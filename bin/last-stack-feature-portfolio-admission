@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Admission gate: the factory admits at most two feature North Stars.
+"""Admission gate: the factory admits two feature North Stars, plus one
+temporary Backfill lane while an admitted North Star is jammed.
 
 One exact Brain point get of `preference-feature-delivery-portfolio-admission`.
 No Brain list. No Brain search. Enumeration under-reports, so it cannot be the
@@ -14,7 +15,10 @@ Exit:
   2  the North Star is paused for new feature creation
   1  the admission record is missing or malformed (fail closed)
 
-Implements `decision-2026-08-31-two-admitted-feature-outcomes`.
+Implements `decision-2026-08-31-two-admitted-feature-outcomes` and
+`decision-2026-09-26-portfolio-jam-backfill-third-lane`: an optional
+`Backfill: <slug>` line admits a third North Star while `Backfill-For` is
+jammed. The gate never admits more than three.
 """
 
 from __future__ import annotations
@@ -34,7 +38,8 @@ ADMISSION_SLUG = "preference-feature-delivery-portfolio-admission"
 # this shape; it does not cap the counter at a fixed allowlist, or every
 # future bump would fail-closed the entire admission gate.
 MIN_POLICY_VERSION = 1
-MAX_ADMITTED = 2
+# Primary + Secondary + the temporary jam Backfill lane.
+MAX_ADMITTED = 3
 SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{2,}$")
 EMPTY_VALUES = ("none", "empty", "unset", "-")
 
@@ -43,7 +48,10 @@ EMPTY_VALUES = ("none", "empty", "unset", "-")
 UNGATED_WORK_CLASSES = ("closeout", "proof", "repair", "incident")
 GATED_WORK_CLASSES = ("feature",)
 
-FIELD_RE = re.compile(r"(?im)^[ \t]*(Policy-Version|Primary|Secondary|Paused|Updated-At|Updated-By|Reason)[ \t]*:[ \t]*(.*?)[ \t]*$")
+FIELD_RE = re.compile(
+    r"(?im)^[ \t]*(Policy-Version|Primary|Secondary|Backfill|Backfill-For|Backfill-Since|"
+    r"Paused|Updated-At|Updated-By|Reason)[ \t]*:[ \t]*(.*?)[ \t]*$"
+)
 
 
 class BrainUnavailable(Exception):
@@ -158,7 +166,16 @@ def read_policy(text: str) -> dict:
         if secondary == primary:
             raise ValueError("Secondary repeats Primary — that admits one outcome, not two")
 
-    admitted = [primary] + ([secondary] if secondary else [])
+    backfill = normalize_slot(fields.get("backfill", ""))
+    if backfill:
+        if "," in backfill or " " in backfill:
+            raise ValueError(f"Backfill must hold one slug: {fields['backfill']!r}")
+        if not SLUG_RE.match(backfill):
+            raise ValueError(f"Backfill is not a slug: {fields['backfill']!r}")
+        if backfill in (primary, secondary):
+            raise ValueError("Backfill repeats an admitted slot — it must name a third outcome")
+
+    admitted = [primary] + ([secondary] if secondary else []) + ([backfill] if backfill else [])
     if len(admitted) > MAX_ADMITTED:
         raise ValueError(f"more than {MAX_ADMITTED} admitted outcomes")
 
@@ -166,6 +183,9 @@ def read_policy(text: str) -> dict:
         "policy_version": version,
         "primary": primary,
         "secondary": secondary,
+        "backfill": backfill,
+        "backfill_for": normalize_slot(fields.get("backfill-for", "")),
+        "backfill_since": fields.get("backfill-since", ""),
         "paused": fields.get("paused", ""),
         "updated_at": fields.get("updated-at", ""),
         "updated_by": fields.get("updated-by", ""),
@@ -185,6 +205,7 @@ def evaluate(north_star: str, work_class: str, brain_bin: str, fixture_dir: Path
         "reason": "",
         "primary": "",
         "secondary": "",
+        "backfill": "",
         "admitted_outcomes": [],
         "point_gets": [],
         "brain_searches": [],
@@ -224,6 +245,8 @@ def evaluate(north_star: str, work_class: str, brain_bin: str, fixture_dir: Path
 
     result["primary"] = policy["primary"]
     result["secondary"] = policy["secondary"]
+    result["backfill"] = policy["backfill"]
+    result["backfill_for"] = policy["backfill_for"]
     result["admitted_outcomes"] = policy["admitted"]
     result["policy_version"] = policy["policy_version"]
     result["updated_at"] = policy["updated_at"]
@@ -244,6 +267,14 @@ def evaluate(north_star: str, work_class: str, brain_bin: str, fixture_dir: Path
         result["verdict"] = "admitted"
         result["admitted"] = True
         result["reason"] = f"{ns} holds the secondary admission slot"
+        return result
+    if policy["backfill"] and ns == policy["backfill"]:
+        result["verdict"] = "admitted"
+        result["admitted"] = True
+        jammed = policy["backfill_for"] or "an admitted North Star"
+        result["reason"] = (
+            f"{ns} holds the temporary backfill admission slot while {jammed} is jammed"
+        )
         return result
 
     admitted_list = ", ".join(policy["admitted"]) or "none"
@@ -297,7 +328,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.json:
         print(
             f"admission {result['verdict']} north_star={result['north_star'] or 'none'} "
-            f"primary={result['primary'] or 'none'} secondary={result['secondary'] or 'none'}"
+            f"primary={result['primary'] or 'none'} secondary={result['secondary'] or 'none'} "
+            f"backfill={result['backfill'] or 'none'}"
         )
     return 0
 

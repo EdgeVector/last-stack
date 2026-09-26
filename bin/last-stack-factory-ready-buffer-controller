@@ -41,7 +41,7 @@ cooldown and gives the driver a one-card safety cap.
 
 After the milestone driver runs, ask `last-stack-portfolio-auto-refill` (dry
 run) whether the admitted North Stars are drained. When it answers
-`would-refill`, run the North Star driver once so the refill lands now and
+`would-refill`, `would-backfill` or `would-clear-backfill`, run the North Star driver once so the refill lands now and
 not at the daily backstop. The `north_star_driver` field reports the result.
 EOF
 }
@@ -210,7 +210,9 @@ if refill_json="$("$REFILL_CLI" --json 2>/dev/null)"; then
   refill_verdict="$(printf '%s\n' "$refill_json" | jq -r '.verdict // ""' 2>/dev/null || true)"
 fi
 case "$refill_verdict" in
-  would-refill)
+  # would-backfill / would-clear-backfill: the jam backfill lane
+  # (decision-2026-09-26-portfolio-jam-backfill-third-lane) lands the same way.
+  would-refill|would-backfill|would-clear-backfill)
     if NORTH_STAR_DRIVER_TRIGGER=ready-buffer-controller \
       "$ROUTINES_CLI" run "$NS_DRIVER_ID" --quiet; then
       NS_DRIVER=ran

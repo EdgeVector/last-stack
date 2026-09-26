@@ -32,6 +32,21 @@ way, even when Primary/Secondary are unchanged — the matcher requires the two
 most recent passes to have recorded the exact `Updated-At` the current record
 carries.
 
+Jam backfill (`decision-2026-09-26-portfolio-jam-backfill-third-lane`): when
+the refill does not fire, the same run checks for a jam. An admitted North
+Star (Primary or Secondary) is jammed when its `runnable` count (milestones in
+gap-report status `in_flight` or `idle_promoteable`) is zero on the two most
+recent matched passes. With no Backfill set, the tool admits the
+highest-ranked paused North Star with an idle milestone (the same
+`pick_candidate` ranking and `idle_by_north_star` supply) as a temporary
+`Backfill:` lane, with `Backfill-For:` and `Backfill-Since:`. When the jammed
+North Star has runnable > 0 on the two most recent matched passes (or is no
+longer admitted), the tool removes the Backfill lines. Only one Backfill lane
+exists; the record never admits more than three North Stars. Each change bumps
+Policy-Version, stamps Updated-By/Updated-At/Reason (with the jam reasons), is
+one point put, and posts a `situations notice --kind config`. The Tom-veto
+reset is the same as for the refill: the matcher needs the exact Updated-At.
+
 Exit:
   0  no trigger this run (nothing written) — the default without --apply
   0  refilled (only with --apply and the trigger fired)
@@ -62,7 +77,12 @@ FIELD_LINE_RE = {
     "updated-at": re.compile(r"(?im)^([ \t]*Updated-At[ \t]*:)[ \t]*.*$"),
     "updated-by": re.compile(r"(?im)^([ \t]*Updated-By[ \t]*:)[ \t]*.*$"),
     "reason": re.compile(r"(?im)^([ \t]*Reason[ \t]*:)[ \t]*.*$"),
+    "backfill": re.compile(r"(?im)^([ \t]*Backfill[ \t]*:)[ \t]*.*$"),
+    "backfill-for": re.compile(r"(?im)^([ \t]*Backfill-For[ \t]*:)[ \t]*.*$"),
+    "backfill-since": re.compile(r"(?im)^([ \t]*Backfill-Since[ \t]*:)[ \t]*.*$"),
 }
+BACKFILL_LINES_RE = re.compile(r"(?im)^[ \t]*(?:Backfill|Backfill-For|Backfill-Since)[ \t]*:.*(?:\n|$)")
+BACKFILL_DECISION = "decision-2026-09-26-portfolio-jam-backfill-third-lane"
 DRIVER_ACTOR = "last-stack-north-star-driver"
 
 
@@ -155,13 +175,20 @@ def load_passes(path: Path) -> list[dict]:
     return out
 
 
-def matching_tail(passes: list[dict], primary: str, secondary: str, updated_at: str) -> list[dict]:
-    """Most-recent-first run of passes matching the live (primary, secondary, updated_at)."""
+def matching_tail(
+    passes: list[dict], primary: str, secondary: str, updated_at: str, backfill: str = ""
+) -> list[dict]:
+    """Most-recent-first run of passes matching the live (primary, secondary, backfill, updated_at).
+
+    A pass written before the Backfill field existed carries no `backfill`
+    key; it matches only a record with no Backfill lane.
+    """
     matched = []
     for rec in reversed(passes):
         if (
             normalize(rec.get("primary", "")) == primary
             and normalize(rec.get("secondary", "")) == secondary
+            and normalize(rec.get("backfill", "")) == backfill
             and rec.get("admission_updated_at", "") == updated_at
         ):
             matched.append(rec)
@@ -214,6 +241,7 @@ def pick_candidate(
     status_of=lambda _slug: "",
     skipped: Optional[list] = None,
     supply: Optional[dict] = None,
+    exclude: tuple = (),
 ) -> Optional[str]:
     """First ranked Paused slug that can take work.
 
@@ -239,7 +267,7 @@ def pick_candidate(
         if not SLUG_RE.match(cand):
             continue
         named.append(cand)
-        if cand in (primary, secondary):
+        if cand in (primary, secondary) or cand in exclude:
             continue
         if supply is not None and int(supply.get(cand, 0) or 0) <= 0:
             if skipped is not None:
@@ -262,7 +290,7 @@ def pick_candidate(
     for count, cand in ranked:
         if count <= 0 or not SLUG_RE.match(cand):
             continue
-        if cand in (primary, secondary) or cand in named:
+        if cand in (primary, secondary) or cand in named or cand in exclude:
             continue
         status = status_of(cand)
         if status in TERMINAL_NORTH_STAR_STATUSES:
@@ -304,6 +332,196 @@ def rewrite_body(body: str, new_fields: dict) -> str:
         rx = FIELD_LINE_RE[key]
         out, count = rx.subn(lambda m: f"{m.group(1)} {value}", out, count=1)
     return out
+
+
+def runnable_in(rec: dict, north_star: str, primary: str, secondary: str) -> Optional[int]:
+    """The pass's runnable count for one admitted North Star; None when not recorded."""
+    by_ns = rec.get("runnable_by_admitted")
+    if isinstance(by_ns, dict) and isinstance(by_ns.get(north_star), int):
+        return by_ns[north_star]
+    key = ""
+    if north_star == primary:
+        key = "primary_runnable"
+    elif north_star and north_star == secondary:
+        key = "secondary_runnable"
+    value = rec.get(key) if key else None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def jam_reasons(rec: dict, jammed: list[str]) -> str:
+    """`<ns>=[m:status,...]` for each jammed North Star, from the newest pass."""
+    by_ns = rec.get("jam_reasons_by_admitted")
+    by_ns = by_ns if isinstance(by_ns, dict) else {}
+    parts = []
+    for ns in jammed:
+        reasons = by_ns.get(ns)
+        if isinstance(reasons, list) and reasons:
+            parts.append(f"{ns}=[{','.join(str(r) for r in reasons)}]")
+        else:
+            parts.append(f"{ns}=[no-nonterminal-milestone]")
+    return "; ".join(parts)
+
+
+def evaluate_backfill(
+    matched: list[dict],
+    primary: str,
+    secondary: str,
+    backfill: str,
+    backfill_for: str,
+    paused: str,
+    status_of,
+) -> dict:
+    """Decide the jam backfill change. `action` is None, "admit", or "clear"."""
+    out: dict = {"action": None, "jammed": [], "jam_reasons": ""}
+    if len(matched) < 2:
+        out["backfill_verdict"] = "no-backfill-change-insufficient-passes"
+        return out
+    recent = matched[:2]
+    ts1, ts2 = recent[1].get("ts", ""), recent[0].get("ts", "")
+    admitted = [ns for ns in (primary, secondary) if ns]
+
+    if backfill:
+        # A Backfill lane is open. Never open a second one (no fourth slot);
+        # only decide whether the jam it covers is over.
+        watched = [backfill_for] if backfill_for else admitted
+        gone = [ns for ns in watched if ns not in admitted]
+        recovered = all(
+            (runnable_in(rec, ns, primary, secondary) or 0) > 0
+            for rec in recent
+            for ns in watched
+            if ns in admitted
+        )
+        if gone:
+            why = f"{', '.join(gone)} is no longer admitted"
+        elif recovered:
+            counts = ", ".join(
+                f"{ns}={runnable_in(recent[1], ns, primary, secondary)}/"
+                f"{runnable_in(recent[0], ns, primary, secondary)}"
+                for ns in watched
+            )
+            why = (
+                f"{', '.join(watched)} reported runnable milestones on 2 consecutive "
+                f"milestone-driver passes ({ts1}, {ts2}; runnable {counts})"
+            )
+        else:
+            out["backfill_verdict"] = "no-backfill-change-still-jammed"
+            return out
+        out["action"] = "clear"
+        out["backfill_verdict"] = "clear"
+        out["backfill_reason"] = (
+            f"Jam backfill cleared: {why}; removed Backfill {backfill}. Cards already filed "
+            f"under {backfill} finish; it files no new cards. Per {BACKFILL_DECISION}."
+        )
+        return out
+
+    jammed = [
+        ns for ns in admitted
+        if all(runnable_in(rec, ns, primary, secondary) == 0 for rec in recent)
+    ]
+    out["jammed"] = jammed
+    if not jammed:
+        out["backfill_verdict"] = "no-backfill-no-jam"
+        return out
+    reasons = jam_reasons(recent[0], jammed)
+    out["jam_reasons"] = reasons
+    supply = recent[0].get("idle_by_north_star")
+    if not isinstance(supply, dict):
+        # Without the supply map the pick cannot prove the candidate has an
+        # idle milestone, and a backfill with nothing to decompose adds no work.
+        out["backfill_verdict"] = "no-backfill-no-supply-map"
+        return out
+    skipped: list = []
+    candidate = pick_candidate(
+        paused, primary, secondary, status_of=status_of, skipped=skipped, supply=supply,
+    )
+    out["backfill_skipped"] = skipped
+    if candidate is None:
+        out["backfill_verdict"] = "no-backfill-candidate"
+        return out
+    out["action"] = "admit"
+    out["backfill_verdict"] = "admit"
+    out["new_backfill"] = candidate
+    out["backfill_for"] = jammed[0]
+    out["backfill_reason"] = (
+        f"Jam backfill: {', '.join(jammed)} reported zero runnable milestones (in_flight or "
+        f"idle_promoteable) on 2 consecutive milestone-driver passes ({ts1}, {ts2}); "
+        f"jam reasons: {reasons}; admitted highest-ranked paused {candidate} with an idle "
+        f"milestone ({supply.get(candidate, 0)}) as Backfill per {BACKFILL_DECISION}."
+    )
+    return out
+
+
+def strip_backfill_lines(body: str) -> str:
+    return BACKFILL_LINES_RE.sub("", body)
+
+
+def set_backfill_lines(body: str, backfill: str, backfill_for: str, since: str) -> str:
+    """Put the three Backfill lines right after Secondary (or Primary)."""
+    out = strip_backfill_lines(body)
+    anchor = FIELD_LINE_RE["secondary"].search(out) or FIELD_LINE_RE["primary"].search(out)
+    lines = f"Backfill: {backfill}\nBackfill-For: {backfill_for}\nBackfill-Since: {since}"
+    if anchor is None:
+        return f"{lines}\n{out}"
+    pos = anchor.end()
+    return f"{out[:pos]}\n{lines}{out[pos:]}"
+
+
+CONTRACT_REWRITES = (
+    (
+        "The North Star driver can create milestones only for the primary or secondary value.",
+        "The North Star driver can create milestones only for the primary, secondary, or backfill value.",
+    ),
+    (
+        "The milestone driver can create Kind:pr cards only for the primary or secondary value.",
+        "The milestone driver can create Kind:pr cards only for the primary, secondary, or backfill value.",
+    ),
+)
+BACKFILL_SECTION = f"""## Jam backfill
+
+An admitted North Star is jammed when it has zero runnable milestones (gap-report status `in_flight` or `idle_promoteable`) on two consecutive `last-stack-milestone-driver` passes. Then `last-stack-portfolio-auto-refill` admits the highest-ranked paused North Star that has an idle milestone as a temporary Backfill lane. It uses the auto-refill ranking and writes `Backfill`, `Backfill-For` (the jammed North Star) and `Backfill-Since`. The Backfill North Star keeps its place in Paused.
+
+Only one Backfill lane exists at a time. The factory never admits more than three feature North Stars.
+
+When the jammed North Star has runnable milestones again on two consecutive passes, the tool removes the Backfill lines. Cards already filed under the Backfill lane finish. The Backfill North Star files no new cards after removal.
+
+A jam is also an alarm: the Reason names the jammed milestones and their status. The Backfill lane keeps the factory busy. It does not repair the jam.
+
+Tom keeps veto as for auto-refill: an edit with a newer `Updated-At` resets the trigger.
+
+See `{BACKFILL_DECISION}`.
+
+"""
+
+
+def ensure_backfill_prose(body: str) -> str:
+    """Bring the Contract and the Jam backfill section up to date. Idempotent."""
+    out = body
+    for old, new in CONTRACT_REWRITES:
+        out = out.replace(old, new)
+    if "## Jam backfill" in out:
+        return out
+    idx = out.find("## Auto-refill")
+    if idx >= 0:
+        return out[:idx] + BACKFILL_SECTION + out[idx:]
+    return out.rstrip("\n") + "\n\n" + BACKFILL_SECTION.rstrip("\n") + "\n"
+
+
+def post_notice(title: str, summary: str, situations_bin: str, actor: str, kind: str) -> bool:
+    try:
+        cp = subprocess.run(
+            [
+                situations_bin, "notice",
+                "--title", title,
+                "--kind", kind,
+                "--system", "last-stack",
+                "--actor", actor,
+                "--summary", summary,
+            ],
+            text=True, capture_output=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return cp.returncode == 0
 
 
 def brain_put(meta: dict, body: str, brain_bin: str, fixture_dir: Optional[Path]) -> bool:
@@ -422,22 +640,91 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         passes = []
 
-    matched = matching_tail(passes, primary, secondary, updated_at)
+    backfill = normalize(fields.get("backfill", ""))
+    backfill_for = normalize(fields.get("backfill-for", ""))
+    matched = matching_tail(passes, primary, secondary, updated_at, backfill)
     result = {
         "verdict": "",
         "refilled": False,
         "primary": primary,
         "secondary": secondary,
+        "backfill": backfill,
+        "backfill_for": backfill_for,
         "policy_version": policy_version,
         "matched_pass_count": len(matched),
         "candidate": "",
     }
+    status_of = lambda slug: read_north_star_status(slug, args.brain, fixture)  # noqa: E731
+
+    def finish() -> int:
+        """Emit the report; exit 1 only when a write was attempted and failed."""
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print(
+                f"last-stack-portfolio-auto-refill: {result['verdict']} "
+                f"candidate={result.get('candidate') or 'none'} "
+                f"backfill={result.get('backfill_verdict', 'none')} "
+                f"policy_version={policy_version}->{result.get('new_policy_version', policy_version)}"
+            )
+        return 1 if result["verdict"] == "write-failed" else 0
+
+    def run_backfill() -> int:
+        """The jam backfill lane runs only when the refill did not fire."""
+        refill_verdict = result["verdict"]
+        change = evaluate_backfill(
+            matched, primary, secondary, backfill, backfill_for, paused, status_of,
+        )
+        result.update({k: v for k, v in change.items() if k != "action"})
+        action = change.get("action")
+        if action is None:
+            return finish()
+        new_policy_version = policy_version + 1
+        new_updated_at = args.now or now_iso()
+        result["new_policy_version"] = new_policy_version
+        result["refill_verdict"] = refill_verdict
+        if action == "admit":
+            result["verdict"] = "backfilled" if args.apply else "would-backfill"
+            new_body = set_backfill_lines(
+                body, change["new_backfill"], change["backfill_for"], new_updated_at
+            )
+        else:
+            result["verdict"] = "backfill-cleared" if args.apply else "would-clear-backfill"
+            new_body = strip_backfill_lines(body)
+        if not args.apply:
+            return finish()
+        new_body = ensure_backfill_prose(new_body)
+        new_body = rewrite_body(new_body, {
+            "policy-version": str(new_policy_version),
+            "updated-at": new_updated_at,
+            "updated-by": DRIVER_ACTOR,
+            "reason": change["backfill_reason"],
+        })
+        if not brain_put(meta, new_body, args.brain, fixture):
+            result["verdict"] = "write-failed"
+            print(
+                "last-stack-portfolio-auto-refill: brain put failed; admission record unchanged",
+                file=sys.stderr,
+            )
+            return finish()
+        if action == "admit":
+            title = (
+                f"Portfolio jam backfill admitted {change['new_backfill']} "
+                f"for {change['backfill_for']} (Policy-Version {new_policy_version})"
+            )
+        else:
+            title = (
+                f"Portfolio jam backfill cleared {backfill} "
+                f"(Policy-Version {new_policy_version})"
+            )
+        result["notice_posted"] = post_notice(
+            title, change["backfill_reason"], args.situations, args.notice_actor, "config",
+        )
+        return finish()
 
     if len(matched) < 2:
         result["verdict"] = "no-trigger-insufficient-passes"
-        if args.json:
-            print(json.dumps(result, indent=2, sort_keys=True))
-        return 0
+        return run_backfill()
 
     two_most_recent = matched[:2]
     drained = all(
@@ -449,9 +736,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     if not drained:
         result["verdict"] = "no-trigger-supply-not-drained"
-        if args.json:
-            print(json.dumps(result, indent=2, sort_keys=True))
-        return 0
+        return run_backfill()
 
     skipped: list = []
     supply = two_most_recent[0].get("idle_by_north_star")
@@ -461,22 +746,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         paused,
         primary,
         secondary,
-        status_of=lambda slug: read_north_star_status(slug, args.brain, fixture),
+        status_of=status_of,
         skipped=skipped,
         supply=supply,
+        exclude=(backfill,) if backfill else (),
     )
     result["skipped_terminal"] = skipped
     result["supply_aware"] = supply is not None
     if candidate is None:
         result["verdict"] = "no-candidate"
-        if args.json:
-            print(json.dumps(result, indent=2, sort_keys=True))
         print(
             "last-stack-portfolio-auto-refill: trigger fired but no paused North Star candidate "
             f"remains in {ADMISSION_SLUG}",
             file=sys.stderr,
         )
-        return 0
+        return run_backfill()
 
     result["candidate"] = candidate
     result["verdict"] = "would-refill" if not args.apply else "refilled"
@@ -522,22 +806,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not put_ok:
             result["verdict"] = "write-failed"
             result["refilled"] = False
-            if args.json:
-                print(json.dumps(result, indent=2, sort_keys=True))
             print("last-stack-portfolio-auto-refill: brain put failed; admission record unchanged", file=sys.stderr)
-            return 1
+            return finish()
         result["refilled"] = True
         notice_ok = notice_refill(candidate, new_policy_version, args.situations, args.notice_actor, True)
         result["notice_posted"] = notice_ok
 
-    if args.json:
-        print(json.dumps(result, indent=2, sort_keys=True))
-    else:
-        print(
-            f"last-stack-portfolio-auto-refill: {result['verdict']} candidate={candidate or 'none'} "
-            f"policy_version={policy_version}->{result.get('new_policy_version', policy_version)}"
-        )
-    return 0
+    return finish()
 
 
 if __name__ == "__main__":

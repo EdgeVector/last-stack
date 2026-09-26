@@ -129,6 +129,13 @@ out="$(FAKE_REFILL=would-refill run_controller 0 "$TMP/state/ns-refill" 5001)"
 [ "$(printf '%s\n' "$out" | jq -r .detail)" = cooldown ]
 [ "$(grep -c 'last-stack-north-star-driver' "$TMP/routines.log")" -eq 1 ]
 
+# A jam backfill change (open or clear) also lands through the North Star driver.
+out="$(FAKE_REFILL=would-backfill run_controller 0 "$TMP/state/ns-backfill" 5000)"
+[ "$(printf '%s\n' "$out" | jq -r .north_star_driver)" = ran ]
+out="$(FAKE_REFILL=would-clear-backfill run_controller 0 "$TMP/state/ns-backfill-clear" 5000)"
+[ "$(printf '%s\n' "$out" | jq -r .north_star_driver)" = ran ]
+[ "$(grep -c 'last-stack-north-star-driver' "$TMP/routines.log")" -eq 3 ]
+
 # Ready cards that all overlap a doing card's surfaces are not supply.
 overlap='{"result":"none","dry_run":true,"scanned":2,"skipped":[{"slug":"a","reason":"surface overlap with doing card x"},{"slug":"b","reason":"surface overlap with doing card y"}]}'
 before="$(wc -l < "$TMP/routines.log" | tr -d ' ')"

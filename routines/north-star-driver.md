@@ -136,8 +136,20 @@ printf 'AUTO_REFILL verdict=%s rc=%s\n' "$refill_verdict" "$refill_rc"
 - `verdict=would-refill` should never appear here (this step always passes
   `--apply`); if it does, treat it the same as `refilled` failing and report
   `noop auto-refill-apply-not-honored`.
+- `verdict=backfilled` / `backfill-cleared` — the jam backfill lane changed
+  (`decision-2026-09-26-portfolio-jam-backfill-third-lane`). An admitted
+  North Star had zero runnable milestones (`in_flight` or `idle_promoteable`)
+  on two consecutive passes, so the helper admitted a temporary `Backfill:`
+  North Star; or the jam ended and the helper removed it. The record changed
+  (Policy-Version bumped, a `--kind config` Situations notice posted). Print
+  `JAM jammed=<.jammed> reasons=<.jam_reasons>` from the JSON. The Backfill
+  keeps the factory busy; it does not repair the jam.
+- `verdict=would-backfill` / `would-clear-backfill` should never appear here;
+  report `noop auto-refill-apply-not-honored`.
 - `verdict=no-trigger-*` / `no-candidate` — nothing written. Continue
-  selection as usual.
+  selection as usual. `.backfill_verdict` says why the jam lane did not
+  change (`no-backfill-no-jam`, `no-backfill-candidate`,
+  `no-backfill-change-still-jammed`, ...).
 - `rc=1` (admission record unreadable/malformed) or `rc=2` (pass-history file
   unreadable) — do not block this pass on it; the admission gate below is the
   authoritative fail-closed check. Report `WARN=auto-refill-check-failed` and
@@ -164,7 +176,7 @@ Use the milestone portfolio captured by the creation inventory gate. Then:
    Then `brain get <slug> --type project` for each candidate slug. Skip misses.
 3. Ignore done, archived, retired, or definition-incomplete North Stars.
    In an untargeted run, also drop every candidate that does not hold the
-   Primary or Secondary slot: run the admission gate below for each candidate
+   Primary, Secondary, or Backfill slot: run the admission gate below for each candidate
    and keep only `rc=0`. Steps 4-6 choose among admitted North Stars only.
    A pending request on a paused North Star waits for admission; it must not
    consume the pass. (2026-09-25: a paused North Star's pending request won
@@ -177,9 +189,34 @@ Use the milestone portfolio captured by the creation inventory gate. Then:
    `complete` or `abandoned`** (`kanban milestone show <slug>`). Those are
    ledger drift; `last-stack-north-star-ledger-sync` flips them. Do not create a
    second milestone for a finished outcome.
-6. Otherwise choose one active North Star with no nonterminal milestone and a
+6. Otherwise choose one active North Star that is **not covered** and has a
    concrete next independently provable outcome already stated in its body or
-   active-programs section.
+   active-programs section. Coverage means runnable work, not the existence
+   of a nonterminal milestone. (2026-09-26: an `idle_blocked` milestone, a
+   `proof_pending` milestone with a failing proof, and a skipped `planned`
+   milestone all counted as coverage. The driver reported "both fully
+   covered" while the Primary had zero runnable cards.) Read the gap report:
+
+   ```bash
+   kanban milestone gap-report --json > /tmp/north-star-driver-gap.json
+   jq -r --arg ns "$ns_slug" '
+     [.milestones[] | select(.north_star == $ns)
+      | select(.status != "complete" and .status != "abandoned")] as $m
+     | ([$m[] | select(.status == "in_flight" or .status == "idle_promoteable"
+          or .status == "needs_next_slice" or .status == "idle_empty")] | length) as $cov
+     | "COVERAGE north_star=\($ns) covered=\($cov) reasons=\([$m[] | "\(.slug):\(.status)"] | join(","))"
+   ' /tmp/north-star-driver-gap.json
+   ```
+
+   - **Covered** — the North Star has at least one milestone with gap-report
+     status `in_flight` or `idle_promoteable`, or `needs_next_slice` or
+     `idle_empty` (the milestone driver can decompose it). Skip it.
+   - **Jammed** — every nonterminal milestone is stuck (`idle_blocked`,
+     `blocked`, `proof_pending` with a failing proof, `planned` and skipped,
+     or any other status), or no nonterminal milestone exists. Create the next
+     milestone from a pending `MILESTONE_REQUEST` or from a concrete next
+     outcome in the North Star body. When neither exists, report
+     `noop jammed north_star=<slug> reasons=<milestone:status,...>`.
 
 If the outcome, acceptance criteria, or owning North Star is ambiguous, do not
 guess. Report `noop needs-outcome-definition`.
@@ -205,7 +242,9 @@ if [ "$admission_rc" -ne 0 ]; then
 fi
 ```
 
-- `rc=0` — the North Star holds the Primary or the Secondary slot. Continue.
+- `rc=0` — the North Star holds the Primary, the Secondary, or the temporary
+  Backfill slot (`decision-2026-09-26-portfolio-jam-backfill-third-lane`).
+  Continue.
 - `rc=2` — the North Star is paused for new feature creation. Create no
   milestone for it. Report `noop admission-paused north_star=<slug>` and pick
   no replacement outcome in this pass. In an untargeted run this means no admitted
