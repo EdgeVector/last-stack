@@ -94,6 +94,20 @@ CACHE_FILE="$STATE_DIR/class-a-heal.last-ok"
 CACHE_TTL_S="${LASTSTACK_CLASS_A_CACHE_TTL_S:-45}"
 # Max wait for another healer holding the lock
 LOCK_WAIT_S="${LASTSTACK_CLASS_A_LOCK_WAIT_S:-20}"
+# Max wait for the host-track install lock before the `current` repoint below.
+# Short on purpose: a busy lock means an install is mid-flight and IT owns the
+# pointer, so the right answer is to do nothing and let the next tick look again.
+HT_LOCK_WAIT_S="${LASTSTACK_CLASS_A_HT_LOCK_WAIT_S:-10}"
+# host-track app name this heal owns; keyed the same way bin/host-track keys it.
+HT_LOCK_APP="${LASTSTACK_CLASS_A_HT_APP:-last-stack}"
+
+# The install lock that `bin/host-track` takes around every current/previous
+# write. Sourced, not reimplemented, so the two writers cannot drift apart on
+# which directory the lock lives in.
+# shellcheck source=../lib/host-track-install-lock.sh
+if [ -r "$ROOT/lib/host-track-install-lock.sh" ]; then
+  . "$ROOT/lib/host-track-install-lock.sh"
+fi
 
 # Critical tools that must be on ~/.local/bin (routinesd PATH prefers it).
 # Keep in sync with config/host-track/apps.json last-stack links.
@@ -589,18 +603,34 @@ healthy() {
 }
 
 # --- 1) Dangling artifacts/current (GC / concurrent install race) -----------
+# True when `current` resolves to a tree that looks like a real last-stack
+# install. Both the pre-lock check and the re-read under the lock call this, so
+# the two cannot drift into disagreeing about what "dangling" means.
+current_target_is_live() {
+  local target abs
+  [ -L "$CURRENT_LINK" ] || return 1
+  target="$(readlink "$CURRENT_LINK" 2>/dev/null || true)"
+  [ -n "$target" ] || return 1
+  case "$target" in
+    /*) abs="$target" ;;
+    *) abs="$ARTIFACT_ROOT/$target" ;;
+  esac
+  [ -d "$abs" ] || return 1
+  [ -x "$abs/bin/host-track" ] || [ -r "$abs/routines/kanban-pickup.md" ]
+}
+
 heal_dangling_current() {
   [ -L "$CURRENT_LINK" ] || return 0
   local target abs prev_t prev_abs n dest
   target="$(readlink "$CURRENT_LINK" 2>/dev/null || true)"
   [ -n "$target" ] || return 0
+  if current_target_is_live; then
+    return 0
+  fi
   case "$target" in
     /*) abs="$target" ;;
     *) abs="$ARTIFACT_ROOT/$target" ;;
   esac
-  if [ -d "$abs" ] && { [ -x "$abs/bin/host-track" ] || [ -r "$abs/routines/kanban-pickup.md" ]; }; then
-    return 0
-  fi
   log "dangling artifacts/current -> $target"
   append_action "dangling-current"
   if [ ! -L "$PREVIOUS_LINK" ]; then
@@ -621,7 +651,64 @@ heal_dangling_current() {
     append_action "would-repoint-previous"
     return 0
   fi
+  # Everything read above was read OUTSIDE the install lock. `current` is
+  # dangling most often because an install is restaging the tree it points at
+  # (bin/host-track commit_staged_version renames the live version aside and
+  # says so: "current briefly dangles until stage is committed"). Writing the
+  # pointer from here during that window is a lost update: host-track restores
+  # `current` to the new digest and this repoint puts it back on `previous`,
+  # leaving current == previous and the install stamp naming a tree that is not
+  # installed.
+  # papercut-host-track-two-schedulers-race-the-current-symlink-and-one-moves-it-backward-20260926
+  # The helper may be unreachable in exactly the situation this function
+  # exists for: `current` dangles, and $ROOT resolves THROUGH current. Refusing
+  # to heal then would make the heal depend on the thing it repairs, so fall
+  # back to a bare mkdir-mutex on the SAME lock path. It has no pid reclaim: if
+  # the directory is there at all, defer. The cost of being wrong is one
+  # skipped tick; the cost of writing the pointer unlocked is a lost update.
+  if ! declare -F ht_install_lock_acquire >/dev/null; then
+    ht_install_lock_acquire() {
+      local lock
+      lock="${HOST_TRACK_LOCK_DIR:-$HOME/.host-track/locks}/install-${1}.lock.d"
+      mkdir -p "$(dirname "$lock")" 2>/dev/null || true
+      mkdir "$lock" 2>/dev/null || return 1
+      printf '%s\n' "$$" >"$lock/pid" 2>/dev/null || true
+      HT_INSTALL_LOCK_HELD="$lock"
+      return 0
+    }
+    ht_install_lock_release() {
+      [ -z "${HT_INSTALL_LOCK_HELD:-}" ] || rm -rf -- "$HT_INSTALL_LOCK_HELD" 2>/dev/null || true
+      HT_INSTALL_LOCK_HELD=""
+    }
+    log "install lock helper unavailable; using the bare mkdir mutex on the same path"
+    append_action "install-lock-fallback-inline"
+  fi
+  if ! ht_install_lock_acquire "$HT_LOCK_APP" "$HT_LOCK_WAIT_S"; then
+    log "install lock busy for $HT_LOCK_APP; an install owns current — not repointing"
+    append_action "repoint-deferred-install-lock-busy"
+    detail="dangling-current-install-lock-busy"
+    return 1
+  fi
+  # Re-read under the lock. Anything decided before the wait is stale, and the
+  # common outcome of waiting is that the install finished and fixed it.
+  if current_target_is_live; then
+    ht_install_lock_release
+    log "current recovered while waiting for the install lock; nothing to repoint"
+    append_action "repoint-unnecessary-current-recovered"
+    return 0
+  fi
+  prev_t="$(readlink "$PREVIOUS_LINK" 2>/dev/null || true)"
+  case "$prev_t" in
+    /*) prev_abs="$prev_t" ;;
+    *) prev_abs="$ARTIFACT_ROOT/$prev_t" ;;
+  esac
+  if [ -z "$prev_t" ] || [ ! -d "$prev_abs" ]; then
+    ht_install_lock_release
+    detail="dangling-current-previous-also-missing"
+    return 1
+  fi
   ln -sfn "$prev_t" "$CURRENT_LINK"
+  ht_install_lock_release
   ensure_path_shims
   append_action "repointed-current-to-previous"
   HT="$(resolve_host_track || printf '%s\n' "$HT")"
