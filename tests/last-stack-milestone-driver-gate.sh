@@ -15,6 +15,8 @@ set -euo pipefail
 case "$*" in
   'milestone gap-report --json') cat "${GATE_GAP_JSON:?}" ;;
   'milestone show ms-b --json') cat "${GATE_MS_SHOW_JSON:-/dev/null}" ;;
+  'milestone detail '*' --json') [ -f "${GATE_FIXTURE_DIR:?}/detail-$3.json" ] || exit 9; cat "$GATE_FIXTURE_DIR/detail-$3.json" ;;
+  'show '*' --json') [ -f "${GATE_FIXTURE_DIR:?}/card-$2.json" ] || exit 9; cat "$GATE_FIXTURE_DIR/card-$2.json" ;;
   *) exit 9 ;;
 esac
 SH
@@ -117,4 +119,101 @@ rm -rf "$tmp/adm/get"
 mkdir -p "$tmp/adm/get"
 run_case admission-unreadable 0 'admission-unreadable'
 
+
+# ---------------------------------------------------------------------------
+# Repair work (papercut-milestone-driver-gate-blind-to-proof-pending-repair-20260926):
+# a proof_pending milestone whose proof card last verdict is a stale FAIL, and
+# decompose entries flagged repair/next-slice, are never an empty frontier and
+# are never skipped by the admission check.
+# ---------------------------------------------------------------------------
+export GATE_FIXTURE_DIR="$tmp/fx"
+mkdir -p "$GATE_FIXTURE_DIR"
+old_at="2026-09-06T00:00:00.000Z"
+fresh_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+proof_pending_case() {
+  # $1 card column, $2 updated_at, $3 body (JSON string content)
+  printf '{"milestone":{"slug":"ms-pp","state":"active","deps":[],"proof_card":"pc-pp"}}\n' >"$GATE_FIXTURE_DIR/detail-ms-pp.json"
+  printf '{"slug":"pc-pp","column":"%s","kind":"validation","updated_at":"%s","body":"%s"}\n' "$1" "$2" "$3" >"$GATE_FIXTURE_DIR/card-pc-pp.json"
+}
+printf '%s\n' '{"counts":{"idle_promoteable":0,"idle_empty":0,"proof_pending":1},"work_queue":[],"milestones":[{"slug":"ms-pp","status":"proof_pending","action":"await_proof"},{"slug":"ms-done","status":"complete","action":"skip"}]}' >"$tmp/pp-empty.json"
+export GATE_GAP_JSON="$tmp/pp-empty.json"
+
+proof_pending_case backlog "$old_at" 'PROOF[failed-offline-ns-proof]: last-stack-north-star-proof --offline FAIL sentry_failure_visible'
+run_case proof-pending-stale-fail 10 'reason=proof-pending-repair=1'
+proof_pending_case done "$old_at" 'PROOF: failed offline north-star-x — report remains FAIL'
+run_case proof-pending-stale-failed-word 10 'reason=proof-pending-repair=1'
+proof_pending_case done "$old_at" 'PROOF[reopened-end-state-unmet]: clause 2'
+run_case proof-pending-reopened-unmet 10 'reason=proof-pending-repair=1'
+proof_pending_case done "$old_at" 'PROOF: FAIL\nPROOF: passed — PASS clone_oid=abc'
+run_case proof-pending-pass-after-fail 0 'empty-frontier'
+proof_pending_case done "$fresh_at" 'PROOF: FAIL'
+run_case proof-pending-fresh-fail 0 'empty-frontier'
+proof_pending_case doing "$old_at" 'PROOF: FAIL'
+run_case proof-pending-rerun-in-doing 0 'empty-frontier'
+proof_pending_case done "$old_at" 'no verdict line'
+run_case proof-pending-no-verdict 0 'empty-frontier'
+rm -f "$GATE_FIXTURE_DIR/card-pc-pp.json"
+run_case proof-pending-card-unreadable 0 'empty-frontier'
+
+# Admission paused on a decompose-only queue: repair work still proceeds.
+cat >"$tmp/adm/get/preference-feature-delivery-portfolio-admission.txt" <<'REC'
+Policy-Version: 1
+Primary: other-ns
+Secondary: none
+Paused:
+Updated-At: 2026-09-18
+Updated-By: test
+Reason: fixture
+REC
+export GATE_MS_SHOW_JSON="$tmp/ms-b.json"
+jq '.work_queue=[{"action":"decompose","slug":"ms-b"}] | .counts.idle_empty=1' "$tmp/pp-empty.json" >"$tmp/pp-paused.json"
+export GATE_GAP_JSON="$tmp/pp-paused.json"
+proof_pending_case backlog "$old_at" 'PROOF: FAIL'
+run_case paused-plus-proof-pending-repair 10 'reason=proof-pending-repair=1'
+proof_pending_case done "$old_at" 'PROOF: PASS'
+run_case paused-no-repair 0 'admission-paused'
+for flag in '"needs_next_slice":true' '"next_slice":true' '"stale_fail_proof":true,"from_status":"proof_pending"' '"work_class":"repair"'; do
+  printf '{"counts":{"idle_promoteable":0,"idle_empty":1},"work_queue":[{"action":"decompose","slug":"ms-b",%s}]}\n' "$flag" >"$tmp/flag.json"
+  export GATE_GAP_JSON="$tmp/flag.json"
+  run_case "paused-repair-flag-$flag" 10 'reason=repair=1'
+done
+printf '%s\n' '{"counts":{"idle_promoteable":0,"idle_empty":1},"work_queue":[{"action":"decompose","slug":"ms-b"}],"milestones":[{"slug":"ms-b","status":"needs_next_slice","action":"decompose"}]}' >"$tmp/next-row.json"
+export GATE_GAP_JSON="$tmp/next-row.json"
+run_case paused-needs-next-slice-row 10 'reason=repair=1'
+
+# Parity: the gate's jq verdict agrees with the snapshot's _proof_verdict.
+sed -n "/^proof_card_filter='/,/^    else \"fresh-fail\" end'/p" "$GATE" \
+  | sed "1s/^proof_card_filter='//; \$s/'\$//" >"$tmp/filter.jq"
+[ -s "$tmp/filter.jq" ] || { echo "could not extract proof_card_filter from the gate" >&2; exit 1; }
+cat >"$tmp/parity.py" <<'PYTEST'
+import importlib.machinery
+import importlib.util
+import json
+import subprocess
+import sys
+loader = importlib.machinery.SourceFileLoader('snapshot', sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+module = importlib.util.module_from_spec(spec)
+loader.exec_module(module)
+bodies = [
+    'PROOF: FAIL', 'RESULT: fail', 'PROOF: PASS', 'result: Passed.',
+    'PROOF: failed offline north-star-x — report remains FAIL',
+    'PROOF[failed-isolated-copy-contract]: x --offline FAIL',
+    'PROOF[reopened-end-state-unmet]: clause 1',
+    'PROOF[ Pass-live ]: ok', 'PROOF[offline-ns-proof]: rc=1 FAIL',
+    'PROOF: fix-card filing failed', 'PROOF: FAIL\nPROOF: passed — ok',
+    'PROOF: PASS\nPROOF[failed-x]: y', '  PROOF:   FAIL  ', 'PROOF: —failed—',
+    'no verdict\nFAIL', '',
+]
+want_map = {'fail': 'stale-fail', 'pass': 'pass', None: 'none'}
+for body in bodies:
+    card = json.dumps({'column': 'done', 'updated_at': '2026-09-06T00:00:00Z', 'body': body})
+    got = subprocess.run(['jq', '-r', '--arg', 'cadence', '3600', '-f', sys.argv[2]],
+                         input=card, capture_output=True, text=True, check=True).stdout.strip()
+    want = want_map[module._proof_verdict(body)]
+    assert got == want, (body, want, got)
+PYTEST
+python3 "$tmp/parity.py" "$ROOT/bin/last-stack-milestone-driver-snapshot" "$tmp/filter.jq" \
+  || { echo "gate proof verdict disagrees with the snapshot's _proof_verdict" >&2; exit 1; }
+echo "ok repair work: proof_pending stale FAIL and repair/next-slice entries are never skipped"
 echo "ok last-stack-milestone-driver-gate"
