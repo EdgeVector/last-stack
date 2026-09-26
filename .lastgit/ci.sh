@@ -321,6 +321,7 @@ ci_test tests/last-stack-pr-reaper-close-guard.sh
 ci_test tests/last-stack-pr-reaper-lifecycle-safety.sh
 ci_test tests/last-stack-factory-hardening.sh
 ci_test tests/last-stack-milestone-driver-snapshot.sh
+ci_test tests/last-stack-milestone-driver-gap-report-reconcile.sh
 ci_test tests/last-stack-factory-ready-buffer-activation.sh
 ci_test tests/last-stack-plistbuddy-compat.sh
 ci_test tests/morning-sync-live-human-gate-reconcile.sh

@@ -8,11 +8,15 @@ fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 mkdir -p "$TMP/bin" "$TMP/run"
 export FIXTURE_STATE="$TMP/state.json" FIXTURE_READS="$TMP/reads.log" FIXTURE_WRITES="$TMP/writes.log"
 cat >"$FIXTURE_STATE" <<'JSON'
-{"milestones":{"release":{"milestone":{"slug":"release","state":"active","deps":[],"proof_status":"pending","proof_card":"","body":"Acceptance requires executable synthetic proof"},"proof_verdict":"pending"},"meter":{"milestone":{"slug":"meter","state":"planned","deps":[],"proof_status":"pending"},"proof_verdict":"pending"}},"card":{"slug":"card-a","column":"backlog","milestone":"release","block_status":"none","surfaces":["src/a.ts"]},"report":{"counts":{"idle_empty":1},"work_queue":[{"slug":"release","action":"decompose"},{"slug":"release","action":"complete_proof"},{"slug":"release","action":"promote","promoteable":["card-a"]}]}}
+{"milestones":{"release":{"milestone":{"slug":"release","state":"active","deps":[],"proof_status":"pending","proof_card":"","body":"Acceptance requires executable synthetic proof","north_star":""},"proof_verdict":"pending"},"meter":{"milestone":{"slug":"meter","state":"planned","deps":[],"proof_status":"pending"},"proof_verdict":"pending"}},"card":{"slug":"card-a","column":"backlog","milestone":"release","block_status":"none","surfaces":["src/a.ts"]},"report":{"counts":{"idle_empty":1},"work_queue":[{"slug":"release","action":"decompose"},{"slug":"release","action":"complete_proof"},{"slug":"release","action":"promote","promoteable":["card-a"]}]}}
 JSON
 cat >"$TMP/bin/preflight" <<'EOF'
 #!/usr/bin/env bash
 exit "${PREFLIGHT_RC:-0}"
+EOF
+cat >"$TMP/bin/last-stack-feature-portfolio-admission" <<'EOF'
+#!/usr/bin/env bash
+echo '{"admitted_outcomes":[]}'
 EOF
 cat >"$TMP/bin/kanban" <<'EOF'
 #!/usr/bin/env bash
@@ -27,6 +31,9 @@ case "$*" in
   'milestone detail '* )
     if [ "${FAIL_DEP_READ:-}" = "$3" ]; then echo service_timeout >&2;exit 1;fi
     jq -e --arg slug "$3" '.milestones[$slug] // empty' "$FIXTURE_STATE";;
+  'milestone show '* )
+    jq -e --arg slug "$3" '.milestones[$slug].milestone // empty
+      | {slug: .slug, north_star: (.north_star // "")}' "$FIXTURE_STATE";;
   'show card-a --json'|'show card-a --canonical --json') jq '.card' "$FIXTURE_STATE";;
   'move '*|'milestone add '*|'milestone state '*)
     printf '%s\n' "$*" >>"$FIXTURE_WRITES"; exit "${MUTATION_RC:-0}";;
@@ -46,7 +53,7 @@ chmod +x "$TMP/bin/"*
 export KANBAN_BIN="$TMP/bin/kanban"
 export MILESTONE_DRIVER_TARGET=release MILESTONE_DRIVER_SAFETY_CAP=1
 run_dir="$TMP/run"; run_id=fixture; artifact="$run_dir/milestone-driver/gap-report.json"
-capture() { "$HELPER" capture --run-dir "$run_dir" --run-id "$run_id" --preflight-bin "$TMP/bin/preflight" --kanban-bin "$KANBAN_BIN"; }
+capture() { "$HELPER" capture --run-dir "$run_dir" --run-id "$run_id" --preflight-bin "$TMP/bin/preflight" --kanban-bin "$KANBAN_BIN" --admission-bin "$TMP/bin/last-stack-feature-portfolio-admission"; }
 guard() { "$HELPER" guard --run-dir "$run_dir" --run-id "$run_id" --artifact "$artifact" -- "$@"; }
 change() { jq "$1" "$FIXTURE_STATE" >"$TMP/next.json"; mv "$TMP/next.json" "$FIXTURE_STATE"; }
 reject() {
@@ -68,7 +75,7 @@ if PREFLIGHT_RC=75 capture >"$TMP/preflight.out" 2>"$TMP/preflight.err"; then fa
 [ ! -s "$FIXTURE_READS" ] || fail 'failed preflight read board'
 grep -q 'no_board_commands=1' "$TMP/preflight.err" || fail 'preflight diagnostic missing'
 capture >"$TMP/capture.json"
-[ "$(wc -l <"$FIXTURE_READS")" -eq 5 ] || fail 'capture must retain five inventory reads'
+[ "$(wc -l <"$FIXTURE_READS")" -eq 6 ] || fail 'capture must retain five inventory reads plus one gap-report reconciliation read'
 "$HELPER" consume --run-dir "$run_dir" --run-id "$run_id" --artifact "$artifact" >"$TMP/consumed.json"
 jq -e '._milestone_driver_run.target=="release" and ._milestone_driver_run.safety_cap==1' "$TMP/consumed.json" >/dev/null || fail 'scope missing'
 reject 'wrong run' "$HELPER" guard --run-dir "$run_dir" --run-id wrong --artifact "$artifact" -- "$KANBAN_BIN" move card-a todo

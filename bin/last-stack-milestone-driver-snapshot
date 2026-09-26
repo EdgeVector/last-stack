@@ -100,6 +100,126 @@ def prerequisites(board, root):
     check(root)
 
 
+def _list_cards(path):
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return []
+    cards = value.get('cards') if isinstance(value, dict) else None
+    return cards if isinstance(cards, list) else []
+
+
+def _milestone_north_star(board, slug, cache):
+    """Best-effort North Star lookup for a milestone slug. Empty on any doubt."""
+    if not isinstance(slug, str) or not slug:
+        return ''
+    if slug in cache:
+        return cache[slug]
+    north_star = ''
+    try:
+        result = subprocess.run([board, 'milestone', 'show', slug, '--json'],
+                                 capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            value = json.loads(result.stdout)
+            if isinstance(value, dict) and value.get('slug') == slug:
+                candidate = value.get('north_star')
+                if isinstance(candidate, str):
+                    north_star = candidate
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        north_star = ''
+    cache[slug] = north_star
+    return north_star
+
+
+def _admitted_north_stars(admission_bin):
+    if not admission_bin or not Path(admission_bin).exists():
+        return set()
+    try:
+        result = subprocess.run([admission_bin, '--work-class', 'feature', '--json'],
+                                 capture_output=True, text=True, timeout=180)
+        value = json.loads(result.stdout)
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return set()
+    outcomes = value.get('admitted_outcomes') if isinstance(value, dict) else None
+    if not isinstance(outcomes, list):
+        return set()
+    return {outcome for outcome in outcomes if isinstance(outcome, str) and outcome}
+
+
+def reconcile_gap_report(board, snapshot_dir, report, admission_bin):
+    """Correct two gap-report drift classes before this run trusts the queue.
+
+    idle_empty staleness: a milestone with no children linked directly to it
+    can still have real in-flight Kind:pr children recorded only against its
+    North Star (child filed with --north-star but no --milestone). Drop that
+    decompose entry -- real work already covers the gap -- and move the
+    milestone from idle_empty to in_flight in counts.
+
+    Safety-cap starvation: keep every other entry at its original position,
+    and only reorder the decompose entries among themselves so ones under an
+    admitted North Star (decision-2026-08-31-two-admitted-feature-outcomes)
+    run first. A fixed low SAFETY_CAP can otherwise spend its whole budget on
+    unadmitted entries that always sort earlier and never reach admitted work.
+
+    Every entry this cannot classify, and every non-decompose entry, passes
+    through unchanged at its original position. Never rebuild the array from
+    a fixed action allowlist -- that silently drops entries carrying an
+    action this code does not enumerate.
+    """
+    work_queue = report.get('work_queue')
+    if not isinstance(work_queue, list) or not work_queue:
+        return report
+
+    ns_children = {}
+    unattached_cards = [card for card in
+                         _list_cards(snapshot_dir / 'todo.json') + _list_cards(snapshot_dir / 'doing.json')
+                         if isinstance(card, dict) and card.get('kind') == 'pr' and not card.get('milestone')]
+    for card in unattached_cards:
+        north_star = card.get('north_star')
+        if isinstance(north_star, str) and north_star:
+            ns_children[north_star] = ns_children.get(north_star, 0) + 1
+
+    ns_cache = {}
+
+    def entry_north_star(entry):
+        return _milestone_north_star(board, entry.get('slug') if isinstance(entry, dict) else None, ns_cache)
+
+    kept = []
+    stale = 0
+    for entry in work_queue:
+        if not isinstance(entry, dict) or entry.get('action') != 'decompose':
+            kept.append(entry)
+            continue
+        north_star = entry_north_star(entry)
+        if north_star and ns_children.get(north_star, 0) > 0:
+            stale += 1
+            continue
+        kept.append(entry)
+
+    if stale:
+        counts = report.get('counts')
+        if isinstance(counts, dict):
+            idle_empty = counts.get('idle_empty')
+            if isinstance(idle_empty, (int, float)) and not isinstance(idle_empty, bool):
+                counts['idle_empty'] = max(0, idle_empty - stale)
+            in_flight = counts.get('in_flight')
+            if isinstance(in_flight, (int, float)) and not isinstance(in_flight, bool):
+                counts['in_flight'] = in_flight + stale
+
+    decompose_indices = [i for i, entry in enumerate(kept)
+                          if isinstance(entry, dict) and entry.get('action') == 'decompose']
+    if len(decompose_indices) > 1:
+        admitted = _admitted_north_stars(admission_bin)
+        if admitted:
+            reordered = sorted((kept[i] for i in decompose_indices),
+                                key=lambda entry: 0 if entry_north_star(entry) in admitted else 1)
+            for index, entry in zip(decompose_indices, reordered):
+                kept[index] = entry
+
+    report['work_queue'] = kept
+    return report
+
+
 def flags(args, allowed):
     values = {}
     index = 0
@@ -226,6 +346,9 @@ def main():
     parser.add_argument('--artifact', default='')
     parser.add_argument('--preflight-bin')
     parser.add_argument('--kanban-bin', default=os.environ.get('KANBAN_BIN', 'kanban'))
+    parser.add_argument('--admission-bin', default=os.environ.get(
+        'MILESTONE_DRIVER_ADMISSION_BIN',
+        str(Path(__file__).resolve().with_name('last-stack-feature-portfolio-admission'))))
     argv = sys.argv[1:]
     boundary = argv.index('--') if '--' in argv else len(argv)
     command = argv[boundary + 1:]
@@ -289,6 +412,7 @@ def main():
                 value = load(snapshot / (step + '.json'))
             if not isinstance(value.get('counts'), dict) or not isinstance(value.get('work_queue'), list):
                 refuse('invalid-gap-report')
+            value = reconcile_gap_report(args.kanban_bin, snapshot, value, args.admission_bin)
             value['_milestone_driver_run'] = {**evidence, 'created_epoch': int(time.time()),
                 'artifact': str(expected), 'target': control['target'], 'safety_cap': control['safety_cap'],
                 'created_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
