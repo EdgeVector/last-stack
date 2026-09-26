@@ -656,6 +656,114 @@ parse_lastdb_gate_main() {
   esac
 }
 
+# OWNER/NAME for Situations out of an app's registry gate_main, or "" when the
+# entry carries none this can read.
+#
+# The registry is the ONLY correct source for this. Three of the seventeen
+# registered apps do not share a name with their repo -- kanban is
+# EdgeVector/fkanban, state-machine is EdgeVector/state-machine-app, and both
+# lastdb and lastdbd are EdgeVector/fold -- so deriving the repo from the app
+# name would ask the policy store about a repo that does not exist and get an
+# unconditional OK. Both venue spellings appear in the wild: the forge URL form
+# every app uses today, and the retired `lastdb:///<slug>` form.
+app_situations_repo() {
+  local json="$1" gate_main rest owner name
+  gate_main="$(field "$json" gate_main)"
+  [ -n "$gate_main" ] || { printf '%s\n' ""; return 0; }
+  rest="${gate_main%%#*}"
+  rest="${rest%.git}"
+  case "$gate_main" in
+    lastdb:///*)
+      name="${rest#lastdb:///}"
+      [ -n "$name" ] || { printf '%s\n' ""; return 0; }
+      printf '%s/%s\n' "$HOST_TRACK_SITUATIONS_DEFAULT_OWNER" "$name"
+      return 0
+      ;;
+  esac
+  name="${rest##*/}"
+  owner="${rest%/*}"
+  owner="${owner##*/}"
+  if [ -n "$name" ] && [ -n "$owner" ] && [ "$owner" != "$name" ]; then
+    printf '%s/%s\n' "$owner" "$name"
+    return 0
+  fi
+  printf '%s\n' ""
+}
+
+# The `situations` CLI, or "" when this host has no policy store.
+#
+# routinesd and a Forgejo runner step both routinely run without ~/.local/bin on
+# PATH. A stripped PATH is not a host without a policy store, and treating the
+# two the same is how this gate would quietly stop gating on exactly the
+# unattended runs it exists for.
+host_track_situations_bin() {
+  local named="${HOST_TRACK_SITUATIONS_BIN:-}"
+  if [ -n "$named" ]; then printf '%s\n' "$named"; return 0; fi
+  if command -v situations >/dev/null 2>&1; then printf '%s\n' "situations"; return 0; fi
+  if [ -x "$HOME/.local/bin/situations" ]; then printf '%s\n' "$HOME/.local/bin/situations"; return 0; fi
+  printf '%s\n' ""
+}
+
+# Refuse a refresh that an active Situation blocks. Returns 3 (the code
+# `refresh --all` already treats as "skip this app, not a failure", as
+# deployment-only does) so one held app cannot fail the whole sweep.
+#
+# Why this exists: on 2026-09-25 `loom-budget-schema-deployment-hold-20260925`
+# went active with `host-track-refresh` in blocked_actions and EdgeVector/loom in
+# scope, and host-track installed loom three times under it -- ending at
+# 60d4f6a9, which carries the held PR 59 build the hold exists to keep off this
+# machine. Nothing on the refresh path had ever read the policy.
+# (papercut-loom-held-build-promoted-and-installed-during-situation-hold-20260926)
+#
+# BLOCKED refuses. A preflight that RAN and failed also refuses: this runs
+# unattended on a 20-minute LaunchAgent with nobody reading its stderr, the
+# write is the one a hold exists to stop, and a skipped refresh is retried on
+# the next tick. Two exceptions, both narrow and both about not deadlocking the
+# repair path:
+#
+#   * a host with NO `situations` binary has no policy store to fail closed on;
+#   * the bootstrap set -- `situations` itself and `last-stack`, which ships
+#     this script -- proceeds on an UNREADABLE policy, because requiring a
+#     working policy store in order to install the fix for a broken policy store
+#     is a deadlock. An explicit BLOCK still refuses, for those apps too.
+HOST_TRACK_SITUATIONS_DEFAULT_OWNER="${HOST_TRACK_SITUATIONS_DEFAULT_OWNER:-EdgeVector}"
+HOST_TRACK_SITUATIONS_BOOTSTRAP_APPS="${HOST_TRACK_SITUATIONS_BOOTSTRAP_APPS:-situations last-stack}"
+refresh_preflight_guard() {
+  local app="$1" json="$2" repo sit out rc bootstrap
+  if [ "${HOST_TRACK_REFRESH_PREFLIGHT_SKIP:-0}" = "1" ]; then
+    # An escape hatch that leaves no trace is a gate nobody can audit.
+    printf 'host-track: %s Situations preflight SKIPPED by HOST_TRACK_REFRESH_PREFLIGHT_SKIP=1\n' "$app" >&2
+    return 0
+  fi
+  repo="$(app_situations_repo "$json")"
+  if [ -z "$repo" ]; then
+    printf 'host-track: %s has no readable gate_main repo; host-track-refresh policy unchecked\n' "$app" >&2
+    return 0
+  fi
+  sit="$(host_track_situations_bin)"
+  [ -n "$sit" ] || return 0
+  set +e
+  out="$("$sit" preflight --action host-track-refresh --repo "$repo" --field slug,reason 2>&1)"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || return 0
+  if [ "$rc" -eq 3 ]; then
+    printf 'host-track: %s REFUSED: Situations blocks host-track-refresh on %s\n' "$app" "$repo" >&2
+    printf '%s\n' "$out" | head -3 | sed 's/^/host-track:   /' >&2
+    return 3
+  fi
+  case " $HOST_TRACK_SITUATIONS_BOOTSTRAP_APPS " in
+    *" $app "*)
+      printf 'host-track: %s Situations policy unreadable (rc=%s); proceeding, %s is in the bootstrap set\n' \
+        "$app" "$rc" "$app" >&2
+      return 0
+      ;;
+  esac
+  printf 'host-track: %s REFUSED: Situations policy for %s could not be read (rc=%s)\n' "$app" "$repo" "$rc" >&2
+  printf '%s\n' "$out" | head -3 | sed 's/^/host-track:   /' >&2
+  return 3
+}
+
 # True when this artifact app's runtime tracks gate_main.
 # Tom mental model: Host Track follows green main, not a manually-promoted
 # stable pointer that can lag forever.
@@ -3075,6 +3183,10 @@ refresh_app() {
   local self_upgrade setup_path
 
   json="$(require_app_json "$app")"
+  # Ask the policy store FIRST: before the channel promote below, before any
+  # staging, and before the already-current fast path. A refresh that a
+  # Situation forbids must cost one local read, not a promotion.
+  refresh_preflight_guard "$app" "$json" || return $?
   install_mode="$(setting "$json" install_mode)"
   [ -n "$install_mode" ] || install_mode="checkout"
   exemption_kind="$(printf '%s\n' "$json" | jq -r '.artifact_exemption.kind // ""')"

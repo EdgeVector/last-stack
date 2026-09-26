@@ -808,6 +808,7 @@ ci_test tests/last-stack-forge-merge-green.sh
 # APPENDED before the registration guard, which stays last.
 ci_test tests/last-stack-worktree-reclaim-bare-mirror.sh
 ci_test tests/host-track-status-unknown-app.sh
+ci_test tests/host-track-refresh-situations-preflight.sh
 ci_test tests/last-stack-host-track-links-bare-helpers.sh
 ci_test tests/last-stack-worktree-reclaim-lsof-fallback.sh
 # kanban health-only reads use `kanban ping`, and kanban-watch heals doing
