@@ -18,7 +18,10 @@ chmod +x "$CHECKS" 2>/dev/null || true
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/lastdb-live-sock-test.XXXXXX")"
+# AF_UNIX sockaddr_un caps the path around 103-104 bytes on macOS. $TMPDIR is
+# routinesd's run-dir scratch path (can be 90+ bytes), so bind sockets under
+# /tmp (a short, stable symlink to /private/tmp) instead of $TMPDIR.
+TMP="$(mktemp -d "/tmp/lastdb-live-sock-test.XXXXXX")"
 HTTP_PID=""
 LISTEN_PID=""
 cleanup() {
