@@ -1609,8 +1609,68 @@ report_path_shadows() {
     done
   done
   if [ "$shadows" -gt 0 ]; then
-    printf 'host-track: %s %s managed command(s) shadowed on PATH; declare each in links[] and re-run: host-track refresh --activate %s\n' \
+    # `refresh --activate` was named here from 2026-09-06 and does not repair a
+    # link: install_artifact_links runs on a CUTOVER, and a refresh whose current
+    # is unchanged never reaches it. Measured 2026-09-26 against a fixture with
+    # one declared target deleted: --activate and a plain refresh both left it
+    # missing; --force and install repaired it.
+    printf 'host-track: %s %s managed command(s) shadowed on PATH; declare each in links[] and re-run: host-track refresh --force %s\n' \
       "$app" "$shadows" "$app" >&2
+  fi
+  return 0
+}
+
+# Report links[] targets the registry DECLARES that this host does not have.
+#
+# `report_path_shadows` asks whether a managed command resolves somewhere else.
+# An ABSENT name resolves nowhere, so its `[ -z "$resolved" ] && continue` skips
+# it, and `verify_active_artifact` only walks `manifest.files[]` -- it never
+# reads links[] at all. So a declared PATH name can be missing for an unbounded
+# time with `check` saying nothing. Measured 2026-09-26: last-stack declared
+# bin/last-stack-prose-citation-check, the file was in the install tree, the PATH
+# name had not existed since the 15:25:16Z install, 1 of 93 declared targets was
+# absent, and `check last-stack` mentioned it on neither stream
+# (papercut-host-track-check-never-verifies-a-declared-links-target-exists-20260926).
+#
+# Report; never fail, for the same reason report_path_shadows does not: a link
+# problem is a stale-install defect rather than a broken artifact, and `check`
+# gates last-stack-class-a-heal, routine-read and the artifact proof.
+report_missing_link_targets() {
+  local app="$1" json="$2" install_root="$3" encoded entry source target_raw target dest
+  local missing=0
+  json="$(active_tree_links_json "$install_root" "$json")"
+  while IFS= read -r encoded; do
+    [ -n "$encoded" ] || continue
+    entry="$(printf '%s' "$encoded" | base64_decode)"
+    source="$(printf '%s\n' "$entry" | jq -r '.source // ""')"
+    target_raw="$(printf '%s\n' "$entry" | jq -r '.target // ""')"
+    target="$(expand_path "$target_raw")"
+    [ -n "$target" ] || continue
+    if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+      missing=$((missing + 1))
+      printf 'host-track: %s declared PATH name missing: %s (source %s)\n' \
+        "$app" "$target" "$source" >&2
+      continue
+    fi
+    # A target that exists but points outside this install_root is somebody
+    # else's file standing where the registry says this app's name goes. That is
+    # a shadow report_path_shadows cannot make either, because it enumerates the
+    # TREE's bin/ and dist/ and this name may live in neither.
+    if [ -L "$target" ]; then
+      dest="$(readlink "$target" 2>/dev/null || true)"
+      case "$dest" in
+        "$install_root"/*) ;;
+        *)
+          missing=$((missing + 1))
+          printf 'host-track: %s declared PATH name %s points outside this install: %s\n' \
+            "$app" "$target" "$dest" >&2
+          ;;
+      esac
+    fi
+  done < <(printf '%s\n' "$json" | jq -r '.links[]? | @base64')
+  if [ "$missing" -gt 0 ]; then
+    printf 'host-track: %s %s declared PATH name(s) not installed; repair: host-track refresh --force %s\n' \
+      "$app" "$missing" "$app" >&2
   fi
   return 0
 }
@@ -1654,6 +1714,7 @@ check_cmd() {
   if [ "$install_mode" = "artifact" ]; then
     IFS=$'\t' read -r _ _ _ shadow_install_root < <(artifact_paths "$app" "$json")
     report_path_shadows "$app" "$shadow_install_root"
+    report_missing_link_targets "$app" "$json" "$shadow_install_root"
   fi
   if [ "$stale" = "true" ]; then
     exemption_kind="$(printf '%s\n' "$status" | jq -r '.artifact_exemption.kind // ""')"
