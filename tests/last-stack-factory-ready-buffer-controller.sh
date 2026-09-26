@@ -12,6 +12,10 @@ cat > "$TMP/bin/kanban" <<'EOF'
 #!/bin/sh
 set -eu
 [ "${FAIL_BOARD:-0}" -eq 0 ] || exit 41
+if [ "${1:-}" = pickup ] && [ "${2:-}" = claim-v2 ] && [ -n "${FAKE_CLAIM:-}" ]; then
+  printf '%s\n' "$FAKE_CLAIM"
+  exit 0
+fi
 printf '{"ready":%s}\n' "${FAKE_READY:-0}"
 EOF
 
@@ -124,6 +128,24 @@ out="$(FAKE_REFILL=fail run_controller 0 "$TMP/state/ns-fail" 5000)"
 out="$(FAKE_REFILL=would-refill run_controller 0 "$TMP/state/ns-refill" 5001)"
 [ "$(printf '%s\n' "$out" | jq -r .detail)" = cooldown ]
 [ "$(grep -c 'last-stack-north-star-driver' "$TMP/routines.log")" -eq 1 ]
+
+# Ready cards that all overlap a doing card's surfaces are not supply.
+overlap='{"result":"none","dry_run":true,"scanned":2,"skipped":[{"slug":"a","reason":"surface overlap with doing card x"},{"slug":"b","reason":"surface overlap with doing card y"}]}'
+before="$(wc -l < "$TMP/routines.log" | tr -d ' ')"
+out="$(FAKE_CLAIM="$overlap" run_controller 4 "$TMP/state/overlap" 9000 2>/dev/null)"
+[ "$(printf '%s\n' "$out" | jq -r .action)" = run ]
+[ "$(printf '%s\n' "$out" | jq -r .ready)" = 0 ]
+[ "$(wc -l < "$TMP/routines.log" | tr -d ' ')" -gt "$before" ]
+
+# A claimable card, a mixed skip list, or an unreadable probe keeps the count.
+claimed='{"result":"claimed","dry_run":true,"card":{"slug":"a"}}'
+out="$(FAKE_CLAIM="$claimed" run_controller 4 "$TMP/state/claimable" 9000)"
+[ "$(printf '%s\n' "$out" | jq -r .detail)" = threshold-satisfied ]
+mixed='{"result":"none","scanned":2,"skipped":[{"slug":"a","reason":"surface overlap with doing card x"},{"slug":"b","reason":"lane cap"}]}'
+out="$(FAKE_CLAIM="$mixed" run_controller 4 "$TMP/state/mixed" 9000)"
+[ "$(printf '%s\n' "$out" | jq -r .detail)" = threshold-satisfied ]
+out="$(FAKE_CLAIM='not json' run_controller 4 "$TMP/state/garbled" 9000)"
+[ "$(printf '%s\n' "$out" | jq -r .detail)" = threshold-satisfied ]
 
 grep -q 'MILESTONE_DRIVER_SAFETY_CAP:-8' "$ROOT/routines/milestone-driver.md"
 grep -q 'ready-buffer controller sets this value to 1' "$ROOT/routines/milestone-driver.md"

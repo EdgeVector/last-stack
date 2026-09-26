@@ -115,6 +115,27 @@ if ! ready="$(printf '%s\n' "$pickup_json" | jq -er '
   exit 1
 fi
 
+# `pickup ready` counts cards that pass the per-card gates. claim-v2 also
+# fences surface overlap with doing cards, and a card with no Surfaces:
+# reserves its whole repo. From 2026-09-21 to 2026-09-26 pickup workers
+# reported "no card claimed" for hours with ready=4: every ready card
+# overlapped a doing card in the same repo, and this controller saw 4 >= 3
+# and never refilled. Ask claim-v2 (dry run, no write) whether any ready card
+# is claimable; when it scanned cards and skipped all of them for overlap,
+# the claimable supply is zero. Any other answer keeps the ready count.
+# papercut-ready-buffer-counts-surface-overlapped-cards-as-ready-20260926
+if [ "$ready" -ge "$THRESHOLD" ]; then
+  claimable="$($BOARD_CLI pickup claim-v2 --worker ready-buffer-controller --dry-run --json 2>/dev/null \
+    | jq -r 'if .result == "none" and (.scanned // 0) > 0
+                and ((.skipped // []) | length) == .scanned
+                and all((.skipped // [])[]; (.reason // "") | startswith("surface overlap"))
+             then "none" else "some" end' 2>/dev/null || true)"
+  if [ "$claimable" = none ]; then
+    echo "READY_BUFFER note: ready=$ready but claim-v2 skips every ready card for surface overlap; claimable=0" >&2
+    ready=0
+  fi
+fi
+
 if [ "$ready" -ge "$THRESHOLD" ]; then
   emit ok none threshold-satisfied "$ready"
   exit 0
