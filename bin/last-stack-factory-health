@@ -316,6 +316,18 @@ def ships_from_dashboard(
         h24_avail = vel.get("available")
     window_missing = h24_count is None
     available = (h24_avail is not False) and not window_missing
+    # `unknown` merges are ones the dashboard could not test because its local
+    # mirror (~/.cache/edgevector-git, never fetched by the meter) lacks the
+    # object. They are never counted. On 2026-09-26 the same forge history read
+    # h24=46, then 1, then 22 (unknown=34) within 25 minutes while Forgejo held
+    # 54 merges, and the 1 raised ship_volume_hard. When unknown merges
+    # outnumber counted ones the count is a floor, not a measurement.
+    # papercut-factory-health-ship-count-swings-on-stale-local-mirrors-20260926
+    h24_unknown = _opt_float(h24.get("unknown"))
+    unknown_heavy = (h24_unknown is not None and h24_count is not None
+                     and h24_unknown > float(h24_count))
+    if unknown_heavy:
+        available = False
 
     target_ago = 1 if use_completed_hour else 0
     last_h: Optional[float] = None
@@ -335,7 +347,7 @@ def ships_from_dashboard(
         per_hour = h24_f / 24.0
     if not last_avail:
         last_h = None
-    if window_missing or h24_avail is False:
+    if window_missing or h24_avail is False or unknown_heavy:
         # A partial read (some repos unreadable) is not a measured count. The
         # dashboard read 0 with available=false on 2026-09-25 while the forge
         # held 21 merges; the 0 went to Tom as ships_24h=0.
