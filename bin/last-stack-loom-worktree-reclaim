@@ -80,7 +80,7 @@ rm -f "$live_file.raw"
 ps -axo command= 2>/dev/null | grep -F -- "$root" >>"$live_file" || true
 
 is_live() {
-  local wt="$1"
+  local wt="$1" live_file="$2"
   [ "$liveness_unavailable" -eq 1 ] && return 0
   grep -qF -- "$wt" "$live_file"
 }
@@ -99,7 +99,7 @@ has_active_ci_owner() {
     local sibling_exec="$(printf '%s' "$sibling_name" | sed 's/#.*//')"
     [ "$sibling_exec" = "$exec_id" ] || continue
     # Check if this sibling is live
-    if is_live "$sibling_wt"; then
+    if is_live "$sibling_wt" "$live_file"; then
       log "keep (active CI owner has live sibling step) $sibling_name"
       return 0
     fi
@@ -178,7 +178,7 @@ for wt in "$root"/*; do
     kept=$((kept + 1))
     continue
   fi
-  if is_live "$wt"; then
+  if is_live "$wt" "$live_file"; then
     log "keep live status=$status $name"
     kept=$((kept + 1))
     continue
