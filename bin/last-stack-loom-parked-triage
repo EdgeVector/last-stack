@@ -16,6 +16,12 @@ by hand and found only two shapes, and neither needed judgement:
             `merge` goes to MERGE, which sees merged and passes, then
             CLOSE_CARD. Rate-limited per walk because CLOSE_CARD can fail
             again until host-track installs the merge.
+  unfence   MERGE was refused because a Situation blocked merge-pr on the
+            repo (for example a timed pause). The walk stays parked while
+            `situations preflight --action merge-pr` still blocks; once it
+            passes, `merge` goes back to MERGE. Without this rule the walk
+            parked forever after the Situation ended (2026-09-26, fold PR
+            2203). Rate-limited like resume; counted under resumed=.
 
 Anything else is left parked and listed as `left`.
 
@@ -34,7 +40,7 @@ dir, and marks the card with one PROGRESS line.
 The last stdout line carries heartbeat tokens:
   parked_seen= escalated= resumed= left= errors=
 
-Test knobs: LOOM_BIN, KANBAN_BIN, FORGE_API_BIN,
+Test knobs: LOOM_BIN, KANBAN_BIN, FORGE_API_BIN, SITUATIONS_BIN,
 LAST_STACK_LOOM_TRIAGE_STATE (state dir).
 """
 import argparse
@@ -49,12 +55,15 @@ import time
 LOOM = os.environ.get("LOOM_BIN", "loom")
 KANBAN = os.environ.get("KANBAN_BIN", "kanban")
 FORGE_API = os.environ.get("FORGE_API_BIN", "last-stack-forge-api")
+SITUATIONS = os.environ.get("SITUATIONS_BIN", "situations")
 STATE_DIR = Path(os.environ.get(
     "LAST_STACK_LOOM_TRIAGE_STATE",
     str(Path.home() / ".local/state/last-stack/loom-parked-triage")))
 
 ESCALATE_MARKERS = ("reviser produced no commit", "review escalated at cap")
 PR_RE = re.compile(r"/([^/]+/[^/]+)/pulls/(\d+)")
+# last-stack-forge-api's refusal line when a Situation blocks the merge.
+MERGE_FENCED_RE = re.compile(r"REFUSED merge on ([\w.-]+/[\w.-]+): Situations preflight says BLOCKED")
 
 
 def run(cmd, timeout=90):
@@ -66,7 +75,10 @@ def run(cmd, timeout=90):
 
 
 def parked_walks(limit):
-    rc, out, err = run([LOOM, "list", "land-card"])
+    # `loom list` defaults to the 20 newest walks in 36h. Parked walks age
+    # out of that view while newer walks run, so the triage saw 3 of 11
+    # parked walks on 2026-09-26. Read a week, far past any daily volume.
+    rc, out, err = run([LOOM, "list", "land-card", "--window-hours", "168", "--limit", "1000"])
     if rc != 0:
         raise RuntimeError(f"loom list land-card failed: {err.strip()[:200]}")
     rows = []
@@ -115,6 +127,12 @@ def pr_merged(ctx):
     return rc == 0 and out.strip() == "true"
 
 
+def merge_fence_clear(repo):
+    """True only when preflight positively allows merge-pr on the repo."""
+    rc, _, _ = run([SITUATIONS, "preflight", "--action", "merge-pr", "--repo", repo], 60)
+    return rc == 0
+
+
 def load_state():
     try:
         return json.loads((STATE_DIR / "state.json").read_text())
@@ -138,6 +156,14 @@ def classify(exec_id, view, state, merge_retry_s, now):
         if now - last < merge_retry_s:
             return "left", "merged; resume signalled recently", None
         return "resume", "PR merged", {"human_decision": "merge"}
+    fenced = MERGE_FENCED_RE.search(view["error"])
+    if fenced:
+        repo = fenced.group(1)
+        if not merge_fence_clear(repo):
+            return "left", f"situation still blocks merge-pr on {repo}", None
+        if now - seen.get("resume_at", 0) < merge_retry_s:
+            return "left", "merge fence cleared; resume signalled recently", None
+        return "unfence", f"situation no longer blocks merge-pr on {repo}", {"human_decision": "merge"}
     if any(m in text for m in ESCALATE_MARKERS):
         if ctx.get("card_difficulty", "fast") != "fast" or ctx.get("triage_escalated") or seen.get("escalated_at"):
             return "left", "already escalated; needs a human", None
