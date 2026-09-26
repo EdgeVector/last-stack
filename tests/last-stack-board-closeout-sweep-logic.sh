@@ -95,6 +95,18 @@ case "$cmd" in
 ]
 JSON
     ;;
+  show)
+    # Return card data with column=doing to confirm each card is still in doing
+    case "${2:-}" in
+      open-pr-in-flight|awaiting-deploy-no-pr|needs-safe-upgrade-no-pr|helper-cutover-end-state-no-pr|empty-zombie-old)
+        printf '{"slug":"%s","column":"doing"}\n' "${2:-}"
+        ;;
+      *)
+        echo "unexpected show: $*" >&2
+        exit 2
+        ;;
+    esac
+    ;;
   add)
     # heal path: add <slug> --pr-url <url>
     printf '%s\n' "$*" >>"${BOARD_HEALS:?}"
@@ -258,6 +270,17 @@ case "${1:-}" in
 ]
 JSON
     ;;
+  show)
+    case "${2:-}" in
+      malformed-structured-pr-url)
+        printf '{"slug":"malformed-structured-pr-url","column":"doing"}\n'
+        ;;
+      *)
+        echo "unexpected show: $*" >&2
+        exit 2
+        ;;
+    esac
+    ;;
   *)
     echo "unexpected malformed-board command: $*" >&2
     exit 2
@@ -306,6 +329,17 @@ case "${1:-}" in
   }
 ]
 JSON
+    ;;
+  show)
+    case "${2:-}" in
+      dirty-nonempty-pr-url)
+        printf '{"slug":"dirty-nonempty-pr-url","column":"doing"}\n'
+        ;;
+      *)
+        echo "unexpected show: $*" >&2
+        exit 2
+        ;;
+    esac
     ;;
   add)
     printf '%s\n' "$*" >>"${BOARD_HEALS:?}"
@@ -375,6 +409,17 @@ case "${1:-}" in
 ]
 JSON
     ;;
+  show)
+    case "${2:-}" in
+      merged-transient-closeout)
+        printf '{"slug":"merged-transient-closeout","column":"doing"}\n'
+        ;;
+      *)
+        echo "unexpected show: $*" >&2
+        exit 2
+        ;;
+    esac
+    ;;
   *)
     echo "unexpected transient-closeout-board command: $*" >&2
     exit 2
@@ -440,6 +485,17 @@ case "$cmd" in
   }
 ]
 JSON
+    ;;
+  show)
+    case "${2:-}" in
+      reaped-closed-pr-ghost|still-open-pr)
+        printf '{"slug":"%s","column":"doing"}\n' "${2:-}"
+        ;;
+      *)
+        echo "unexpected show: $*" >&2
+        exit 2
+        ;;
+    esac
     ;;
   add)
     printf '%s\n' "$*" >>"${BOARD_HEALS:?}"
@@ -555,6 +611,17 @@ case "$cmd" in
 ]
 JSON
     ;;
+  show)
+    case "${2:-}" in
+      body-reap-annotation)
+        printf '{"slug":"body-reap-annotation","column":"doing"}\n'
+        ;;
+      *)
+        echo "unexpected show: $*" >&2
+        exit 2
+        ;;
+    esac
+    ;;
   add)
     printf '%s\n' "$*" >>"${BOARD_HEALS:?}"
     ;;
@@ -633,6 +700,17 @@ case "${1:-}" in
   }
 ]
 JSON
+    ;;
+  show)
+    case "${2:-}" in
+      merged-deploy-park)
+        printf '{"slug":"merged-deploy-park","column":"doing"}\n'
+        ;;
+      *)
+        echo "unexpected show: $*" >&2
+        exit 2
+        ;;
+    esac
     ;;
   add|tag|set|mark)
     : ;;

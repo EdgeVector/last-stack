@@ -122,10 +122,14 @@ if ! grep -q '^truly-doing-park backlog' "$moves"; then
   exit 1
 fi
 
-# Show unavailable: fail open, legacy behavior demotes to backlog.
-if ! grep -q '^show-fails-park backlog' "$moves"; then
-  echo "FAIL: expected show-fails-park demoted to backlog (fail open):" >&2
+# Show unavailable: refuse mutation on stale preview.
+if grep -q '^show-fails-park ' "$moves" 2>/dev/null; then
+  echo "FAIL: sweep mutated show-fails-park despite read failure:" >&2
   cat "$moves" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -q 'card-read-failed:show-fails-park'; then
+  echo "FAIL: expected card-read-failed flag for show-fails-park" >&2
   exit 1
 fi
 

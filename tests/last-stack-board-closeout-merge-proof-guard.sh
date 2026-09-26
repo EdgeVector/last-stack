@@ -89,6 +89,17 @@ case "${1:-}" in
 ]
 JSON
     ;;
+  show)
+    case "${2:-}" in
+      merged-card|unmerged-card)
+        printf '{"slug":"%s","column":"doing"}\n' "${2:-}"
+        ;;
+      *)
+        echo "unexpected show: $*" >&2
+        exit 2
+        ;;
+    esac
+    ;;
   add)
     printf '%s\n' "$*" >>"${BOARD_ADDS:?}"
     ;;
