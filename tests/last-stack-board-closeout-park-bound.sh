@@ -59,6 +59,17 @@ case "${1:-}" in
 ]
 JSON
     ;;
+  show)
+    case "${2:-}" in
+      parked-old|parked-fresh)
+        printf '{"slug":"%s","column":"doing"}\n' "${2:-}"
+        ;;
+      *)
+        echo "unexpected show: $*" >&2
+        exit 2
+        ;;
+    esac
+    ;;
   move)
     printf '%s %s\n' "${2:-}" "${3:-}" >>"${BOARD_MOVES:?}"
     ;;
@@ -188,6 +199,17 @@ case "${1:-}" in
   }
 ]
 JSON
+    ;;
+  show)
+    case "${2:-}" in
+      merged-but-board-sick)
+        printf '{"slug":"merged-but-board-sick","column":"doing"}\n'
+        ;;
+      *)
+        echo "unexpected show: $*" >&2
+        exit 2
+        ;;
+    esac
     ;;
   move)
     printf '%s %s\n' "${2:-}" "${3:-}" >>"${BOARD_MOVES:?}"

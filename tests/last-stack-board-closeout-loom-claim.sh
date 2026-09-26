@@ -34,7 +34,16 @@ case "\${1:-}" in
       '$(card_json plain-zombie 'Repo: EdgeVector/fold\nKind: pr')'
     ;;
   show)
-    echo "show unavailable" >&2; exit 3 ;;
+    case "\${2:-}" in
+      loom-live|loom-terminal|loom-unreadable|plain-zombie)
+        printf '{"slug":"%s","column":"doing"}\n' "\${2:-}"
+        ;;
+      *)
+        echo "unexpected show: \$*" >&2
+        exit 2
+        ;;
+    esac
+    ;;
   add|tag|set|mark) : ;;
   move) printf '%s %s\n' "\${2:-}" "\${3:-}" >>"\${BOARD_MOVES:?}" ;;
   *) echo "unexpected: \$*" >&2; exit 2 ;;

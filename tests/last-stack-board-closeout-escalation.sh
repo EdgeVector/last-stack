@@ -85,6 +85,17 @@ case "\${1:-}" in
 ]
 JSON
     ;;
+  show)
+    case "\${2:-}" in
+      stuck-card)
+        printf '{"slug":"stuck-card","column":"$column"}\n'
+        ;;
+      *)
+        echo "unexpected show: \$*" >&2
+        exit 2
+        ;;
+    esac
+    ;;
   mark)
     printf '%s\n' "\${3:-}" >>"\${BOARD_MARKS:?}"
     ;;

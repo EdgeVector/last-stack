@@ -1161,6 +1161,12 @@ for (const card of cards) {
   const slug = String(card.slug || "");
   if (!slug) continue;
   const truth = confirmDoing(slug);
+  if (truth === null) {
+    // Card point-read failed: refuse mutation on stale preview.
+    res.flagged.push(`card-read-failed:${slug}`);
+    res.skipped.push(`${slug}:card-read-failed`);
+    continue;
+  }
   if (truth && truth.column !== "doing") {
     // Stale list row: the Card tip already left doing. Never move it.
     res.flagged.push(`stale-list-row:${slug}:${truth.column}`);
@@ -2234,6 +2240,11 @@ for card in cards:
     if not slug:
         continue
     truth = confirm_doing(slug)
+    if truth is None:
+        # Card point-read failed: refuse mutation on stale preview.
+        res["flagged"].append(f"card-read-failed:{slug}")
+        res["skipped"].append(f"{slug}:card-read-failed")
+        continue
     if truth and truth["column"] != "doing":
         # Stale list row: the Card tip already left doing. Never move it.
         res["flagged"].append(f"stale-list-row:{slug}:{truth['column']}")
