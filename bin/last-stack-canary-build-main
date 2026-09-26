@@ -45,6 +45,7 @@ Env:
   LAST_STACK_CANARY_BUILD_BIN_DIR   with --skip-build: dir with all three binaries
   LAST_STACK_CANARY_BUILD_KEEP      max staged OIDs to keep (default 5)
   LAST_STACK_CANARY_TARGET          package triple (default aarch64-apple-darwin)
+  LAST_STACK_CANARY_BUILD_STEP_TIMEOUT  wall-clock bound per git op in ensure_worktree, seconds (default 300)
 EOF
 }
 
@@ -55,6 +56,39 @@ die() {
 
 log() {
   echo "last-stack-canary-build-main: $*" >&2
+}
+
+# Run "$@" under a wall-clock budget (same three-tier fallback as
+# last-stack-disk-reclaim-gate's run_bounded). Under real host contention,
+# a stalled `git worktree`/`reset`/`clean` call inside ensure_worktree used to
+# hang until the OUTER CI shard supervisor killed the whole shard, with no
+# diagnostic (papercut-last-stack-ci-shard-supervisor-timeout-flake-20260926).
+# Bounding each step turns that into a fast, named failure instead.
+run_bounded() {
+  local secs="$1"; shift
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$secs" "$@"
+  elif command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@"
+  elif command -v perl >/dev/null 2>&1; then
+    perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
+  else
+    "$@"
+  fi
+}
+
+# Like run_bounded, but a timeout or failure is fatal and names the step, so
+# the shard's own log carries the diagnosis instead of losing it to whichever
+# process the outer supervisor kills once its own deadline expires.
+must_run_bounded() {
+  local step="$1" secs="$2"; shift 2
+  local rc=0
+  run_bounded "$secs" "$@" >&2 || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    124|142) die "ensure_worktree: $step timed out after ${secs}s (host contention?): $*" ;;
+    *) die "ensure_worktree: $step failed rc=$rc: $*" ;;
+  esac
 }
 
 dry_run=0
@@ -85,6 +119,7 @@ FORGE_GIT="${LAST_STACK_FORGE_GIT:-last-stack-forge-git}"
 KEEP="${LAST_STACK_CANARY_BUILD_KEEP:-5}"
 TARGET="${LAST_STACK_CANARY_TARGET:-aarch64-apple-darwin}"
 CARGO_CMD="${LAST_STACK_CANARY_CARGO_CMD:-cargo build --release -p lastdb_node --bin lastdb --bin lastdbd --bin lastdb_restore_probe}"
+STEP_TIMEOUT="${LAST_STACK_CANARY_BUILD_STEP_TIMEOUT:-300}"
 
 # routinesd dispatch shells carry a stripped PATH without ~/.cargo/bin, so the
 # default CARGO_CMD dies with exit 127 before the build starts.
@@ -220,33 +255,35 @@ ensure_worktree() {
   # 2026-09-25: the 00:48 PT disk-reclaim run emptied canary-build/, and the
   # 02:47 PT nightly stopped at stage=build rc=128. Drop registrations whose
   # directory is gone before any add.
-  git -C "$FOLD_MIRROR" worktree prune 2>/dev/null || true
+  run_bounded "$STEP_TIMEOUT" git -C "$FOLD_MIRROR" worktree prune 2>/dev/null || true
   # Explicitly remove stale registration if the directory is missing
   if ! [ -d "$WORKDIR/.git" ] && ! [ -f "$WORKDIR/.git" ]; then
-    if git -C "$FOLD_MIRROR" worktree list 2>/dev/null | grep -qF -- "$WORKDIR"; then
-      git -C "$FOLD_MIRROR" worktree remove --force "$WORKDIR" 2>/dev/null || true
+    if run_bounded "$STEP_TIMEOUT" git -C "$FOLD_MIRROR" worktree list 2>/dev/null | grep -qF -- "$WORKDIR"; then
+      run_bounded "$STEP_TIMEOUT" git -C "$FOLD_MIRROR" worktree remove --force "$WORKDIR" 2>/dev/null || true
     fi
   fi
   if [ -d "$WORKDIR/.git" ] || [ -f "$WORKDIR/.git" ]; then
     # Detached checkout at desired oid
-    git -C "$WORKDIR" fetch --no-tags origin refs/heads/main:refs/remotes/origin/main 2>/dev/null || true
+    run_bounded "$STEP_TIMEOUT" git -C "$WORKDIR" fetch --no-tags origin refs/heads/main:refs/remotes/origin/main 2>/dev/null || true
     # Prefer mirror as remote if worktree came from it
-    if ! git -C "$WORKDIR" cat-file -e "${oid}^{commit}" 2>/dev/null; then
-      git -C "$WORKDIR" fetch "$FOLD_MIRROR" "$oid" 2>/dev/null || \
-        git -C "$FOLD_MIRROR" fetch origin refs/heads/main:refs/heads/main 2>/dev/null || true
+    if ! run_bounded "$STEP_TIMEOUT" git -C "$WORKDIR" cat-file -e "${oid}^{commit}" 2>/dev/null; then
+      run_bounded "$STEP_TIMEOUT" git -C "$WORKDIR" fetch "$FOLD_MIRROR" "$oid" 2>/dev/null || \
+        run_bounded "$STEP_TIMEOUT" git -C "$FOLD_MIRROR" fetch origin refs/heads/main:refs/heads/main 2>/dev/null || true
     fi
-    git -C "$WORKDIR" checkout --detach "$oid" 2>/dev/null || {
+    if ! run_bounded "$STEP_TIMEOUT" git -C "$WORKDIR" checkout --detach "$oid" 2>/dev/null; then
       # recreate
-      git -C "$FOLD_MIRROR" worktree remove --force "$WORKDIR" 2>/dev/null || rm -rf "$WORKDIR"
-      git -C "$FOLD_MIRROR" worktree add --detach "$WORKDIR" "$oid" >&2
-    }
+      run_bounded "$STEP_TIMEOUT" git -C "$FOLD_MIRROR" worktree remove --force "$WORKDIR" 2>/dev/null || rm -rf "$WORKDIR"
+      must_run_bounded "worktree add (recreate)" "$STEP_TIMEOUT" git -C "$FOLD_MIRROR" worktree add --detach "$WORKDIR" "$oid"
+    fi
   else
     rm -rf "$WORKDIR"
-    git -C "$FOLD_MIRROR" worktree add --detach "$WORKDIR" "$oid" >&2
+    must_run_bounded "worktree add" "$STEP_TIMEOUT" git -C "$FOLD_MIRROR" worktree add --detach "$WORKDIR" "$oid"
   fi
   # Ensure clean enough for non-dirty release binaries
-  git -C "$WORKDIR" reset --hard "$oid" >&2
-  { git -C "$WORKDIR" clean -fdx -e target 2>/dev/null || git -C "$WORKDIR" clean -fd; } >&2
+  must_run_bounded "reset --hard" "$STEP_TIMEOUT" git -C "$WORKDIR" reset --hard "$oid"
+  if ! run_bounded "$STEP_TIMEOUT" git -C "$WORKDIR" clean -fdx -e target 2>/dev/null; then
+    must_run_bounded "clean -fd (fallback)" "$STEP_TIMEOUT" git -C "$WORKDIR" clean -fd
+  fi
 }
 
 emit_result() {
