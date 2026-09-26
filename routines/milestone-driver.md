@@ -320,6 +320,7 @@ the same stuck count next run:
 | `complete_proof` + `missing_proof_card=true` | implementation done, no proof card exists at all, no live `not_required` | See **file_proof_card** below instead of leaving it `await_proof` forever |
 | `decompose` + `next_slice=true` (+ `missing_proof_card=true` when `proof_card` is empty) | fkanban `needs_next_slice`: implementation slices done so far, acceptance not proven, no proof card | See **next_slice** below. The guard authorizes the next Kind:pr slice (as decompose) or the proof card (as `file_proof`) for this entry |
 | `decompose` + `needs_spec=true`, `sibling_milestones=[...]` | the milestone body is only a bare newline list of other milestone slugs -- no Outcome/Acceptance/Goal/End-State spec to decompose from | See **needs_spec** below instead of silently skipping the entry |
+| `decompose` + `needs_spec=true`, `missing_design_slug=<slug>` | the Outcome/Acceptance body cites a `design-*` slug that no longer resolves via `brain get` (often a design written during the 2026-09-06..25 gbrain-primary window and never migrated back) | See **needs_spec** below. Do not read gbrain (`no-gbrain-brain-is-lastdb-20260925`); escalate the missing design record to Tom or rewrite the milestone body with a self-contained Outcome/Acceptance |
 
 Print:
 
@@ -557,6 +558,18 @@ would otherwise skip it silently every pass.
 4. Never treat a bare slug list itself as "decomposition already done" —
    listing sibling slugs is not an Outcome/Acceptance spec, and inferring one
    from child counts is exactly the drift **Proof verdict** below warns about.
+
+For each `work_queue` item flagged `needs_spec=true` with `missing_design_slug`
+instead of `sibling_milestones`
+(papercut-milestones-cite-gbrain-only-designs-driver-skips-20260926): the body
+does have an Outcome/Acceptance section, but it cites a `design-*` slug that
+`brain get` cannot resolve. Do not read gbrain to find it
+(no-gbrain-brain-is-lastdb-20260925). File a `needs_human` note naming the
+missing slug and this milestone, or — if the Outcome/Acceptance text already
+states enough to decompose without the design record — rewrite the body to be
+self-contained and drop the dead citation, then let the **next** capture
+re-run Decompose for it. Either way this stops the entry from re-appearing as
+a silent skip every pass.
 
 ### complete_proof (work_queue — do this every run when present)
 

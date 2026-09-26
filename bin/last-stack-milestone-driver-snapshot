@@ -247,6 +247,7 @@ def _proof_verdict(body):
 
 _SPEC_SECTION_RE = re.compile(r'^##\s*(outcome|acceptance|goal|end state)', re.M | re.I)
 _BARE_SLUG_LINE_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
+_DESIGN_SLUG_RE = re.compile(r'\bdesign-[a-z0-9][a-z0-9-]*\b')
 
 
 def _is_bare_slug_list_body(body):
@@ -263,7 +264,37 @@ def _is_bare_slug_list_body(body):
     return all(_BARE_SLUG_LINE_RE.fullmatch(line) for line in lines)
 
 
-def _annotate_stuck_states(board, report, detail_cache, card_cache):
+def _cited_design_slugs(body):
+    """Every `design-*` slug an Outcome/Acceptance/Goal/End-State body cites."""
+    if not isinstance(body, str):
+        return []
+    seen = []
+    for match in _DESIGN_SLUG_RE.finditer(body):
+        slug = match.group(0)
+        if slug not in seen:
+            seen.append(slug)
+    return seen
+
+
+def _brain_slug_exists(brain_bin, slug, cache):
+    """Best-effort `brain get <slug>` existence check. None on any doubt --
+    never fatal, and never mistaken for a confirmed absence."""
+    if slug in cache:
+        return cache[slug]
+    exists = None
+    try:
+        result = subprocess.run([brain_bin, 'get', slug], capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            exists = True
+        elif result.returncode == 1 and 'No record' in result.stderr:
+            exists = False
+    except (subprocess.TimeoutExpired, OSError):
+        exists = None
+    cache[slug] = exists
+    return exists
+
+
+def _annotate_stuck_states(board, report, detail_cache, card_cache, brain_bin=None, design_cache=None):
     """Annotate (never rename) three more dead-end states so the driver can
     act on them instead of re-reporting the same stuck count every pass.
     `action` stays exactly what the classifier emitted -- `authorize()`
@@ -286,6 +317,12 @@ def _annotate_stuck_states(board, report, detail_cache, card_cache):
       Acceptance spec): flag `needs_spec` + `sibling_milestones` so the
       driver treats it as needing a spec instead of silently skipping it.
       (papercut-milestone-driver-rollup-body-milestones-block-decompose-20260926)
+    - decompose whose Outcome/Acceptance cites a `design-*` slug that no
+      longer resolves in brain (e.g. written during the 2026-09-06..25
+      gbrain-primary window and never migrated back): flag `needs_spec` +
+      `missing_design_slug` so the driver reports the gap every pass instead
+      of silently re-skipping the same idle milestone forever.
+      (papercut-milestones-cite-gbrain-only-designs-driver-skips-20260926)
     - decompose + `next_slice` (fkanban needs_next_slice) with no proof card:
       flag `missing_proof_card` so the driver can choose between the next
       Kind:pr slice and the proof card.
@@ -298,6 +335,8 @@ def _annotate_stuck_states(board, report, detail_cache, card_cache):
     counts = report.get('counts')
     if not isinstance(counts, dict):
         counts = None
+    if design_cache is None:
+        design_cache = {}
 
     def bump(name):
         if counts is not None:
@@ -346,6 +385,15 @@ def _annotate_stuck_states(board, report, detail_cache, card_cache):
                     annotated.append({**entry, **extra, 'needs_spec': True, 'sibling_milestones': siblings})
                     bump('needs_spec')
                     flagged = True
+            if not flagged and brain_bin:
+                body = milestone.get('body', '') if detail else ''
+                if detail:
+                    missing = [cited for cited in _cited_design_slugs(body)
+                               if _brain_slug_exists(brain_bin, cited, design_cache) is False]
+                    if missing:
+                        annotated.append({**entry, **extra, 'needs_spec': True, 'missing_design_slug': missing[0]})
+                        bump('needs_spec')
+                        flagged = True
             if not flagged:
                 annotated.append({**entry, **extra} if extra else entry)
         elif action == 'complete_proof':
@@ -543,7 +591,7 @@ def _admitted_north_stars(admission_bin):
     return {outcome for outcome in outcomes if isinstance(outcome, str) and outcome}
 
 
-def reconcile_gap_report(board, snapshot_dir, report, admission_bin):
+def reconcile_gap_report(board, snapshot_dir, report, admission_bin, brain_bin=None):
     """Correct two gap-report drift classes before this run trusts the queue.
 
     idle_empty staleness: a milestone with no children linked directly to it
@@ -616,7 +664,7 @@ def reconcile_gap_report(board, snapshot_dir, report, admission_bin):
     report['work_queue'] = kept
     report = _stamp_next_slice(report)
     detail_cache, card_cache = {}, {}
-    report = _annotate_stuck_states(board, report, detail_cache, card_cache)
+    report = _annotate_stuck_states(board, report, detail_cache, card_cache, brain_bin=brain_bin)
     # After the annotation pass, so an appended repair entry is not
     # re-annotated, and after the idle_empty drop, which already applied the
     # North Star in-flight rule this call repeats.
@@ -817,6 +865,7 @@ def main():
     parser.add_argument('--artifact', default='')
     parser.add_argument('--preflight-bin')
     parser.add_argument('--kanban-bin', default=os.environ.get('KANBAN_BIN', 'kanban'))
+    parser.add_argument('--brain-bin', default=os.environ.get('BRAIN_BIN', 'brain'))
     parser.add_argument('--admission-bin', default=os.environ.get(
         'MILESTONE_DRIVER_ADMISSION_BIN',
         str(Path(__file__).resolve().with_name('last-stack-feature-portfolio-admission'))))
@@ -883,7 +932,7 @@ def main():
                 value = load(snapshot / (step + '.json'))
             if not isinstance(value.get('counts'), dict) or not isinstance(value.get('work_queue'), list):
                 refuse('invalid-gap-report')
-            value = reconcile_gap_report(args.kanban_bin, snapshot, value, args.admission_bin)
+            value = reconcile_gap_report(args.kanban_bin, snapshot, value, args.admission_bin, brain_bin=args.brain_bin)
             value['_milestone_driver_run'] = {**evidence, 'created_epoch': int(time.time()),
                 'artifact': str(expected), 'target': control['target'], 'safety_cap': control['safety_cap'],
                 'created_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}

@@ -160,4 +160,60 @@ jq -e '.work_queue | length == 2' "$artifact3" >/dev/null \
 jq -e '.work_queue[0] == {"slug":"ms-await","action":"await_proof"}' "$artifact3" >/dev/null \
   || fail 'an unrecognized action entry must keep its original position and shape'
 
-printf '%s\n' 'ok: gap-report reconciliation drops North-Star-stale idle_empty entries, keeps directly-attached children, prioritizes admitted decompose work, and never drops an unrecognized queue entry'
+# ---------------------------------------------------------------------------
+# Scenario 4: decompose milestone citing a `design-*` slug that no longer
+# resolves in brain (gbrain-primary-window design record never migrated
+# back) must be flagged needs_spec + missing_design_slug, not silently
+# skipped every pass. A sibling milestone whose cited design slug DOES
+# resolve must NOT be flagged (negative fixture supplies a real, different
+# value -- not an absent check).
+# papercut-milestones-cite-gbrain-only-designs-driver-skips-20260926
+# ---------------------------------------------------------------------------
+S4="$TMP/s4"
+mkdir -p "$S4/run"
+cat >"$S4/kanban" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  'list --column backlog --json') echo '{"cards":[],"total":0,"truncated":false}';;
+  'list --column todo --json') echo '{"cards":[],"total":0,"truncated":false}';;
+  'list --column doing --json') echo '{"cards":[],"total":0,"truncated":false}';;
+  'milestone portfolio --json') echo '{"entries":[],"total":0,"truncated":false}';;
+  'milestone gap-report --json')
+    echo '{"counts":{"idle_empty":2,"in_flight":0},"work_queue":[{"slug":"ms-missing-design","action":"decompose"},{"slug":"ms-real-design","action":"decompose"}]}';;
+  'milestone detail ms-missing-design --json')
+    echo '{"milestone":{"slug":"ms-missing-design","north_star":"ns-a","body":"## Acceptance\ndesign-gbrain-only-wave3 Wave 3 fixtures.","proof_card":null}}';;
+  'milestone detail ms-real-design --json')
+    echo '{"milestone":{"slug":"ms-real-design","north_star":"ns-a","body":"## Acceptance\ndesign-still-in-brain Wave 3 fixtures.","proof_card":null}}';;
+  *) echo "unexpected fixture command: $*" >&2; exit 9;;
+esac
+EOF
+chmod +x "$S4/kanban"
+cat >"$S4/brain" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  'get design-gbrain-only-wave3')
+    echo 'error: No record with slug "design-gbrain-only-wave3".' >&2; exit 1;;
+  'get design-still-in-brain')
+    echo '{"slug":"design-still-in-brain"}'; exit 0;;
+  *) echo "unexpected fixture command: $*" >&2; exit 9;;
+esac
+EOF
+chmod +x "$S4/brain"
+
+capture_json4="$("$HELPER" capture --run-dir "$S4/run" --run-id s4 \
+  --preflight-bin "$TMP/bin/preflight" --kanban-bin "$S4/kanban" --admission-bin "$S1/admission" \
+  --brain-bin "$S4/brain")"
+artifact4="$(printf '%s\n' "$capture_json4" | jq -r '.artifact')"
+
+jq -e '.work_queue[] | select(.slug == "ms-missing-design") | .needs_spec == true' "$artifact4" >/dev/null \
+  || fail 'a decompose milestone citing an unresolvable design-* slug must be flagged needs_spec'
+jq -e '.work_queue[] | select(.slug == "ms-missing-design") | .missing_design_slug == "design-gbrain-only-wave3"' "$artifact4" >/dev/null \
+  || fail 'missing_design_slug must name the unresolvable slug so the driver can report it'
+jq -e '.counts.needs_spec == 1' "$artifact4" >/dev/null \
+  || fail 'needs_spec count must be bumped exactly once for the one bad milestone'
+jq -e '.work_queue[] | select(.slug == "ms-real-design") | has("needs_spec") | not' "$artifact4" >/dev/null \
+  || fail 'a sibling milestone whose cited design slug resolves in brain must not be flagged'
+
+printf '%s\n' 'ok: gap-report reconciliation drops North-Star-stale idle_empty entries, keeps directly-attached children, prioritizes admitted decompose work, never drops an unrecognized queue entry, and flags a milestone citing an unresolvable design-* slug instead of silently re-skipping it'
