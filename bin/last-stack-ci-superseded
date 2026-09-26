@@ -49,8 +49,21 @@ if [ -z "$branch" ]; then
   case "$pr" in ''|*[!0-9]*) echo "superseded-check: unknown (no PR number)"; exit 2 ;; esac
 fi
 if [ -z "$repo" ] || [ -z "$sha" ]; then echo "superseded-check: unknown (no repo or sha)"; exit 2; fi
-if [ -z "${FORGE_TOKEN:-}" ]; then echo "superseded-check: unknown (no FORGE_TOKEN)"; exit 2; fi
 command -v jq >/dev/null 2>&1 || { echo "superseded-check: unknown (no jq)"; exit 2; }
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
+if [ -r "$ROOT/lib/forge-token.sh" ]; then
+  . "$ROOT/lib/forge-token.sh"
+fi
+FORGE_TOKEN_FILE=""
+if [ -z "${FORGE_TOKEN:-}" ]; then
+  FORGE_TOKEN="$(last_stack_forge_token 2>/dev/null || true)"
+  if [ -z "$FORGE_TOKEN" ]; then echo "superseded-check: unknown (no FORGE_TOKEN)"; exit 2; fi
+fi
+if ! FORGE_TOKEN_FILE="$(last_stack_forge_curl_auth_config)"; then
+  echo "superseded-check: unknown (no FORGE_TOKEN)"; exit 2
+fi
+trap 'rm -rf "$(dirname "$FORGE_TOKEN_FILE")" 2>/dev/null' EXIT
 
 root="${FORGE_ROOT:-${GITHUB_SERVER_URL:-http://localhost:3300}}"
 # The Mac host runner hands jobs host.docker.internal, which only resolves in
@@ -60,7 +73,7 @@ if [ "$(uname -s)" = "Darwin" ]; then root="${root//host.docker.internal/localho
 root="${root%/}"
 
 if [ -n "$branch" ]; then
-  body="$(curl -sS --max-time 20 -H "Authorization: token $FORGE_TOKEN" -H "Accept: application/json" \
+  body="$(curl -sS --max-time 20 -K "$FORGE_TOKEN_FILE" -H "Accept: application/json" \
     "$root/api/v1/repos/$repo/branches/$branch" 2>/dev/null)" || { echo "superseded-check: unknown (forge unreachable)"; exit 2; }
   head="$(printf '%s' "$body" | jq -r '.commit.id // empty' 2>/dev/null)"
   if [ -z "$head" ]; then echo "superseded-check: unknown (no commit id in the branch reply)"; exit 2; fi
@@ -72,7 +85,7 @@ if [ -n "$branch" ]; then
   exit 1
 fi
 
-body="$(curl -sS --max-time 20 -H "Authorization: token $FORGE_TOKEN" -H "Accept: application/json" \
+body="$(curl -sS --max-time 20 -K "$FORGE_TOKEN_FILE" -H "Accept: application/json" \
   "$root/api/v1/repos/$repo/pulls/$pr" 2>/dev/null)" || { echo "superseded-check: unknown (forge unreachable)"; exit 2; }
 state="$(printf '%s' "$body" | jq -r '.state // empty' 2>/dev/null)"
 merged="$(printf '%s' "$body" | jq -r '.merged // false' 2>/dev/null)"

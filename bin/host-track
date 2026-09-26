@@ -362,20 +362,16 @@ if [ -r "$ROOT/lib/forge-token.sh" ]; then
   . "$ROOT/lib/forge-token.sh" && FORGE_TOKEN_LIB_LOADED=1
 fi
 
-# Emits `-c http.<base>.extraHeader=...` words for a local forge remote, and
-# nothing at all for any other remote. A non-forge gate is untouched.
-forge_auth_args() {
-  local remote="$1" token
+# Export forge auth for a local forge remote to the environment. Returns 0 when
+# exported, 1 when the remote doesn't need auth or the token is unavailable.
+forge_auth_export() {
+  local remote="$1"
   case "$remote" in
     http://localhost:3300/*|http://127.0.0.1:3300/*) ;;
-    *) return 0 ;;
+    *) return 1 ;;
   esac
-  [ "$FORGE_TOKEN_LIB_LOADED" = "1" ] || return 0
-  token="$(last_stack_forge_token 2>/dev/null || true)"
-  [ -n "$token" ] || return 0
-  printf '%s\n' \
-    "-c" "http.http://localhost:3300/.extraHeader=Authorization: token $token" \
-    "-c" "http.http://127.0.0.1:3300/.extraHeader=Authorization: token $token"
+  [ "$FORGE_TOKEN_LIB_LOADED" = "1" ] || return 1
+  last_stack_forge_export_git_config 2>/dev/null
 }
 
 gate_head() {
@@ -383,24 +379,20 @@ gate_head() {
   [ -n "$host_track" ] || return 0
   [ -n "$remote" ] || return 0
   [ -n "$ref" ] || return 0
-  local auth=()
-  while IFS= read -r word; do
-    [ -n "$word" ] && auth+=("$word")
-  done < <(forge_auth_args "$remote")
-  git "${auth[@]+"${auth[@]}"}" -C "$host_track" ls-remote "$remote" "$ref" 2>/dev/null \
-    | awk 'NR == 1 {print $1}' || true
+  (
+    forge_auth_export "$remote" || true
+    git -C "$host_track" ls-remote "$remote" "$ref" 2>/dev/null
+  ) | awk 'NR == 1 {print $1}' || true
 }
 
 remote_head() {
   local remote="$1" ref="$2"
   [ -n "$remote" ] || return 0
   [ -n "$ref" ] || return 0
-  local auth=()
-  while IFS= read -r word; do
-    [ -n "$word" ] && auth+=("$word")
-  done < <(forge_auth_args "$remote")
-  git "${auth[@]+"${auth[@]}"}" ls-remote "$remote" "$ref" 2>/dev/null \
-    | awk 'NR == 1 {print $1}' || true
+  (
+    forge_auth_export "$remote" || true
+    git ls-remote "$remote" "$ref" 2>/dev/null
+  ) | awk 'NR == 1 {print $1}' || true
 }
 
 binary_version() {
@@ -501,23 +493,25 @@ registry_index_local_copy() {
   esac
   cache="${HOST_TRACK_REGISTRY_INDEX_CACHE:-$HOME/.local/state/last-stack/registry-index-cache}"
   mkdir -p "$cache"
-  token=""
+  auth_file=""
   if [ "$FORGE_TOKEN_LIB_LOADED" -eq 1 ]; then
-    token="$(last_stack_forge_token 2>/dev/null || true)"
+    auth_file="$(last_stack_forge_curl_auth_config 2>/dev/null || true)"
   fi
-  header=()
-  [ -z "$token" ] || header=(-H "Authorization: token $token")
   # Per-writer temp names. Two refreshes that overlap used to share
   # "$channel.json.tmp": one renamed it away and the other printed
   # "mv: rename ... next.json.tmp: No such file or directory"
   # (papercut-host-track-registry-index-cache-rename-race-20260921).
   local tmp_json="$cache/$channel.json.tmp.$$" tmp_sig="$cache/$channel.json.sig.tmp.$$"
-  if ! curl -fsS --max-time 20 "${header[@]}" -o "$tmp_json" "${index%/}/$channel.json"     || ! curl -fsS --max-time 20 "${header[@]}" -o "$tmp_sig" "${index%/}/$channel.json.sig"; then
+  local curl_args=()
+  [ -z "$auth_file" ] || curl_args=(-K "$auth_file")
+  if ! curl -fsS --max-time 20 "${curl_args[@]}" -o "$tmp_json" "${index%/}/$channel.json"     || ! curl -fsS --max-time 20 "${curl_args[@]}" -o "$tmp_sig" "${index%/}/$channel.json.sig"; then
     rm -f "$tmp_json" "$tmp_sig"
+    [ -z "$auth_file" ] || rm -rf "$(dirname "$auth_file")" 2>/dev/null || true
     printf 'host-track: registry index %s/%s.json is not readable (forge token %s)\n' \
-      "$index" "$channel" "$([ -n "$token" ] && echo present || echo absent)" >&2
+      "$index" "$channel" "$([ -n "$auth_file" ] && echo present || echo absent)" >&2
     return 1
   fi
+  [ -z "$auth_file" ] || rm -rf "$(dirname "$auth_file")" 2>/dev/null || true
   # rename(2) is atomic per file; the last writer wins, and both writers
   # fetched the same published index.
   mv -f "$tmp_json" "$cache/$channel.json"

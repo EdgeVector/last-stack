@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # What `host-track status` REPORTS when a Forgejo gate head can and cannot be
 # read. The companion to tests/host-track-forge-gate-head-auth.sh, which unit-
-# tests `forge_auth_args` and proves the right `-c` words come out.
+# tests `forge_auth_export` and proves the right GIT_CONFIG_* env vars are set.
 #
 # This file asserts the behaviour those words exist for, because the outage had
 # two halves and emitting the header only fixes the first:
@@ -46,7 +46,7 @@ fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 
 TOKEN="s3cret-forge-token"
 WANT_HEADER="Authorization: token $TOKEN"
-# Must literally be a localhost:3300 base: that base is what `forge_auth_args`
+# Must literally be a localhost:3300 base: that base is what `forge_auth_export`
 # keys on, and a rewritten URL would silently take the non-forge path.
 GATE_REMOTE="http://localhost:3300/EdgeVector/fold.git"
 
@@ -71,10 +71,10 @@ gate_oid="$(/usr/bin/git -C "$seed" rev-parse HEAD)"
 /usr/bin/git clone -q --bare "$real_remote" "$cache"
 
 # Stands in for the forge on the one subcommand the gate read uses. It answers
-# `ls-remote` for the localhost:3300 remote ONLY when the scoped extraHeader
-# reached its own argv, and otherwise reproduces the exact refusal a real
-# unauthenticated git gives. That is what makes "the token works" an assertion
-# instead of a hope. Every other git call is delegated untouched.
+# `ls-remote` for the localhost:3300 remote ONLY when the auth header is in the
+# environment via GIT_CONFIG_VALUE_*, and otherwise reproduces the exact refusal
+# a real unauthenticated git gives. That is what makes "the token works" an
+# assertion instead of a hope. Every other git call is delegated untouched.
 cat > "$tmp/bin/git" <<STUB
 #!/usr/bin/env bash
 want_header='$WANT_HEADER'
@@ -85,16 +85,12 @@ cat >> "$tmp/bin/git" <<'STUB'
 is_ls_remote=""
 hits_gate=""
 header=""
-prev=""
 for arg in "$@"; do
   [ "$arg" = "ls-remote" ] && is_ls_remote=1
   [ "$arg" = "$gate_remote" ] && hits_gate=1
-  case "$prev" in
-    -c) case "$arg" in http.http://localhost:3300/.extraHeader=*) header="${arg#*=}" ;; esac ;;
-  esac
-  prev="$arg"
 done
 if [ -n "$is_ls_remote" ] && [ -n "$hits_gate" ]; then
+  header="${GIT_CONFIG_VALUE_0:-}"
   if [ "$header" != "$want_header" ]; then
     echo "fatal: could not read Username for 'http://localhost:3300': Device not configured" >&2
     exit 128

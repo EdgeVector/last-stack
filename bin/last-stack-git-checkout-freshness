@@ -46,16 +46,15 @@ git_ls_remote() {
   local repo="$1"
   local remote="$2"
   local ref="$3"
-  local remote_url scope token auth
+  local remote_url scope
 
   remote_url="$(git -C "$repo" remote get-url "$remote" 2>/dev/null || true)"
   scope="$(forge_auth_scope "$remote_url")"
-  if [ -n "$scope" ] && token="$(last_stack_forge_token)"; then
-    auth="$(printf 'tom:%s' "$token" | base64 | tr -d '\n')"
-    git -C "$repo" \
-      -c credential.helper= \
-      -c "http.${scope}.extraHeader=Authorization: Basic $auth" \
-      ls-remote "$remote" "$ref"
+  if [ -n "$scope" ] && last_stack_forge_token >/dev/null 2>&1; then
+    (
+      last_stack_forge_export_git_config
+      git -C "$repo" -c credential.helper= ls-remote "$remote" "$ref"
+    )
     return
   fi
 

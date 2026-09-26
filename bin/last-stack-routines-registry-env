@@ -175,8 +175,13 @@ last_stack_registry_assert_safe_write() {
     reg_real="$registry_dir"
   fi
 
+  # Only guard when the target is the ACTUAL host registry, not just under
+  # the login home. A sandbox temp dir like ~/.routines/runs/xyz/registry is
+  # NOT the host registry; it's a temporary directory that happens to share
+  # the login home prefix. The host registry is at ~/.routines/registry only.
+  local host_reg_dir="${host_reg_real}/registry"
   case "$reg_real" in
-    "$host_reg_real"|"$host_reg_real"/*|"$host_reg"|"$host_reg"/*|"${REG_LOGIN_HOME}/.routines"|"${REG_LOGIN_HOME}/.routines"/*)
+    "$host_reg_dir"|"$host_reg_dir"/*)
       for p in "$@"; do
         case "$p" in
           *"/Users/REPLACE"*|*"Users/REPLACE"*)

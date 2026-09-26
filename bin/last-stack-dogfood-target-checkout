@@ -166,15 +166,18 @@ forge_auth_scope() {
 git_with_remote_url_auth() {
   local remote_url_value="$1"
   shift
-  local scope token
+  local scope
 
   scope="$(forge_auth_scope "$remote_url_value")"
-  if [ -n "$scope" ] && token="$(last_stack_forge_token)"; then
-    git \
-      -c credential.helper= \
-      -c "http.${scope}.extraHeader=Authorization: token $token" \
-      "$@"
-    return
+  if [ -n "$scope" ]; then
+    # Export git config for this scope if we have a token
+    if last_stack_forge_token >/dev/null 2>&1; then
+      (
+        last_stack_forge_export_git_config
+        git -c credential.helper= "$@"
+      )
+      return
+    fi
   fi
 
   git "$@"

@@ -21,11 +21,11 @@ fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 # Extract the auth helper and its two callers from the real script and drive
 # them directly. Asserting on executed behaviour, not on text in the file.
 # From the token-lib guard down to the end of remote_head(): that block holds
-# forge_auth_args and both head readers, and nothing else.
+# forge_auth_export and both head readers, and nothing else.
 awk '/^FORGE_TOKEN_LIB_LOADED=0$/ { f = 1 }
      /^binary_version\(\) \{$/ { exit }
      f { print }' "$BIN" > "$tmp/extract.sh"
-for fn in forge_auth_args gate_head remote_head; do
+for fn in forge_auth_export gate_head remote_head; do
   grep -q "^$fn() {" "$tmp/extract.sh" || fail "could not extract $fn from $BIN"
 done
 
@@ -36,9 +36,14 @@ ROOT="$EXTRACT_ROOT"
 # Stub the token source so the test never touches the real keychain.
 FORGE_TOKEN_LIB_LOADED=1
 last_stack_forge_token() { printf '%s' "test-token-abc"; }
-printf 'FORGE_START\n'
-forge_auth_args "$1"
-printf 'FORGE_END\n'
+if forge_auth_export "$1" 2>/dev/null; then
+  printf 'AUTH_EXPORTED\n'
+  printf 'GIT_CONFIG_COUNT=%s\n' "${GIT_CONFIG_COUNT:-}"
+  printf 'GIT_CONFIG_KEY_0=%s\n' "${GIT_CONFIG_KEY_0:-}"
+  printf 'GIT_CONFIG_VALUE_0=%s\n' "${GIT_CONFIG_VALUE_0:-}"
+else
+  printf 'NO_AUTH\n'
+fi
 PROBE
 
 run_probe() {
@@ -46,16 +51,18 @@ run_probe() {
     bash "$tmp/probe.sh" "$1" 2>/dev/null
 }
 
-# --- a forge remote gets the token as an extraHeader ---
+# --- a forge remote gets the token as an env var ---
 out="$(run_probe 'http://localhost:3300/EdgeVector/fold.git')"
-grep -q 'extraHeader=Authorization: token test-token-abc' <<<"$out" \
-  || fail "localhost:3300 remote got no auth header: $out"
-[ "$(grep -c -- '^-c$' <<<"$out")" -eq 2 ] \
-  || fail "expected two -c words for a forge remote: $out"
+grep -q 'AUTH_EXPORTED' <<<"$out" \
+  || fail "localhost:3300 remote got no auth export: $out"
+grep -q 'GIT_CONFIG_VALUE_0=Authorization: token test-token-abc' <<<"$out" \
+  || fail "localhost:3300 remote got wrong GIT_CONFIG_VALUE_0: $out"
 
 out="$(run_probe 'http://127.0.0.1:3300/EdgeVector/fold.git')"
-grep -q 'extraHeader=Authorization: token test-token-abc' <<<"$out" \
-  || fail "127.0.0.1:3300 remote got no auth header: $out"
+grep -q 'AUTH_EXPORTED' <<<"$out" \
+  || fail "127.0.0.1:3300 remote got no auth export: $out"
+grep -q 'GIT_CONFIG_VALUE_0=Authorization: token test-token-abc' <<<"$out" \
+  || fail "127.0.0.1:3300 remote got wrong token: $out"
 
 # --- every other remote is untouched ---
 for remote in \
@@ -65,8 +72,7 @@ for remote in \
   'http://localhost:9999/EdgeVector/fold.git'
 do
   out="$(run_probe "$remote")"
-  body="$(sed -n '/FORGE_START/,/FORGE_END/p' <<<"$out" | sed '1d;$d')"
-  [ -z "$body" ] || fail "non-forge remote $remote gained auth args: $body"
+  grep -q 'NO_AUTH' <<<"$out" || fail "non-forge remote $remote gained auth: $out"
 done
 
 # --- the readers still resolve a real head over a credential-free remote ---
