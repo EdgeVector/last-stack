@@ -39,6 +39,8 @@ skip_smoke="${LAST_STACK_CANARY_SKIP_SMOKE:-0}"
 skip_rows="${LAST_STACK_CANARY_SKIP_ROWS:-0}"
 primary_lastdbd="${LAST_STACK_CANARY_PRIMARY_LASTDBD:-$HOME/.lastdb/current/lastdbd}"
 resolve_bin="${LAST_STACK_CANARY_APP_RESOLVE_BIN:-lastdb}"
+apps_only_stamp_dir="${LAST_STACK_CANARY_APPS_ONLY_STAMP_DIR:-$HOME/.local/state/last-stack/canary-apps-only}"
+apps_only_cooldown="${LAST_STACK_CANARY_APPS_ONLY_COOLDOWN_SECS:-3600}"
 
 usage() {
   printf '%s\n' 'last-stack-canary-candidate-gate'
@@ -48,6 +50,7 @@ usage() {
   printf '%s\n' '  LAST_STACK_CANARY_SMOKE_RUN, LAST_STACK_CANARY_PUBLISH_NEXT_BIN,'
   printf '%s\n' '  LAST_STACK_CANARY_SKIP_BUILD=1, LAST_STACK_CANARY_SKIP_SMOKE=1, LAST_STACK_CANARY_SKIP_ROWS=1'
   printf '%s\n' '  LAST_STACK_CANARY_PRIMARY_LASTDBD, LAST_STACK_CANARY_APP_RESOLVE_BIN'
+  printf '%s\n' '  LAST_STACK_CANARY_APPS_ONLY_STAMP_DIR, LAST_STACK_CANARY_APPS_ONLY_COOLDOWN_SECS'
 }
 
 case "${1:-}" in
@@ -97,6 +100,26 @@ apps_moved_past_registry() {
   printf '%s' "$moved"
 }
 
+write_apps_only_stamp() {
+  # Best effort: a stamp that cannot be written must not fail a GREEN pass, it
+  # only costs the next run a repeat.
+  local stamp="$1" fp="$2" verdict="$3" dir
+  [ -n "$stamp" ] && [ -n "$fp" ] || return 0
+  dir="$(dirname "$stamp")"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  jq -n --arg fp "$fp" --arg r "$verdict" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --argjson e "$(date +%s)" '{fingerprint: $fp, result: $r, at: $at, at_epoch: $e}' \
+    >"$stamp.tmp" 2>/dev/null && mv -f "$stamp.tmp" "$stamp" 2>/dev/null || true
+  return 0
+}
+
+apps_only_fingerprint() {
+  # A stable id for "this set of app pins against this primary build".
+  local set_file="$1"
+  jq -r '.apps | to_entries | sort_by(.key) | map(.key + "=" + (.value.sha // "")) | join(",")' \
+    "$set_file" 2>/dev/null | shasum -a 256 | awk '{print $1}'
+}
+
 apps_only_pass() {
   # apps_only_pass <why>: <why> names the resolve outcome that sent us here, so
   # the result line still says why the full pass did not run.
@@ -121,6 +144,32 @@ apps_only_pass() {
     result noop "stage=apps-only candidate=$incoming primary=$primary apps=$count evidence=${why}_apps_already_proved"
   fi
 
+  # The smoke costs ~18 minutes of the primary host. This routine does NOT fire
+  # once a day: it fired 7 times on 2026-09-24, four of them inside 22 minutes,
+  # every one of them a `resolve` noop that cost seconds. Those are exactly the
+  # runs the apps-only pass now picks up, so without a cooldown one busy evening
+  # buys four consecutive real smokes for the same app pins -- and the natural
+  # gate does not close in time, because a published row only becomes visible to
+  # `lastdb app resolve` after the tap PR merges and the mirror syncs.
+  #
+  # So: one apps-only smoke per <primary build, app-pin fingerprint> per
+  # cooldown, recorded whatever the verdict. A RED set must not be re-smoked
+  # every ten minutes either.
+  local fp fp_short stamp stamp_fp stamp_at stamp_age stamp_result
+  fp="$(apps_only_fingerprint "$set_file")"
+  fp_short="${fp:0:12}"
+  stamp="$apps_only_stamp_dir/$primary.json"
+  if [ -n "$fp" ] && [ -f "$stamp" ]; then
+    stamp_fp="$(jq -r '.fingerprint // ""' "$stamp" 2>/dev/null || true)"
+    stamp_at="$(jq -r '.at_epoch // 0' "$stamp" 2>/dev/null || true)"
+    [[ "$stamp_at" =~ ^[0-9]+$ ]] || stamp_at=0
+    stamp_result="$(jq -r '.result // "unknown"' "$stamp" 2>/dev/null || true)"
+    stamp_age=$(( $(date +%s) - stamp_at ))
+    if [ "$stamp_fp" = "$fp" ] && [ "$stamp_age" -lt "$apps_only_cooldown" ]; then
+      result noop "stage=apps-only primary=$primary apps=$count moved=$moved fingerprint=$fp_short evidence=${why}_apps_only_cooldown last=${stamp_result} age=${stamp_age}s cooldown=${apps_only_cooldown}s"
+    fi
+  fi
+
   local smoke_status=skipped proof_file="$run_dir/apps-only-proof.json" src=0 steps
   if [ "$skip_smoke" != 1 ]; then
     [ -f "$smoke_run" ] || result error "evidence=tool_missing tool=$smoke_run"
@@ -135,9 +184,12 @@ apps_only_pass() {
       # A RED apps-only smoke is a verdict about the app set, not about the
       # primary, which is untouched here. No rows, and no ledger line event
       # for the same reason the candidate smoke writes none.
+      write_apps_only_stamp "$stamp" "$fp" red
       result error "stage=apps-only primary=$primary apps=$count moved=$moved evidence=smoke_red steps=$steps log=$run_dir/apps-only-smoke.err after=$why"
     fi
   fi
+
+  write_apps_only_stamp "$stamp" "$fp" green
 
   local rows_status=skipped rows_out rows_pr rrc=0
   if [ "$skip_rows" != 1 ] && [ "$skip_smoke" != 1 ]; then

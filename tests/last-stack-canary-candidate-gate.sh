@@ -5,8 +5,9 @@
 #   - a candidate equal to the primary, or a held cutover, runs the APPS-ONLY
 #     pass: same set + same smoke pinned to the PRIMARY's lastdbd, rows
 #     published, and never a cutover
-#   - the apps-only pass is a noop only when `next` already proves every app
-#     at the set's pin for the build the primary runs
+#   - the apps-only pass is a noop when `next` already proves every app at the
+#     set's pin for the build the primary runs, and when the same pins were
+#     already smoked for this primary build inside the cooldown
 # Every tool is a fake that records its calls; nothing real runs.
 set -euo pipefail
 
@@ -50,7 +51,8 @@ cat >"$fake/candidate-set" <<EOF
 echo "candidate-set \$*" >>"$calls"
 out=""
 while [ \$# -gt 0 ]; do case "\$1" in --out) out="\$2"; shift 2;; *) shift;; esac; done
-printf '{"lastdb":{"build":"0.23.3-200-gbbbbbbbbb"},"apps":{"brain":{"sha":"abc"},"kanban":{"sha":"def"}}}\n' >"\$out"
+k="\${FAKE_SET_KANBAN_SHA:-def}"
+printf '{"lastdb":{"build":"0.23.3-200-gbbbbbbbbb"},"apps":{"brain":{"sha":"abc"},"kanban":{"sha":"%s"}}}\n' "\$k" >"\$out"
 EOF
 cat >"$fake/smoke.sh" <<EOF
 #!/usr/bin/env bash
@@ -87,6 +89,11 @@ chmod +x "$fake"/*
 
 run_gate() {
   : >"$calls"
+  # The apps-only cooldown is real state on disk. Every case below is about the
+  # DECISION, so clear it per run; the cooldown cases opt in with
+  # KEEP_APPS_ONLY_STAMPS=1. Without this, one case's stamp silences the next
+  # case's smoke and the assertion passes for the wrong reason.
+  [ "${KEEP_APPS_ONLY_STAMPS:-0}" = 1 ] || rm -rf "$work/apps-only-stamps"
   env ROUTINES_RUN_DIR="$work/run" \
     LAST_STACK_CANARY_V2_BUILD_MAIN="$fake/build-main" \
     LAST_STACK_CANARY_V2_DOGFOOD="$fake/dogfood" \
@@ -97,6 +104,7 @@ run_gate() {
     LAST_STACK_CANARY_V2_PRIMARY_IDENTITY_CMD="$fake/identity" \
     LAST_STACK_CANARY_PRIMARY_LASTDBD="$prim_bin" \
     LAST_STACK_CANARY_APP_RESOLVE_BIN="$fake/lastdb" \
+    LAST_STACK_CANARY_APPS_ONLY_STAMP_DIR="$work/apps-only-stamps" \
     "$@" "$GATE"
 }
 
@@ -166,5 +174,51 @@ out="$(run_gate env FAKE_PRIMARY=0.23.3-200-gbbbbbbbbb FAKE_PROVED='{}' LAST_STA
 grep -q 'ROUTINE_RESULT outcome=noop' <<<"$out" || fail "absent primary binary not noop: $out"
 grep -q 'primary_lastdbd_absent' <<<"$out" || fail "absent primary binary evidence: $out"
 grep -q '^smoke' "$calls" && fail "absent primary binary still ran the smoke"
+
+# The cooldown. This routine is not daily in practice — it fired 7 times on
+# 2026-09-24, four of them inside 22 minutes, and every one of those was a
+# `resolve` noop that the apps-only pass now picks up. Without a cooldown one
+# busy evening buys four consecutive ~18-minute smokes for the same app pins,
+# because a published row is not visible to `lastdb app resolve` until the tap
+# PR merges and the mirror syncs.
+rm -rf "$work/apps-only-stamps"
+out="$(KEEP_APPS_ONLY_STAMPS=1 run_gate env FAKE_PRIMARY=0.23.3-200-gbbbbbbbbb FAKE_PROVED='{"brain":"abc"}')"
+grep -q 'ROUTINE_RESULT outcome=ok' <<<"$out" || fail "first apps-only pass not ok: $out"
+[ -f "$work/apps-only-stamps/0.23.3-200-gbbbbbbbbb.json" ] || fail "no apps-only stamp written"
+jq -e '.result == "green" and (.fingerprint | length) == 64' "$work/apps-only-stamps/0.23.3-200-gbbbbbbbbb.json" >/dev/null \
+  || fail "apps-only stamp shape: $(cat "$work/apps-only-stamps/0.23.3-200-gbbbbbbbbb.json")"
+
+# Same primary build, same pins, immediately again: no second smoke.
+out="$(KEEP_APPS_ONLY_STAMPS=1 run_gate env FAKE_PRIMARY=0.23.3-200-gbbbbbbbbb FAKE_PROVED='{"brain":"abc"}')"
+grep -q 'ROUTINE_RESULT outcome=noop' <<<"$out" || fail "second pass inside the cooldown not a noop: $out"
+grep -q 'apps_only_cooldown' <<<"$out" || fail "cooldown evidence missing: $out"
+grep -q '^smoke' "$calls" && fail "cooldown still ran the smoke"
+
+# A pin that MOVED is a different fingerprint and must smoke again, cooldown or
+# not: the cooldown bounds repeats of the same work, never new work.
+out="$(KEEP_APPS_ONLY_STAMPS=1 run_gate env FAKE_PRIMARY=0.23.3-200-gbbbbbbbbb FAKE_PROVED='{"brain":"abc"}' FAKE_SET_KANBAN_SHA=zzz)"
+grep -q 'ROUTINE_RESULT outcome=ok' <<<"$out" || fail "a moved pin was suppressed by the cooldown: $out"
+grep -q '^smoke' "$calls" || fail "a moved pin did not smoke"
+
+# A RED set is stamped too, or it is re-smoked every ten minutes.
+rm -rf "$work/apps-only-stamps"
+out="$(KEEP_APPS_ONLY_STAMPS=1 run_gate env FAKE_PRIMARY=0.23.3-200-gbbbbbbbbb FAKE_PROVED='{}' FAKE_SMOKE=RED)"
+grep -q 'ROUTINE_RESULT outcome=error' <<<"$out" || fail "red apps-only not error: $out"
+jq -e '.result == "red"' "$work/apps-only-stamps/0.23.3-200-gbbbbbbbbb.json" >/dev/null \
+  || fail "red apps-only smoke left no stamp"
+out="$(KEEP_APPS_ONLY_STAMPS=1 run_gate env FAKE_PRIMARY=0.23.3-200-gbbbbbbbbb FAKE_PROVED='{}' FAKE_SMOKE=RED)"
+grep -q 'last=red' <<<"$out" || fail "red stamp did not hold the cooldown: $out"
+grep -q '^smoke' "$calls" && fail "red set was re-smoked inside the cooldown"
+
+# A zero cooldown is the escape hatch an operator needs.
+out="$(KEEP_APPS_ONLY_STAMPS=1 run_gate env FAKE_PRIMARY=0.23.3-200-gbbbbbbbbb FAKE_PROVED='{}' LAST_STACK_CANARY_APPS_ONLY_COOLDOWN_SECS=0)"
+grep -q '^smoke' "$calls" || fail "cooldown=0 still suppressed the smoke"
+
+# A different primary build has its own stamp: a node cutover must re-prove.
+rm -rf "$work/apps-only-stamps"
+out="$(KEEP_APPS_ONLY_STAMPS=1 run_gate env FAKE_PRIMARY=0.23.3-200-gbbbbbbbbb FAKE_PROVED='{"brain":"abc"}')"
+grep -q 'ROUTINE_RESULT outcome=ok' <<<"$out" || fail "stamp setup pass: $out"
+out="$(KEEP_APPS_ONLY_STAMPS=1 run_gate env FAKE_PRIMARY=0.23.3-201-gccccccccc FAKE_INCOMING=0.23.3-201-gccccccccc FAKE_PROVED='{"brain":"abc"}')"
+grep -q '^smoke' "$calls" || fail "a new primary build reused another build's cooldown stamp"
 
 echo "PASS last-stack-canary-candidate-gate"
