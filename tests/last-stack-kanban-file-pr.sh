@@ -23,6 +23,9 @@ mkdir -p "$tmp/bin" "$tmp/empty-fixture"
 : >"$tmp/ms-add.log"
 : >"$tmp/add.body"
 export LAST_STACK_DECISION_FIXTURE="$tmp/empty-fixture"
+# Surface derivation reads bare mirrors; point it at an empty root so these
+# fixtures never depend on the live ~/.cache/edgevector-git tree.
+export LAST_STACK_GIT_MIRROR_ROOT="$tmp/no-mirrors"
 
 # Offline admission record: ns-a is the admitted primary, ns-paused is not.
 # decision-2026-08-31-two-admitted-feature-outcomes
