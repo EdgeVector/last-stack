@@ -22,6 +22,14 @@ by hand and found only two shapes, and neither needed judgement:
             passes, `merge` goes back to MERGE. Without this rule the walk
             parked forever after the Situation ended (2026-09-26, fold PR
             2203). Rate-limited like resume; counted under resumed=.
+  handoff   The PR is merged, one resume was already signalled, and the walk
+            parked again after the retry window. CLOSE_CARD keeps refusing
+            (for example "Merge is not done. Add a positive PROOF line"), so
+            another `merge` only loops. The card goes to the validate lane
+            through last-stack-card-reopen-validate (doing + pr_url + PROOF
+            marker, block_status cleared), then the walk gets `drop`. Before
+            this rule two merged cards sat in backlog as needs_human for 4-10h
+            and the validate routine skipped them by policy (2026-09-26).
 
 Anything else is left parked and listed as `left`.
 
@@ -38,9 +46,9 @@ the walk in the foreground and can run for an hour), logs it under the state
 dir, and marks the card with one PROGRESS line.
 
 The last stdout line carries heartbeat tokens:
-  parked_seen= escalated= resumed= left= errors=
+  parked_seen= escalated= resumed= handed_off= left= errors=
 
-Test knobs: LOOM_BIN, KANBAN_BIN, FORGE_API_BIN, SITUATIONS_BIN,
+Test knobs: LOOM_BIN, KANBAN_BIN, FORGE_API_BIN, SITUATIONS_BIN, REOPEN_BIN,
 LAST_STACK_LOOM_TRIAGE_STATE (state dir).
 """
 import argparse
@@ -56,6 +64,8 @@ LOOM = os.environ.get("LOOM_BIN", "loom")
 KANBAN = os.environ.get("KANBAN_BIN", "kanban")
 FORGE_API = os.environ.get("FORGE_API_BIN", "last-stack-forge-api")
 SITUATIONS = os.environ.get("SITUATIONS_BIN", "situations")
+REOPEN = os.environ.get(
+    "REOPEN_BIN", str(Path(__file__).resolve().parent / "last-stack-card-reopen-validate"))
 STATE_DIR = Path(os.environ.get(
     "LAST_STACK_LOOM_TRIAGE_STATE",
     str(Path.home() / ".local/state/last-stack/loom-parked-triage")))
@@ -155,6 +165,8 @@ def classify(exec_id, view, state, merge_retry_s, now):
         last = seen.get("resume_at", 0)
         if now - last < merge_retry_s:
             return "left", "merged; resume signalled recently", None
+        if last:
+            return "handoff", "merged; parked again after resume", {"human_decision": "drop"}
         return "resume", "PR merged", {"human_decision": "merge"}
     fenced = MERGE_FENCED_RE.search(view["error"])
     if fenced:
@@ -186,6 +198,22 @@ def signal(exec_id, payload, card):
              + (f" card_difficulty={payload['card_difficulty']}" if "card_difficulty" in payload else "")], 60)
 
 
+def handoff(exec_id, view, card):
+    """Send a merged card to the validate lane. True when the board took it."""
+    if not card:
+        return False
+    first = next((l.strip() for l in view["error"].splitlines() if l.strip()), "")
+    reason = f"loom walk {exec_id} merged but CLOSE_CARD parked again after a resume: {first[:200]}"
+    # Reopen first: a card with block_status cleared but still in backlog
+    # can be promoted to todo and claimed as WORK with nothing to change.
+    rc, _, _ = run([REOPEN, card, "--pr-url", str(view["context"].get("pr_url") or ""),
+                    "--reason", reason, "--board-cli", KANBAN], 120)
+    if rc != 0:
+        return False
+    rc, _, _ = run([KANBAN, "set", card, "--block-status", "none"], 60)
+    return rc == 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--apply", action="store_true")
@@ -199,12 +227,12 @@ def main():
 
     now = time.time()
     state = load_state()
-    rows, counts = [], {"parked_seen": 0, "escalated": 0, "resumed": 0, "left": 0, "errors": 0}
+    rows, counts = [], {"parked_seen": 0, "escalated": 0, "resumed": 0, "handed_off": 0, "left": 0, "errors": 0}
     try:
         ids = parked_walks(args.limit)
     except RuntimeError as exc:
         print(f"last-stack-loom-parked-triage: {exc}", file=sys.stderr)
-        print("parked_seen=0 escalated=0 resumed=0 left=0 errors=1")
+        print("parked_seen=0 escalated=0 resumed=0 handed_off=0 left=0 errors=1")
         return 1
     for exec_id in ids:
         counts["parked_seen"] += 1
@@ -220,6 +248,16 @@ def main():
         if action == "left":
             counts["left"] += 1
             continue
+        if action == "handoff":
+            if args.apply and not handoff(exec_id, view, card):
+                counts["errors"] += 1
+                rows[-1]["why"] += "; reopen-validate failed, walk left parked"
+                continue
+            counts["handed_off"] += 1
+            if args.apply:
+                signal(exec_id, payload, card)
+                state.setdefault(exec_id, {})["handoff_at"] = now
+            continue
         counts["escalated" if action == "escalate" else "resumed"] += 1
         if args.apply:
             signal(exec_id, payload, card)
@@ -234,7 +272,7 @@ def main():
             print(f"{r['action']}\t{r['exec']}\t{r.get('card') or '-'}\t{r['why']}")
     tokens = " ".join(f"{k}={v}" for k, v in counts.items())
     if args.gate:
-        acted = counts["escalated"] + counts["resumed"]
+        acted = counts["escalated"] + counts["resumed"] + counts["handed_off"]
         print(f"ROUTINE_RESULT outcome={'ok' if acted else 'noop'} detail={tokens.replace(' ', ',')}")
     print(tokens)
     return 0
