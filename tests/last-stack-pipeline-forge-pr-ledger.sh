@@ -64,8 +64,27 @@ exit 2
 SH
 chmod +x "$tmp/brain-bin"
 
+# ── fake situations: OK unless BLOCKED_REPO names the repo ───────────────────
+# Exported for EVERY case: without it the ledger resolves the real `situations`
+# through PATH and a fixture test reads the live policy store.
+cat >"$tmp/situations-bin" <<'SH'
+#!/usr/bin/env bash
+# preflight --action <a> --repo <r> --field slug,reason
+repo=""; action=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in --repo) repo="$2"; shift 2 ;; --action) action="$2"; shift 2 ;; *) shift ;; esac
+done
+if [ "${SITUATIONS_UNREADABLE:-}" = "$repo" ]; then echo "boom" >&2; exit 1; fi
+if [ "${BLOCKED_REPO:-}" = "$repo" ] && [ "$action" = merge-pr ]; then
+  printf '%s\t%s\n' "${BLOCKED_SLUG:-test-hold-20260926}" blocked; exit 3
+fi
+exit 0
+SH
+chmod +x "$tmp/situations-bin"
+
 export FAKE_FORGE_DIR="$fx" FAKE_BRAIN_DIR="$tmp/brain"
 export LAST_STACK_FORGE_API="$tmp/forge-api"
+export LAST_STACK_SITUATIONS_BIN="$tmp/situations-bin"
 export LAST_STACK_PR_LEDGER_NOW="2026-09-22T12:00:00Z"
 put() { key="$(printf '%s' "$1" | tr '/?&=' '____')"; cat >"$fx/$key.json"; }
 
@@ -314,6 +333,60 @@ cp "$fx/repos_EdgeVector_fold_commits_head7_status.json" "$fx/repos_EdgeVector_f
 "$LEDGER" scan --repo "$R" --json >"$tmp/scan.json"
 jq -e '.prs[0].shape == "red" and .prs[0].merge_intent == "" and .prs[0].stuck == true' "$tmp/scan.json" >/dev/null   || { echo "FAIL a red PR must not read the arm state"; cat "$tmp/scan.json"; exit 1; }
 echo "ok   merge_intent is read only for a green PR"
+
+# 9f. a green PR whose repo is under a Situation that blocks merge-pr
+#     Regression 2026-09-25: the ledger filed p0 papercut-pipeline-forge-loom-pr-63
+#     for a green, mergeable PR whose only blocker was
+#     loom-budget-schema-deployment-hold-20260925 (merge-pr in blocked_actions,
+#     EdgeVector/loom in scope_repos). A p0 whose implied remedy is an action an
+#     active p0 Situation forbids raises papercut-p0-active, puts a deliberate
+#     hold at the top of the factory queue, and invites the merge: three loom PRs
+#     merged under that hold the same day.
+echo '[]' | put "repos/$R/pulls?state=open&limit=50"
+sync --apply   # drain the tracked rows from the cases above
+# PR 30 green + ARMED (so it is stuck but for the hold), PR 31 red on the same repo
+pulls_open 30 31 | put "repos/$R/pulls?state=open&limit=50"
+put "repos/$R/commits/head30/status" <<'J'
+{"statuses":[{"context":"Forge CI / ci-required (pull_request)","status":"success","created_at":"2026-09-22T10:10:00Z"},
+             {"context":"Forge CI / Mini (pull_request)","status":"success","created_at":"2026-09-22T10:20:00Z"}]}
+J
+cp "$fx/repos_EdgeVector_fold_commits_head7_status.json" "$fx/repos_EdgeVector_fold_commits_head31_status.json"
+put "repos/$R/issues/30/timeline?limit=50&page=1" <<'J'
+[{"type":"pull_scheduled_merge","created_at":"2026-09-22T10:30:00Z"}]
+J
+
+# control: with no hold, the armed green PR IS stuck
+"$LEDGER" scan --repo "$R" --json >"$tmp/scan.json"
+jq -e '(.prs[] | select(.number==30) | .stuck) == true
+       and (.prs[] | select(.number==30) | .merge_policy) == "ok"
+       and (.prs[] | select(.number==31) | .merge_policy) == ""' "$tmp/scan.json" >/dev/null   || { echo "FAIL control: an armed green PR on an unheld repo must stay stuck, and a red PR must not pay for the policy read"; cat "$tmp/scan.json"; exit 1; }
+
+BLOCKED_REPO="$R" BLOCKED_SLUG=hold-abc-20260926 "$LEDGER" scan --repo "$R" --json >"$tmp/scan.json"
+jq -e '(.prs[] | select(.number==30) | .stuck) == false
+       and (.prs[] | select(.number==30) | .stuck_excluded) == "policy-blocked"
+       and (.prs[] | select(.number==30) | .policy_hold) == "hold-abc-20260926"' "$tmp/scan.json" >/dev/null   || { echo "FAIL a green PR on a merge-pr-blocked repo must not be stuck"; cat "$tmp/scan.json"; exit 1; }
+# the SAME pass must keep the red PR stuck: a held repo's broken CI lane is
+# still a pipeline defect, and drafting its fix is inside the hold's
+# allowed_actions. A fixture with only the green case cannot tell a correctly
+# scoped check from one that suppresses every shape.
+jq -e '(.prs[] | select(.number==31) | .stuck) == true
+       and (.prs[] | select(.number==31) | .stuck_excluded) == ""' "$tmp/scan.json" >/dev/null   || { echo "FAIL a red PR on a held repo is still a pipeline defect"; cat "$tmp/scan.json"; exit 1; }
+jq -e '.heartbeat_fields | test("policy_blocked=fold#30") and test("policy_holds=hold-abc-20260926")' "$tmp/scan.json" >/dev/null   || { echo "FAIL heartbeat must RECORD the held PR and name the hold"; jq -r .heartbeat_fields "$tmp/scan.json"; exit 1; }
+: >"$tmp/brain/calls.log"
+BLOCKED_REPO="$R" BLOCKED_SLUG=hold-abc-20260926 sync --apply
+jq -e '([.ledger.actions[] | select(.action=="policy-blocked" and .slug=="papercut-pipeline-forge-fold-pr-30" and .policy=="hold-abc-20260926")] | length) == 1
+       and ([.ledger.actions[] | select(.action=="file" and .slug=="papercut-pipeline-forge-fold-pr-31")] | length) == 1' "$tmp/out.json" >/dev/null   || { echo "FAIL sync must name the held PR and still file the red one"; cat "$tmp/out.json"; exit 1; }
+[ ! -f "$tmp/brain/papercut-pipeline-forge-fold-pr-30.status" ] || { echo "FAIL filed a p0 for a PR an active hold forbids merging"; exit 1; }
+[ "$(cat "$tmp/brain/papercut-pipeline-forge-fold-pr-31.status")" = open ] || { echo "FAIL red PR on a held repo was suppressed too"; exit 1; }
+echo "ok   a green PR under a merge-pr hold is recorded, not filed; a red one still is"
+
+# an UNREADABLE policy store must FILE, not suppress. The opposite asymmetry to
+# merge_green_once: a filing writes nothing to the forge, so failing closed here
+# would lose a real signal for no gain.
+SITUATIONS_UNREADABLE="$R" "$LEDGER" scan --repo "$R" --json >"$tmp/scan.json"
+jq -e '(.prs[] | select(.number==30) | .stuck) == true
+       and (.prs[] | select(.number==30) | .merge_policy) == "unreadable"' "$tmp/scan.json" >/dev/null   || { echo "FAIL an unreadable merge-pr policy must fail OPEN and stay stuck"; cat "$tmp/scan.json"; exit 1; }
+echo "ok   an unreadable policy store fails open"
 
 # 10. the prompt uses the ledger and forbids per-state slugs
 grep -Fq 'last-stack-pipeline-forge-pr-ledger" reap-plan' "$ROOT/routines/pr-reaper.md" \

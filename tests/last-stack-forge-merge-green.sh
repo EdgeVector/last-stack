@@ -52,6 +52,26 @@ SH
 chmod +x "$tmp/forge-api"
 export FAKE_FORGE_DIR="$fx" LAST_STACK_FORGE_API="$tmp/forge-api"
 export LAST_STACK_PR_LEDGER_NOW="2026-09-23T16:40:00Z"
+
+# Fake situations preflight. The real one reads the live LastDB node, which a
+# fixture must never touch. $FAKE_SITUATIONS_RC picks the answer:
+#   0 -> OK (the default, so the gate stays LIVE in cases 1-6 and a regression
+#        that refuses an ALLOWED merge fails those cases too)
+#   3 -> BLOCKED, printing the slug<TAB>reason row `--field slug,reason` emits
+#   2 -> a preflight that cannot answer
+#        (papercut-situations-preflight-crashes-on-scope-routines-20260922)
+cat >"$tmp/situations" <<'SH'
+#!/usr/bin/env bash
+rc="${FAKE_SITUATIONS_RC:-0}"
+printf '%s rc=%s\n' "$*" "$rc" >>"$FAKE_FORGE_DIR/preflight.log"
+case "$rc" in
+  0) exit 0 ;;
+  3) printf 'widget-hold-20260925\tblocked\n'; exit 3 ;;
+  *) echo "situations: node did not respond within 30000ms" >&2; exit "$rc" ;;
+esac
+SH
+chmod +x "$tmp/situations"
+export LAST_STACK_SITUATIONS_BIN="$tmp/situations"
 put() { key="$(printf '%s' "$1" | tr '/?&=' '____')"; cat >"$fx/$key.json"; }
 
 R=EdgeVector/widget
@@ -129,4 +149,78 @@ set -e
 [ "$v" = merge-405 ] || fail "405 must report merge-405 (got $v)"
 tail -1 "$fx/writes.log" | grep -q 'merge_when_checks_succeed' || fail "a failed direct merge must re-arm the schedule it cancelled"
 
+# 7) A Situation blocking merge-pr on this repo: refuse before ANY read or write.
+#
+#    The wrapper (last-stack#203) refuses the merge POST on its own, so the point
+#    of this check is the SEQUENCE, not the merge. Without it, a blocked repo gets:
+#      DELETE .../merge  -> cancels the owner's armed schedule (never guarded)
+#      POST   .../merge  -> refused by the wrapper, verdict merge-failed
+#      POST   .../merge  -> the recovery re-arm, also refused
+#    i.e. the schedule is destroyed, nothing is merged, and the schedule cannot be
+#    put back, reported as an opaque "merge-failed".
+green_status; armed_at "2026-09-23T16:30:33Z"; reset
+set +e
+out="$(FAKE_SITUATIONS_RC=3 "$LEDGER" merge-green --repo "$R" --pr 7 --json --apply)"
+rc=$?
+set -e
+v="$(printf '%s' "$out" | jq -r '.merge_green.verdict')"
+[ "$v" = situations-blocked ] || fail "a blocked repo must report situations-blocked (got $v)"
+[ "$rc" = 3 ] || fail "situations-blocked must exit 3 (got $rc)"
+[ ! -s "$fx/writes.log" ] || fail "a blocked merge must write NOTHING, including the DELETE that cancels the owner's schedule"
+grep -q '^DELETE' "$fx/writes.log" && fail "the schedule cancel must not run on a blocked repo"
+printf '%s' "$out" | jq -e '.merge_green.policy == "blocked"' >/dev/null || fail "policy field must read blocked"
+printf '%s' "$out" | jq -e '.merge_green.policy_detail | test("widget-hold-20260925")' >/dev/null \
+  || fail "the refusal must carry the blocking Situation slug, not just a verdict"
+# The text renderer must name the slug too: a verdict alone sends the reader back
+# to preflight to find out which Situation refused.
+set +e
+txt="$(FAKE_SITUATIONS_RC=3 "$LEDGER" merge-green --repo "$R" --pr 7 --apply)"
+set -e
+case "$txt" in *widget-hold-20260925*) ;; *) fail "text output must name the Situation slug: $txt" ;; esac
+grep -q 'merge-pr' "$fx/preflight.log" || fail "preflight was never called"
+# Policy first, evidence second: with the PR fixture gone every forge read 404s,
+# so a clean verdict proves nothing was read.
+mv "$fx/repos_EdgeVector_widget_pulls_7.json" "$tmp/pr7.hidden"
+set +e
+v="$(FAKE_SITUATIONS_RC=3 "$LEDGER" merge-green --repo "$R" --pr 7 --json --apply | jq -r '.merge_green.verdict')"
+set -e
+mv "$tmp/pr7.hidden" "$fx/repos_EdgeVector_widget_pulls_7.json"
+[ "$v" = situations-blocked ] || fail "policy must be checked before the PR is read (got $v)"
+
+# 8) A preflight that cannot answer FAILS CLOSED here. The wrapper fails open on
+#    this case so a broken install cannot stop every merge on the forge; this is a
+#    scheduled repair verb with no operator watching, and its writes are exactly
+#    the ones a hold exists to stop.
+reset
+set +e
+out="$(FAKE_SITUATIONS_RC=2 "$LEDGER" merge-green --repo "$R" --pr 7 --json --apply)"
+rc=$?
+set -e
+v="$(printf '%s' "$out" | jq -r '.merge_green.verdict')"
+[ "$v" = situations-unreadable ] || fail "an unreadable preflight must fail closed (got $v)"
+[ "$rc" = 3 ] || fail "situations-unreadable must exit 3 (got $rc)"
+[ ! -s "$fx/writes.log" ] || fail "an unreadable policy must write nothing"
+
+# 9) A host with no situations binary has no policy store to consult: proceed,
+#    and say so in the report rather than passing silently.
+green_status; armed_at "2026-09-23T16:30:33Z"; reset
+mkdir -p "$tmp/empty-home"
+out="$(env -u LAST_STACK_SITUATIONS_BIN PATH=/usr/bin:/bin HOME="$tmp/empty-home" \
+  "$LEDGER" merge-green --repo "$R" --pr 7 --json --apply)"
+v="$(printf '%s' "$out" | jq -r '.merge_green.verdict')"
+[ "$v" = merged-now ] || fail "a host without situations must still merge (got $v)"
+printf '%s' "$out" | jq -e '.merge_green.policy_detail | test("no situations binary")' >/dev/null \
+  || fail "the fail-open path must name itself in the report"
+
+# 10) A NAMED situations binary that does not exist is a broken configuration,
+#     not a host without a policy store: fail closed, never fall through to 9.
+green_status; armed_at "2026-09-23T16:30:33Z"; reset
+set +e
+v="$(LAST_STACK_SITUATIONS_BIN="$tmp/no-such-situations" \
+  "$LEDGER" merge-green --repo "$R" --pr 7 --json --apply | jq -r '.merge_green.verdict')"
+set -e
+[ "$v" = situations-unreadable ] || fail "a missing NAMED preflight binary must fail closed (got $v)"
+[ ! -s "$fx/writes.log" ] || fail "a missing NAMED preflight binary must write nothing"
+
+echo "ok last-stack-forge-merge-green situations gate"
 echo "ok last-stack-forge-merge-green"

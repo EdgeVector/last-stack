@@ -65,7 +65,9 @@ Env:
 Merge preflight guard:
   POST .../pulls/<n>/merge first runs `situations preflight --action merge-pr
   --repo OWNER/REPO`. BLOCKED (exit 3) refuses the call with exit 3 and the
-  Situation text. A missing or failing situations CLI does not block.
+  Situation text. A missing or failing situations CLI does not block, but a
+  merge URL with no readable OWNER/REPO is refused: there is no repo to ask
+  about, and a silent fall-through cannot be told from an allow.
   DELETE .../pulls/<n>/merge (cancel a scheduled merge) is never guarded.
   Override (rare): LAST_STACK_FORGE_MERGE_PREFLIGHT_SKIP=1.
   Env: LAST_STACK_SITUATIONS_BIN (default: situations on PATH).
@@ -273,12 +275,59 @@ fi
 # Put the check where every caller passes. BLOCKED refuses; a CLI that cannot
 # run fails open, because a broken situations install must not stop every
 # merge on the forge.
+#
+# The guard has two fail-open paths and only ONE of them is the "broken install"
+# case above:
+#
+#   * a situations CLI that is absent or cannot run -> fail open, as designed.
+#   * a merge URL this guard cannot read a repo out of -> REFUSE. There is no
+#     policy to consult, because we do not know which repo is being merged, and
+#     falling through silently is indistinguishable from an allow. The first
+#     version matched only `/api/v1/repos/<o>/<r>/pulls/<n>/merge` and returned 0
+#     on anything else, which this wrapper's OWN documented path forms reach: a
+#     caller passing `/repos/<o>/<r>/pulls/<n>/merge` (leading slash, no
+#     `/api/v1`) lands in the catch-all arm and builds
+#     `$FORGE_ROOT/api/v1//repos/...` -- a DOUBLE slash the anchored pattern
+#     cannot match, on a URL Forgejo serves happily. That form bypassed the gate
+#     entirely (measured 2026-09-25, on the very call that opened last-stack#212).
+merge_repo_from_url() {
+  local path_only="${url%%\?*}" repo
+  # Form-agnostic: everything after the FIRST /repos/ and before /pulls/. Covers
+  # `repos/...`, `/api/v1/repos/...`, the `/repos/...` catch-all that doubles the
+  # slash, and a full http:// URL, with no per-form pattern to keep in sync.
+  case "$path_only" in */repos/*/pulls/*) ;; *) return 1 ;; esac
+  repo="${path_only#*/repos/}"
+  repo="${repo%%/pulls/*}"
+  [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+  printf '%s\n' "$repo"
+}
+
+situations_bin_for_merge() {
+  local sit="${LAST_STACK_SITUATIONS_BIN:-situations}"
+  if command -v "$sit" >/dev/null 2>&1; then
+    printf '%s\n' "$sit"
+    return 0
+  fi
+  # A sandboxed agent shell can lose ~/.local/bin from PATH. Losing the policy
+  # CLI to a stripped PATH is not a broken install, so look at the known install
+  # path before concluding this host has no policy store at all. An explicitly
+  # NAMED binary is never second-guessed.
+  if [[ -z "${LAST_STACK_SITUATIONS_BIN:-}" && -x "$HOME/.local/bin/situations" ]]; then
+    printf '%s\n' "$HOME/.local/bin/situations"
+    return 0
+  fi
+  return 1
+}
+
 merge_preflight_guard() {
-  local path_only="${url%%\?*}" repo sit_bin out rc
-  repo="$(printf '%s' "$path_only" | sed -n -E 's#.*/api/v1/repos/([^/]+/[^/]+)/pulls/[0-9]+/merge$#\1#p')"
-  [[ -n "$repo" ]] || return 0
-  sit_bin="${LAST_STACK_SITUATIONS_BIN:-situations}"
-  command -v "$sit_bin" >/dev/null 2>&1 || return 0
+  local repo sit_bin out rc
+  if ! repo="$(merge_repo_from_url)"; then
+    echo "last-stack-forge-api: REFUSED merge: no OWNER/REPO in $url, so merge-pr policy could not be checked." >&2
+    echo "last-stack-forge-api: pass the path as repos/OWNER/REPO/pulls/<n>/merge." >&2
+    echo "last-stack-forge-api: override (rare, needs clearance): LAST_STACK_FORGE_MERGE_PREFLIGHT_SKIP=1" >&2
+    exit 3
+  fi
+  sit_bin="$(situations_bin_for_merge)" || return 0
   set +e
   out="$("$sit_bin" preflight --action merge-pr --repo "$repo" 2>&1)"
   rc=$?

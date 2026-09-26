@@ -144,7 +144,10 @@ read/write, fail loudly if the resolved path is empty or starts with
    fi
    ```
 2. Situations preflight (read-only list is enough unless you will mutate CI
-   gates): honor any active Situation that freezes pipeline work.
+   gates): honor any active Situation that freezes pipeline work. Read it BEFORE
+   the first mutation of the wake, not after — a late read is how the 2026-09-25
+   loom merge violation happened. The merge path now refuses on its own, but a
+   refusal you could have predicted still costs the wake.
 3. Confirm board/brain reachability with a cheap socket-backed read:
    ```bash
    kanban ping >/dev/null
@@ -388,6 +391,24 @@ mutation. The list can be stale: a PR that the point read shows closed, or a
    succeed` means auto-merge is ALREADY armed. It is a success receipt, not an
    error: do not retry, do not file. If every required context is green and
    the PR is still open 10 minutes later, that is the stuck-task shape of step 4.
+   **Exit 3 `REFUSED merge on <repo>` is policy, not friction.** The wrapper runs
+   `situations preflight --action merge-pr --repo <owner>/<repo>` before every
+   merge POST and refuses when an active Situation blocks it. Cite the slug it
+   prints, leave the PR alone this wake, and do not file a pipeline row for it.
+   Do NOT set `LAST_STACK_FORGE_MERGE_PREFLIGHT_SKIP=1`: that override is for an
+   operator acting on explicit clearance, not for a routine clearing its queue.
+   The same refusal reaches you as verdict `situations-blocked` (exit 3) from
+   `last-stack-pipeline-forge-pr-ledger merge-green`. This gate exists because on
+   2026-09-25 this routine re-armed a green loom PR before reading Situations,
+   and three PRs merged under an active p0 hold
+   (`papercut-incident-pipeline-health-loom-pr60-merge-violates-active-hold-20260925`).
+   `sync` now makes the same judgment before it FILES: a green unmerged PR on a
+   merge-pr-blocked repo is reported as ledger action `policy-blocked` with the
+   hold's slug and heartbeat fields `policy_blocked=` / `policy_holds=`, and no
+   p0 row is written. That is a correct pass, not a skipped one — say the slug in
+   the heartbeat and move on. The scope is deliberate: a RED PR on a held repo
+   still gets its row, because reading logs and drafting a fix are inside such a
+   hold's `allowed_actions`.
 2. **BEHIND / conflict** → worktree rebase onto base, push with lease, re-arm.
    BEHIND only (no conflict): first run
    `"$last_stack/bin/last-stack-forge-pr-update-branch" --repo <r> --pr <n>`;

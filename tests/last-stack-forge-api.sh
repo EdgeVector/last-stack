@@ -363,6 +363,44 @@ LAST_STACK_SITUATIONS_BIN="$SIT_DIR/absent" "$API" --method POST --data '{"Do":"
 set -e
 grep -q 'POST /api/v1/repos/EdgeVector/held/pulls/8/merge' "$LOG_FILE" || { echo "FAIL: skip override should reach the forge" >&2; exit 1; }
 grep -q 'POST /api/v1/repos/EdgeVector/held/pulls/9/merge' "$LOG_FILE" || { echo "FAIL: missing situations CLI should fail open" >&2; exit 1; }
+
+# The guard must not depend on WHICH documented path form the caller used. This
+# wrapper accepts `repos/...`, `/api/v1/repos/...` and a full URL, and anything
+# else falls to a catch-all that builds `$FORGE_ROOT/api/v1/<path>`. A caller
+# passing `/repos/<o>/<r>/pulls/<n>/merge` therefore produces
+# `/api/v1//repos/...` — a DOUBLE slash, on a URL Forgejo serves. The first
+# version of this guard matched only the single-slash `/api/v1/repos/...` shape
+# and returned 0 on everything else, so that form bypassed the gate completely.
+set +e
+slash_out="$("$API" --method POST --data '{"Do":"merge"}' /repos/EdgeVector/held/pulls/10/merge 2>&1 >/dev/null)"
+rc=$?
+set -e
+if [[ "$rc" -ne 3 || "$slash_out" != *"REFUSED merge on EdgeVector/held"* ]]; then
+  echo "FAIL: a leading-slash merge path must be gated too, got rc=$rc: $slash_out" >&2
+  exit 1
+fi
+if grep -q 'repos/EdgeVector/held/pulls/10/merge' "$LOG_FILE"; then
+  echo "FAIL: the leading-slash form bypassed the guard and reached the forge" >&2
+  exit 1
+fi
+
+# A merge URL with no readable OWNER/REPO is REFUSED, not waved through. There is
+# no repo to ask preflight about, and a silent fall-through cannot be told from
+# an allow. This is a different case from an absent CLI (which does fail open,
+# asserted above): here the policy store is fine and the request is unreadable.
+set +e
+bad_out="$("$API" --method POST --data '{"Do":"merge"}' repos/held/pulls/11/merge 2>&1 >/dev/null)"
+rc=$?
+set -e
+if [[ "$rc" -ne 3 || "$bad_out" != *"no OWNER/REPO in"* ]]; then
+  echo "FAIL: an unreadable merge URL must be refused with a named reason, got rc=$rc: $bad_out" >&2
+  exit 1
+fi
+if grep -q 'repos/held/pulls/11/merge' "$LOG_FILE"; then
+  echo "FAIL: an unreadable merge URL reached the forge" >&2
+  exit 1
+fi
+
 echo "ok last-stack-forge-api merge preflight guard"
 
 echo "ok last-stack-forge-api update-branch pending guard"
