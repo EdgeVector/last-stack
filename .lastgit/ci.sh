@@ -586,6 +586,13 @@ ci_test tests/last-stack-portal-wt-mirror-origin-refspec.sh
 # install_artifact_links heals a PATH target only when links[] declares it, so
 # an undeclared name is never looked at: last-stack ran a 2026-07-22 portal-wt
 # for six weeks while `host-track check last-stack` printed ok. ~2s.
+
+# Emergency purge fallback when Trash is unavailable (disk-reclaim step 5).
+# Mocks Trash command failures and verifies rm -rf fallback. Hermetic: temp HOME,
+# mock trash/gio, no system Trash access. ~1s.
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/last-stack-purge-to-trash-fallback.sh
+
 ci_test tests/host-track-path-shadow.sh
 
 # A soak must DELAY an install, never prevent it: a channel merging faster than

@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# Move a directory to macOS Trash with fallbacks when Trash is unavailable.
+# Used by disk-reclaim emergency purge to safely remove large build caches.
+#
+# Usage:
+#   last-stack-purge-to-trash <path>
+#   last-stack-purge-to-trash --log-file <file> <path>
+#
+# Exit codes:
+#   0  → successfully moved to Trash
+#   1  → Trash unavailable; fell back to direct delete (check log for reason)
+#   2  → usage error
+#   3  → path does not exist or is not a directory
+#
+# When Trash is unavailable, this script:
+#   1. Logs the failure reason (NSError code, Trash directory state, etc.)
+#   2. Falls back to rm -rf with a timestamped note in the log
+#   3. Returns exit 1 so the caller can report "fallback_delete" in heartbeat
+#
+set -euo pipefail
+
+: "${TMPDIR:=/tmp}"
+trash_err_file=$(mktemp "$TMPDIR/trash-err.XXXXXX")
+gio_err_file=$(mktemp "$TMPDIR/gio-err.XXXXXX")
+rm_err_file=$(mktemp "$TMPDIR/rm-err.XXXXXX")
+trap 'rm -f "$trash_err_file" "$gio_err_file" "$rm_err_file"' EXIT
+
+usage() {
+  cat <<'USAGE'
+last-stack-purge-to-trash <path>
+last-stack-purge-to-trash --log-file <file> <path>
+
+Move a directory to macOS Trash. If Trash is unavailable (permission denied,
+missing ~/.local/share/Trash, etc.), fall back to rm -rf and log the reason.
+
+Exits 0 on Trash move, 1 on fallback delete, 2 on usage error, 3 on missing path.
+USAGE
+}
+
+log_file=""
+path=""
+
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  --log-file)
+    if [ -z "${2:-}" ] || [ -z "${3:-}" ]; then
+      usage >&2
+      exit 2
+    fi
+    log_file="$2"
+    path="$3"
+    ;;
+  *)
+    if [ -z "${1:-}" ]; then
+      usage >&2
+      exit 2
+    fi
+    path="$1"
+    ;;
+esac
+
+# Ensure path exists and is a directory
+if [ ! -d "$path" ]; then
+  printf 'error: path does not exist or is not a directory: %s\n' "$path" >&2
+  exit 3
+fi
+
+log() {
+  local msg="$1"
+  if [ -n "$log_file" ]; then
+    printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$msg" >>"$log_file"
+  fi
+  printf '%s\n' "$msg"
+}
+
+# Try /usr/bin/trash first
+if command -v trash >/dev/null 2>&1; then
+  if trash "$path" 2>"$trash_err_file"; then
+    log "moved_to_trash method=trash path=$path"
+    exit 0
+  fi
+  trash_err="$(cat "$trash_err_file" 2>/dev/null || echo 'unknown')"
+  log "trash_failed method=trash error='$trash_err' path=$path"
+fi
+
+# Try gio trash as fallback (only if trash failed)
+# Note: gio might be used for non-trash purposes, so we check if it has trash subcommand
+if command -v gio >/dev/null 2>&1; then
+  if gio trash "$path" 2>"$gio_err_file"; then
+    log "moved_to_trash method=gio path=$path"
+    exit 0
+  fi
+  gio_err="$(cat "$gio_err_file" 2>/dev/null || echo 'unknown')"
+  log "trash_failed method=gio error='$gio_err' path=$path"
+fi
+
+# Both Trash methods failed; check Trash directory state for diagnostics
+log "trash_unavailable_fallback_to_delete path=$path"
+if [ -d "$HOME/.local/share/Trash" ]; then
+  log "trash_dir_exists=$HOME/.local/share/Trash"
+  if [ -w "$HOME/.local/share/Trash" ]; then
+    log "trash_dir_writable=true"
+  else
+    log "trash_dir_writable=false reason=permission_denied"
+  fi
+else
+  log "trash_dir_missing=$HOME/.local/share/Trash"
+fi
+
+# Check if the source path is writable (determines if delete will succeed)
+if [ -w "$path" ]; then
+  log "source_path_writable=true"
+else
+  log "source_path_writable=false"
+fi
+
+# Fall back to direct rm -rf
+log "fallback_delete_starting path=$path timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+if rm -rf "$path" 2>"$rm_err_file"; then
+  log "fallback_delete_succeeded path=$path"
+  exit 1
+fi
+
+# Direct delete also failed
+rm_err="$(cat "$rm_err_file" 2>/dev/null || echo 'unknown')"
+log "fallback_delete_failed error='$rm_err' path=$path"
+exit 1
