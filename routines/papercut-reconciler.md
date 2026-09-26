@@ -261,6 +261,63 @@ output; a stale doc that misled an agent; the same workaround across sessions.
   the symptom was fixed or reconciled.
 - Read the survivors' bodies (targeted `brain get`, not bulk dumps).
 
+## Step 2b — Point-get every brain slug the shipped prose cites
+
+A dangling citation reads as an audited ground truth, so the agent stops looking
+and the standing rule it supports arrives with no evidence anyone can check. 41
+of 93 citations in the installed prose were dangling when this was measured
+(2026-09-26), mostly records that gbrain held between 2026-09-06 and 2026-09-25
+and that were never migrated back. The citations were correct when written; the
+corpus moved out from under them and nothing noticed. This routine already runs
+every few hours and already talks to the brain, so it is the cheapest owner.
+
+Run it against BOTH roots. The install root carries `routines/`, `skills/` and
+`instructions/`; the workspace root carries the `CLAUDE.md` every agent in this
+workspace reads first, and that file cites SOPs too.
+
+```bash
+cite_out="$(mktemp "$TMPDIR/prose-cite.XXXXXX")"
+last-stack-prose-citation-check --root "${LAST_STACK_ROOT:-$HOME/.last-stack}" \
+  --json > "$cite_out" 2> "$cite_out.err"; echo $? > "$cite_out.rc"
+jq -r '"dangling=\(.dangling|length) unknown=\(.unknown|length) resolved=\(.resolved)"' "$cite_out"
+jq -r '.dangling[] | "\(.slug)  cited_in=\(.cited_in|join(","))"' "$cite_out"
+```
+
+Read `$cite_out.rc`, not the output alone:
+
+| rc | meaning | what to do |
+|---|---|---|
+| 0 | every citation resolves | nothing; do not file |
+| 1 | at least one citation is dangling | file or refresh the papercut below |
+| 3 | the node could not answer for some slugs | **not a finding.** Say so in the run output and move on. A busy node is not a dangling citation, and a routine that files one as the other is ignored within a day. |
+
+When rc is 1, file or refresh ONE papercut — `brain papercut file` with
+`--kind specified-fix`, or `brain append` onto
+`papercut-shipped-prose-cites-brain-slugs-that-do-not-resolve-20260926` while it
+is open — carrying the count, the slugs, and the citing files. Do NOT file one
+papercut per slug: this is one class with one remedy shape.
+
+The remedy per slug is a decision, made once, and a citation to a record nobody
+can read should not survive the pass that finds it:
+
+1. repoint it at a record that resolves, when `brain ask` finds one covering the
+   same claim;
+2. otherwise put the one-line evidence IN the document and drop the pointer. The
+   gbrain-era records are gone, not misfiled — four of the missing SOPs were
+   searched for on 2026-09-26 and the top hits were unrelated SOPs — so for
+   those there is nothing to repoint at.
+
+Prefer remedy 2 as the default shape even when 1 is available: when a document
+states a standing prohibition, the reason belongs in the document, and the slug
+is a pointer to more rather than the only place the reason exists.
+
+Two classes are NOT findings and the checker already excludes them, so do not
+re-report them: generator slug prefixes (`papercut-pipeline-forge-<repo>-pr-<n>`
+and friends), detected from the source text; and tokens naming a file under
+`bin/` `tests/` `lib/` `hooks/` (`papercut-lifecycle-close` is a helper). One
+further exclusion lives in `config/prose-citation-ignore.txt`, and every entry
+there states its reason.
+
 ## Step 3 — Find the patterns
 Cluster open papercuts by shared root cause, not surface similarity: same tool
 or repo, same class of failure (PATH/sandbox, stale doc, missing helper, flaky
