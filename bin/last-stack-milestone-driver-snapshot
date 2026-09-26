@@ -131,6 +131,183 @@ def _milestone_north_star(board, slug, cache):
     return north_star
 
 
+def _milestone_detail_best_effort(board, slug, cache):
+    """Best-effort `milestone detail` read. None on any doubt -- never fatal."""
+    if not isinstance(slug, str) or not slug:
+        return None
+    if slug in cache:
+        return cache[slug]
+    value = None
+    try:
+        result = subprocess.run([board, 'milestone', 'detail', slug, '--json'],
+                                 capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            parsed = json.loads(result.stdout)
+            if (isinstance(parsed, dict) and isinstance(parsed.get('milestone'), dict)
+                    and parsed['milestone'].get('slug') == slug):
+                value = parsed
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        value = None
+    cache[slug] = value
+    return value
+
+
+def _card_best_effort(board, slug, cache):
+    """Best-effort `show` read for a card slug (e.g. a proof card). None on doubt."""
+    if not isinstance(slug, str) or not slug:
+        return None
+    if slug in cache:
+        return cache[slug]
+    value = None
+    try:
+        result = subprocess.run([board, 'show', slug, '--json'],
+                                 capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            parsed = json.loads(result.stdout)
+            if isinstance(parsed, dict) and parsed.get('slug') == slug:
+                value = parsed
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        value = None
+    cache[slug] = value
+    return value
+
+
+def _parse_timestamp(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith('Z'):
+        text = text[:-1] + '+00:00'
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _cadence_seconds():
+    # The routine's declared cadence (routines/milestone-driver.md: hourly).
+    # One stale-run grace period before we call a FAIL proof report stale.
+    raw = os.environ.get('MILESTONE_DRIVER_CADENCE_SECONDS', '3600')
+    try:
+        value = int(raw)
+    except ValueError:
+        return 3600
+    return value if value > 0 else 3600
+
+
+_FAIL_EVIDENCE_RE = re.compile(r'^[ \t]*(?:PROOF|RESULT):[ \t]*FAIL[ \t]*$', re.M | re.I)
+_SPEC_SECTION_RE = re.compile(r'^##\s*(outcome|acceptance|goal|end state)', re.M | re.I)
+_BARE_SLUG_LINE_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
+
+
+def _is_bare_slug_list_body(body):
+    """True when a milestone body is only a newline list of sibling slugs --
+    no Outcome/Acceptance/Goal/End-State spec for decompose to work from
+    (papercut-milestone-driver-rollup-body-milestones-block-decompose-20260926)."""
+    if not isinstance(body, str):
+        return False
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    if not lines:
+        return False
+    if _SPEC_SECTION_RE.search(body):
+        return False
+    return all(_BARE_SLUG_LINE_RE.fullmatch(line) for line in lines)
+
+
+def _annotate_stuck_states(board, report, detail_cache, card_cache):
+    """Annotate (never rename) three more dead-end states so the driver can
+    act on them instead of re-reporting the same stuck count every pass.
+    `action` stays exactly what the classifier emitted -- `authorize()`
+    matches a guarded command back to its queue entry by that exact string,
+    so renaming it here would make a legitimate later guard call (e.g.
+    `milestone state <slug> complete` after a proof card gets attached)
+    refuse with `action-not-in-current-queue` even though the live
+    prerequisite/proof checks would otherwise allow it.
+
+    - decompose (idle_empty) whose terminal proof report is an old FAIL:
+      flag `stale_fail_proof` + `proof_card` so the driver re-runs the proof
+      or files the repair card the FAIL points at, instead of treating it as
+      fresh idle_empty forever.
+      (papercut-milestone-driver-never-reruns-stale-fail-proof-20260926)
+    - complete_proof with implementation done and no proof card at all:
+      flag `missing_proof_card` so the driver files the missing proof card
+      instead of leaving it uncounted every pass.
+      (papercut-milestones-with-done-work-and-no-proof-card-have-no-exit-20260926)
+    - decompose whose milestone body is a bare slug list (no Outcome/
+      Acceptance spec): flag `needs_spec` + `sibling_milestones` so the
+      driver treats it as needing a spec instead of silently skipping it.
+      (papercut-milestone-driver-rollup-body-milestones-block-decompose-20260926)
+    """
+    work_queue = report.get('work_queue')
+    if not isinstance(work_queue, list) or not work_queue:
+        return report
+    cadence = _cadence_seconds()
+    now = datetime.now(timezone.utc)
+    counts = report.get('counts')
+    if not isinstance(counts, dict):
+        counts = None
+
+    def bump(name):
+        if counts is not None:
+            current = counts.get(name, 0)
+            if not isinstance(current, (int, float)) or isinstance(current, bool):
+                current = 0
+            counts[name] = current + 1
+
+    annotated = []
+    for entry in work_queue:
+        if not isinstance(entry, dict):
+            annotated.append(entry)
+            continue
+        action = entry.get('action')
+        slug = entry.get('slug')
+        if action == 'decompose':
+            detail = _milestone_detail_best_effort(board, slug, detail_cache)
+            milestone = detail.get('milestone', {}) if detail else {}
+            proof_card_slug = milestone.get('proof_card') if detail else None
+            flagged = False
+            if isinstance(proof_card_slug, str) and proof_card_slug:
+                proof_card = _card_best_effort(board, proof_card_slug, card_cache)
+                body = proof_card.get('body', '') if proof_card else ''
+                is_terminal = bool(proof_card) and proof_card.get('column') == 'done'
+                is_fail = bool(_FAIL_EVIDENCE_RE.search(body)) if isinstance(body, str) else False
+                updated_at = _parse_timestamp(proof_card.get('updated_at')) if proof_card else None
+                is_stale = bool(updated_at) and (now - updated_at).total_seconds() > cadence
+                if is_terminal and is_fail and is_stale:
+                    annotated.append({**entry, 'stale_fail_proof': True, 'proof_card': proof_card_slug})
+                    bump('stale_fail_proof')
+                    flagged = True
+            if not flagged:
+                body = milestone.get('body', '') if detail else ''
+                if detail and _is_bare_slug_list_body(body):
+                    siblings = [line.strip() for line in body.splitlines() if line.strip()]
+                    annotated.append({**entry, 'needs_spec': True, 'sibling_milestones': siblings})
+                    bump('needs_spec')
+                    flagged = True
+            if not flagged:
+                annotated.append(entry)
+        elif action == 'complete_proof':
+            detail = _milestone_detail_best_effort(board, slug, detail_cache)
+            milestone = detail.get('milestone', {}) if detail else {}
+            proof_card_slug = milestone.get('proof_card') if detail else None
+            proof_status = milestone.get('proof_status') if detail else None
+            proof_verdict = detail.get('proof_verdict') if detail else None
+            missing_card = detail is not None and not proof_card_slug
+            already_not_required = proof_status == 'not_required' and proof_verdict == 'not_required'
+            if missing_card and not already_not_required:
+                annotated.append({**entry, 'missing_proof_card': True})
+                bump('missing_proof_card')
+            else:
+                annotated.append(entry)
+        else:
+            annotated.append(entry)
+    report['work_queue'] = annotated
+    return report
+
+
 def _admitted_north_stars(admission_bin):
     if not admission_bin or not Path(admission_bin).exists():
         return set()
@@ -217,6 +394,7 @@ def reconcile_gap_report(board, snapshot_dir, report, admission_bin):
                 kept[index] = entry
 
     report['work_queue'] = kept
+    report = _annotate_stuck_states(board, report, {}, {})
     return report
 
 

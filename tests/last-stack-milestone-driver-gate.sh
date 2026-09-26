@@ -14,6 +14,7 @@ cat >"$tmp/bin/kanban" <<'SH'
 set -euo pipefail
 case "$*" in
   'milestone gap-report --json') cat "${GATE_GAP_JSON:?}" ;;
+  'milestone show ms-b --json') cat "${GATE_MS_SHOW_JSON:-/dev/null}" ;;
   *) exit 9 ;;
 esac
 SH
@@ -61,9 +62,14 @@ printf '%s\n' '{"counts":{"idle_promoteable":0,"idle_empty":0},"work_queue":[{"a
 export GATE_GAP_JSON="$tmp/proof.json"
 run_case complete-proof 10 'reason=complete_proof=1'
 
-# Decompose-only: admission readable → proceed
-printf '%s\n' '{"counts":{"idle_promoteable":0,"idle_empty":1},"work_queue":[{"action":"decompose","slug":"ms-b","north_star":"ns-a"}]}' >"$tmp/decomp.json"
+# Decompose-only: real gap-report entries carry only {action, promoteable,
+# slug} -- no north_star/northStar field. The gate must look the real value
+# up on the milestone record itself, not the work_queue entry
+# (papercut-milestone-driver-gate-north-star-filter-dead-20260926).
+printf '%s\n' '{"counts":{"idle_promoteable":0,"idle_empty":1},"work_queue":[{"action":"decompose","slug":"ms-b"}]}' >"$tmp/decomp.json"
 export GATE_GAP_JSON="$tmp/decomp.json"
+printf '%s\n' '{"slug":"ms-b","north_star":"ns-a"}' >"$tmp/ms-b.json"
+export GATE_MS_SHOW_JSON="$tmp/ms-b.json"
 export LAST_STACK_ADMISSION_FIXTURE="$tmp/adm"
 cat >"$tmp/adm/get/preference-feature-delivery-portfolio-admission.txt" <<'REC'
 Policy-Version: 1
