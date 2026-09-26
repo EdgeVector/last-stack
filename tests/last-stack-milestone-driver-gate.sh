@@ -29,6 +29,8 @@ export PATH="$tmp/bin:/usr/bin:/bin"
 export LAST_STACK_MILESTONE_DRIVER_GATE_KANBAN="$tmp/bin/kanban"
 export LAST_STACK_MILESTONE_DRIVER_GATE_ADMISSION="$ROOT/bin/last-stack-feature-portfolio-admission"
 export LAST_STACK_HEARTBEATS_FILE="$tmp/heartbeats.log"
+export LAST_STACK_MILESTONE_DRIVER_GATE_PASS_RECORD="$ROOT/bin/last-stack-portfolio-pass-record"
+export LAST_STACK_PORTFOLIO_PASSES_FILE="$tmp/passes.jsonl"
 
 run_case() {
   local name="$1"
@@ -88,11 +90,22 @@ Policy-Version: 1
 Primary: other-ns
 Secondary: none
 Paused:
-Updated-At: 2026-09-16
+Updated-At: 2026-09-17
 Updated-By: test
 Reason: fixture
 REC
 run_case decompose-paused 0 'admission-paused'
+
+# The gate records the portfolio pass even when it skips: a paused
+# decompose-only queue is the starved state auto-refill must see. One record
+# per admission Updated-At inside the 3000 s interval.
+[ -s "$tmp/passes.jsonl" ] || { echo "gate wrote no portfolio pass record" >&2; exit 1; }
+tail -n 1 "$tmp/passes.jsonl" | jq -e '.primary == "other-ns" and .idle_by_north_star == {}' >/dev/null \
+  || { echo "unexpected pass record: $(tail -n 1 "$tmp/passes.jsonl")" >&2; exit 1; }
+before="$(wc -l <"$tmp/passes.jsonl" | tr -d ' ')"
+run_case decompose-paused-again 0 'admission-paused'
+[ "$(wc -l <"$tmp/passes.jsonl" | tr -d ' ')" = "$before" ] \
+  || { echo "gate must not record twice inside the min interval" >&2; exit 1; }
 
 # Unreadable board → skip
 export GATE_GAP_JSON="$tmp/missing.json"

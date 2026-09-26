@@ -75,6 +75,21 @@ printf '%s' "$line" | jq -e '
 "$bin" --gap-report "$gap" --fixture-dir "$live" --passes-file "$passes" --ts 2026-09-03T19:00:00Z >/dev/null
 [ "$(wc -l <"$passes" | tr -d ' ')" = "2" ] || fail "expected two appended lines: $(cat "$passes")"
 
+# --min-interval-s: a frequent caller (the milestone-driver gate) keeps the
+# hourly cadence. Last pass 19:00Z, same Updated-At: 19:30Z skips, 19:51Z records.
+out="$("$bin" --gap-report "$gap" --fixture-dir "$live" --passes-file "$passes" --ts 2026-09-03T19:30:00Z --min-interval-s 3000 --json)"
+printf '%s' "$out" | jq -e '.recorded == false and (.reason | startswith("min-interval"))' >/dev/null \
+  || fail "a pass inside the min interval must skip: $out"
+[ "$(wc -l <"$passes" | tr -d ' ')" = "2" ] || fail "min-interval skip must not append: $(cat "$passes")"
+"$bin" --gap-report "$gap" --fixture-dir "$live" --passes-file "$passes" --ts 2026-09-03T19:51:00Z --min-interval-s 3000 >/dev/null
+[ "$(wc -l <"$passes" | tr -d ' ')" = "3" ] || fail "a pass past the min interval must append: $(cat "$passes")"
+
+# A changed admission record (new Updated-At) records at once, inside the interval.
+changed="$tmp/changed"
+sed 's/^Updated-At: .*/Updated-At: 2026-09-03T19:55:00Z/' "$live/get/$slug.txt" | write_admission "$changed"
+"$bin" --gap-report "$gap" --fixture-dir "$changed" --passes-file "$passes" --ts 2026-09-03T19:56:00Z --min-interval-s 3000 >/dev/null
+[ "$(wc -l <"$passes" | tr -d ' ')" = "4" ] || fail "a new admission Updated-At must record inside the interval: $(cat "$passes")"
+
 # ----------------------------------------------------------- soft-skip cases
 missing="$tmp/missing"
 mkdir -p "$missing/get"

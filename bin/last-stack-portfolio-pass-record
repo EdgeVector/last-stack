@@ -25,6 +25,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -114,6 +115,36 @@ def idle_by_north_star(milestones: list[dict]) -> dict[str, int]:
     return dict(sorted(out.items()))
 
 
+def parse_ts(value: str) -> Optional[datetime]:
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def last_pass_age_s(passes_path: Path, now_ts: str, admission_updated_at: str) -> Optional[int]:
+    """Age of the newest pass under the same admission record, or None."""
+    try:
+        lines = passes_path.read_text().splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(rec, dict) or rec.get("admission_updated_at") != admission_updated_at:
+            return None
+        then, now = parse_ts(rec.get("ts", "")), parse_ts(now_ts)
+        if then is None or now is None:
+            return None
+        return int((now - then).total_seconds())
+    return None
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--gap-report", required=True, help="Path to kanban milestone gap-report --json output")
@@ -121,6 +152,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--fixture-dir", help="Offline brain: get/<slug>.txt (no live node)")
     ap.add_argument("--brain", default=os.environ.get("BRAIN_BIN", "brain"))
     ap.add_argument("--ts", default="", help="Override pass timestamp (tests only)")
+    ap.add_argument(
+        "--min-interval-s",
+        type=int,
+        default=0,
+        help="Skip when the last recorded pass is newer than this many seconds and "
+        "carries the same admission Updated-At (keeps the cadence hourly when a "
+        "frequent caller such as the milestone-driver gate records)",
+    )
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
@@ -167,6 +206,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     }
 
     passes_path = Path(args.passes_file)
+    if args.min_interval_s > 0:
+        recent = last_pass_age_s(passes_path, ts, admission["updated_at"])
+        if recent is not None and recent < args.min_interval_s:
+            result = {"recorded": False, "reason": f"min-interval: last pass {recent}s ago"}
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print(f"portfolio-pass-record: skipped (last pass {recent}s ago)")
+            return 0
     passes_path.parent.mkdir(parents=True, exist_ok=True)
     with passes_path.open("a") as fh:
         fh.write(json.dumps(record, sort_keys=True) + "\n")

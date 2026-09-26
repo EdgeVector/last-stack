@@ -35,6 +35,7 @@ Env (optional, for tests):
   LAST_STACK_MILESTONE_DRIVER_GATE_KANBAN   kanban CLI (default kanban)
   LAST_STACK_MILESTONE_DRIVER_GATE_ADMISSION admission CLI
   LAST_STACK_ADMISSION_FIXTURE              offline admission fixture dir
+  LAST_STACK_MILESTONE_DRIVER_GATE_PASS_RECORD pass-record CLI ("" disables)
 USAGE
 }
 
@@ -91,6 +92,21 @@ if [ "$gap_rc" -ne 0 ] || [ ! -s "$tmp/gap.json" ]; then
 fi
 if ! "$jq_bin" -e 'type == "object"' "$tmp/gap.json" >/dev/null 2>&1; then
   skip "board-unreadable gap-report-json-invalid"
+fi
+
+# Portfolio pass record (best-effort). The auto-refill trigger needs one
+# record per hourly pass. The harness used to write it as its LAST step, so a
+# timed-out run (2026-09-26T11:06Z, SIGKILL at 31 min) or a gate skip on a
+# paused decompose-only queue (the starved state refill exists for) left no
+# record, and refill kept its stale rank-only pick. Record here, from the same
+# zero-LLM gap-report, before any skip or proceed.
+pass_record_bin="${LAST_STACK_MILESTONE_DRIVER_GATE_PASS_RECORD-${last_stack}/bin/last-stack-portfolio-pass-record}"
+if [ -n "$pass_record_bin" ] && [ -x "$pass_record_bin" ]; then
+  pass_args=(--gap-report "$tmp/gap.json" --min-interval-s 3000)
+  if [ -n "${LAST_STACK_ADMISSION_FIXTURE:-}" ]; then
+    pass_args+=(--fixture-dir "$LAST_STACK_ADMISSION_FIXTURE")
+  fi
+  "$pass_record_bin" "${pass_args[@]}" >/dev/null 2>&1 || true
 fi
 
 wq_len="$("$jq_bin" -r '(.work_queue // []) | length' "$tmp/gap.json")"
