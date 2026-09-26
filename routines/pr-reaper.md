@@ -215,6 +215,34 @@ last 60 min. It gets reaped next round if still open.
    independently mergeable within the 1h SLA. If no card exists and the work
    looks wanted, FILE one card per slice (Repo: header = bare `owner/name`
    token; `## END STATE` section required).
+2b. **File the slices you propose (card-backed oversized reap).** An advisory
+   split with no card is lost: the card stays deferred and nobody splits it
+   (fold PR 2187, +3211 lines, 2026-09-25). When the reaped PR is oversized
+   AND its card is `Kind: pr` AND the card has a `north_star` and a
+   `milestone`, file the slices instead of only describing them:
+   - At most **4 slices** per reap. Each slice names concrete files (from the
+     `git diff --stat` above) and the original card's `## STEPS` numbers it
+     covers. If you cannot name the files and steps of each slice concretely,
+     do not file. Keep the advisory note, and add the line
+     `SPLIT-NOT-FILED: <why>` to the reap section. Count
+     `flagged=split-not-filed:<slug>`.
+   - File each slice with `last-stack-kanban-file-pr` (never raw
+     `kanban add`), slug `<card-slug>-s<N>`, the SAME `--repo`,
+     `--north-star` and `--milestone` as the original, `--column backlog`
+     for every slice after the first, and `--deps <previous-slice-slug>` so
+     slices land in order. The body must have `## GOAL` and `## END STATE`
+     that name the slice's files and the original STEPS it covers, plus a
+     `## PRIOR ART` line citing the preserved branch
+     (`<repo> branch <head-branch>`, head `<sha>`) and the closed PR URL.
+     A decision-check conflict (exit 2) stops the filing: record it in the
+     reap section and keep the advisory split.
+   - Then mark the original card superseded, in this order:
+     `kanban mark <slug> "RELEASE-WHEN: none"`, then
+     `kanban set <slug> --block-status deferred --block-reason "superseded by <slice-slugs>"`,
+     then `kanban move <slug> backlog`. The `RELEASE-WHEN: none` line tells
+     `last-stack-kanban-deferral-release` to leave it. This replaces the
+     "move back to `todo`" of step 1 for this card.
+   - Count the filed slices in the heartbeat `splits_filed=<S>`.
 3. If the closed PR was NOT card-backed and looks abandoned/irrelevant, no
    card — the close comment is the record.
 

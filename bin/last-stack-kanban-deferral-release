@@ -1,0 +1,466 @@
+#!/usr/bin/env python3
+"""Release deferred / needs_human cards whose named release conditions all hold.
+
+Why (2026-09-26): card lastdb-meter-trust-fail-closed-repair-20260924 sat
+block_status=deferred for more than a day. Its block_reason named two
+papercuts. One was fixed and the premise of the other was gone, but no
+routine re-checked the reason, so the hold outlived its cause.
+
+This sweep reads the backlog and todo columns (capped list reads), point-reads
+each held card, and parses its release conditions:
+
+  * a body line `RELEASE-WHEN: <cond>[, <cond>...]` (the last line wins), or,
+    when the body has no such line, the conditions named in `block_reason` --
+    either an inline `RELEASE-WHEN:` or a reason that LEADS with a wait phrase
+    (`awaiting` / `waiting on|for` / `blocked on|by` / `until` / `after`);
+    only its first clause (up to `;`, `. `, or a dash) is read.
+
+Condition kinds (see skills/kanban/SKILL.md "RELEASE-WHEN"):
+
+  papercut-<slug>          brain papercut status fixed|verified|wontfix|duplicate
+  card:<slug> / <slug>     kanban card is in column done (bare slug only in a
+                           RELEASE-WHEN line; block_reason needs `card:`)
+  <forge PR URL>           the PR is merged (also `owner/name#N`)
+  after <YYYY-MM-DD[THH:MM[:SS]Z]>   the time has passed
+  none                     explicit hold with no machine release (superseded)
+
+A card whose conditions ALL hold is released: `kanban set --block-status none`,
+one `kanban mark` evidence line, and a move backlog -> todo when it is Kind:pr
+with a substantive body and `kanban pickup explain` accepts it for todo.
+A held card with no machine-checkable condition is reported `unconditioned`
+and left alone. Dry-run is the default; `--apply` writes.
+
+Deploy-parked cards (awaiting-deploy & co tags) belong to
+last-stack-kanban-reopen-deferred and are skipped here.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+HELD_STATUSES = {"deferred", "needs_human"}
+RELEASED_PAPERCUT = {"fixed", "verified", "wontfix", "duplicate"}
+DEPLOY_TAGS = {
+    "awaiting-deploy",
+    "awaiting-validation",
+    "deploy-gate",
+    "live-proof",
+    "needs-safe-upgrade",
+}
+RELEASE_LINE_RE = re.compile(r"RELEASE-WHEN\s*:\s*(.*)$", re.IGNORECASE)
+PAPERCUT_RE = re.compile(r"\bpapercut-[a-z0-9][a-z0-9-]*[a-z0-9]\b")
+PR_URL_RE = re.compile(
+    r"https?://[^\s/]+/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pulls?/(\d+)\b"
+)
+PR_SHORT_RE = re.compile(r"\b([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#(\d+)\b")
+AFTER_RE = re.compile(
+    r"\bafter\s+(\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?Z?)?)",
+    re.IGNORECASE,
+)
+CARD_PREFIX_RE = re.compile(r"\bcard\s*[: ]\s*([a-z0-9][a-z0-9-]*[a-z0-9])\b", re.IGNORECASE)
+# Loose (block_reason) form: the slug must be hyphenated so prose such as
+# "card itself" or "card review" is not read as a card condition.
+CARD_LOOSE_RE = re.compile(r"\bcard\s*[: ]\s*([a-z0-9]+(?:-[a-z0-9]+)+)\b", re.IGNORECASE)
+# A block_reason names release conditions only when its cause LEADS with a
+# wait phrase. Free-text reasons often cite a papercut or PR as history
+# ("re-checked 6x, see papercut-x"); a fixed papercut there is not a release.
+REASON_LEAD_RE = re.compile(
+    r"^\s*(?:[a-z_-]+\s*:\s*)?(?:awaiting|waiting\s+(?:on|for)|blocked\s+(?:on|by)|until|after)\b",
+    re.IGNORECASE,
+)
+LEAD_SLUG_RE = re.compile(
+    r"^\s*(?:[a-z_-]+\s*:\s*)?(?:awaiting|waiting\s+(?:on|for)|blocked\s+(?:on|by)|until)\s+"
+    r"`?([a-z0-9]+(?:-[a-z0-9]+){2,})\b",
+    re.IGNORECASE,
+)
+BARE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$")
+GOAL_RE = re.compile(r"(?im)^\s*(?:##\s*GOAL\b|GOAL\s*:)")
+END_STATE_RE = re.compile(r"(?im)^\s*(?:##\s*END STATE\b|END STATE\s*:|DONE WHEN\s*:)")
+
+
+def run(argv: list[str], timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(argv, text=True, capture_output=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(argv, 124, "", str(exc))
+
+
+def parse_json(text: str) -> Any:
+    cleaned = "".join(" " if 0 <= ord(ch) < 32 and ch not in "\n\r\t" else ch for ch in text)
+    return json.loads(cleaned)
+
+
+def cards_from(value: Any) -> tuple[list[dict[str, Any]], bool]:
+    if isinstance(value, list):
+        return [c for c in value if isinstance(c, dict)], False
+    if isinstance(value, dict):
+        cards = value.get("cards")
+        if isinstance(cards, list):
+            return [c for c in cards if isinstance(c, dict)], bool(value.get("truncated"))
+    return [], False
+
+
+def tags(card: dict[str, Any]) -> set[str]:
+    raw = card.get("tags") or []
+    if isinstance(raw, str):
+        return {p for p in re.split(r"[,\s]+", raw) if p}
+    return {str(p).strip() for p in raw if str(p).strip()}
+
+
+def unfenced_lines(text: str) -> list[str]:
+    out: list[str] = []
+    fenced = False
+    for raw in text.splitlines():
+        if raw.strip().startswith("```"):
+            fenced = not fenced
+            continue
+        if not fenced:
+            out.append(raw)
+    return out
+
+
+def release_line(body: str) -> str | None:
+    """Return the text of the LAST unfenced RELEASE-WHEN line, if any."""
+    found: str | None = None
+    for line in unfenced_lines(body):
+        match = RELEASE_LINE_RE.search(line)
+        if match:
+            found = match.group(1).strip()
+    return found
+
+
+def cond_key(cond: dict[str, str]) -> str:
+    return f"{cond['kind']}:{cond['ref']}"
+
+
+def parse_release_when(text: str) -> tuple[list[dict[str, str]], list[str], bool]:
+    """Strict parse of a RELEASE-WHEN value. Returns (conds, bad_tokens, none)."""
+    conds: list[dict[str, str]] = []
+    bad: list[str] = []
+    tokens = [t.strip().strip("`").strip() for t in re.split(r"[,;]|\s+and\s+", text)]
+    tokens = [t.rstrip(".") for t in tokens if t]
+    if len(tokens) == 1 and tokens[0].lower() in {"none", "never", "manual"}:
+        return [], [], True
+    for token in tokens:
+        if m := PR_URL_RE.fullmatch(token):
+            conds.append({"kind": "pr", "ref": token, "owner": m.group(1), "repo": m.group(2), "number": m.group(3)})
+        elif m := PR_SHORT_RE.fullmatch(token):
+            conds.append({"kind": "pr", "ref": token, "owner": m.group(1), "repo": m.group(2), "number": m.group(3)})
+        elif m := AFTER_RE.fullmatch(token):
+            conds.append({"kind": "after", "ref": m.group(1)})
+        elif PAPERCUT_RE.fullmatch(token):
+            conds.append({"kind": "papercut", "ref": token})
+        elif m := CARD_PREFIX_RE.fullmatch(token):
+            conds.append({"kind": "card", "ref": m.group(1)})
+        elif BARE_SLUG_RE.fullmatch(token):
+            conds.append({"kind": "card", "ref": token})
+        else:
+            bad.append(token)
+    return conds, bad, False
+
+
+def parse_reason(text: str) -> tuple[list[dict[str, str]], list[str], bool]:
+    """Loose scan of free-text block_reason for machine-checkable conditions."""
+    inline = RELEASE_LINE_RE.search(text)
+    if inline:
+        return parse_release_when(inline.group(1))
+    conds: list[dict[str, str]] = []
+    if not REASON_LEAD_RE.match(text):
+        return conds, [], False
+    # Only the leading clause states the cause; later clauses are history.
+    text = re.split(r";|\.\s|\s[—-]{1,2}\s", text, maxsplit=1)[0]
+    for m in PR_URL_RE.finditer(text):
+        conds.append({"kind": "pr", "ref": m.group(0), "owner": m.group(1), "repo": m.group(2), "number": m.group(3)})
+    for m in PAPERCUT_RE.finditer(text):
+        conds.append({"kind": "papercut", "ref": m.group(0)})
+    for m in CARD_LOOSE_RE.finditer(text):
+        conds.append({"kind": "card", "ref": m.group(1)})
+    # "blocked on <slug>": a card slug right after the lead phrase.
+    lead = LEAD_SLUG_RE.match(text)
+    if lead and not lead.group(1).startswith("papercut-"):
+        conds.append({"kind": "card", "ref": lead.group(1)})
+    for m in AFTER_RE.finditer(text):
+        conds.append({"kind": "after", "ref": m.group(1)})
+    return conds, [], False
+
+
+def dedupe(conds: list[dict[str, str]]) -> list[dict[str, str]]:
+    seen: dict[str, dict[str, str]] = {}
+    for cond in conds:
+        seen.setdefault(cond_key(cond), cond)
+    return list(seen.values())
+
+
+def parse_when(value: str) -> datetime | None:
+    text = value.strip().replace(" ", "T")
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+class Checker:
+    def __init__(self, args: argparse.Namespace, now: datetime) -> None:
+        self.args = args
+        self.now = now
+        self.cache: dict[str, tuple[bool, str]] = {}
+
+    def check(self, cond: dict[str, str]) -> tuple[bool, str]:
+        key = cond_key(cond)
+        if key not in self.cache:
+            handler = getattr(self, f"_check_{cond['kind']}")
+            self.cache[key] = handler(cond)
+        return self.cache[key]
+
+    def _check_papercut(self, cond: dict[str, str]) -> tuple[bool, str]:
+        result = run([self.args.brain_cli, "get", cond["ref"], "--type", "papercut", "--field", "status"], timeout=45)
+        if result.returncode != 0:
+            return False, "papercut-unreadable-or-missing"
+        state = result.stdout.strip().splitlines()[-1].strip().lower() if result.stdout.strip() else ""
+        return state in RELEASED_PAPERCUT, f"status={state or 'empty'}"
+
+    def _check_card(self, cond: dict[str, str]) -> tuple[bool, str]:
+        result = run([self.args.board_cli, "show", cond["ref"], "--json"], timeout=45)
+        if result.returncode != 0:
+            return False, "card-unreadable-or-missing"
+        try:
+            data = parse_json(result.stdout)
+        except json.JSONDecodeError:
+            return False, "card-json-unparsed"
+        column = str((data or {}).get("column") or "") if isinstance(data, dict) else ""
+        return column == "done", f"column={column or 'empty'}"
+
+    def _check_pr(self, cond: dict[str, str]) -> tuple[bool, str]:
+        if "github.com" in cond["ref"]:
+            return False, "unsupported-venue-github"
+        path = f"repos/{cond['owner']}/{cond['repo']}/pulls/{cond['number']}"
+        result = run([self.args.forge_api, path], timeout=45)
+        if result.returncode != 0:
+            return False, "pr-unreadable"
+        try:
+            data = parse_json(result.stdout)
+        except json.JSONDecodeError:
+            return False, "pr-json-unparsed"
+        if not isinstance(data, dict):
+            return False, "pr-json-unparsed"
+        if data.get("merged") is True:
+            return True, f"merged={str(data.get('merge_commit_sha') or '')[:12] or 'yes'}"
+        return False, f"state={data.get('state') or 'unknown'} merged=false"
+
+    def _check_after(self, cond: dict[str, str]) -> tuple[bool, str]:
+        when = parse_when(cond["ref"])
+        if when is None:
+            return False, "date-unparsed"
+        return self.now >= when, "elapsed" if self.now >= when else "not-yet"
+
+
+def substantive(body: str) -> bool:
+    return bool(GOAL_RE.search(body) and END_STATE_RE.search(body))
+
+
+def read_candidates(args: argparse.Namespace, report: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for column in args.columns:
+        listed = run([args.board_cli, "list", "--column", column, "--json", "--limit", str(args.limit)], timeout=120)
+        if listed.returncode != 0:
+            raise RuntimeError(f"kanban list {column} failed: {listed.stderr.strip()[:200]}")
+        try:
+            cards, truncated = cards_from(parse_json(listed.stdout))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"kanban list {column} JSON parse failed: {exc}") from exc
+        if truncated:
+            report["truncated"].append(column)
+        for card in cards:
+            if str(card.get("block_status") or "").lower() in HELD_STATUSES:
+                candidates.append(card)
+    return candidates
+
+
+def sweep(args: argparse.Namespace) -> dict[str, Any]:
+    now = parse_when(args.now) if args.now else datetime.now(timezone.utc)
+    if now is None:
+        raise RuntimeError(f"--now unparsed: {args.now}")
+    report: dict[str, Any] = {
+        "mode": "apply" if args.apply else "dry-run",
+        "now": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "scanned": 0,
+        "released": [],
+        "kept": [],
+        "unconditioned": [],
+        "held": [],
+        "malformed": [],
+        "deploy_owned": [],
+        "errors": [],
+        "truncated": [],
+        "capped": 0,
+    }
+    checker = Checker(args, now)
+    candidates = read_candidates(args, report)
+    if len(candidates) > args.max_cards:
+        report["capped"] = len(candidates) - args.max_cards
+        candidates = candidates[: args.max_cards]
+    report["scanned"] = len(candidates)
+
+    for preview in candidates:
+        slug = str(preview.get("slug") or "").strip()
+        if not slug:
+            continue
+        if tags(preview) & DEPLOY_TAGS:
+            report["deploy_owned"].append({"slug": slug})
+            continue
+        shown = run([args.board_cli, "show", slug, "--json"], timeout=60)
+        if shown.returncode != 0:
+            report["errors"].append({"slug": slug, "reason": "show-failed"})
+            continue
+        try:
+            card = parse_json(shown.stdout)
+        except json.JSONDecodeError:
+            report["errors"].append({"slug": slug, "reason": "show-json-unparsed"})
+            continue
+        body = str(card.get("body") or "")
+        reason = str(card.get("block_reason") or preview.get("block_reason") or "")
+        status = str(card.get("block_status") or preview.get("block_status") or "")
+        column = str(card.get("column") or preview.get("column") or "")
+        base = {"slug": slug, "block_status": status, "column": column}
+
+        line = release_line(body)
+        if line is not None:
+            conds, bad, explicit_none = parse_release_when(line)
+            source = "body"
+        else:
+            conds, bad, explicit_none = parse_reason(reason)
+            source = "block_reason"
+        conds = dedupe(conds)
+
+        if explicit_none:
+            report["held"].append({**base, "source": source})
+            continue
+        if bad:
+            report["malformed"].append({**base, "source": source, "tokens": bad})
+            continue
+        if not conds:
+            report["unconditioned"].append({**base, "reason": reason[:160]})
+            continue
+
+        evaluated = []
+        for cond in conds:
+            ok, detail = checker.check(cond)
+            evaluated.append({"kind": cond["kind"], "ref": cond["ref"], "holds": ok, "detail": detail})
+        if not all(item["holds"] for item in evaluated):
+            report["kept"].append({
+                **base,
+                "source": source,
+                "open": [f"{i['ref']} ({i['detail']})" for i in evaluated if not i["holds"]],
+                "met": [f"{i['ref']} ({i['detail']})" for i in evaluated if i["holds"]],
+            })
+            continue
+
+        evidence = "; ".join(f"{i['ref']} {i['detail']}" for i in evaluated)
+        is_pr = str(card.get("kind") or "").strip().lower() == "pr"
+        want_todo = column == "backlog" and is_pr and substantive(body)
+        entry: dict[str, Any] = {**base, "source": source, "evidence": evidence, "dest": column}
+        if want_todo:
+            entry["dest"] = "todo-if-pickup-explain-accepts"
+        if args.apply:
+            entry.update(apply_release(args, slug, status, evidence, want_todo, now))
+        report["released"].append(entry)
+    return report
+
+
+def apply_release(
+    args: argparse.Namespace, slug: str, status: str, evidence: str, want_todo: bool, now: datetime
+) -> dict[str, Any]:
+    stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    cleared = run([args.board_cli, "set", slug, "--block-status", "none"], timeout=60)
+    if cleared.returncode != 0:
+        return {"applied": False, "error": f"set-failed: {cleared.stderr.strip()[:160]}"}
+    run(
+        [args.board_cli, "mark", slug, f"RELEASED {stamp} (deferral-release): {status} hold cleared; all release conditions hold: {evidence}"],
+        timeout=60,
+    )
+    if not want_todo:
+        return {"applied": True}
+    explained = run([args.board_cli, "pickup", "explain", slug, "--json"], timeout=60)
+    accepted = False
+    why = "pickup-explain-failed"
+    if explained.returncode == 0:
+        try:
+            data = parse_json(explained.stdout)
+            guard = data.get("write_guard") or {}
+            accepted = bool(data.get("ready")) or bool(guard.get("ok"))
+            why = str(data.get("reason") or guard.get("code") or "")
+        except (json.JSONDecodeError, AttributeError):
+            why = "pickup-explain-unparsed"
+    if not accepted:
+        return {"applied": True, "dest": "backlog", "not_moved": why}
+    moved = run([args.board_cli, "move", slug, "todo"], timeout=60)
+    if moved.returncode != 0:
+        return {"applied": True, "dest": "backlog", "not_moved": f"move-failed: {moved.stderr.strip()[:160]}"}
+    return {"applied": True, "dest": "todo"}
+
+
+def summary(report: dict[str, Any]) -> str:
+    def slugs(key: str) -> str:
+        return ",".join(item["slug"] for item in report[key]) or "-"
+
+    return (
+        f"kanban-deferral-release {report['now']} mode={report['mode']} scanned={report['scanned']} "
+        f"released={len(report['released'])} kept={len(report['kept'])} "
+        f"unconditioned={len(report['unconditioned'])} held={len(report['held'])} "
+        f"malformed={len(report['malformed'])} deploy_owned={len(report['deploy_owned'])} "
+        f"errors={len(report['errors'])} capped={report['capped']} "
+        f"truncated={','.join(report['truncated']) or '-'} "
+        f"released_slugs={slugs('released')} kept_slugs={slugs('kept')} "
+        f"unconditioned_slugs={slugs('unconditioned')}"
+    )
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--apply", action="store_true", help="write to the board (default: dry-run)")
+    parser.add_argument("--json", action="store_true", help="print the JSON report on stdout, the summary line on stderr")
+    parser.add_argument("--board-cli", default=os.environ.get("BOARD_CLI", "kanban"))
+    parser.add_argument("--brain-cli", default=os.environ.get("BRAIN_CLI", "brain"))
+    parser.add_argument(
+        "--forge-api",
+        default=os.environ.get("FORGE_API_BIN", str(Path.home() / ".last-stack" / "bin" / "last-stack-forge-api")),
+    )
+    parser.add_argument("--columns", default="backlog,todo", help="comma list (default backlog,todo)")
+    parser.add_argument("--limit", type=int, default=300, help="per-column list cap (default 300)")
+    parser.add_argument("--max-cards", type=int, default=120, help="point-read cap per run (default 120)")
+    parser.add_argument("--now", default="", help="ISO time override (tests)")
+    args = parser.parse_args(argv)
+    args.columns = [c.strip() for c in args.columns.split(",") if c.strip()]
+    try:
+        report = sweep(args)
+    except RuntimeError as exc:
+        print(f"kanban-deferral-release error={exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(report, sort_keys=True))
+        print(summary(report), file=sys.stderr)
+        return 1 if report["errors"] and not (report["released"] or report["kept"]) else 0
+    for key in ("released", "kept", "unconditioned", "held", "malformed"):
+        for item in report[key]:
+            detail = item.get("evidence") or "; ".join(item.get("open", [])) or item.get("reason") or ""
+            print(f"{key}\t{item['slug']}\t{detail}")
+    print(summary(report))
+    return 1 if report["errors"] and not (report["released"] or report["kept"]) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

@@ -130,6 +130,37 @@ then `kanban move <slug> backlog` if it must leave the pickup lane. `add` can
 set `--block-status` on create; `set` is the metadata-only path for an existing
 card.
 
+### RELEASE-WHEN: every hold names what releases it
+
+A `deferred` or `needs_human` hold must say what ends it in a form a machine
+can check. Put one body line (append it with `kanban mark`; the last line wins):
+
+```
+RELEASE-WHEN: papercut-<slug>, card:<slug>, http://localhost:3300/EdgeVector/<repo>/pulls/<n>, after 2026-10-01
+```
+
+| Condition | Holds when |
+|---|---|
+| `papercut-<slug>` | `brain get <slug> --type papercut` status is `fixed`, `verified`, `wontfix` or `duplicate` |
+| `card:<slug>` (or a bare slug) | the card is in column `done` |
+| Forge PR URL or `owner/name#N` | the PR is merged |
+| `after <YYYY-MM-DD[THH:MMZ]>` | the time is past |
+| `none` | never: an explicit hold (for example `superseded by <slugs>`) |
+
+Separate conditions with `,` or `;`. ALL conditions must hold.
+
+`last-stack-kanban-deferral-release` (the `groom-board` routine runs it with
+`--apply`) reads `backlog` and `todo`. When all conditions hold, it clears the
+hold, marks the evidence, and moves a `Kind: pr` card with a `## GOAL` +
+`## END STATE` brief to `todo` if `kanban pickup explain` accepts it.
+With no `RELEASE-WHEN:` line, it reads `block_reason` only when the reason
+starts with `awaiting`, `waiting on|for`, `blocked on|by`, `until` or `after`,
+and only up to the first `;`, `. ` or dash. There it reads `papercut-*` slugs,
+PR URLs, `card:<slug>`, `after <date>`, and a card slug directly after the
+lead phrase (`blocked on <card-slug>`). A hold with no checkable condition
+is reported `unconditioned` and is not changed. Deploy-parked cards
+(`awaiting-deploy` tags) belong to `last-stack-kanban-reopen-deferred`.
+
 `list` flags: `--board --column --tag --assignee --wide --field --limit N
 --all --json --full-body --full_body`.
 
