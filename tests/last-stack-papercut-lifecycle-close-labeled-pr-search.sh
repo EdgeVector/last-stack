@@ -22,6 +22,10 @@ cat >"$tmp/records.json" <<'JSON'
   {"slug": "papercut-prefix", "title": "Only a longer slug is labeled", "status": "open",
    "body": "Status: OPEN\nRepo: EdgeVector/last-stack\n"},
   {"slug": "papercut-search-down", "title": "Search fails", "status": "open",
+   "body": "Status: OPEN\nRepo: EdgeVector/last-stack\n"},
+  {"slug": "papercut-cited-as-context", "title": "Cited by a PR that does not fix it", "status": "open",
+   "body": "Status: OPEN\nRepo: EdgeVector/last-stack\n"},
+  {"slug": "papercut-verb-no-card", "title": "A repair VERB needs no card markers", "status": "open",
    "body": "Status: OPEN\nRepo: EdgeVector/last-stack\n"}
 ]
 JSON
@@ -49,7 +53,15 @@ case "$route" in
     printf '['; pr last-stack 13 false 'Papercut: papercut-unmerged-fix'; printf ']\n' ;;
   "repos/issues/search?q=papercut-prefix&"*)
     printf '['; pr last-stack 14 true 'Papercut: papercut-prefix-longer'; printf ']\n' ;;
-  repos/EdgeVector/last-stack/pulls/11)
+  # The shape that closed a live claim: a hand-written PR body whose ONLY
+  # reference to the record is a `Papercut:` trailer, with no card markers. The
+  # body even says it is additive, exactly as EdgeVector/last-stack#255 did.
+  "repos/issues/search?q=papercut-cited-as-context&"*)
+    printf '['; pr last-stack 15 true 'Additive on purpose; this corrects the prescription in\nPapercut: papercut-cited-as-context'; printf ']\n' ;;
+  # A repair VERB closes with no card markers anywhere in the body.
+  "repos/issues/search?q=papercut-verb-no-card&"*)
+    printf '['; pr last-stack 16 true 'Fixes: papercut-verb-no-card'; printf ']\n' ;;
+  repos/EdgeVector/last-stack/pulls/11|repos/EdgeVector/last-stack/pulls/15|repos/EdgeVector/last-stack/pulls/16)
     printf '{"state":"closed","merged":true}\n' ;;
   *)
     echo "404 Not Found: $route" >&2
@@ -76,12 +88,16 @@ import json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 assert not data.get("errors"), data.get("errors")
 fixed = {f["slug"]: f for f in data["fixed"]}
-assert set(fixed) == {"papercut-labeled-fix"}, sorted(fixed)
+# `papercut-verb-no-card` closes on `Fixes:` with no card markers at all;
+# `papercut-cited-as-context` must NOT close, because its only reference is a
+# `Papercut:` trailer in a body that is not a card.
+assert set(fixed) == {"papercut-labeled-fix", "papercut-verb-no-card"}, sorted(fixed)
 f = fixed["papercut-labeled-fix"]
 assert f["ref"] == "http://forge.test/EdgeVector/last-stack/pulls/11", f
 assert "labeled repair line" in f["detail"], f
 skips = {s["slug"]: s for s in data["skipped"] if s.get("slug")}
-for slug in ("papercut-prose-only", "papercut-unmerged-fix", "papercut-prefix", "papercut-search-down"):
+for slug in ("papercut-prose-only", "papercut-unmerged-fix", "papercut-prefix", "papercut-search-down",
+             "papercut-cited-as-context"):
     assert skips[slug]["reason"] == "no-review-ref", (slug, skips.get(slug))
 assert "forge_search_error" in skips["papercut-search-down"], skips["papercut-search-down"]
 PY
@@ -99,4 +115,4 @@ if grep -q 'issues/search' "$FORGE_CALL_LOG"; then
   exit 1
 fi
 
-echo "ok: lifecycle closer closes on a labeled repair line in a merged PR, never on prose, unmerged, or prefix matches"
+echo "ok: lifecycle closer closes on a labeled repair line in a merged PR, never on prose, unmerged, prefix matches, or a bare Papercut: citation trailer"

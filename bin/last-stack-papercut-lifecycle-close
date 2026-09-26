@@ -30,7 +30,29 @@ FORGE_RE = re.compile(r"https?://[^/\s)>\]]+/([^/\s)>\]]+)/([^/\s)>\]]+)/pulls?/
 # A merged PR repairs a papercut only when it says so on a labeled line. A
 # bare mention is not a repair claim: PR bodies cite papercuts as context
 # (papercut-lifecycle-closer-treats-incident-pr-as-fix-20260925).
-REPAIR_LINE_RE = re.compile(r"(?im)^[ \t>*-]*(?:papercut|papercuts|fixes|fixed|closes|resolves)[ \t]*:(?P<rest>.*)$")
+#
+# Two label sets, because `Papercut:` means opposite things in the two bodies
+# this function is handed. `fixes` / `fixed` / `closes` / `resolves` are repair
+# VERBS and mean repair anywhere. `papercut` is not a verb: on a reconciler
+# CARD it is the repair link (routines/papercut-reconciler.md: "The
+# `Papercut: <slug>` lines are the repair link"), and in hand-written prose it
+# is a citation (skills/lastdb-safe-upgrade/SKILL.md and its script both carry
+# `Papercut: <slug>` next to a hazard they describe). Reading the card meaning
+# in a hand-written PR body closed
+# papercut-fkanban-host-track-fresh-while-main-ahead-20260923 on
+# EdgeVector/last-stack#255, a PR whose own body says it is additive and
+# corrects that record's prescription, and whose record says twice that its
+# titled claim is unfixed. So the citation label counts only in a body that is
+# actually a card — which is the Loom-copied card body that search_repair_prs
+# was written for (papercut-card-merge-does-not-close-its-named-papercuts-20260926).
+REPAIR_VERB_LINE_RE = re.compile(r"(?im)^[ \t>*-]*(?:fixes|fixed|closes|resolves)[ \t]*:(?P<rest>.*)$")
+CITATION_LABEL_LINE_RE = re.compile(r"(?im)^[ \t>*-]*(?:papercut|papercuts)[ \t]*:(?P<rest>.*)$")
+# The card contract last-stack-kanban-file-pr enforces: a brief carries `## GOAL`
+# (or `GOAL:`) and `## END STATE` (or `END STATE:` / `DONE WHEN:`). A reconciler
+# entry also carries a `Card:` line. A PR trailer has none of these.
+CARD_SHAPED_RE = re.compile(
+    r"(?im)^[ \t>*-]*(?:#{1,6}[ \t]*)?(?:GOAL|END[ \t]STATE|DONE[ \t]WHEN|Card)\b"
+)
 GITHUB_RE = re.compile(r"https?://github\.com/([^/\s)>\]]+)/([^/\s)>\]]+)/pull/(\d+)")
 PIPELINE_STUCK_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-(cr|forge|pr|merges)-")
 # `pipeline-health` also files an AGGREGATE row per repo (`...-merges-<repo>`,
@@ -898,9 +920,22 @@ def review_refs(body: str, slug: str = "") -> tuple[list[ReviewRef], list[str]]:
 
 
 def names_repair(text: str, slug: str) -> bool:
-    """True when a labeled repair line names exactly this slug."""
+    """True when a labeled repair line names exactly this slug.
+
+    A repair VERB line counts in any body. A bare `Papercut:` line counts only
+    when the body is card-shaped, because that label is also how prose and PR
+    trailers CITE a papercut, and an auto-close on a live claim is the expensive
+    direction: a `fixed` row is invisible to `papercut list --status open`, to
+    triage and to every stale sweep, so the residual claim does not wait, it
+    disappears while the ledger reports it shipped. A missed close is visible
+    and gets taken on the next pass.
+    """
     token = re.compile(r"(?<![a-z0-9-])" + re.escape(slug) + r"(?![a-z0-9-])")
-    return any(token.search(m.group("rest")) for m in REPAIR_LINE_RE.finditer(text))
+    if any(token.search(m.group("rest")) for m in REPAIR_VERB_LINE_RE.finditer(text)):
+        return True
+    if not CARD_SHAPED_RE.search(text):
+        return False
+    return any(token.search(m.group("rest")) for m in CITATION_LABEL_LINE_RE.finditer(text))
 
 
 def search_repair_prs(args: argparse.Namespace, slug: str) -> list[ReviewRef]:
