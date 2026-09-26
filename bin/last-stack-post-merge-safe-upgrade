@@ -69,6 +69,7 @@ map_repo_to_app() {
     routines) printf 'artifact:routines\n' ;;
     lastsecrets) printf 'artifact:lastsecrets\n' ;;
     configurations) printf 'artifact:configurations\n' ;;
+    remote) printf 'artifact:remote\n' ;;
     search) printf 'artifact:search\n' ;;
     loom) printf 'artifact:loom\n' ;;
     *) printf '\n' ;;
@@ -76,7 +77,7 @@ map_repo_to_app() {
 }
 
 if [ "$SHOW_MAP" = 1 ]; then
-  for r in last-stack brain situations fkanban kanban routines lastsecrets configurations search loom; do
+  for r in last-stack brain situations fkanban kanban routines lastsecrets configurations remote search loom; do
     printf '%-16s -> %s\n' "$r" "$(map_repo_to_app "$r")"
   done
   exit 0
@@ -447,7 +448,7 @@ CONVERGE_TIMEOUT="${LAST_STACK_POST_MERGE_CONVERGE_TIMEOUT:-600}"
 CONVERGE_INTERVAL="${LAST_STACK_POST_MERGE_CONVERGE_INTERVAL:-300}"
 
 converge_repos() {
-  printf 'last-stack\nbrain\nsituations\nfkanban\nroutines\nlastsecrets\nconfigurations\nsearch\nloom\n'
+  printf 'last-stack\nbrain\nsituations\nfkanban\nroutines\nlastsecrets\nconfigurations\nremote\nsearch\nloom\n'
 }
 
 tip_seen_path() { printf '%s/%s.tip-seen\n' "$STATE_DIR" "$1"; }

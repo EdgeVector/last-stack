@@ -348,7 +348,7 @@ install-side safe-upgrade so PATH tracks main without stuffing that into CI.
 - **Detects merges** like `notify-discord.sh`: fleet open-CR index → open→gone →
   `cr view` → if `state=merged` and base is `main` and repo is mapped → upgrade
 - **Mapped apps:** last-stack / brain / situations / fkanban|kanban (app `kanban`) /
-  routines / lastsecrets / configurations / search / loom → find the merge
+  routines / lastsecrets / configurations / remote / search / loom → find the merge
   oid's published manifest; if none exists yet (a LastGit-native repo has no
   Forgejo `publish` job to have made one), clone `lastdb:///<repo>`, run
   `.lastgit/ci.sh`, and `lastgit artifact publish` it from source; then
