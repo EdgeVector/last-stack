@@ -609,11 +609,14 @@ def probe_provider_fallback() -> dict[str, Any]:
             'prompt = "health"\n'
             'timeout_min = 0.5\n'
         )
+        # routines drops a fence whose lastSeenAt is older than its TTL
+        # (isHarnessOutaged), so a fixed date un-fences Codex once it ages
+        # out and the chain stops on the Codex leg. Stamp the fence now.
         (home / "harness-outage/codex.json").write_text(
             json.dumps(
                 {
                     "kind": "usage-limit",
-                    "lastSeenAt": "2026-08-31T00:00:00Z",
+                    "lastSeenAt": now(),
                     "situationSlug": "feature-provider-proof",
                     "expiresAt": "2099-01-01T00:00:00Z",
                 }
