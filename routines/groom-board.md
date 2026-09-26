@@ -227,6 +227,24 @@ fail-closed; errors never auto-close a card.
    to `done` with a `PROOF <ISO>:` line. Do not leave calendar gates sitting for
    manual morning-sync forever.
 
+9. **Release holds whose conditions hold (one bounded command).** A
+   `deferred` / `needs_human` hold that names papercuts, cards, PRs or a date
+   is released when all of them hold (convention: `RELEASE-WHEN:` in the
+   kanban skill). Run it once; it caps its own reads:
+
+   ```bash
+   last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+   run_dir="${ROUTINES_RUN_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/groom.XXXXXX")}"
+   "$last_stack/bin/last-stack-kanban-deferral-release" --apply \
+     >"$run_dir/deferral-release.out" 2>"$run_dir/deferral-release.err" || true
+   tail -n 1 "$run_dir/deferral-release.out"
+   ```
+
+   Copy its last line (`kanban-deferral-release … released=… kept=…
+   unconditioned=…`) into the digest. Do not hand-release a `kept` card.
+   List `unconditioned` slugs under ⚠️ Needs a human → "hold has no
+   RELEASE-WHEN". Do not invent a condition for them.
+
 ## Guardrails
 - NEVER kill or restart the process hosting your brain/board node.
 - Dev, not prod: any card you file/break-down that touches a prod surface or an
