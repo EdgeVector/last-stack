@@ -82,6 +82,8 @@ class H(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"number": 405, "mergeable": False, "state": "open"}))
         elif self.path.endswith("/pulls/406"):
             self._send(200, json.dumps({"number": 406, "mergeable": True, "state": "open"}))
+        elif self.path.endswith("/pulls/407"):
+            self._send(200, json.dumps({"number": 407, "mergeable": True, "merged": True, "state": "closed"}))
         elif self.path.endswith("/pulls/501"):
             self._send(200, json.dumps({"number": 501, "state": "open", "head": {"sha": "aaaa501"}}))
         elif self.path.endswith("/pulls/502"):
@@ -116,7 +118,7 @@ class H(BaseHTTPRequestHandler):
         if self.path.endswith("/pulls/405/merge"):
             # Forgejo's real 405 body. It reads as transient and names nothing.
             self._send(405, json.dumps({"message": "Please try again later"}))
-        elif self.path.endswith("/pulls/406/merge"):
+        elif self.path.endswith("/pulls/406/merge") or self.path.endswith("/pulls/407/merge"):
             self._send(405, json.dumps({"message": "Please try again later"}))
         elif "/merge" in self.path:
             # Simulate Forgejo auto-merge arm while required checks pending.
@@ -241,6 +243,17 @@ set -e
 if [[ "$stuck_out" != *"mergeable=true"* || "$stuck_out" != *"empty-commit heal applies"* ]]; then
   echo "FAIL: 405 on a mergeable PR did not point at the stuck status-check heal" >&2
   echo "got: $stuck_out" >&2
+  exit 1
+fi
+
+# A 405 on an already-merged PR must not advise the empty-commit heal.
+set +e
+merged_out="$("$API" --method POST --data '{"Do":"squash"}' \
+  repos/EdgeVector/fold/pulls/407/merge 2>&1 >/dev/null)"
+set -e
+if [[ "$merged_out" != *"already MERGED"* || "$merged_out" == *"empty-commit heal applies"* ]]; then
+  echo "FAIL: 405 on a merged PR must say merged and must not advise the heal" >&2
+  echo "got: $merged_out" >&2
   exit 1
 fi
 

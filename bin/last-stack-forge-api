@@ -407,6 +407,13 @@ merge_405_verdict() {
   else
     mergeable="unknown"
   fi
+  # Forgejo also answers 405 when the PR is already merged, and still reports
+  # mergeable=true. The heal advice below would then send an agent to push an
+  # empty commit onto a merged branch (seen 2026-09-26 on fkanban PR 41).
+  if [[ "$pr_body" =~ \"merged\"[[:space:]]*:[[:space:]]*true ]]; then
+    echo "last-stack-forge-api: PR #$pr_num is already MERGED — this 405 needs no heal. Nothing to do." >&2
+    return
+  fi
   # Forgejo recomputes `mergeable` asynchronously after a push, so a merge
   # POST seconds after a push can read false on a clean branch. Re-read
   # before calling it a conflict
