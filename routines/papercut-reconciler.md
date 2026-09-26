@@ -371,6 +371,15 @@ For each pattern worth fixing now:
   as `fixed` when a merged PR carries its labeled line. A slug named only in
   prose is context and never closes anything
   (papercut-card-merge-does-not-close-its-named-papercuts-20260926).
+- **`Papercut:` is the repair link only ON A CARD.** In a hand-written PR body
+  the same label is how authors CITE the record for context, so the closer counts
+  it as a repair claim only when the body is card-shaped (`## GOAL`,
+  `## END STATE`, `DONE WHEN:` or a `Card:` line) — which a Loom-copied card body
+  always is and a trailer never is. A hand-written PR that should close a
+  papercut writes `Fixes: <slug>`, which counts in any body. Reading the card
+  meaning in a PR trailer closed a live claim on EdgeVector/last-stack#255,
+  a PR whose own body says it is additive
+  (papercut-lifecycle-closer-treats-incident-pr-as-fix-20260925).
 - File as many pattern cards as the evidence genuinely supports; too ambiguous
   or too large → one `backlog` card with what you know.
 
