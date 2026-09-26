@@ -36,6 +36,13 @@ This helper replaces both:
            heartbeat as `green_unarmed=` and in the actions as
            `action=green-unarmed`, and no row is written. Its owner is the
            card's `needs_human` decision, not this ledger. See merge_intent().
+         - the SEVERITY of a filed row comes from its shape, not from a
+           constant: `p0` only for a conflict or a red main, which cannot
+           resolve unless somebody acts; `p1` for a red, cancelled, pending or
+           armed-green row, which often clears on its own. Severity cannot be
+           amended after a filing, so the evidence line carries `passes=<n>`,
+           the number of consecutive passes that fingerprint has survived. See
+           row_severity().
          - every row this helper tracks is closed `verified` with a live point
            read once its PR is merged or closed, or (main-red rows) once the
            base tip is green on every required context.
@@ -100,6 +107,46 @@ EVENT_SUFFIX = re.compile(r"\s+\((pull_request|push|pull_request_target)\)$")
 # caller instead of being thrown away at the first read.
 CANCELLED = "cancelled"
 CANCELLED_DESC = re.compile(r"cancel", re.I)
+
+# Severity is chosen once, at file time: `brain papercut` has no verb that amends
+# a header column afterwards, and re-filing the same slug is refused by the
+# dedupe gate as an exact self-duplicate
+# (papercut-brain-papercut-has-no-verb-to-amend-a-header-column-after-filing-20260926).
+# So the value has to be right on the FIRST pass, and the split that survives
+# that constraint is by SHAPE: does this row name something that cannot resolve
+# unless somebody acts on it?
+#
+# STRUCTURAL — does not self-heal, and its blast radius is not one PR:
+#   conflict   the head needs a rebase; no re-run and no wait clears it.
+#   base-red   the base tip is red, so every open PR in the repo inherits it.
+# TRANSIENT — everything else a pass can call stuck: a red that may be a flake on
+# a loaded host, a cancelled run whose remedy is a re-run, a context still queued
+# behind a congested lane, a green PR waiting on the completer.
+#
+# Filing every per-PR row at p0 made `papercut-p0-active` — the fleet's only
+# drop-everything signal — continuously true for states no agent could act on:
+# six distinct p0 rows inside 40 minutes on EdgeVector/last-stack on 2026-09-26,
+# none naming a durable defect, and the band a triaging agent ranks on never held
+# the same contents twice
+# (papercut-pipeline-ledger-p0-per-stuck-pr-floods-the-priority-band-20260926).
+STRUCTURAL_SHAPES = {"conflict"}
+SEVERITY_STRUCTURAL = "p0"
+SEVERITY_TRANSIENT = "p1"
+
+
+def row_severity(pr: dict[str, Any]) -> str:
+    """p0 for a row that cannot resolve without action, p1 for a transient state.
+
+    NOT escalated later. A transient red that persists is still p1, because the
+    severity column is immutable after the filing; what the pass records instead
+    is `passes=<n>` on the evidence line, so a reader can tell a flake from a
+    wedged lane. When an amend verb exists, escalation keys on that counter.
+    """
+    if pr.get("root_cause") == "base-red":
+        return SEVERITY_STRUCTURAL
+    if pr.get("shape") in STRUCTURAL_SHAPES:
+        return SEVERITY_STRUCTURAL
+    return SEVERITY_TRANSIENT
 
 
 def now_utc() -> dt.datetime:
@@ -667,7 +714,7 @@ def live_card_owner(args: argparse.Namespace, pr: dict[str, Any], now: dt.dateti
     return card_slug
 
 
-def evidence_line(pr: dict[str, Any], checked_at: str) -> str:
+def evidence_line(pr: dict[str, Any], checked_at: str, passes: int = 0) -> str:
     req = ", ".join(f"{c}={s}" for c, s in pr["required"].items())
     intent = f" intent={pr['merge_intent']}" if pr.get("merge_intent") else ""
     # `cancelled=` is what tells the next reader the red is infra, not product.
@@ -675,9 +722,14 @@ def evidence_line(pr: dict[str, Any], checked_at: str) -> str:
     # defect this whole classification exists to stop.
     cancelled = pr.get("cancelled_contexts") or []
     cancel = f" cancelled={', '.join(cancelled)}" if cancelled else ""
+    # How many consecutive passes this row has been observed with the same
+    # fingerprint. A transient row is filed p1 and never escalated (row_severity),
+    # so this counter is the only thing that separates a flake from a lane that
+    # has been wedged for an hour.
+    seen = f" passes={passes}" if passes else ""
     return (
         f"- {checked_at}: {pr['repo']}#{pr['number']} shape={pr['shape']}{intent} head={pr['head_sha'][:12]} "
-        f"mergeable={pr['mergeable']} age_min={pr['age_min']}{cancel} required: {req}\n"
+        f"mergeable={pr['mergeable']} age_min={pr['age_min']}{cancel}{seen} required: {req}\n"
     )
 
 
@@ -750,6 +802,10 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         pr = prs[0]
         fingerprint = ";".join(sorted(f"{p['number']}:{p['head_sha']}:{p['shape']}" for p in prs))
         prior = tracked.get(slug) or {}
+        # Consecutive passes this exact fingerprint has been seen. Resets when the
+        # head or the shape changes, because that is a different observation.
+        passes = int(prior.get("passes") or 0) + 1 if prior.get("fingerprint") == fingerprint else 1
+        severity = row_severity(pr)
         if not pr["root_cause"] and args.owner_fresh_min > 0:
             owner = live_card_owner(args, pr, now_utc())
             if owner:
@@ -765,9 +821,14 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             continue
         if status in LIVE:
             if prior.get("fingerprint") == fingerprint:
-                act("unchanged", slug)
+                # Still no write to the record — the append only happens on a
+                # change — but the counter has to advance, or every pass reads
+                # `passes=1` and a wedged lane is indistinguishable from a flake.
+                act("unchanged", slug, passes=passes)
+                if args.apply:
+                    tracked[slug] = {**prior, "passes": passes, "last_seen_at": checked_at}
                 continue
-            chunk = "".join(evidence_line(p, checked_at) for p in prs)
+            chunk = "".join(evidence_line(p, checked_at, passes) for p in prs)
             row = act("append", slug, prs=[p["number"] for p in prs])
             if args.apply:
                 proc = run([brain, "append", slug, "--type", "papercut"], stdin=chunk)
@@ -815,15 +876,15 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             body = (
                 f"Source: last-stack-pipeline-forge-pr-ledger (one row per PR; closes itself when the PR merges or closes)\n"
                 f"Repo: {pr['repo']}\nPR: {', '.join(str(p['number']) for p in prs)}\nChecked-at: {checked_at}\n\n"
-                f"## Evidence\n" + "".join(evidence_line(p, checked_at) for p in prs)
+                f"## Evidence\n" + "".join(evidence_line(p, checked_at, passes) for p in prs)
             )
-            row = act("file", file_slug, prs=[p["number"] for p in prs])
+            row = act("file", file_slug, prs=[p["number"] for p in prs], severity=severity)
             if args.apply:
                 argv = [
                     brain, "papercut", "file", file_slug,
-                    "--component", "pipeline", "--severity", "p0", "--kind", "specified-fix",
+                    "--component", "pipeline", "--severity", severity, "--kind", "specified-fix",
                     "--symptom", symptom, "--title", title, "--repo", pr["repo"],
-                    "--tag", "papercut", "--tag", "pipeline", "--tag", "p0", "--body", body,
+                    "--tag", "papercut", "--tag", "pipeline", "--tag", severity, "--body", body,
                 ]
                 proc = run(argv)
                 refusal = (proc.stdout or "") + (proc.stderr or "")
@@ -849,6 +910,11 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                 "kind": {"base-red": "main-red", "known": "known"}.get(pr["root_cause"], "pr"),
                 "fingerprint": fingerprint,
                 "last_evidence_at": checked_at,
+                # The severity the row was FILED at. It cannot be amended later,
+                # so this is what the record actually carries, not a wish.
+                "severity": severity,
+                "passes": passes,
+                "last_seen_at": checked_at,
             }
 
     # 2. tracked rows whose PR left the open set (or whose main went green) → close verified

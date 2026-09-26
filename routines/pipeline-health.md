@@ -300,6 +300,18 @@ What the ledger does, so you do not repeat it:
   for 2 hours.
 - It files ONE row per PR: `papercut-pipeline-forge-<repo>-pr-<n>`. It appends
   one evidence line only when the head or the shape changes.
+- It picks the SEVERITY from the shape. `conflict` and a red main are `p0`: they
+  do not resolve unless somebody acts, and a red main blocks every open PR. A
+  `red`, `cancelled`, `pending` or armed-green row is `p1`, because those clear
+  on their own often enough that a p0 for each one made `papercut-p0-active`
+  continuously true — six distinct p0 rows inside 40 minutes on
+  EdgeVector/last-stack on 2026-09-26, none naming a durable defect. Do NOT read
+  a p1 pipeline row as "less broken": read it as "this may be a flake, and the
+  evidence line's `passes=<n>` says how many consecutive passes it has survived".
+- Severity is NOT amended later. `brain papercut` has no verb for it, so a
+  transient row that turns out to be a wedged lane stays p1 and its persistence
+  lives in `passes=<n>`. Raise it by filing the root cause as its own papercut,
+  never by re-filing the PR row.
 - A PR red only on contexts that are also red on the base tip goes to ONE
   per-repo row, `papercut-pipeline-forge-<repo>-main-red`, and gets no per-PR
   row. Main red is the defect; fix main, not the PR.

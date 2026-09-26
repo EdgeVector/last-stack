@@ -162,7 +162,7 @@ echo "ok   apply files papercut-pipeline-forge-fold-pr-7"
 # 4. same head + same shape → no second write (no per-state sibling, no append)
 : >"$tmp/brain/calls.log"
 sync --apply
-jq -e '.ledger.actions == [{"action":"unchanged","slug":"papercut-pipeline-forge-fold-pr-7"}]' "$tmp/out.json" >/dev/null \
+jq -e '.ledger.actions == [{"action":"unchanged","slug":"papercut-pipeline-forge-fold-pr-7","passes":2}]' "$tmp/out.json" >/dev/null \
   || { echo "FAIL repeat pass must be unchanged"; cat "$tmp/out.json"; exit 1; }
 if grep -Eq '^(append|papercut file)' "$tmp/brain/calls.log"; then echo "FAIL repeat pass wrote"; cat "$tmp/brain/calls.log"; exit 1; fi
 echo "ok   an unchanged PR causes no write"
@@ -463,6 +463,105 @@ SITUATIONS_UNREADABLE="$R" "$LEDGER" scan --repo "$R" --json >"$tmp/scan.json"
 jq -e '(.prs[] | select(.number==30) | .stuck) == true
        and (.prs[] | select(.number==30) | .merge_policy) == "unreadable"' "$tmp/scan.json" >/dev/null   || { echo "FAIL an unreadable merge-pr policy must fail OPEN and stay stuck"; cat "$tmp/scan.json"; exit 1; }
 echo "ok   an unreadable policy store fails open"
+
+# ── 9g. severity by SHAPE, not one p0 for everything ─────────────────────────
+# papercut-pipeline-ledger-p0-per-stuck-pr-floods-the-priority-band-20260926:
+# every per-PR row was filed at a hard-coded p0, so `papercut-p0-active` — the
+# fleet's only drop-everything signal — was continuously true for transient CI
+# states: six distinct p0 rows inside 40 minutes on EdgeVector/last-stack on
+# 2026-09-26, none naming a durable defect. Severity cannot be amended after a
+# filing, so it has to be right on the first pass.
+echo '[]' | put "repos/$R/pulls?state=open&limit=50"
+sync --apply   # drain the tracked rows from the cases above
+
+# 9g-1. a red PR is TRANSIENT: p1, and the tag follows the severity
+pulls_open 50 | put "repos/$R/pulls?state=open&limit=50"
+cp "$fx/repos_EdgeVector_fold_commits_head7_status.json" "$fx/repos_EdgeVector_fold_commits_head50_status.json"
+: >"$tmp/brain/calls.log"
+sync --apply
+jq -e '[.ledger.actions[] | select(.action=="file" and .slug=="papercut-pipeline-forge-fold-pr-50")][0].severity == "p1"' "$tmp/out.json" >/dev/null \
+  || { echo "FAIL a red PR row must be filed p1"; cat "$tmp/out.json"; exit 1; }
+grep -q -- '--severity p1' "$tmp/brain/calls.log" || { echo "FAIL --severity p1 not passed"; cat "$tmp/brain/calls.log"; exit 1; }
+if grep -q -- '--severity p0' "$tmp/brain/calls.log"; then echo "FAIL a transient red was filed p0"; cat "$tmp/brain/calls.log"; exit 1; fi
+if grep -q -- '--tag p0' "$tmp/brain/calls.log"; then echo "FAIL the p0 tag outlived the p0 severity"; cat "$tmp/brain/calls.log"; exit 1; fi
+grep -q -- '--tag p1' "$tmp/brain/calls.log" || { echo "FAIL the severity tag must follow the severity"; cat "$tmp/brain/calls.log"; exit 1; }
+grep -q 'passes=1' "$tmp/brain/calls.log" || { echo "FAIL the first evidence line must carry passes=1"; cat "$tmp/brain/calls.log"; exit 1; }
+echo "ok   a transient red PR row is filed p1, tag and evidence agree"
+
+# 9g-2. persistence is counted across passes even though nothing is written
+: >"$tmp/brain/calls.log"
+sync --apply
+jq -e '[.ledger.actions[] | select(.slug=="papercut-pipeline-forge-fold-pr-50")] == [{"action":"unchanged","slug":"papercut-pipeline-forge-fold-pr-50","passes":2}]' "$tmp/out.json" >/dev/null \
+  || { echo "FAIL an unchanged pass must advance the persistence counter"; cat "$tmp/out.json"; exit 1; }
+if grep -Eq '^(append|papercut file)' "$tmp/brain/calls.log"; then echo "FAIL counting persistence must not write"; cat "$tmp/brain/calls.log"; exit 1; fi
+sync --apply
+jq -e '[.ledger.actions[] | select(.slug=="papercut-pipeline-forge-fold-pr-50")][0].passes == 3' "$tmp/out.json" >/dev/null \
+  || { echo "FAIL the counter must keep advancing"; cat "$tmp/out.json"; exit 1; }
+# a NEW head is a different observation: the count restarts and the append says so
+pulls_open 50 | sed 's/"sha":"head50"/"sha":"head50b"/' | put "repos/$R/pulls?state=open&limit=50"
+cp "$fx/repos_EdgeVector_fold_commits_head7_status.json" "$fx/repos_EdgeVector_fold_commits_head50b_status.json"
+sync --apply
+grep -q 'head=head50b.*passes=1' "$tmp/brain/papercut-pipeline-forge-fold-pr-50.body" \
+  || { echo "FAIL a new head must reset the persistence counter"; cat "$tmp/brain/papercut-pipeline-forge-fold-pr-50.body"; exit 1; }
+echo "ok   persistence counts consecutive passes and resets on a new observation"
+
+# 9g-3. a CONFLICT is STRUCTURAL: it cannot resolve without a rebase, so p0
+echo '[]' | put "repos/$R/pulls?state=open&limit=50"
+put "repos/$R/pulls/50" <<'J'
+{"number":50,"state":"closed","merged":true,"merged_at":"2026-09-22T11:59:00Z"}
+J
+sync --apply
+pulls_open 51 | sed 's/"mergeable":true/"mergeable":false/' | put "repos/$R/pulls?state=open&limit=50"
+put "repos/$R/commits/head51/status" <<'J'
+{"statuses":[{"context":"Forge CI / ci-required (pull_request)","status":"success","created_at":"2026-09-22T10:10:00Z"},
+             {"context":"Forge CI / Mini (pull_request)","status":"success","created_at":"2026-09-22T10:20:00Z"}]}
+J
+: >"$tmp/brain/calls.log"
+sync --apply
+jq -e '[.ledger.actions[] | select(.action=="file" and .slug=="papercut-pipeline-forge-fold-pr-51")][0].severity == "p0"' "$tmp/out.json" >/dev/null \
+  || { echo "FAIL a conflict row must stay p0"; cat "$tmp/out.json"; exit 1; }
+grep -q -- '--severity p0' "$tmp/brain/calls.log" || { echo "FAIL conflict filing must pass --severity p0"; cat "$tmp/brain/calls.log"; exit 1; }
+echo "ok   a conflicted PR stays p0"
+
+# 9g-4. a red MAIN is STRUCTURAL: one row, whole-repo blast radius, so p0
+echo '[]' | put "repos/$R/pulls?state=open&limit=50"
+put "repos/$R/pulls/51" <<'J'
+{"number":51,"state":"closed","merged":false,"merged_at":null}
+J
+sync --apply
+put "repos/$R/commits/base1/status" <<'J'
+{"statuses":[{"context":"Forge CI / ci-required (push)","status":"success","created_at":"2026-09-22T11:00:00Z"},
+             {"context":"Forge CI / Mini (push)","status":"failure","description":"Failing after 3m","created_at":"2026-09-22T11:00:00Z"}]}
+J
+pulls_open 52 | put "repos/$R/pulls?state=open&limit=50"
+cp "$fx/repos_EdgeVector_fold_commits_head7_status.json" "$fx/repos_EdgeVector_fold_commits_head52_status.json"
+: >"$tmp/brain/calls.log"
+sync --apply
+# the main-red row was already closed verified above, so this recurrence files
+# under a dated occurrence slug — the severity is the assertion, not the slug
+jq -e '[.ledger.actions[] | select(.action=="file" and (.slug | startswith("papercut-pipeline-forge-fold-main-red")))][0].severity == "p0"' "$tmp/out.json" >/dev/null \
+  || { echo "FAIL a main-red row must stay p0"; cat "$tmp/out.json"; exit 1; }
+grep -q -- '--severity p0' "$tmp/brain/calls.log" || { echo "FAIL main-red filing must pass --severity p0"; cat "$tmp/brain/calls.log"; exit 1; }
+echo "ok   a red main stays p0"
+
+# 9g-5. a CANCELLED required run is transient — its remedy is a re-run — so p1
+put "repos/$R/commits/base1/status" <<'J'
+{"statuses":[{"context":"Forge CI / ci-required (push)","status":"success","created_at":"2026-09-22T11:00:00Z"},
+             {"context":"Forge CI / Mini (push)","status":"success","created_at":"2026-09-22T11:30:00Z"}]}
+J
+echo '[]' | put "repos/$R/pulls?state=open&limit=50"
+sync --apply
+pulls_open 53 | put "repos/$R/pulls?state=open&limit=50"
+cat >"$fx/repos_EdgeVector_fold_commits_head53_status.json" <<'J'
+{"statuses":[{"context":"Forge CI / ci-required (pull_request)","status":"success","created_at":"2026-09-22T10:10:00Z"},
+             {"context":"Forge CI / Mini (pull_request)","status":"failure","description":"Has been cancelled","created_at":"2026-09-22T10:20:00Z"}]}
+J
+: >"$tmp/brain/calls.log"
+sync --apply
+jq -e '[.ledger.actions[] | select(.action=="file" and .slug=="papercut-pipeline-forge-fold-pr-53")][0].severity == "p1"' "$tmp/out.json" >/dev/null \
+  || { echo "FAIL a cancelled row must be p1"; cat "$tmp/out.json"; exit 1; }
+if grep -q -- '--severity p0' "$tmp/brain/calls.log"; then echo "FAIL a cancelled run was filed p0"; cat "$tmp/brain/calls.log"; exit 1; fi
+echo "ok   a cancelled required run is filed p1"
 
 # 10. the prompt uses the ledger and forbids per-state slugs
 grep -Fq 'last-stack-pipeline-forge-pr-ledger" reap-plan' "$ROOT/routines/pr-reaper.md" \
