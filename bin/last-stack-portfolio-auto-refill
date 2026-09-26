@@ -11,7 +11,10 @@ pass-history file `last-stack-portfolio-pass-record` writes each hour — never
 a Brain list.
 
 Action: admit the highest-ranked paused North Star (the first real slug in
-the `Paused:` field, in order) into the Secondary slot. The Primary slot
+the `Paused:` field, in order) that has an idle milestone in the latest pass's
+`idle_by_north_star` map into the Secondary slot. When no ranked slug has one,
+admit the catch-all North Star with the most idle milestones. A pass record
+without the map keeps the ranked-only pick. The Primary slot
 never moves here — it is Tom's pinned strategic pick
 (`decision-2026-08-31-lastdb-storage-simplification-primary`), while the
 Secondary slot is the rotation point: both prior manual refills
@@ -201,23 +204,66 @@ def read_north_star_status(slug: str, brain_bin: str, fixture_dir: Optional[Path
     return (meta.get("status") or "").strip().lower()
 
 
+CATCH_ALL = "all-other-feature-north-stars"
+
+
 def pick_candidate(
     paused_field: str,
     primary: str,
     secondary: str,
     status_of=lambda _slug: "",
     skipped: Optional[list] = None,
+    supply: Optional[dict] = None,
 ) -> Optional[str]:
+    """First ranked Paused slug that can take work.
+
+    `supply` is the latest pass's `idle_by_north_star` map. When it is present,
+    a candidate with no idle milestone is skipped: admitting it fills the slot
+    with nothing to decompose, and the next two drained passes swap it back out
+    (2026-09-26: factory-stays-fast and feature-delivery-effective-flow, both
+    with zero idle milestones, traded the Secondary slot). When no ranked slug
+    has supply and Paused carries the catch-all, the North Star with the most
+    idle milestones behind the catch-all is admitted. An old pass record with
+    no map keeps the old ranked-only behavior.
+    """
+    named: list[str] = []
+    has_catch_all = False
+    for tok in paused_field.split(","):
+        if normalize(tok) == CATCH_ALL:
+            has_catch_all = True
+            break
     for tok in paused_field.split(","):
         cand = normalize(tok)
         if not cand or cand in PLACEHOLDER_TOKENS:
             continue
         if not SLUG_RE.match(cand):
             continue
+        named.append(cand)
         if cand in (primary, secondary):
+            continue
+        if supply is not None and int(supply.get(cand, 0) or 0) <= 0:
+            if skipped is not None:
+                skipped.append(f"{cand}:no-idle-milestones")
             continue
         # An unreadable record keeps the old behavior (admit): a brain read
         # blip must not stop the rotation. Only a stated terminal status skips.
+        status = status_of(cand)
+        if status in TERMINAL_NORTH_STAR_STATUSES:
+            if skipped is not None:
+                skipped.append(f"{cand}:{status}")
+            continue
+        return cand
+    if supply is None or not has_catch_all:
+        return None
+    ranked = sorted(
+        ((int(n or 0), ns) for ns, n in supply.items()),
+        key=lambda item: (-item[0], item[1]),
+    )
+    for count, cand in ranked:
+        if count <= 0 or not SLUG_RE.match(cand):
+            continue
+        if cand in (primary, secondary) or cand in named:
+            continue
         status = status_of(cand)
         if status in TERMINAL_NORTH_STAR_STATUSES:
             if skipped is not None:
@@ -408,14 +454,19 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     skipped: list = []
+    supply = two_most_recent[0].get("idle_by_north_star")
+    if not isinstance(supply, dict):
+        supply = None
     candidate = pick_candidate(
         paused,
         primary,
         secondary,
         status_of=lambda slug: read_north_star_status(slug, args.brain, fixture),
         skipped=skipped,
+        supply=supply,
     )
     result["skipped_terminal"] = skipped
+    result["supply_aware"] = supply is not None
     if candidate is None:
         result["verdict"] = "no-candidate"
         if args.json:
@@ -434,10 +485,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     new_policy_version = policy_version + 1
     new_updated_at = args.now or now_iso()
     new_paused = rebuild_paused(paused, candidate, secondary)
+    from_catch_all = normalize(candidate) not in [normalize(t) for t in paused.split(",")]
+    if from_catch_all:
+        pick = (
+            f"no ranked paused North Star had an idle milestone, so admitted {candidate} "
+            f"({supply.get(candidate, 0)} idle milestones) from {CATCH_ALL}"
+        )
+    elif supply is not None:
+        pick = (
+            f"admitted highest-ranked paused {candidate} with an idle milestone "
+            f"({supply.get(candidate, 0)})"
+        )
+    else:
+        pick = f"admitted highest-ranked paused {candidate}"
     reason = (
         f"Auto-refill: {primary} and {secondary} reported zero idle-promoteable and zero "
         f"idle-empty milestones on 2 consecutive milestone-driver passes ({ts1}, {ts2}); "
-        f"admitted highest-ranked paused {candidate} into Secondary per "
+        f"{pick} into Secondary per "
         "decision-2026-09-03-portfolio-auto-refill-from-ranking."
     )
     result["new_policy_version"] = new_policy_version

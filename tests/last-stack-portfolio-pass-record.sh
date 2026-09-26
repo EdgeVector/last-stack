@@ -68,6 +68,7 @@ printf '%s' "$line" | jq -e '
   and .admission_updated_at == "2026-09-01T00:00:00Z"
   and .admission_updated_by == "owner"
   and .ts == "2026-09-03T18:00:00Z"
+  and .idle_by_north_star == {"north-star-feature-delivery-effective-flow": 2, "north-star-other": 1}
 ' >/dev/null || fail "unexpected pass record: $line"
 
 # A second pass appends, never overwrites.

@@ -94,6 +94,26 @@ def counts_for(milestones: list[dict], north_star: str) -> tuple[int, int]:
     return idle_promoteable, idle_empty
 
 
+def idle_by_north_star(milestones: list[dict]) -> dict[str, int]:
+    """Idle (promote + decompose) milestone count for EVERY North Star.
+
+    The auto-refill reads this to skip a paused candidate that has nothing to
+    decompose. Without it the refill admitted north-star-lastdb-factory-stays-fast
+    at 2026-09-26T08:42Z with zero idle milestones, so the admission produced
+    no card (papercut-portfolio-auto-refill-admits-north-star-with-no-supply-20260926).
+    """
+    out: dict[str, int] = {}
+    for m in milestones:
+        if not isinstance(m, dict):
+            continue
+        if m.get("action") not in ("promote", "decompose"):
+            continue
+        ns = normalize(m.get("north_star", ""))
+        if ns:
+            out[ns] = out.get(ns, 0) + 1
+    return dict(sorted(out.items()))
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--gap-report", required=True, help="Path to kanban milestone gap-report --json output")
@@ -143,6 +163,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "secondary_idle_empty": s_empty,
         "admission_updated_at": admission["updated_at"],
         "admission_updated_by": admission["updated_by"],
+        "idle_by_north_star": idle_by_north_star(milestones),
     }
 
     passes_path = Path(args.passes_file)

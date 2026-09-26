@@ -240,4 +240,38 @@ grep -q 'last-stack-portfolio-auto-refill' "$ROOT/routines/north-star-driver.md"
 grep -q 'last-stack-portfolio-pass-record' "$ROOT/routines/milestone-driver.md" \
   || fail "milestone-driver does not record portfolio passes"
 
+# ------------------------------------- supply-aware pick (idle_by_north_star)
+# papercut-portfolio-auto-refill-admits-north-star-with-no-supply-20260926
+supply_pass() {
+  # supply_pass <ts> <idle_by_north_star JSON object>
+  printf '{"ts":"%s","primary":"north-star-feature-delivery-effective-flow","secondary":"north-star-lastdb-no-scan-access","primary_idle_promoteable":0,"primary_idle_empty":0,"secondary_idle_promoteable":0,"secondary_idle_empty":0,"admission_updated_at":"2026-09-01T00:00:00Z","admission_updated_by":"owner","idle_by_north_star":%s}\n' "$1" "$2"
+}
+live_s="$tmp/supply"
+write_admission "$live_s" < <(base_record)
+passes_s="$tmp/supply.jsonl"
+
+# A ranked candidate with no idle milestone is skipped for the next one that has one.
+{ supply_pass 2026-09-03T18:00:00Z '{}'
+  supply_pass 2026-09-03T19:00:00Z '{"north-star-b":2,"north-star-z":9}'
+} >"$passes_s"
+out="$("$bin" --fixture-dir "$live_s" --passes-file "$passes_s" --json)"
+printf '%s' "$out" | jq -e '.candidate == "north-star-b" and .supply_aware == true and (.skipped_terminal | index("north-star-a:no-idle-milestones"))' >/dev/null \
+  || fail "ranked candidate with no idle milestone must be skipped: $out"
+
+# No ranked candidate has supply: the catch-all North Star with the most idle milestones wins.
+{ supply_pass 2026-09-03T18:00:00Z '{}'
+  supply_pass 2026-09-03T19:00:00Z '{"north-star-y":1,"north-star-z":3,"north-star-lastdb-no-scan-access":5}'
+} >"$passes_s"
+out="$("$bin" --fixture-dir "$live_s" --passes-file "$passes_s" --json)"
+printf '%s' "$out" | jq -e '.candidate == "north-star-z" and (.reason | test("from all-other-feature-north-stars"))' >/dev/null \
+  || fail "catch-all fallback must pick the most idle non-admitted North Star: $out"
+
+# No supply anywhere: no candidate, nothing written.
+{ supply_pass 2026-09-03T18:00:00Z '{}'
+  supply_pass 2026-09-03T19:00:00Z '{}'
+} >"$passes_s"
+out="$("$bin" --fixture-dir "$live_s" --passes-file "$passes_s" --json)"
+printf '%s' "$out" | jq -e '.verdict == "no-candidate" and .refilled == false' >/dev/null \
+  || fail "no idle milestone anywhere must be no-candidate: $out"
+
 printf 'ok last-stack-portfolio-auto-refill\n'
