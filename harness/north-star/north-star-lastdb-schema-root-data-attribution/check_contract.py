@@ -106,6 +106,14 @@ def enum_variants(text):
     return VARIANT_RE.findall(match.group(1))
 
 
+FN_NAME_RE = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def function_name(span):
+    match = FN_NAME_RE.search(span)
+    return match.group(1) if match else None
+
+
 def function_spans(text):
     lines = code_text(text).splitlines()
     starts = [index for index, line in enumerate(lines) if FN_RE.match(line)]
@@ -207,17 +215,51 @@ def source_failures(texts):
         failures,
     )
 
+    # The ordering rule -- a pending scope is opened before its event is
+    # appended -- is a property of the CALL PATH, not of one function body. Two
+    # upstream pipelines share one attribution tail, so the append lives in a
+    # helper and each caller begins first. A span-local reading calls that
+    # correct shape a violation: it went red on every last-stack gate run on
+    # 2026-09-26 for fold's `consolidate attribution write duplication`, which
+    # moved the append into `record_attribution_scopes` and left both
+    # `begin_pending_scopes` calls in the callers.
+    # papercut-north-star-attribution-ordering-rule-is-span-local-20260926
+    #
+    # So: follow one hop. A function that appends without its own begin is
+    # compliant when it HAS callers in this file and EVERY caller begins before
+    # calling it. No caller is a failure too — an append nothing reaches after a
+    # begin has no proved ordering.
+    ordering_failure = "A write appends an attribution event before its pending scope."
+    spans = list(function_spans(write))
     event_functions = 0
-    for body in function_spans(write):
+    append_helpers = []
+    for body in spans:
         append_at = body.find("append_events_and_clear_pending_scopes")
         if append_at < 0:
             continue
         event_functions += 1
         begin_at = body.find("begin_pending_scopes")
-        if begin_at < 0 or begin_at > append_at:
-            failures.append(
-                "A write appends an attribution event before its pending scope."
-            )
+        if 0 <= begin_at < append_at:
+            continue
+        name = function_name(body)
+        if name is None:
+            failures.append(ordering_failure)
+            continue
+        append_helpers.append(name)
+    for name in append_helpers:
+        call = "%s(" % name
+        callers = [
+            body for body in spans if function_name(body) != name and call in body
+        ]
+        if not callers:
+            failures.append(ordering_failure)
+            continue
+        for body in callers:
+            call_at = body.find(call)
+            begin_at = body.find("begin_pending_scopes")
+            if not 0 <= begin_at < call_at:
+                failures.append(ordering_failure)
+                break
     if event_functions == 0:
         failures.append("The write path does not append an attribution source event.")
     require_code(

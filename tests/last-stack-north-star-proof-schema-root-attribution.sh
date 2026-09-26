@@ -358,6 +358,117 @@ grep -F -q "Source label: git:$WORK/fold-wt:HEAD" \
   fail "the harness did not load the Fold worktree with git show"
 [ ! -e "$WORK/marker" ] || fail "the worktree proof called lastdb or brain"
 
+# ── the ordering rule follows one call hop ───────────────────────────────────
+# The rule is "a pending scope is opened before its event is appended", and that
+# is a property of the CALL PATH. Two upstream pipelines share one attribution
+# tail, so fold moved the append into a helper and left each caller's
+# `begin_pending_scopes` in place; a span-local reading called that a violation
+# and turned this gate red on every last-stack run of 2026-09-26.
+# The fixture above carries only the inline spelling, which is why nothing
+# caught it. These four cases carry the other shapes.
+# papercut-north-star-attribution-ordering-rule-is-span-local-20260926
+ordering_tree() {
+  # ordering_tree <dir> <write.rs body>: a full source tree that differs from
+  # the fixture in the write path only.
+  local dir="$1" body="$2"
+  mkdir -p "$dir/fold_db/crates/core/src/db_operations" \
+    "$dir/fold_db/crates/core/src/fold_db_core/mutation_manager" \
+    "$dir/fold_db/crates/core/src/schema/core" \
+    "$dir/lastdb_node/src"
+  cp -R "$FIXTURE/fold_db/crates/core/src/schema" "$dir/fold_db/crates/core/src/"
+  cp "$FIXTURE/fold_db/crates/core/src/db_operations/attribution_ledger.rs" \
+    "$dir/fold_db/crates/core/src/db_operations/attribution_ledger.rs"
+  cp "$FIXTURE/lastdb_node/src/attribution_epoch.rs" "$dir/lastdb_node/src/attribution_epoch.rs"
+  printf '%s\n' "$body" >"$dir/fold_db/crates/core/src/fold_db_core/mutation_manager/write.rs"
+}
+ordering_report() {
+  # ordering_report <dir> <report-dir>: run the source check over that tree.
+  PATH="$WORK/bin:$PATH" \
+    SCHEMA_ROOT_ATTRIBUTION_SOURCE_DIR="$1" \
+    NORTH_STAR_PROOF_DIR="$2" \
+    "$RUNNER" --offline north-star-lastdb-schema-root-data-attribution \
+    >"$2.out" 2>"$2.err" || true
+  printf '%s' "$2/north-star-lastdb-schema-root-data-attribution.md"
+}
+ordering_gate="$(cat <<'RS'
+fn attribution_source_events_enabled() -> bool {
+    std::env::var("LASTDB_ATTRIBUTION_SOURCE_EVENTS")
+        .is_ok_and(|value| matches!(value.trim(), "1" | "true" | "on" | "yes"))
+}
+RS
+)"
+ordering_helper="$(cat <<'RS'
+    async fn record_attribution_scopes(&self) -> Result<(), ()> {
+        self.db_ops
+            .attribution()
+            .append_events_and_clear_pending_scopes(attribution_events(), &mutation_ids)
+            .await?;
+        Ok(())
+    }
+RS
+)"
+
+# The consolidated shape fold actually ships: the append is in a helper and both
+# callers begin first. The source contract must PASS.
+ordering_tree "$WORK/order-helper" "$ordering_gate
+$ordering_helper
+    async fn write_mutations_batch_with_receipt_cloud(&self) -> Result<(), ()> {
+        self.db_ops.attribution().begin_pending_scopes(&scopes).await?;
+        let receipt = self.write_with_aggregate_invalidations().await?;
+        self.record_attribution_scopes(&scopes).await?;
+        Ok(receipt)
+    }
+    pub(crate) async fn apply_replayed_mutations(&self) -> Result<(), ()> {
+        self.db_ops.attribution().begin_pending_scopes(&scopes).await?;
+        let receipt = self.write_with_aggregate_invalidations().await?;
+        self.record_attribution_scopes(&scopes).await?;
+        Ok(receipt)
+    }"
+report="$(ordering_report "$WORK/order-helper" "$WORK/order-helper-report")"
+grep -q 'Source contract: PASS' "$report" \
+  || fail "a shared attribution tail in a helper was read as a violation: $(sed -n '/Source failures/,+4p' "$report")"
+
+# A caller that appends through the helper BEFORE it begins is the real
+# regression, and it must still fail. The wrong ORDER, not an absent begin:
+# a fixture with no begin at all cannot reach this branch.
+ordering_tree "$WORK/order-late-begin" "$ordering_gate
+$ordering_helper
+    async fn write_mutations_batch_with_receipt_cloud(&self) -> Result<(), ()> {
+        let receipt = self.write_with_aggregate_invalidations().await?;
+        self.record_attribution_scopes(&scopes).await?;
+        self.db_ops.attribution().begin_pending_scopes(&scopes).await?;
+        Ok(receipt)
+    }"
+report="$(ordering_report "$WORK/order-late-begin" "$WORK/order-late-begin-report")"
+grep -q 'A write appends an attribution event before its pending scope.' "$report" \
+  || fail "a caller that appends before it begins passed: $(sed -n '/Source failures/,+4p' "$report")"
+
+# An append nothing reaches after a begin has no proved ordering either.
+ordering_tree "$WORK/order-orphan" "$ordering_gate
+$ordering_helper
+    async fn write_mutations_batch_with_receipt_cloud(&self) -> Result<(), ()> {
+        self.db_ops.attribution().begin_pending_scopes(&scopes).await?;
+        Ok(())
+    }"
+report="$(ordering_report "$WORK/order-orphan" "$WORK/order-orphan-report")"
+grep -q 'A write appends an attribution event before its pending scope.' "$report" \
+  || fail "an unreachable append helper passed: $(sed -n '/Source failures/,+4p' "$report")"
+
+# The span-local violation the rule was written for, which the fixture never
+# exercised: one function, append first, begin after.
+ordering_tree "$WORK/order-inline" "$ordering_gate
+    async fn write_mutations_batch_with_receipt_cloud(&self) -> Result<(), ()> {
+        self.db_ops
+            .attribution()
+            .append_events_and_clear_pending_scopes(attribution_events(), &mutation_ids)
+            .await?;
+        self.db_ops.attribution().begin_pending_scopes(&scopes).await?;
+        Ok(())
+    }"
+report="$(ordering_report "$WORK/order-inline" "$WORK/order-inline-report")"
+grep -q 'A write appends an attribution event before its pending scope.' "$report" \
+  || fail "an inline append before its begin passed: $(sed -n '/Source failures/,+4p' "$report")"
+
 PORTAL="${EDGEVECTOR_WORKSPACE:-$HOME/code/edgevector}/fold/.portal/cache"
 if [ -f "$PORTAL" ]; then
   PATH="$WORK/bin:$PATH" \
