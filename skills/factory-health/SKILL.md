@@ -33,6 +33,17 @@ Edit `config/factory-health.toml` (or `FACTORY_HEALTH_CONFIG`). Key knobs:
 - Supply runway: `pickup_ready / ships_per_hour` (soft <2h, hard <1h)
 - Doing max age + stale count
 - Aged doing+pr_url closeout smell
+- Supply per admitted North Star (`[supply]`): runnable Kind:pr cards in
+  todo/doing plus in_flight/idle_promoteable milestones, for each North Star
+  that `preference-feature-delivery-portfolio-admission` admits (Primary,
+  Secondary, optional Backfill; one Brain point get). Zero of both = JAMMED.
+  The first jammed pass makes the verdict soft with no page. Two consecutive
+  jammed passes page (hard) and name every open milestone with its gap-report
+  status and reason (blocked backlog cards + block_reason, proof card FAIL,
+  planned state). Heartbeat adds `runnable_by_ns=<ns>:<cards>/<active_ms>/<decomposable_ms>`,
+  `jammed=` and `jam_passes=`. `~/.local/state/last-stack/factory-health/supply-latest.json`
+  carries `{ts, admitted, runnable_by_ns, jammed, consecutive_jam_passes}` for
+  the portfolio backfill tool.
 
 ## On alert
 

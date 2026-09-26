@@ -15,6 +15,8 @@ The factory can look "fine" while:
 - ship rate drops vs the last 24h average
 - cards sit in `doing` for hours (merged-but-not-closed, zombies)
 - `todo` piles up or starves
+- an admitted North Star has zero runnable cards (supply jam) while the
+  other bands stay green — observed 2026-09-26
 
 LLM watch/pickup can be paused (low-credit). This check is **always-on** and
 pages Tom via `ra notify` before any auto-fix.

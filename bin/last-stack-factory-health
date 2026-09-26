@@ -8,7 +8,16 @@ Usage:
 
 Exit 0 always after a completed pass (including alerts). Exit 2 on usage error.
 Heartbeat line:
-  factory-health <ISO> ok|soft|hard|noop alerts=N … flagged=…
+  factory-health <ISO> ok|soft|hard|noop alerts=N … factory=…
+    runnable_by_ns=<ns>:<cards>/<active_ms>/<decomposable_ms>,… jammed=<ns,…|none|unknown>
+    jam_passes=N
+
+Supply (runnable cards per admitted North Star): an admitted North Star with
+zero runnable Kind:pr cards and zero in_flight/idle_promoteable milestones is
+jammed. A jam makes the verdict soft on the first pass and pages (hard) once it
+holds for [supply] alarm_after_passes consecutive passes. State and
+supply-latest.json live in ~/.local/state/last-stack/factory-health/
+(override FACTORY_HEALTH_SUPPLY_STATE_DIR).
 """
 from __future__ import annotations
 
@@ -135,6 +144,9 @@ class Alert:
     title: str
     detail: str
     recommendations: list[str] = field(default_factory=list)
+    # False keeps the alert in the verdict and the heartbeat but out of the
+    # out-of-band message: a first supply-jam pass must not page on its own.
+    notify: bool = True
 
 
 @dataclass
@@ -659,8 +671,8 @@ def pickup_ready_count(board_cli: str) -> Optional[int]:
     return int(value)
 
 
-def safe_milestone_frontier(board_cli: str) -> tuple[Optional[bool], str]:
-    """Report whether gap-report exposes work that the driver can safely add."""
+def fetch_gap_report(board_cli: str) -> tuple[Optional[dict[str, Any]], str]:
+    """Read `milestone gap-report --json` once. Return (data, error)."""
     code, out, err = run(
         [board_cli, "milestone", "gap-report", "--json"], timeout=120
     )
@@ -670,6 +682,22 @@ def safe_milestone_frontier(board_cli: str) -> tuple[Optional[bool], str]:
         data = parse_json(out)
     except Exception:
         return None, "malformed gap-report"
+    if not isinstance(data, dict):
+        return None, "malformed gap-report"
+    return data, ""
+
+
+def safe_milestone_frontier(board_cli: str) -> tuple[Optional[bool], str]:
+    """Report whether gap-report exposes work that the driver can safely add."""
+    data, error = fetch_gap_report(board_cli)
+    return frontier_from_gap_report(data, error)
+
+
+def frontier_from_gap_report(
+    data: Optional[dict[str, Any]], error: str = ""
+) -> tuple[Optional[bool], str]:
+    if data is None:
+        return None, error or "malformed gap-report"
     queue = data.get("work_queue") if isinstance(data, dict) else None
     if not isinstance(queue, list):
         return None, "gap-report has no work_queue"
@@ -682,6 +710,385 @@ def safe_milestone_frontier(board_cli: str) -> tuple[Optional[bool], str]:
     if safe:
         return True, ",".join(safe[:5])
     return False, "no promote or decompose action"
+
+
+# ── Supply: runnable cards per admitted North Star ─────────────────────────
+# On 2026-09-26 the Primary North Star had zero runnable cards for hours. Every
+# routine said "healthy" and this check only said todo_runway_hard, which names
+# a symptom and no cause. The supply signal counts runnable work per ADMITTED
+# North Star and, when one has none, names each open milestone and why it
+# cannot produce a card. Reads: one Brain point get, one gap-report, capped
+# todo/doing lists, and bounded `kanban show` for blocked backlog cards of a
+# jammed North Star only. Never a Brain list or search.
+
+ADMISSION_SLUG = "preference-feature-delivery-portfolio-admission"
+ADMISSION_FIELDS = ("primary", "secondary", "backfill")
+TERMINAL_MILESTONE_STATUSES = {"complete", "abandoned"}
+ACTIVE_MILESTONE_STATUSES = {"in_flight", "idle_promoteable"}
+DECOMPOSABLE_MILESTONE_STATUSES = {"needs_next_slice", "idle_empty"}
+EMPTY_ADMISSION_VALUES = {"", "-", "none", "null", "n/a", "tbd"}
+SUPPLY_LIST_LIMIT = 200
+
+
+def supply_state_dir() -> Path:
+    env = os.environ.get("FACTORY_HEALTH_SUPPLY_STATE_DIR")
+    if env:
+        return Path(env)
+    return Path.home() / ".local" / "state" / "last-stack" / "factory-health"
+
+
+def parse_admission(body: str) -> dict[str, Optional[str]]:
+    """Read Primary/Secondary/Backfill from the admission record body.
+
+    The first line for each key wins. `Backfill:` is optional; an absent line or
+    a placeholder value (none, -, tbd) reads as None.
+    """
+    admitted: dict[str, Optional[str]] = {k: None for k in ADMISSION_FIELDS}
+    for raw in (body or "").splitlines():
+        m = re.match(r"^\s*[-*]?\s*(Primary|Secondary|Backfill)\s*:\s*(.*)$", raw, re.I)
+        if not m:
+            continue
+        key = m.group(1).lower()
+        if admitted[key] is not None:
+            continue
+        value = m.group(2).strip().strip("`*").strip()
+        value = re.split(r"[\s,;]", value, maxsplit=1)[0].strip("`*.")
+        if value.lower() in EMPTY_ADMISSION_VALUES:
+            continue
+        admitted[key] = value
+    return admitted
+
+
+def read_admission(brain_cli: str, slug: str) -> tuple[Optional[dict[str, Optional[str]]], str]:
+    """One exact Brain point get of the admission record."""
+    code, out, err = run(
+        [brain_cli, "get", slug, "--type", "preference", "--json"], timeout=60
+    )
+    if code != 0:
+        return None, (err or out or f"exit {code}").strip()[:160]
+    try:
+        data = parse_json(out)
+    except Exception:
+        return None, "malformed admission record"
+    body = data.get("body") if isinstance(data, dict) else None
+    if not isinstance(body, str):
+        return None, "admission record has no body"
+    admitted = parse_admission(body)
+    if not admitted.get("primary") and not admitted.get("secondary"):
+        return None, "admission record names no Primary or Secondary"
+    return admitted, ""
+
+
+def list_column(board_cli: str, column: str) -> tuple[Optional[list[dict[str, Any]]], bool]:
+    """Capped read of one column. Return (cards or None on failure, truncated)."""
+    code, out, _ = run(
+        [board_cli, "list", "--column", column, "--json", "--limit", str(SUPPLY_LIST_LIMIT)],
+        timeout=120,
+    )
+    if code != 0:
+        return None, False
+    try:
+        data = parse_json(out)
+    except Exception:
+        return None, False
+    if isinstance(data, list):
+        return data, False
+    if isinstance(data, dict) and isinstance(data.get("cards"), list):
+        return data["cards"], bool(data.get("truncated"))
+    return None, False
+
+
+def show_card(board_cli: str, slug: str) -> Optional[dict[str, Any]]:
+    code, out, _ = run([board_cli, "show", slug, "--json"], timeout=60)
+    if code != 0:
+        return None
+    try:
+        data = parse_json(out)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def admitted_list(admitted: dict[str, Optional[str]]) -> list[str]:
+    out: list[str] = []
+    for key in ADMISSION_FIELDS:
+        ns = admitted.get(key)
+        if ns and ns not in out:
+            out.append(ns)
+    return out
+
+
+def milestone_reason(
+    ms: dict[str, Any],
+    card_lookup: Any,
+    budget: list[int],
+) -> str:
+    """Name why one open milestone produces no runnable card."""
+    status = str(ms.get("status") or "?")
+    parts = [str(ms.get("reason") or "").strip() or "no reason given"]
+    state = str(ms.get("state") or "")
+    if state and state not in {"active", status}:
+        parts.append(f"state={state}")
+    blocked = [str(s) for s in (ms.get("blocked_backlog") or []) if s]
+    if blocked:
+        named: list[str] = []
+        for slug in blocked:
+            why = ""
+            if budget[0] > 0 and card_lookup is not None:
+                budget[0] -= 1
+                card = card_lookup(slug)
+                if card is None:
+                    why = "unreadable"
+                else:
+                    why = str(card.get("block_reason") or "").strip()
+                    status_b = str(card.get("block_status") or "").strip()
+                    deps = card.get("blockedBy") or card.get("missingDeps") or []
+                    if not why and deps:
+                        why = "dep-blocked by " + ",".join(str(d) for d in deps[:3])
+                    if status_b:
+                        why = f"{status_b}: {why}" if why else status_b
+            named.append(f"{slug} ({why or 'no block_reason'})")
+        parts.append("blocked backlog: " + "; ".join(named))
+    if status == "proof_pending":
+        if ms.get("has_proof_card"):
+            parts.append("proof card FAIL (proof_passing=false)")
+        else:
+            parts.append("no proof card")
+    return " | ".join(p for p in parts if p)
+
+
+def compute_supply(
+    admitted: dict[str, Optional[str]],
+    gap_report: dict[str, Any],
+    todo_cards: list[dict[str, Any]],
+    doing_cards: list[dict[str, Any]],
+    card_lookup: Any = None,
+    max_lookups: int = 12,
+) -> dict[str, Any]:
+    """Pure supply computation over already-read inputs (fixture-testable)."""
+    milestones = [m for m in (gap_report.get("milestones") or []) if isinstance(m, dict)]
+    ms_ns = {str(m.get("slug")): str(m.get("north_star") or "") for m in milestones}
+    ns_list = admitted_list(admitted)
+    runnable: dict[str, dict[str, int]] = {
+        ns: {"cards": 0, "active_milestones": 0, "decomposable_milestones": 0}
+        for ns in ns_list
+    }
+    for card in list(todo_cards) + list(doing_cards):
+        if str(card.get("kind") or "").lower() != "pr":
+            continue
+        ns = str(card.get("north_star") or "") or ms_ns.get(str(card.get("milestone") or ""), "")
+        if ns in runnable:
+            runnable[ns]["cards"] += 1
+    for m in milestones:
+        ns = str(m.get("north_star") or "")
+        if ns not in runnable:
+            continue
+        status = str(m.get("status") or "")
+        if status in ACTIVE_MILESTONE_STATUSES:
+            runnable[ns]["active_milestones"] += 1
+        elif status in DECOMPOSABLE_MILESTONE_STATUSES:
+            runnable[ns]["decomposable_milestones"] += 1
+    jammed: list[dict[str, Any]] = []
+    budget = [max(0, int(max_lookups))]
+    for ns in ns_list:
+        row = runnable[ns]
+        if row["cards"] > 0 or row["active_milestones"] > 0:
+            continue
+        named = []
+        for m in milestones:
+            if str(m.get("north_star") or "") != ns:
+                continue
+            status = str(m.get("status") or "")
+            if status in TERMINAL_MILESTONE_STATUSES:
+                continue
+            named.append(
+                {
+                    "slug": str(m.get("slug") or "?"),
+                    "status": status or "?",
+                    "reason": milestone_reason(m, card_lookup, budget),
+                }
+            )
+        jammed.append({"ns": ns, "milestones": named})
+    return {
+        "admitted": {k: admitted.get(k) for k in ADMISSION_FIELDS},
+        "runnable_by_ns": runnable,
+        "jammed": jammed,
+    }
+
+
+def advance_jam_streaks(
+    previous: dict[str, Any], jammed_ns: list[str]
+) -> tuple[dict[str, int], int]:
+    """Per-North-Star consecutive jam counts. A clear pass resets that NS."""
+    prev = previous.get("jam_streaks") if isinstance(previous, dict) else None
+    prev = prev if isinstance(prev, dict) else {}
+    streaks: dict[str, int] = {}
+    for ns in jammed_ns:
+        try:
+            streaks[ns] = int(prev.get(ns) or 0) + 1
+        except (TypeError, ValueError):
+            streaks[ns] = 1
+    return streaks, max(streaks.values(), default=0)
+
+
+def format_runnable(supply: Optional[dict[str, Any]]) -> str:
+    """Heartbeat token: <ns>:<cards>/<active_ms>/<decomposable_ms>,..."""
+    if not supply:
+        return "unavailable"
+    rows = supply.get("runnable_by_ns") or {}
+    if not rows:
+        return "none"
+    return ",".join(
+        f"{ns}:{r['cards']}/{r['active_milestones']}/{r['decomposable_milestones']}"
+        for ns, r in rows.items()
+    )
+
+
+def format_jammed(supply: Optional[dict[str, Any]]) -> str:
+    if not supply:
+        return "unknown"
+    names = [j["ns"] for j in supply.get("jammed") or []]
+    return ",".join(names) if names else "none"
+
+
+def jam_detail(supply: dict[str, Any]) -> str:
+    lines: list[str] = []
+    for jam in supply.get("jammed") or []:
+        lines.append(f"{jam['ns']}: 0 runnable cards, 0 in_flight/idle_promoteable milestones")
+        if not jam["milestones"]:
+            lines.append("  - no open milestone (the North Star driver must add one)")
+        for m in jam["milestones"]:
+            lines.append(f"  - {m['slug']} [{m['status']}] {m['reason']}")
+    return "\n  ".join(lines)
+
+
+def collect_supply(
+    cfg: dict[str, Any],
+    board_cli: str,
+    brain_cli: str,
+    gap_report: Optional[dict[str, Any]],
+    gap_error: str,
+) -> tuple[Optional[dict[str, Any]], str]:
+    """Read the inputs and compute supply. Return (supply or None, error)."""
+    slug = str(cfg_get(cfg, "supply", "admission_slug", ADMISSION_SLUG))
+    admitted, error = read_admission(brain_cli, slug)
+    if admitted is None:
+        return None, f"admission: {error}"
+    if gap_report is None:
+        return None, f"gap-report: {gap_error or 'unavailable'}"
+    todo, todo_trunc = list_column(board_cli, "todo")
+    doing, doing_trunc = list_column(board_cli, "doing")
+    if todo is None or doing is None:
+        return None, "board: todo/doing list unreadable"
+    supply = compute_supply(
+        admitted,
+        gap_report,
+        todo,
+        doing,
+        card_lookup=lambda s: show_card(board_cli, s),
+        max_lookups=int(cfg_get(cfg, "supply", "max_block_lookups", 12)),
+    )
+    supply["lists_truncated"] = bool(todo_trunc or doing_trunc)
+    return supply, ""
+
+
+def evaluate_supply(
+    cfg: dict[str, Any],
+    supply: Optional[dict[str, Any]],
+    supply_error: str,
+    consecutive: int,
+) -> list[Alert]:
+    """Jam alerts. Any jam keeps the verdict off `ok`; only a sustained jam pages."""
+    if not cfg_get(cfg, "supply", "enabled", True):
+        return []
+    if supply is None:
+        return [
+            Alert(
+                severity="soft",
+                code="supply_unreadable",
+                title="Supply per admitted North Star unreadable",
+                detail=supply_error or "unavailable",
+                notify=False,
+            )
+        ]
+    if not supply.get("jammed"):
+        return []
+    alarm_after = int(cfg_get(cfg, "supply", "alarm_after_passes", 2))
+    names = format_jammed(supply)
+    recs = [
+        "Unblock or re-scope a named milestone, or let the North Star driver add a milestone.",
+        "Backfill: admit a paused North Star with idle milestones (preference-feature-delivery-portfolio-admission).",
+    ]
+    if consecutive >= alarm_after:
+        return [
+            Alert(
+                severity="hard",
+                code="supply_jam_sustained",
+                title=f"Admitted North Star jammed for {consecutive} passes: {names}",
+                detail=jam_detail(supply),
+                recommendations=recs,
+            )
+        ]
+    return [
+        Alert(
+            severity="soft",
+            code="supply_jam",
+            title=f"Admitted North Star jammed (pass {consecutive}/{alarm_after}): {names}",
+            detail=jam_detail(supply),
+            recommendations=recs,
+            notify=False,
+        )
+    ]
+
+
+def write_supply_files(
+    sdir: Path,
+    supply: Optional[dict[str, Any]],
+    streaks: dict[str, int],
+    consecutive: int,
+    ts: str,
+) -> None:
+    sdir.mkdir(parents=True, exist_ok=True)
+    if supply is not None:
+        (sdir / "supply-state.json").write_text(
+            json.dumps(
+                {
+                    "ts": ts,
+                    "jammed": [j["ns"] for j in supply.get("jammed") or []],
+                    "jam_streaks": streaks,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    latest = supply_latest_payload(supply, consecutive, ts)
+    tmp = sdir / "supply-latest.json.tmp"
+    tmp.write_text(json.dumps(latest, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(sdir / "supply-latest.json")
+
+
+def supply_latest_payload(
+    supply: Optional[dict[str, Any]], consecutive: int, ts: str
+) -> dict[str, Any]:
+    if supply is None:
+        return {
+            "ts": ts,
+            "available": False,
+            "admitted": None,
+            "runnable_by_ns": None,
+            "jammed": None,
+            "consecutive_jam_passes": consecutive,
+        }
+    return {
+        "ts": ts,
+        "available": True,
+        "admitted": supply["admitted"],
+        "runnable_by_ns": supply["runnable_by_ns"],
+        "jammed": supply["jammed"],
+        "consecutive_jam_passes": consecutive,
+        "lists_truncated": bool(supply.get("lists_truncated")),
+    }
 
 
 def age_hours(card: dict[str, Any], now: float) -> float:
@@ -1865,7 +2272,8 @@ def main(argv: list[str]) -> int:
     )
     ready = pickup_ready_count(board_cli)
     snap.pickup_ready = ready if ready is not None else -1
-    frontier, frontier_detail = safe_milestone_frontier(board_cli)
+    gap_report, gap_error = fetch_gap_report(board_cli)
+    frontier, frontier_detail = frontier_from_gap_report(gap_report, gap_error)
     meta["safe_milestone_frontier"] = frontier
     meta["safe_milestone_frontier_detail"] = frontier_detail
     # refresh stale with config soft age for snapshot fields before evaluate mutates
@@ -1893,12 +2301,45 @@ def main(argv: list[str]) -> int:
 
     alerts = evaluate(cfg, snap, meta, state)
 
+    # Supply per admitted North Star. Kept out of evaluate() so the band tests
+    # that call evaluate() with an empty meta keep their exact alert lists.
+    supply: Optional[dict[str, Any]] = None
+    supply_error = "disabled"
+    consecutive = 0
+    streaks: dict[str, int] = {}
+    ssdir = supply_state_dir()
+    if cfg_get(cfg, "supply", "enabled", True):
+        brain_cli = str(cfg_get(cfg, "supply", "brain_cli", "brain"))
+        try:
+            supply, supply_error = collect_supply(
+                cfg, board_cli, brain_cli, gap_report, gap_error
+            )
+        except Exception as exc:  # a supply read must never kill the pass
+            supply, supply_error = None, f"error: {exc}"[:160]
+        previous = load_state(ssdir / "supply-state.json")
+        if supply is not None:
+            streaks, consecutive = advance_jam_streaks(
+                previous, [j["ns"] for j in supply.get("jammed") or []]
+            )
+        else:
+            # An unreadable pass neither extends nor clears a jam streak.
+            prev = previous.get("jam_streaks") if isinstance(previous, dict) else {}
+            streaks = dict(prev) if isinstance(prev, dict) else {}
+            consecutive = max((int(v) for v in streaks.values()), default=0)
+        alerts.extend(evaluate_supply(cfg, supply, supply_error, consecutive))
+        meta["supply"] = supply_latest_payload(supply, consecutive, iso_z())
+        meta["supply_error"] = supply_error
+
     # Append history ring (keep ~7d hourly)
     hist = state.setdefault("history", [])
     hist.append(asdict(snap))
     state["history"] = hist[-24 * 7 :]
 
-    actions = maybe_auto_fix(cfg, alerts, last_stack, args.dry_run)
+    # Supply alerts name work that no closeout or install heal can create, so
+    # they do not start factory-heal.
+    actions = maybe_auto_fix(
+        cfg, [a for a in alerts if not a.code.startswith("supply_")], last_stack, args.dry_run
+    )
 
     severity = "ok"
     if any(a.severity == "hard" for a in alerts):
@@ -1910,16 +2351,19 @@ def main(argv: list[str]) -> int:
 
     notified = False
     notify_detail = "skipped"
-    if alerts and cfg_get(cfg, "notify", "enabled", True) and not args.no_notify:
+    notifiable = [a for a in alerts if a.notify]
+    if not notifiable and alerts:
+        notify_detail = "not-notifiable"
+    if notifiable and cfg_get(cfg, "notify", "enabled", True) and not args.no_notify:
         quiet = in_quiet_hours(cfg)
-        hard_only = [a for a in alerts if a.severity == "hard"]
+        hard_only = [a for a in notifiable if a.severity == "hard"]
         if quiet and not cfg_get(cfg, "notify", "quiet_allows_hard", True):
             notify_detail = "quiet-hours"
         elif quiet and not hard_only and cfg_get(cfg, "notify", "quiet_allows_hard", True):
             # soft only during quiet — skip
             notify_detail = "quiet-soft-suppressed"
         else:
-            to_send = hard_only if quiet else alerts
+            to_send = hard_only if quiet else notifiable
             if not to_send:
                 notify_detail = "quiet-no-hard"
             else:
@@ -1942,6 +2386,11 @@ def main(argv: list[str]) -> int:
 
     if not args.dry_run:
         save_state(state_path, state)
+        if cfg_get(cfg, "supply", "enabled", True):
+            try:
+                write_supply_files(ssdir, supply, streaks, consecutive, iso_z())
+            except OSError as exc:
+                print(f"factory-health: supply state write failed: {exc}", file=sys.stderr)
 
     codes = ",".join(a.code for a in alerts) if alerts else "none"
     line = (
@@ -1954,7 +2403,10 @@ def main(argv: list[str]) -> int:
         f"max_doing_age_h={snap.max_doing_age_h} "
         f"notified={int(notified)} notify={notify_detail} "
         f"auto_fix={','.join(actions) if actions else 'none'} "
-        f"factory={factory_status_label(fetch)}"
+        f"factory={factory_status_label(fetch)} "
+        f"runnable_by_ns={format_runnable(supply)} "
+        f"jammed={format_jammed(supply)} "
+        f"jam_passes={consecutive}"
     )
     print(line)
     if args.json:
