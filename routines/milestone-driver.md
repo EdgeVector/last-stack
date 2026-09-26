@@ -539,8 +539,13 @@ local pass-history file — never a Brain list, never a Kanban write.
 A failure here must never fail this run; it only affects a future
 north-star-driver pass's auto-refill visibility.
 
-Write 5–15 lines to automation memory. Heartbeat via
-`$last_stack/bin/last-stack-brain-append-heartbeat` with GAP_FILL counts.
+Write 5–15 lines to automation memory. Heartbeat with exactly this command
+(fill in the counts; do not add other flags):
+
+```bash
+"$last_stack/bin/last-stack-brain-append-heartbeat" --automation last-stack-milestone-driver \
+  --line "<ok|noop|error> GAP_FILL IDLE_MILESTONES=<n> SKIPPED_IN_FLIGHT=<n> FILED=<n> PROMOTED=<n> PROOF_ONLY=<n> SAFETY_CAP=<n> CAP_HIT=<n>"
+```
 
 End with ROUTINE_RESULT:
 `outcome=<ok|noop|error> detail=<one-line>`.
