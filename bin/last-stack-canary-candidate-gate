@@ -26,6 +26,21 @@
 # apps-only pass, pinned to the build the primary actually runs after the
 # failure. The candidate's GREEN set names a build this host did not take; the
 # apps-only set names one it does.
+#
+# Step 0, primary-rows, runs BEFORE the expensive build: when registry `next`
+# has no row proved with the build the primary runs RIGHT NOW, prove the app
+# set against that build (set + isolated smoke on the primary's own lastdbd +
+# publish-next) and never cut over. Any path can move the primary --
+# lastdb-safe-upgrade, post-merge-safe-upgrade, a hand rollback -- and only this
+# gate wrote rows, so a primary moved outside it froze every host-track refresh
+# until the next nightly pass (2026-09-26: 2375 went live at 12:53Z with no
+# rows, and kanban, routines, brain and situations all held).
+# papercut-host-track-refresh-held-hours-after-lastdb-cutover-no-registry-proof-trigger-20260926
+#
+# `--primary-rows-only` runs step 0 alone. It costs one identity read and one
+# `lastdb app resolve` when the rows exist. `--detach` adds: when rows are
+# missing, start the worker in its own session and return at once. The
+# lastdb-safe-upgrade GREEN tail and the hourly reconcile gate call it that way.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
@@ -46,6 +61,12 @@ primary_lastdbd="${LAST_STACK_CANARY_PRIMARY_LASTDBD:-$HOME/.lastdb/current/last
 resolve_bin="${LAST_STACK_CANARY_APP_RESOLVE_BIN:-lastdb}"
 apps_only_stamp_dir="${LAST_STACK_CANARY_APPS_ONLY_STAMP_DIR:-$HOME/.local/state/last-stack/canary-apps-only}"
 apps_only_cooldown="${LAST_STACK_CANARY_APPS_ONLY_COOLDOWN_SECS:-3600}"
+primary_rows_enabled="${LAST_STACK_CANARY_PRIMARY_ROWS:-1}"
+primary_rows_probe_app="${LAST_STACK_CANARY_PRIMARY_ROWS_PROBE_APP:-}"
+primary_rows_lock="${LAST_STACK_CANARY_PRIMARY_ROWS_LOCK:-$HOME/.local/state/last-stack/canary-primary-rows.lock}"
+primary_rows_log_dir="${LAST_STACK_CANARY_PRIMARY_ROWS_LOG_DIR:-$HOME/.local/state/last-stack/canary-primary-rows}"
+apps_config="${LAST_STACK_CANARY_APPS_CONFIG:-${ROOT}/config/registry/apps.json}"
+self_path="$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")"
 
 usage() {
   printf '%s\n' 'last-stack-canary-candidate-gate'
@@ -56,19 +77,45 @@ usage() {
   printf '%s\n' '  LAST_STACK_CANARY_SKIP_BUILD=1, LAST_STACK_CANARY_SKIP_SMOKE=1, LAST_STACK_CANARY_SKIP_ROWS=1'
   printf '%s\n' '  LAST_STACK_CANARY_PRIMARY_LASTDBD, LAST_STACK_CANARY_APP_RESOLVE_BIN'
   printf '%s\n' '  LAST_STACK_CANARY_APPS_ONLY_STAMP_DIR, LAST_STACK_CANARY_APPS_ONLY_COOLDOWN_SECS'
+  printf '%s\n' '  LAST_STACK_CANARY_PRIMARY_ROWS=0 (skip step 0), LAST_STACK_CANARY_PRIMARY_ROWS_PROBE_APP,'
+  printf '%s\n' '  LAST_STACK_CANARY_PRIMARY_ROWS_LOCK, LAST_STACK_CANARY_PRIMARY_ROWS_LOG_DIR,'
+  printf '%s\n' '  LAST_STACK_CANARY_APPS_CONFIG, LAST_STACK_CANARY_V2_PRIMARY_IDENTITY_CMD'
+  printf '%s\n' ''
+  printf '%s\n' '  --primary-rows-only   run step 0 alone: prove rows for the build the primary'
+  printf '%s\n' '                        runs when next has none; never builds, never cuts over'
+  printf '%s\n' '  --detach              with --primary-rows-only: start the worker in its own'
+  printf '%s\n' '                        session when rows are missing and return at once'
 }
 
-case "${1:-}" in
-  '') ;;
-  -h|--help) usage; exit 0 ;;
-  *) usage >&2; exit 2 ;;
-esac
+mode=full
+detach=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --primary-rows-only) mode=primary-rows ;;
+    --detach) detach=1 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  shift
+done
+if [ "$detach" = 1 ] && [ "$mode" != primary-rows ]; then
+  usage >&2
+  exit 2
+fi
+
+# Set before any step can name them in a detail line (set -u).
+incoming=-
+primary=-
+primary_rows_status=""
 
 result() {
   # result <outcome> <detail-kv...>: the two contract lines, then exit 0.
-  local outcome="$1"; shift
-  printf 'CANARY_CANDIDATE result=%s %s\n' "$outcome" "$*"
-  printf 'ROUTINE_RESULT outcome=%s detail=%s\n' "$outcome" "$(printf '%s' "$*" | tr ' ' ',')"
+  local outcome="$1" detail
+  shift
+  detail="$*"
+  [ -z "$primary_rows_status" ] || detail="$detail primary_rows=$primary_rows_status"
+  printf 'CANARY_CANDIDATE result=%s %s\n' "$outcome" "$detail"
+  printf 'ROUTINE_RESULT outcome=%s detail=%s\n' "$outcome" "$(printf '%s' "$detail" | tr ' ' ',')"
   exit 0
 }
 
@@ -282,6 +329,227 @@ apps_only_pass() {
   esac
 }
 
+identity_command="${LAST_STACK_CANARY_V2_PRIMARY_IDENTITY_CMD:-last-stack-lastdb-memory-guard --identity}"
+
+read_primary_build() {
+  # Print the build the primary runs right now, or nothing. Read twice: once at
+  # step 2, and again after a failed cutover, because a row is a proved PAIR and
+  # the second half of the pair is whatever the primary runs AT THAT MOMENT.
+  local out rc=0 token
+  set +e
+  out="$(eval "$identity_command" 2>/dev/null)"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || return 0
+  for token in $out; do
+    case "$token" in build=*) printf '%s' "${token#build=}" ;; esac
+  done
+  return 0
+}
+
+# ── 0. primary-rows ──────────────────────────────────────────────────────
+# A row is a proved pair <app sha, lastdb build>, and host-track installs only a
+# pair whose build is the one the primary runs. So the moment the primary runs a
+# build with no `next` row, every app install freezes. Step 0 closes that gap
+# for whatever path moved the primary. It never builds and never cuts over.
+#
+# Cheap when rows exist: one identity read, one `lastdb --version`, one
+# `lastdb app resolve`. publish-next writes a row for every app in one PR, so
+# one app's row stands for the build's whole set; a new app with no row is the
+# apps-only pass's job (it compares every app's pin).
+#
+# One lock covers step 0 and the whole full gate. The full gate cuts the
+# primary over at step 5, and that safe-upgrade's GREEN tail starts a detached
+# `--primary-rows-only`; the lock makes that spawn a noop while this gate still
+# owns the build and is about to publish its own rows at step 6.
+
+lock_owned=0
+lock_holder=-
+
+primary_rows_lock_live_holder() {
+  # Print the pid of a LIVE holder, or nothing. An empty pid file is a holder
+  # between mkdir and the pid write, unless the lock dir is older than 10 min.
+  local pid
+  [ -d "$primary_rows_lock" ] || return 0
+  pid="$(sed -n '1p' "$primary_rows_lock/pid" 2>/dev/null || true)"
+  if [[ "$pid" =~ ^[0-9]+$ ]]; then
+    if kill -0 "$pid" 2>/dev/null; then printf '%s' "$pid"; fi
+    return 0
+  fi
+  if [ -z "$(find "$primary_rows_lock" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then
+    printf '%s' starting
+  fi
+  return 0
+}
+
+primary_rows_lock_acquire() {
+  local holder
+  mkdir -p "$(dirname "$primary_rows_lock")" 2>/dev/null || true
+  if ! mkdir "$primary_rows_lock" 2>/dev/null; then
+    holder="$(primary_rows_lock_live_holder)"
+    if [ -n "$holder" ]; then
+      lock_holder="$holder"
+      return 1
+    fi
+    # The owner is gone. Take the lock over.
+    rm -f "$primary_rows_lock/pid"
+    rmdir "$primary_rows_lock" 2>/dev/null || true
+    if ! mkdir "$primary_rows_lock" 2>/dev/null; then
+      lock_holder=race
+      return 1
+    fi
+  fi
+  printf '%s\n' "$$" >"$primary_rows_lock/pid"
+  lock_owned=1
+  return 0
+}
+
+primary_rows_lock_release() {
+  [ "$lock_owned" = 1 ] || return 0
+  rm -f "$primary_rows_lock/pid"
+  rmdir "$primary_rows_lock" 2>/dev/null || true
+  lock_owned=0
+}
+trap primary_rows_lock_release EXIT
+
+primary_rows_probe() {
+  # primary_rows_probe <app>: print present | missing | unknown for the row
+  # `next` holds for <app> proved with the build the primary runs.
+  local app="$1" out rc=0 err_file sha
+  err_file="$(mktemp "${TMPDIR:-/tmp}/primary-rows-probe.XXXXXX")"
+  set +e
+  out="$("$resolve_bin" app resolve "$app" --channel next --lastdb-version "$primary" --json 2>"$err_file")"
+  rc=$?
+  set -e
+  sha="$(printf '%s' "$out" | jq -r '.sha // empty' 2>/dev/null || true)"
+  if [ "$rc" -eq 0 ] && [ -n "$sha" ]; then
+    printf '%s' present
+  elif grep -q 'no next row' "$err_file" 2>/dev/null \
+    || { [ "$rc" -eq 0 ] && printf '%s' "$out" | jq -e 'has("sha")' >/dev/null 2>&1; }; then
+    printf '%s' missing
+  else
+    printf '%s' unknown
+  fi
+  rm -f "$err_file"
+}
+
+primary_rows_step() {
+  # Sets primary_rows_status (ok | noop | spawned | red | unknown | skipped),
+  # primary_rows_evidence and primary_rows_detail. Returns 0 on ok/spawned,
+  # 10 on noop/skipped, 20 on red/unknown. Never exits the gate.
+  local app probe bin_build rc=0 ts log child_dir child
+  primary_rows_status=noop
+  primary_rows_evidence=unset
+  primary_rows_detail=""
+  if [ "$primary_rows_enabled" != 1 ]; then
+    primary_rows_status=skipped
+    primary_rows_evidence=disabled
+    primary_rows_detail="stage=primary-rows evidence=disabled"
+    return 10
+  fi
+  primary="$(read_primary_build)"
+  if [ -z "$primary" ] || [ "$primary" = unknown ]; then
+    primary=-
+    primary_rows_status=unknown
+    primary_rows_evidence=primary_identity_absent
+    primary_rows_detail="stage=primary-rows evidence=primary_identity_absent"
+    return 20
+  fi
+  if [ -z "$primary_lastdbd" ] || [ ! -x "$primary_lastdbd" ]; then
+    primary_rows_evidence=primary_lastdbd_absent
+    primary_rows_detail="stage=primary-rows primary=$primary evidence=primary_lastdbd_absent bin=${primary_lastdbd:-unset}"
+    return 10
+  fi
+  # The smoke boots the binary; the row names the running build. They must be
+  # the same build, or the row would name a pair nothing proved (a binary
+  # swapped on disk before the daemon restarts, for example).
+  bin_build="$("$primary_lastdbd" --version 2>/dev/null | awk 'NF {v=$NF} END {print v}' || true)"
+  if [ "$bin_build" != "$primary" ]; then
+    primary_rows_evidence=primary_binary_mismatch
+    primary_rows_detail="stage=primary-rows primary=$primary evidence=primary_binary_mismatch binary=${bin_build:-unreadable}"
+    return 10
+  fi
+  app="$primary_rows_probe_app"
+  if [ -z "$app" ]; then
+    app="$(jq -r '.apps | keys[0] // empty' "$apps_config" 2>/dev/null || true)"
+  fi
+  [ -n "$app" ] || app=kanban
+  probe="$(primary_rows_probe "$app")"
+  case "$probe" in
+    present)
+      primary_rows_evidence=rows_present
+      primary_rows_detail="stage=primary-rows primary=$primary probe_app=$app evidence=rows_present"
+      return 10
+      ;;
+    missing) ;;
+    *)
+      # Do not smoke on a probe that could not answer: a broken resolve must
+      # not buy an ~18-minute smoke every hour. Report it; it is visible.
+      primary_rows_status=unknown
+      primary_rows_evidence=probe_failed
+      primary_rows_detail="stage=primary-rows primary=$primary probe_app=$app evidence=probe_failed"
+      return 20
+      ;;
+  esac
+
+  if [ "$mode" = primary-rows ] && [ "$detach" = 1 ]; then
+    lock_holder="$(primary_rows_lock_live_holder)"
+    if [ -n "$lock_holder" ]; then
+      primary_rows_evidence=locked
+      primary_rows_detail="stage=primary-rows primary=$primary probe_app=$app evidence=locked holder=$lock_holder"
+      return 10
+    fi
+    ts="$(date -u +%Y%m%dT%H%M%SZ)"
+    child_dir="$primary_rows_log_dir/$ts-$primary"
+    log="$child_dir.log"
+    mkdir -p "$child_dir"
+    # Its own session: the caller (a routine gate with a 15-minute budget, or
+    # the safe-upgrade tail) returns now, and its process-group teardown must
+    # not take the smoke with it.
+    ROUTINES_RUN_DIR="$child_dir" nohup perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or die "exec: $!\n"' \
+      "$self_path" --primary-rows-only </dev/null >"$log" 2>&1 &
+    child=$!
+    primary_rows_status=spawned
+    primary_rows_evidence=rows_missing
+    primary_rows_detail="stage=primary-rows primary=$primary probe_app=$app evidence=rows_missing pid=$child log=$log"
+    return 0
+  fi
+
+  if [ "$lock_owned" != 1 ] && ! primary_rows_lock_acquire; then
+    primary_rows_evidence=locked
+    primary_rows_detail="stage=primary-rows primary=$primary probe_app=$app evidence=locked holder=$lock_holder"
+    return 10
+  fi
+  apps_only_run primary_rows_missing || rc=$?
+  primary_rows_detail="$(printf '%s' "$apps_only_detail" | sed 's/stage=apps-only/stage=primary-rows/') probe_app=$app"
+  primary_rows_evidence="$apps_only_evidence"
+  case "$rc" in
+    0)  primary_rows_status=ok; return 0 ;;
+    10) primary_rows_status=noop; return 10 ;;
+    *)  primary_rows_status=red; return 20 ;;
+  esac
+}
+
+if [ "$mode" = primary-rows ]; then
+  step0_rc=0
+  primary_rows_step || step0_rc=$?
+  printf 'PRIMARY_ROWS result=%s %s\n' "$primary_rows_status" "$primary_rows_detail"
+  [ "$step0_rc" -ne 20 ] || exit 1
+  exit 0
+fi
+
+# The full gate holds the lock for its whole run (see above). A live holder is
+# a primary-rows worker in flight: step 0 is its job, so skip it here.
+if primary_rows_lock_acquire; then
+  primary_rows_step || true
+else
+  primary_rows_status=skipped
+  primary_rows_evidence=locked
+fi
+# A GREEN or RED step 0 wrote the apps-only cooldown stamp for <primary build,
+# app pins>. The apps-only exits below read the same stamp, so they do not
+# smoke the same pins a second time in this run.
+
 for tool in "$dogfood" "$pipeline"; do
   [ -x "$tool" ] || result error "evidence=tool_missing tool=$tool"
 done
@@ -303,24 +571,6 @@ if [ "$skip_build" != 1 ]; then
   fi
   build_status="$(printf '%s\n' "$build_json" | jq -r '.status // "unknown"' 2>/dev/null || echo unknown)"
 fi
-
-identity_command="${LAST_STACK_CANARY_V2_PRIMARY_IDENTITY_CMD:-last-stack-lastdb-memory-guard --identity}"
-
-read_primary_build() {
-  # Print the build the primary runs right now, or nothing. Read twice: once at
-  # step 2, and again after a failed cutover, because a row is a proved PAIR and
-  # the second half of the pair is whatever the primary runs AT THAT MOMENT.
-  local out rc=0 token
-  set +e
-  out="$(eval "$identity_command" 2>/dev/null)"
-  rc=$?
-  set -e
-  [ "$rc" -eq 0 ] || return 0
-  for token in $out; do
-    case "$token" in build=*) printf '%s' "${token#build=}" ;; esac
-  done
-  return 0
-}
 
 # ── 2. resolve the candidate and the hold policy ─────────────────────────
 primary="$(read_primary_build)"

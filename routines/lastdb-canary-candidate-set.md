@@ -22,8 +22,15 @@ export PATH="$last_stack/bin:$HOME/.local/bin:$PATH"
 "$last_stack/bin/last-stack-canary-candidate-gate"
 ```
 
-The gate runs six steps in this order and stops at the first one that fails:
+The gate runs six steps in this order and stops at the first one that fails.
+Step 0 comes first and never stops the gate:
 
+0. **primary-rows** — when registry `next` has no row proved with the build
+   the primary runs now, prove the app set against that build (set + smoke on
+   the primary's own `lastdbd` + rows). No build, no cutover. One
+   `lastdb app resolve` when the rows exist. `--primary-rows-only` runs it
+   alone; `--detach` returns at once. lastdb-safe-upgrade and the hourly
+   reconcile gate call it that way.
 1. **build** — `last-stack-canary-build-main` stages Forge fold `main` under
    `canary-builds/<oid>/` (`already_staged` is fine).
 2. **resolve** — the candidate build, the primary build, the cutover-hold

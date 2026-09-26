@@ -486,6 +486,14 @@ After a GREEN **live** upgrade the script posts a Situations **notice** so other
 agents can attribute socket blips to the upgrade instead of opening a false
 incident.
 
+Then it starts `last-stack-canary-candidate-gate --primary-rows-only --detach`.
+Host-track installs an app only from a registry `next` row proved with the
+build the primary runs, and a cutover on this path wrote no rows. The step is
+a noop when rows exist. Otherwise it proves the app set against the new build
+in an isolated smoke on the primary's own `lastdbd` and publishes the rows.
+It never builds and never cuts over. The hourly reconcile gate re-runs it if
+this call is missed. `LASTDB_SAFE_UPGRADE_PRIMARY_ROWS=0` turns it off.
+
 ## Reading results
 
 | Output | Meaning | Action |
