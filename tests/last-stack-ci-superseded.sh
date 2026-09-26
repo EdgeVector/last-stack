@@ -11,12 +11,14 @@ test -x "$BIN"
 
 PORT_FILE="$(mktemp "${TMPDIR:-/tmp}/ci-superseded-port.XXXXXX")"
 LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/ci-superseded-mock.XXXXXX")"
+STUB_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ci-superseded-notoken.XXXXXX")"
 cleanup() {
   if [[ -n "${MOCK_PID:-}" ]] && kill -0 "$MOCK_PID" 2>/dev/null; then
     kill "$MOCK_PID" 2>/dev/null || true
     wait "$MOCK_PID" 2>/dev/null || true
   fi
   rm -f "$PORT_FILE" "$LOG_FILE"
+  rm -rf "$STUB_DIR"
 }
 trap cleanup EXIT
 
@@ -82,7 +84,25 @@ expect 2 "no state/head" --repo o/r --pr 9 --sha x
 expect 2 "no PR number" --repo o/r --pr "" --sha x
 FORGE_TOKEN="wrong" expect 2 "unknown" --repo o/r --pr 1 --sha aaaa1111
 FORGE_ROOT="http://127.0.0.1:9" expect 2 "unknown" --repo o/r --pr 1 --sha aaaa1111
-FORGE_TOKEN="" expect 2 "no FORGE_TOKEN" --repo o/r --pr 1 --sha aaaa1111
+# `FORGE_TOKEN=""` does NOT by itself reach the no-token branch. lib/forge-token.sh
+# resolves three sources in order — $FORGE_TOKEN, keychain item `forgejo-token`,
+# then lastsecrets://forgejo-token — so an empty env var only falls through to the
+# next one. On a developer host the keychain answers, the binary reaches the mock,
+# the mock 401s, and the answer is `unknown (no state/head in the PR reply)`. That
+# made this one case green ONLY where every fallback is empty (the CI runner) and
+# red for every agent running the same gate locally, which is the shape that
+# teaches a fleet to ignore its own gate. Stub the two fallbacks so the branch
+# under test is the branch that runs, in both environments.
+printf '#!/bin/sh\nexit 1\n' >"$STUB_DIR/security"
+printf '#!/bin/sh\nexit 1\n' >"$STUB_DIR/lastsecrets"
+chmod +x "$STUB_DIR/security" "$STUB_DIR/lastsecrets"
+FORGE_TOKEN="" PATH="$STUB_DIR:$PATH" expect 2 "no FORGE_TOKEN" --repo o/r --pr 1 --sha aaaa1111
+# No assertion follows that the stubs did not leak into the later cases, and the
+# reason is that one cannot be written honestly: every later case exports a real
+# $FORGE_TOKEN, so it never consults a fallback and passes either way. A case
+# that DID consult one would be environment-dependent again — exactly the defect
+# above. The scoping rests on bash applying a prefix assignment to that one
+# command only, which the two probes for this fix exercise directly.
 # --branch: a main push run whose sha is no longer the head is superseded.
 expect 1 "current — main is at dddd4444he" --repo o/r --branch main --sha dddd4444head
 expect 0 "SUPERSEDED — main is now dddd4444he" --repo o/r --branch main --sha eeee5555old
