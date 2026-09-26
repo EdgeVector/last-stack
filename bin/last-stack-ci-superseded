@@ -8,15 +8,24 @@
 # (papercut-forge-queued-runs-for-merged-pr-heads-cannot-be-cancelled-by-agents-20260923).
 # The gate asks this helper first and ends early when the answer is superseded.
 #
+# --branch mode is the same question for a push run. Main push runs share one
+# serial concurrency group (cancel-in-progress is false on main), and each one
+# needs a macos-arm64 publish slot. On 2026-09-26 eight main push runs waited
+# in line behind one publish; each would test and publish a tree that the next
+# run publishes anyway. A push run whose sha is no longer the branch head ends
+# early; the newest run still tests and publishes the head.
+# papercut-last-stack-main-push-runs-serialize-behind-publish-20260926
+#
 # Exit codes:
-#   0  superseded (PR not open, or its head is no longer --sha); prints the reason
+#   0  superseded (PR not open, its head is no longer --sha, or --branch moved past --sha)
 #   1  current (the gate must run)
-#   2  unknown (no PR number, no token, forge unreachable, bad reply) — run the gate
+#   2  unknown (no PR number or branch, no token, forge unreachable, bad reply) — run the gate
 set -uo pipefail
 
 usage() {
   cat <<'EOF'
 Usage: last-stack-ci-superseded --repo OWNER/REPO --pr N --sha SHA
+       last-stack-ci-superseded --repo OWNER/REPO --branch B --sha SHA
 
 Env: FORGE_ROOT (default: GITHUB_SERVER_URL, with host.docker.internal -> localhost on macOS,
      else http://localhost:3300), FORGE_TOKEN (required).
@@ -24,18 +33,21 @@ Exit 0 superseded, 1 current, 2 unknown. Fail-open: callers run the gate on 1 an
 EOF
 }
 
-repo="" pr="" sha=""
+repo="" pr="" branch="" sha=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) repo="${2:-}"; shift 2 ;;
     --pr) pr="${2:-}"; shift 2 ;;
+    --branch) branch="${2:-}"; shift 2 ;;
     --sha) sha="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "last-stack-ci-superseded: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
-case "$pr" in ''|*[!0-9]*) echo "superseded-check: unknown (no PR number)"; exit 2 ;; esac
+if [ -z "$branch" ]; then
+  case "$pr" in ''|*[!0-9]*) echo "superseded-check: unknown (no PR number)"; exit 2 ;; esac
+fi
 if [ -z "$repo" ] || [ -z "$sha" ]; then echo "superseded-check: unknown (no repo or sha)"; exit 2; fi
 if [ -z "${FORGE_TOKEN:-}" ]; then echo "superseded-check: unknown (no FORGE_TOKEN)"; exit 2; fi
 command -v jq >/dev/null 2>&1 || { echo "superseded-check: unknown (no jq)"; exit 2; }
@@ -46,6 +58,19 @@ root="${FORGE_ROOT:-${GITHUB_SERVER_URL:-http://localhost:3300}}"
 # job must keep host.docker.internal, so rewrite only on macOS.
 if [ "$(uname -s)" = "Darwin" ]; then root="${root//host.docker.internal/localhost}"; fi
 root="${root%/}"
+
+if [ -n "$branch" ]; then
+  body="$(curl -sS --max-time 20 -H "Authorization: token $FORGE_TOKEN" -H "Accept: application/json" \
+    "$root/api/v1/repos/$repo/branches/$branch" 2>/dev/null)" || { echo "superseded-check: unknown (forge unreachable)"; exit 2; }
+  head="$(printf '%s' "$body" | jq -r '.commit.id // empty' 2>/dev/null)"
+  if [ -z "$head" ]; then echo "superseded-check: unknown (no commit id in the branch reply)"; exit 2; fi
+  if [ "$head" != "$sha" ]; then
+    echo "superseded-check: SUPERSEDED — $branch is now ${head:0:10}, this run tests ${sha:0:10}; the newer push run tests and publishes the head"
+    exit 0
+  fi
+  echo "superseded-check: current — $branch is at ${sha:0:10}"
+  exit 1
+fi
 
 body="$(curl -sS --max-time 20 -H "Authorization: token $FORGE_TOKEN" -H "Accept: application/json" \
   "$root/api/v1/repos/$repo/pulls/$pr" 2>/dev/null)" || { echo "superseded-check: unknown (forge unreachable)"; exit 2; }

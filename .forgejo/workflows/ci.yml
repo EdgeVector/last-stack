@@ -122,6 +122,8 @@ jobs:
           # Superseded-head skip (bin/last-stack-ci-superseded). Empty on push.
           LAST_STACK_CI_PR_NUMBER: ${{ github.event.pull_request.number }}
           LAST_STACK_CI_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Superseded main push (same helper, --branch). Empty on pull_request.
+          LAST_STACK_CI_PUSH_BRANCH: ${{ github.event_name == 'push' && 'main' || '' }}
           LAST_STACK_CI_FORGE_TOKEN: ${{ secrets.FORGEJO_TOKEN || github.token }}
         run: bash .lastgit/ci.sh
 
@@ -169,9 +171,20 @@ jobs:
       - name: Build the artifact tree
         run: true
 
+      # The publish slot can wait an hour behind PR gates. If main moved on
+      # while this run waited, the next run in the serial group publishes the
+      # newer head; publishing this tree first only delays it. Fail-open: an
+      # unknown answer publishes.
+      # papercut-last-stack-main-push-runs-serialize-behind-publish-20260926
       - name: Publish into the artifact CAS and promote stable
         run: |
           set -euo pipefail
+          rc=0
+          bin/last-stack-ci-superseded --repo "$GITHUB_REPOSITORY" --branch main --sha "$GITHUB_SHA" || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "publish: SKIPPED — main moved past $GITHUB_SHA; the newer push run publishes"
+            exit 0
+          fi
           app="$(jq -r '.artifacts[0].app' .lastgit/artifacts.json)"
           paths="$(jq -r '.artifacts[0].paths | join(",")' .lastgit/artifacts.json)"
           digest="$(lastgit artifact publish --app "$app" --repo last-stack --oid "$GITHUB_SHA" --input . --paths "$paths" --json 2>/dev/null \
