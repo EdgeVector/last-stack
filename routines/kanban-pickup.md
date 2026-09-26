@@ -846,6 +846,11 @@ explicitly requested, treat this section as disabled and EXIT.
 (or ship-mode North Star with a nonterminal milestone) has unblocked not-done
 `Kind: pr` children, idle mode must **not** invent papercut/hygiene
 implementation work. File-only ok only for true pipeline P0s.
+"Unblocked" means claimable now: `kanban milestone gap-report --json` shows
+`counts.in_flight > 0`, or `counts.idle_promoteable > 0` with a promoteable
+child whose repo passes `situations preflight --action claim-card`. A frontier
+held only by block_status, unfinished deps, or a Situation-blocked repo does not
+hold the budget (same rule as `routines/papercut-reconciler.md`).
 
 Canonical: brain `sop-feature-ship-loop` (North Star → Milestone → cards; **no
 new feature-owner cards**). If a pickup-ready `Kind: pr` child of an active

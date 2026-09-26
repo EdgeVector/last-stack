@@ -25,6 +25,9 @@ grep -q 'brain get <slug> --type papercut' "$prompt"
 grep -q 'forbidden for discovery' "$prompt"
 grep -q 'conserved=true' "$prompt"
 grep -q 'Do not change the typed papercut repair status merely because it was carded' "$prompt"
+grep -q 'kanban milestone gap-report --json' "$prompt"
+grep -q 'situations preflight --action claim-card --repo <Repo>' "$prompt"
+grep -q 'budget_hold=released' "$prompt"
 
 queue_helper="$ROOT/bin/last-stack-papercut-queue"
 [ -x "$queue_helper" ] || { echo "missing executable queue helper" >&2; exit 1; }

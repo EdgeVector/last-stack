@@ -12,6 +12,32 @@ promote new papercut PR cards into `default/todo`. Keep them in backlog or
 brain-only until the milestone frontier is stocked. Prefer no-op heartbeat
 `noop ship-outcome-budget-holds`.
 
+"Unblocked" means **claimable now**, and the hold is decided mechanically, not
+by reading milestone prose. Measure it before you defer anything:
+
+```bash
+d="$(mktemp -d "$TMPDIR/budget.XXXXXX")"
+last-stack-json-capture "$d/gap.json" -- kanban milestone gap-report --json
+jq -r '.counts | "in_flight=\(.in_flight // 0) idle_promoteable=\(.idle_promoteable // 0)"' "$d/gap.json"
+```
+
+The hold applies only when at least one of these is true:
+
+1. `counts.in_flight > 0` — a milestone child is already in todo/doing.
+2. `counts.idle_promoteable > 0` AND at least one promoteable child's `Repo:`
+   passes `situations preflight --action claim-card --repo <Repo>` (exit 0).
+
+A frontier whose only children sit in backlog with a `block_status`, wait on
+unfinished deps, or name a repo whose `claim-card` preflight is BLOCKED (exit 3)
+is **not** stocked: pickup cannot claim it, so it cannot absorb the budget.
+When neither condition holds, the hold is released: file the pattern cards this
+pass under the normal Step 4 rules and record `budget_hold=released
+reason=frontier-unclaimable in_flight=<n> idle_promoteable=<n>` in the
+heartbeat. Measured 2026-09-26: the hold read "active frontier" on every pass
+for a week while `gap-report` showed `in_flight=0 idle_promoteable=0` and a
+Situation paused the only repo with frontier work; 95 papercuts stayed deferred
+and todo sat at 0 (papercut-reconciler-budget-hold-counts-unclaimable-frontier-20260926).
+
 Do **not** use new `feature-owner` cards for budget; that graph is retired
 (brain `sop-feature-ship-loop`). Legacy feature-owner cards still on the board
 may count as "driving" only until migrated — still do not file new ones.
