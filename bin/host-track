@@ -2036,6 +2036,36 @@ commit_staged_version() {
   fi
 }
 
+# Check the link sources an artifact tree DECLARES FOR ITSELF, against that tree.
+# `verify_staged_artifact_links` reads the OUTGOING declarations and runs only
+# when the version had to be materialized, so neither of its two jobs covers a
+# links[] entry that ships inside the incoming tree -- which is the set
+# `install_artifact_links` now applies. Checking before the cutover keeps a bad
+# declaration as a refusal on the old tree instead of a half-linked new one.
+# A tree that ships no host-track registry, or none naming this app, is fine.
+verify_tree_declared_links() {
+  local app="$1" tree="$2" registry encoded entry source
+  registry="$tree/config/host-track/apps.json"
+  [ -f "$registry" ] || return 0
+  while IFS= read -r encoded; do
+    [ -n "$encoded" ] || continue
+    entry="$(printf '%s' "$encoded" | base64_decode)"
+    source="$(printf '%s\n' "$entry" | jq -r '.source // ""')"
+    if ! safe_artifact_relpath "$source"; then
+      printf 'host-track: %s incoming registry declares an invalid link source: %s\n' \
+        "$app" "$source" >&2
+      return 1
+    fi
+    if [ ! -e "$tree/$source" ] || [ -L "$tree/$source" ]; then
+      printf 'host-track: %s incoming registry declares link source %s, which that tree does not contain\n' \
+        "$app" "$source" >&2
+      return 1
+    fi
+  done < <(jq -r --arg app "$app" '.apps[]? | select(.app == $app) | .links[]? | @base64' \
+    "$registry" 2>/dev/null)
+  return 0
+}
+
 verify_staged_artifact_links() {
   local json="$1" stage="$2" encoded entry source
   while IFS= read -r encoded; do
@@ -2048,8 +2078,42 @@ verify_staged_artifact_links() {
   done < <(printf '%s\n' "$json" | jq -r '.links[]? | @base64')
 }
 
+# links[] ships INSIDE the artifact, so the tree that `current` points at is the
+# authority on the PATH names that tree wants. host-track resolves $REGISTRY from
+# its OWN root, which during a self-flip is the OUTGOING tree, so an artifact that
+# added a command AND its links[] entry in one commit installed the file and the
+# registry and created no PATH name; the routine step naming the command exited
+# 127 until some later flip happened to carry it. Measured on
+# EdgeVector/last-stack#268, which followed the registry's own instruction to land
+# both in the same change
+# (papercut-host-track-applies-links-from-the-outgoing-registry-so-a-new-path-name-lands-one-flip-late-20260926).
+#
+# Only links[] and retired_links[] are taken from that tree. Every other field in
+# the entry (install_root, artifact_root, channel, post_install) stays the one
+# this run resolved, so a flip can never redirect its own install midway.
+#
+# Scope, because this reads a file the artifact controls: every caller runs AFTER
+# `current` was repointed, so this is the incoming tree on an install and the
+# rolled-back tree on a rollback -- which is also the correct source there, where
+# the outgoing registry could declare a link whose source does not exist in the
+# tree being restored.
+active_tree_links_json() {
+  local install_root="$1" fallback="$2" app registry incoming
+  app="$(printf '%s\n' "$fallback" | jq -r '.app // ""')"
+  [ -n "$app" ] || { printf '%s\n' "$fallback"; return 0; }
+  registry="$install_root/current/config/host-track/apps.json"
+  [ -f "$registry" ] || { printf '%s\n' "$fallback"; return 0; }
+  incoming="$(jq -c --arg app "$app" '.apps[]? | select(.app == $app)' "$registry" 2>/dev/null || true)"
+  [ -n "$incoming" ] || { printf '%s\n' "$fallback"; return 0; }
+  printf '%s\n' "$fallback" \
+    | jq -c --argjson incoming "$incoming" \
+        '. + {links: ($incoming.links // []), retired_links: ($incoming.retired_links // [])}' \
+    2>/dev/null || printf '%s\n' "$fallback"
+}
+
 install_artifact_links() {
   local json="$1" install_root="$2" encoded entry source target_raw target
+  json="$(active_tree_links_json "$install_root" "$json")"
   while IFS= read -r encoded; do
     [ -n "$encoded" ] || continue
     entry="$(printf '%s' "$encoded" | base64_decode)"
@@ -3242,6 +3306,10 @@ artifact_install_app() {
           "$app" "$old_target" >&2
       fi
     fi
+  fi
+  if ! verify_tree_declared_links "$app" "$install_root/versions/$digest"; then
+    finish_artifact_install_lock "$reuse_install_lock"
+    return 1
   fi
   atomic_symlink "versions/$digest" "$install_root/current"
   # Scrub any pre-existing invalid previous left by older installs / wrong mode.
