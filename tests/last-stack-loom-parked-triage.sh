@@ -32,7 +32,8 @@ case "$1" in
       "t	lx-fenced-open	parked	AWAIT_HUMAN	land-card" \
       "t	lx-fenced-shut	parked	AWAIT_HUMAN	land-card" \
       "t	lx-running	running	WAIT_CI	land-card" \
-      "t	lx-unreadable	parked	AWAIT_HUMAN	land-card"
+      "t	lx-unreadable	parked	AWAIT_HUMAN	land-card" \
+      "t	lx-dead	parked	AWAIT_HUMAN	land-card"
     ;;
   show)
     case "$2" in
@@ -99,6 +100,16 @@ context.card_difficulty: "fast"
 context.pr_url: "http://forge.test/EdgeVector/fold/pulls/6"
 V
       ;;
+      lx-dead) cat <<'V'
+lx-dead
+status: parked
+state: AWAIT_HUMAN
+context.card: "card-dead"
+context.card_difficulty: "normal"
+context.park_reason: "node error"
+node PARK#1 succeeded: {"reason":"node error"}
+V
+      ;;
       *) echo "no such execution" >&2; exit 1 ;;
     esac
     ;;
@@ -122,6 +133,7 @@ EOF
 cat >"$stub/kanban" <<'EOF'
 #!/usr/bin/env bash
 echo "kanban $*" >>"$CALLS"
+[ "$1" != show ] || echo '{"column":"backlog"}'
 EOF
 cat >"$stub/reopen" <<'EOF'
 #!/usr/bin/env bash
@@ -134,11 +146,12 @@ fail() { echo "FAIL: $*" >&2; cat "$CALLS" >&2; exit 1; }
 
 # Dry run: classifies, signals nothing, writes no state.
 out="$("$bin")"
-tail -1 <<<"$out" | grep -qx 'parked_seen=7 escalated=1 resumed=2 handed_off=0 left=3 errors=1' || fail "dry-run counts: $out"
+tail -1 <<<"$out" | grep -qx 'parked_seen=8 escalated=1 resumed=2 handed_off=0 requeued=1 left=3 errors=1' || fail "dry-run counts: $out"
 grep -q '^escalate	lx-stall	card-stall' <<<"$out" || fail "stall not escalated"
 grep -q '^resume	lx-merged	card-merged' <<<"$out" || fail "merged not resumed"
 grep -q '^left	lx-normal' <<<"$out" || fail "normal walk must stay parked"
 grep -q '^left	lx-other' <<<"$out" || fail "unknown park must stay parked"
+grep -q '^requeue	lx-dead	card-dead	node error before a PR' <<<"$out" || fail "no-PR node error not requeued"
 grep -q '^unfence	lx-fenced-open	card-fenced-open' <<<"$out" || fail "cleared fence not resumed"
 grep -q '^left	lx-fenced-shut	card-fenced-shut	situation still blocks merge-pr on EdgeVector/fold' <<<"$out" \
   || fail "blocked fence must stay parked"
@@ -157,18 +170,24 @@ grep -q '^loom signal lx-stall card-decision --payload {"human_decision": "retry
 grep -q '^loom signal lx-merged card-decision --payload {"human_decision": "merge"}' "$CALLS" || fail "resume payload"
 grep -q '^loom signal lx-fenced-open card-decision --payload {"human_decision": "merge"}' "$CALLS" || fail "unfence payload"
 [ "$(grep -c '^loom signal' "$CALLS")" -eq 3 ] || fail "signal count"
-[ "$(grep -c '^kanban mark' "$CALLS")" -eq 3 ] || fail "mark count"
+[ "$(grep -c '^kanban mark' "$CALLS")" -eq 4 ] || fail "mark count"
+grep -q '^loom cancel lx-dead$' "$CALLS" || fail "requeue must cancel the dead walk"
+grep -q '^kanban set card-dead --block-status none --block-reason $' "$CALLS" || fail "requeue must clear block_status"
+grep -q '^kanban move card-dead todo$' "$CALLS" || fail "requeue must move the card to todo"
+[ "$(grep -n '^loom cancel lx-dead' "$CALLS" | cut -d: -f1)" -lt "$(grep -n '^kanban move card-dead' "$CALLS" | cut -d: -f1)" ] \
+  || fail "cancel must land before the move"
 
 # Second apply: escalation is once per walk; resume is rate-limited.
 : >"$CALLS"
 out="$("$bin" --apply)"
-tail -1 <<<"$out" | grep -qx 'parked_seen=7 escalated=0 resumed=0 handed_off=0 left=6 errors=1' || fail "second pass counts: $out"
+tail -1 <<<"$out" | grep -qx 'parked_seen=8 escalated=0 resumed=0 handed_off=0 requeued=0 left=7 errors=1' || fail "second pass counts: $out"
 sleep 1
 grep -q '^loom signal' "$CALLS" && fail "second pass signalled again"
+grep -q '^left	lx-dead	card-dead	no-PR node error again after a requeue' <<<"$out" || fail "requeue must happen once per card"
 
 # Gate form: applies, prints the routinesd trailer, exits 0.
 out="$("$bin" --gate)" || fail "gate exit"
-grep -q '^ROUTINE_RESULT outcome=noop detail=parked_seen=7,escalated=0' <<<"$out" || fail "gate trailer: $out"
+grep -q '^ROUTINE_RESULT outcome=noop detail=parked_seen=8,escalated=0' <<<"$out" || fail "gate trailer: $out"
 
 age_resume() {
   python3 - "$tmp/state/state.json" "$@" <<'PY'
@@ -185,7 +204,7 @@ PY
 age_resume lx-merged lx-fenced-open
 : >"$CALLS"
 out="$("$bin" --apply)"
-tail -1 <<<"$out" | grep -qx 'parked_seen=7 escalated=0 resumed=1 handed_off=1 left=4 errors=1' || fail "handoff pass counts: $out"
+tail -1 <<<"$out" | grep -qx 'parked_seen=8 escalated=0 resumed=1 handed_off=1 requeued=0 left=5 errors=1' || fail "handoff pass counts: $out"
 grep -q '^handoff	lx-merged	card-merged	merged; parked again after resume' <<<"$out" || fail "merged walk not handed off"
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   [ "$(grep -c '^signal-ran' "$CALLS")" -ge 2 ] && break

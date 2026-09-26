@@ -31,6 +31,14 @@ by hand and found only two shapes, and neither needed judgement:
             this rule two merged cards sat in backlog as needs_human for 4-10h
             and the validate routine skipped them by policy (2026-09-26).
 
+  requeue   The walk parked on "node error" before it opened a PR, and the
+            error block is empty or says "no evidence recorded". Nothing is
+            there for a person to judge and a signal only reruns the dead
+            node. The walk is cancelled and the card goes back to todo for a
+            fresh walk (block_status cleared, one RESET line). Once per card;
+            a second such park stays for a human. Before this rule two cards
+            sat in backlog as needs_human for 36h (2026-09-26).
+
 Anything else is left parked and listed as `left`.
 
 Usage:
@@ -46,7 +54,7 @@ the walk in the foreground and can run for an hour), logs it under the state
 dir, and marks the card with one PROGRESS line.
 
 The last stdout line carries heartbeat tokens:
-  parked_seen= escalated= resumed= handed_off= left= errors=
+  parked_seen= escalated= resumed= handed_off= requeued= left= errors=
 
 Test knobs: LOOM_BIN, KANBAN_BIN, FORGE_API_BIN, SITUATIONS_BIN, REOPEN_BIN,
 LAST_STACK_LOOM_TRIAGE_STATE (state dir).
@@ -71,6 +79,7 @@ STATE_DIR = Path(os.environ.get(
     str(Path.home() / ".local/state/last-stack/loom-parked-triage")))
 
 ESCALATE_MARKERS = ("reviser produced no commit", "review escalated at cap")
+NO_EVIDENCE_MARKER = "no evidence recorded"
 PR_RE = re.compile(r"/([^/]+/[^/]+)/pulls/(\d+)")
 # last-stack-forge-api's refusal line when a Situation blocks the merge.
 MERGE_FENCED_RE = re.compile(r"REFUSED merge on ([\w.-]+/[\w.-]+): Situations preflight says BLOCKED")
@@ -181,6 +190,12 @@ def classify(exec_id, view, state, merge_retry_s, now):
             return "left", "already escalated; needs a human", None
         return "escalate", "fast reviser stalled", {
             "human_decision": "retry", "card_difficulty": "normal", "triage_escalated": True}
+    error = view["error"].strip().lower()
+    if (not ctx.get("pr_url") and str(ctx.get("park_reason") or "") == "node error"
+            and (not error or NO_EVIDENCE_MARKER in error)):
+        if state.get(f"card:{ctx.get('card')}", {}).get("requeued_at"):
+            return "left", "no-PR node error again after a requeue; needs a human", None
+        return "requeue", "node error before a PR; no evidence to judge", None
     return "left", "no automatic rule", None
 
 
@@ -214,6 +229,31 @@ def handoff(exec_id, view, card):
     return rc == 0
 
 
+def requeue(exec_id, card):
+    """Cancel a dead walk and put its card back in todo. True on success."""
+    if not card:
+        return False
+    rc, out, _ = run([KANBAN, "show", card, "--json"], 60)
+    try:
+        column = json.loads(out).get("column") if rc == 0 else None
+    except (json.JSONDecodeError, AttributeError):
+        column = None
+    # A done card means a newer walk already landed it; never pull it back.
+    if column not in ("backlog", "todo", "doing"):
+        return False
+    rc, _, _ = run([LOOM, "cancel", exec_id], 90)
+    if rc != 0:
+        return False
+    run([KANBAN, "mark", card,
+         f"RESET loom-parked-triage: walk {exec_id} parked on a node error before any PR "
+         "(no evidence recorded). Walk cancelled; card back to todo for a fresh walk."], 60)
+    rc, _, _ = run([KANBAN, "set", card, "--block-status", "none", "--block-reason", ""], 60)
+    if rc != 0:
+        return False
+    rc, _, _ = run([KANBAN, "move", card, "todo"], 60)
+    return rc == 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--apply", action="store_true")
@@ -227,12 +267,12 @@ def main():
 
     now = time.time()
     state = load_state()
-    rows, counts = [], {"parked_seen": 0, "escalated": 0, "resumed": 0, "handed_off": 0, "left": 0, "errors": 0}
+    rows, counts = [], {"parked_seen": 0, "escalated": 0, "resumed": 0, "handed_off": 0, "requeued": 0, "left": 0, "errors": 0}
     try:
         ids = parked_walks(args.limit)
     except RuntimeError as exc:
         print(f"last-stack-loom-parked-triage: {exc}", file=sys.stderr)
-        print("parked_seen=0 escalated=0 resumed=0 handed_off=0 left=0 errors=1")
+        print("parked_seen=0 escalated=0 resumed=0 handed_off=0 requeued=0 left=0 errors=1")
         return 1
     for exec_id in ids:
         counts["parked_seen"] += 1
@@ -258,6 +298,15 @@ def main():
                 signal(exec_id, payload, card)
                 state.setdefault(exec_id, {})["handoff_at"] = now
             continue
+        if action == "requeue":
+            if args.apply:
+                if not requeue(exec_id, card):
+                    counts["errors"] += 1
+                    rows[-1]["why"] += "; requeue failed, walk left parked"
+                    continue
+                state.setdefault(f"card:{card}", {})["requeued_at"] = now
+            counts["requeued"] += 1
+            continue
         counts["escalated" if action == "escalate" else "resumed"] += 1
         if args.apply:
             signal(exec_id, payload, card)
@@ -272,7 +321,7 @@ def main():
             print(f"{r['action']}\t{r['exec']}\t{r.get('card') or '-'}\t{r['why']}")
     tokens = " ".join(f"{k}={v}" for k, v in counts.items())
     if args.gate:
-        acted = counts["escalated"] + counts["resumed"] + counts["handed_off"]
+        acted = counts["escalated"] + counts["resumed"] + counts["handed_off"] + counts["requeued"]
         print(f"ROUTINE_RESULT outcome={'ok' if acted else 'noop'} detail={tokens.replace(' ', ',')}")
     print(tokens)
     return 0
