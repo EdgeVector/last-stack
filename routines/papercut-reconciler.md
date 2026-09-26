@@ -275,9 +275,17 @@ Run it against BOTH roots. The install root carries `routines/`, `skills/` and
 `instructions/`; the workspace root carries the `CLAUDE.md` every agent in this
 workspace reads first, and that file cites SOPs too.
 
+Resolve the command, do not assume the PATH name exists. host-track applies
+`links[]` from the OUTGOING tree at flip time, so the install that delivers a new
+`bin/` entry does not create its `~/.local/bin` name until a LATER flip
+(papercut-host-track-applies-links-from-the-outgoing-registry-so-a-new-path-name-lands-one-flip-late-20260926).
+A bare name exits 127 in that window, and silently.
+
 ```bash
+cite_bin="$(command -v last-stack-prose-citation-check \
+  || printf '%s\n' "${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-prose-citation-check")"
 cite_out="$(mktemp "$TMPDIR/prose-cite.XXXXXX")"
-last-stack-prose-citation-check --root "${LAST_STACK_ROOT:-$HOME/.last-stack}" \
+"$cite_bin" --root "${LAST_STACK_ROOT:-$HOME/.last-stack}" \
   --json > "$cite_out" 2> "$cite_out.err"; echo $? > "$cite_out.rc"
 jq -r '"dangling=\(.dangling|length) unknown=\(.unknown|length) resolved=\(.resolved)"' "$cite_out"
 jq -r '.dangling[] | "\(.slug)  cited_in=\(.cited_in|join(","))"' "$cite_out"
