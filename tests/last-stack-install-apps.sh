@@ -99,6 +99,21 @@ chmod +x "$stubbin/git"
 cat >"$stubbin/bun" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"${BUN_LOG:-/dev/null}"
+# BUN_FAIL_TIMES: fail the first N `bun install` invocations, the way a cold
+# cache in the smoke's throwaway HOME fails one tarball fetch.
+case "$1" in
+  install)
+    if [ -n "${BUN_FAIL_TIMES:-}" ] && [ -n "${BUN_FAIL_COUNT_FILE:-}" ]; then
+      n="$(cat "$BUN_FAIL_COUNT_FILE" 2>/dev/null)"
+      [ -n "$n" ] || n=0
+      if [ "$n" -lt "$BUN_FAIL_TIMES" ]; then
+        printf '%s\n' "$((n + 1))" >"$BUN_FAIL_COUNT_FILE"
+        echo 'error: Fail extracting tarball for "protobufjs"' >&2
+        exit 1
+      fi
+    fi
+    ;;
+esac
 exit 0
 EOF
 chmod +x "$stubbin/bun"
@@ -181,5 +196,53 @@ if grep -Fq 'bun link' /tmp/last-stack-install-apps-link.out; then
   exit 1
 fi
 grep -Fq -- "--cache-dir $tmp/home/.cache/bun" "$tmp/bun.log"
+
+# A transient dependency fetch must not fail a release proof. This step runs
+# inside the llms-txt install smoke, and that smoke's GREEN verdict is what
+# writes the app registry `next` rows — so one failed tarball download used to
+# cost the whole fleet a delivery cycle (measured 2026-09-26: RED on
+# `Fail extracting tarball for "protobufjs"`, identical sha clean on retry).
+retry_home="$tmp/home-retry"
+rm -rf "$retry_home" "$tmp/apps-retry"
+printf '0\n' >"$tmp/bun-fail-count"
+HOME="$retry_home" BREW_LOG="$tmp/brew-retry.log" BUN_LOG="$tmp/bun-retry.log" \
+  BUN_FAIL_TIMES=2 BUN_FAIL_COUNT_FILE="$tmp/bun-fail-count" \
+  LAST_STACK_BUN_INSTALL_ATTEMPTS=3 LAST_STACK_BUN_INSTALL_SLEEP=0 \
+  PATH="$stubbin:/usr/bin:/bin" \
+  "$ROOT/bin/last-stack-install-apps" --dir "$tmp/apps-retry" --no-brew --no-link \
+  >"$tmp/retry.out" 2>&1 || {
+    echo "install-apps did not retry a transient bun install failure" >&2
+    tail -20 "$tmp/retry.out" >&2
+    exit 1
+  }
+grep -Fq "retrying in" "$tmp/retry.out" || {
+  echo "no retry was reported for a failing bun install" >&2
+  tail -20 "$tmp/retry.out" >&2
+  exit 1
+}
+test "$(grep -c '^install ' "$tmp/bun-retry.log")" -ge 3 || {
+  echo "bun install was not attempted 3 times: $(cat "$tmp/bun-retry.log")" >&2
+  exit 1
+}
+
+# And a dependency install that fails every time must still FAIL. A retry that
+# swallows a real breakage is worse than no retry: the smoke would go GREEN and
+# publish a registry row for an app that cannot install.
+rm -rf "$tmp/home-retry-fail" "$tmp/apps-retry-fail"
+printf '0\n' >"$tmp/bun-fail-count-2"
+if HOME="$tmp/home-retry-fail" BREW_LOG="$tmp/brew-rf.log" BUN_LOG="$tmp/bun-rf.log" \
+  BUN_FAIL_TIMES=99 BUN_FAIL_COUNT_FILE="$tmp/bun-fail-count-2" \
+  LAST_STACK_BUN_INSTALL_ATTEMPTS=2 LAST_STACK_BUN_INSTALL_SLEEP=0 \
+  PATH="$stubbin:/usr/bin:/bin" \
+  "$ROOT/bin/last-stack-install-apps" --dir "$tmp/apps-retry-fail" --no-brew --no-link \
+  >"$tmp/retry-fail.out" 2>&1; then
+  echo "a permanently failing bun install was reported as a success" >&2
+  exit 1
+fi
+grep -Fq "giving up" "$tmp/retry-fail.out" || {
+  echo "the exhausted-retry path did not say so" >&2
+  tail -20 "$tmp/retry-fail.out" >&2
+  exit 1
+}
 
 echo "ok"
