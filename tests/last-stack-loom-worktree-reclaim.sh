@@ -89,3 +89,81 @@ ls "$tmp/patches"/loom-lx-failed-old_IMPLEMENT-*.patch >/dev/null 2>&1 || fail "
 git -C "$repo" worktree list | grep -q 'lx-succeeded-old' && fail "git still lists a removed worktree"
 
 echo "ok last-stack-loom-worktree-reclaim"
+
+# --- Active CI owner race: IMPLEMENT is terminal but REPAIR sibling is live -------
+# 2026-09-25: disk reclaim removed an IMPLEMENT worktree while a corresponding
+# REPAIR step was running in a sibling worktree. The reclaim checked liveness by
+# process cwd/cmd on each tree individually, but didn't check if a sibling step
+# was live. Now we check for live sibling steps before reclaiming.
+tmp2="$(mktemp -d "${TMPDIR:-/tmp}/loom-wt-active-owner.XXXXXX")"
+trap 'rm -rf "$tmp" "$tmp2"' EXIT
+
+repo2="$tmp2/repo"
+wts2="$tmp2/worktrees"
+mkdir -p "$repo2" "$wts2"
+git -C "$repo2" init -q -b main
+git -C "$repo2" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+
+mk2() {
+  git -C "$repo2" worktree add -q --detach "$wts2/$1#$2" main
+  : >"$wts2/$1#$2.loom-guard"
+  mkdir -p "$wts2/$1#$2/target"
+  touch "$wts2/$1#$2/target/KEEP_ME"
+}
+
+# Terminal IMPLEMENT, but active REPAIR sibling
+mk2 lx-with-repair IMPLEMENT
+old "$wts2/lx-with-repair#IMPLEMENT"
+mk2 lx-with-repair REPAIR
+old "$wts2/lx-with-repair#REPAIR"  # Make REPAIR old too so it passes age check
+
+# Purely terminal (both steps terminal)
+mk2 lx-no-repair IMPLEMENT
+old "$wts2/lx-no-repair#IMPLEMENT"
+
+# Start a process in the REPAIR worktree to make it "live"
+(
+  cd "$wts2/lx-with-repair#REPAIR"
+  exec sleep 600
+) &
+repair_pid=$!
+
+# lsof stub that includes the live REPAIR worktree
+cat >"$stub/lsof-with-repair" <<EOF
+#!/usr/bin/env bash
+printf 'p1\nn/\np2\nn$(cd "$wts2" && pwd -P)/lx-with-repair#REPAIR\n'
+EOF
+chmod +x "$stub/lsof-with-repair"
+
+# Add loom stub response for REPAIR step
+cat >"$stub/loom" <<'EOF'
+#!/usr/bin/env bash
+case "$2" in
+  lx-with-repair|lx-no-repair)
+    echo "status: succeeded"
+    ;;
+  *)
+    echo "no such execution" >&2
+    exit 1
+    ;;
+esac
+EOF
+
+run2() {
+  LOOM_WORKTREES_DIR="$wts2" LOOM_BIN="$stub/loom" \
+    LAST_STACK_WORKTREE_PATCH_DIR="$tmp2/patches" "$bin" "$@"
+}
+
+# Give kernel a moment to register the cwd
+sleep 0.3
+
+out2="$(LAST_STACK_LOOM_RECLAIM_LSOF="$stub/lsof-with-repair" run2)"
+kill "$repair_pid" 2>/dev/null || true
+wait "$repair_pid" 2>/dev/null || true
+
+# lx-with-repair#IMPLEMENT must be kept because lx-with-repair#REPAIR is live
+[ -d "$wts2/lx-with-repair#IMPLEMENT" ] || fail "IMPLEMENT worktree removed while active REPAIR sibling exists: $out2"
+[ -d "$wts2/lx-with-repair#REPAIR" ] || fail "active REPAIR worktree should exist"
+# lx-no-repair#IMPLEMENT must be removed (no active repair)
+[ ! -d "$wts2/lx-no-repair#IMPLEMENT" ] || fail "purely terminal IMPLEMENT should be reclaimed: $out2"
+echo "ok active CI owner keeps terminal worktree"
