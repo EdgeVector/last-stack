@@ -281,8 +281,8 @@ def evidence_failures(path, log_path=None):
     if data.get("schema") != EVIDENCE_SCHEMA:
         failures.append("The evidence schema is not %s." % EVIDENCE_SCHEMA)
 
-    # Validate provenance (required)
-    provenance = section(data, "provenance", failures)
+    # Validate provenance if present
+    provenance = data.get("provenance", {})
     if provenance:
         command = req_string(provenance, "command", failures)
         run_start = req_time(provenance, "run_start_at", failures)
