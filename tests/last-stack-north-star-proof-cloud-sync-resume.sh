@@ -12,6 +12,24 @@ FIXTURE="$ROOT/tests/fixtures/north-star-lastdb-cloud-sync-resume"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cloud-sync-resume-proof-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
+# shellcheck source=../harness/north-star/common.sh
+. "$ROOT/harness/north-star/common.sh"
+
+# A report names the exact rule that failed, and this file then deleted $WORK
+# one instruction after printing a line that did not carry it. Several
+# assertions are a bare `grep -q` under `set -e` and printed NOTHING at all.
+# papercut-north-star-proof-test-fail-message-drops-the-report-reason-20260926
+on_err() {
+  local rc="$1" line="$2" report
+  echo "$(basename "$0"): failed at line $line (rc=$rc)" >&2
+  for report in "$WORK"/*/*.md "$WORK"/*-report/*.md; do
+    [ -f "$report" ] || continue
+    grep -q '^Source failures:' "$report" || continue
+    printf '  %s: %s\n' "${report#"$WORK"/}" "$(ns_fold_report_failures "$report")" >&2
+  done
+}
+trap 'on_err "$?" "$LINENO"' ERR
+
 fail() {
   echo "last-stack-north-star-proof-cloud-sync-resume: $*" >&2
   exit 1
@@ -377,7 +395,7 @@ env -u CLOUD_SYNC_RESUME_SOURCE_DIR -u CLOUD_SYNC_RESUME_ALLOW_REENABLE \
   >"$WORK/worktree.out" 2>"$WORK/worktree.err" || true
 expect_verdict "$WORK/worktree/north-star-lastdb-cloud-sync-resume.md" FAIL
 grep -q 'Source contract: PASS' "$WORK/worktree/north-star-lastdb-cloud-sync-resume.md" ||
-  fail "a Fold worktree .git file did not satisfy the resume contract"
+  fail "a Fold worktree .git file did not satisfy the resume contract: $(ns_fold_report_failures "$WORK/worktree/north-star-lastdb-cloud-sync-resume.md")"
 grep -q 'Operational evidence: ABSENT' "$WORK/worktree/north-star-lastdb-cloud-sync-resume.md"
 grep -F -q "Source label: git:$WORK/fold-wt:HEAD" \
   "$WORK/worktree/north-star-lastdb-cloud-sync-resume.md" ||
@@ -402,24 +420,78 @@ env -u CLOUD_SYNC_RESUME_SOURCE_DIR -u CLOUD_SYNC_RESUME_ALLOW_REENABLE -u FOLD_
 expect_verdict "$WORK/ws-worktree/north-star-lastdb-cloud-sync-resume.md" FAIL
 grep -q 'Source contract: PASS' \
   "$WORK/ws-worktree/north-star-lastdb-cloud-sync-resume.md" ||
-  fail "the workspace Fold worktree .git file did not satisfy the resume contract"
+  fail "the workspace Fold worktree .git file did not satisfy the resume contract: $(ns_fold_report_failures "$WORK/ws-worktree/north-star-lastdb-cloud-sync-resume.md")"
 grep -F -q "Source label: git:$WORK/ev/fold:HEAD" \
   "$WORK/ws-worktree/north-star-lastdb-cloud-sync-resume.md" ||
   fail "the harness did not load the workspace Fold worktree with git show"
 [ ! -e "$WORK/marker" ] || fail "the workspace worktree proof called lastdb or brain"
 
+# --- Fold source lanes -------------------------------------------------------
+# This is a last-stack gate, so its exit code must be a function of a last-stack
+# commit. Grading the Fold portal's CURRENT head broke that: fold merged a
+# correct refactor at 2026-09-26T11:24Z and every last-stack PR went red on it,
+# and the mirror's HEAD is a branch a registered worktree freezes, so the gate
+# graded 26f0f601f while fold's real main was 590ac314e.
+# papercut-last-stack-ci-shard-grades-the-live-fold-portal-head-20260926
+#
+# Reporting lane: the live head. A DRIFT notice, never an exit code.
+# Blocking lane: the PINNED oid in harness/north-star/fold-source.pin.
+# Every assertion that is about OUR harness rather than about fold's content
+# stays blocking in both lanes.
 PORTAL="${EDGEVECTOR_WORKSPACE:-$HOME/code/edgevector}/fold/.portal/cache"
 if [ -f "$PORTAL" ]; then
-  PATH="$WORK/bin:$PATH" \
-  env -u CLOUD_SYNC_RESUME_SOURCE_DIR -u CLOUD_SYNC_RESUME_ALLOW_REENABLE -u FOLD_REPO \
-    CLOUD_SYNC_RESUME_PROOF_EVIDENCE_FILE= \
-    NORTH_STAR_PROOF_DIR="$WORK/portal" \
-    "$RUNNER" --offline north-star-lastdb-cloud-sync-resume >"$WORK/portal.out" 2>"$WORK/portal.err" || true
-  expect_verdict "$WORK/portal/north-star-lastdb-cloud-sync-resume.md" FAIL
-  grep -q 'Source contract: PASS' "$WORK/portal/north-star-lastdb-cloud-sync-resume.md" ||
-    fail "the Fold portal source did not satisfy the resume contract"
-  grep -q 'Operational evidence: ABSENT' "$WORK/portal/north-star-lastdb-cloud-sync-resume.md"
-  [ ! -e "$WORK/marker" ] || fail "the portal proof called lastdb or brain"
+  MIRROR="$(tr -d '[:space:]' <"$PORTAL")"
+  portal_run() {
+    # portal_run <report-dir> [<fold oid>]: grade the portal source.
+    local dir="$1" oid="${2:-}"
+    PATH="$WORK/bin:$PATH" \
+    env -u CLOUD_SYNC_RESUME_SOURCE_DIR -u CLOUD_SYNC_RESUME_ALLOW_REENABLE \
+      -u FOLD_REPO \
+      CLOUD_SYNC_RESUME_PROOF_EVIDENCE_FILE= \
+      NORTH_STAR_FOLD_SOURCE_OID="$oid" \
+      NORTH_STAR_PROOF_DIR="$dir" \
+      "$RUNNER" --offline north-star-lastdb-cloud-sync-resume \
+      >"$dir.out" 2>"$dir.err" || true
+  }
+
+  # Reporting lane: the live mirror head.
+  portal_run "$WORK/portal-live"
+  live_report="$WORK/portal-live/north-star-lastdb-cloud-sync-resume.md"
+  ns_fold_drift_report "live fold portal head" \
+    "$(ns_fold_rev_label "$MIRROR" HEAD)" "$live_report"
+  if ns_fold_source_absent "$live_report"; then
+    echo "fold-source-drift: the live fold head is not readable in $MIRROR; skipping the live-lane harness assertions" >&2
+  else
+    # These hold whatever fold contains: they are properties of THIS harness.
+    expect_verdict "$live_report" FAIL
+    grep -q 'Operational evidence: ABSENT' "$live_report" ||
+      fail "the live portal report lacks Operational evidence: ABSENT: $(ns_fold_report_failures "$live_report")"
+    [ ! -e "$WORK/marker" ] || fail "the portal proof called lastdb or brain"
+  fi
+
+  # Blocking lane: the pinned oid.
+  if PIN="$(ns_fold_source_pin)"; then
+    if ns_fold_rev_present "$MIRROR" "$PIN"; then
+      portal_run "$WORK/portal-pin" "$PIN"
+      pin_report="$WORK/portal-pin/north-star-lastdb-cloud-sync-resume.md"
+      expect_verdict "$pin_report" FAIL
+      grep -q 'Source contract: PASS' "$pin_report" ||
+        fail "pinned fold $PIN lacks Source contract: PASS — fix fold or move harness/north-star/fold-source.pin deliberately: $(ns_fold_report_failures "$pin_report")"
+      grep -q 'Operational evidence: ABSENT' "$pin_report" ||
+        fail "the pinned portal report lacks Operational evidence: ABSENT: $(ns_fold_report_failures "$pin_report")"
+      grep -F -q "Source label: fold-portal:$PIN" "$pin_report" ||
+        fail "the report does not name the fold commit it graded: $(grep -F 'Source label:' "$pin_report")"
+      [ ! -e "$WORK/marker" ] || fail "the pinned portal proof called lastdb or brain"
+    else
+      # A pin this mirror cannot resolve is an environment fact, not a
+      # last-stack defect. Refusing here would put another repo's fetch
+      # state back in this gate's exit code, which is the whole defect.
+      # The fixture lanes above still gate the contract; say so loudly.
+      echo "fold-source-pin: skip — $PIN is not in $MIRROR; the fixture lanes still gate this contract" >&2
+    fi
+  else
+    fail "harness/north-star/fold-source.pin holds no fold oid"
+  fi
 fi
 
 echo "PASS last-stack-north-star-proof-cloud-sync-resume"

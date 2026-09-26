@@ -75,13 +75,17 @@ copy_from_tree() {
 }
 
 copy_from_git() {
-  local git_dir="$1" rel dest
+  # copy_from_git <git-dir> [<rev>]: read the source at one commit. The rev is
+  # explicit because the gate grades a PINNED Fold oid while the report lane
+  # grades the live head, and a bare mirror's HEAD is a branch a registered
+  # worktree can freeze. See "Fold source lanes" in harness/north-star/common.sh.
+  local git_dir="$1" rev="${2:-HEAD}" rel dest
   refuse_primary "$git_dir"
   [ -d "$git_dir" ] || return 1
   for rel in "${SOURCE_FILES[@]}"; do
     dest="$TMP/src/$rel"
     mkdir -p "$(dirname "$dest")"
-    if ! git --git-dir="$git_dir" show "HEAD:$rel" >"$dest"; then
+    if ! git --git-dir="$git_dir" show "$rev:$rel" >"$dest"; then
       return 1
     fi
     [ -s "$dest" ] || return 1
@@ -108,7 +112,7 @@ copy_from_checkout() {
 }
 
 load_source() {
-  local explicit repo portal cache ws
+  local explicit repo portal cache ws rev
   explicit="${SCHEMA_ROOT_ATTRIBUTION_SOURCE_DIR:-}"
   if [ -n "$explicit" ]; then
     refuse_primary "$explicit"
@@ -133,8 +137,11 @@ load_source() {
   portal="$(ns_edgevector_workspace)/fold/.portal/cache"
   if [ -f "$portal" ]; then
     cache="$(tr -d '[:space:]' <"$portal")"
-    copy_from_git "$cache" || finish FAIL "The Fold source is absent."
-    printf '%s\n' "fold-portal:HEAD"
+    rev="${NORTH_STAR_FOLD_SOURCE_OID:-HEAD}"
+    copy_from_git "$cache" "$rev" || finish FAIL "The Fold source is absent at $rev."
+    # Name the commit. "fold-portal:HEAD" never told a reader which Fold tree
+    # produced the verdict, and the mirror's HEAD moves on fold's clock.
+    printf '%s\n' "fold-portal:$(ns_fold_rev_label "$cache" "$rev")"
     return 0
   fi
 

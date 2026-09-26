@@ -1,0 +1,9 @@
+# The EdgeVector/fold commit the north-star source contracts are graded
+# against inside ci-required. The live Fold tip is a REPORT lane only; see
+# harness/north-star/common.sh "Fold source lanes". Move this pin in a
+# deliberate, reviewed change: its failure names the fold commit.
+#
+# 590ac314e = EdgeVector/fold main at 2026-09-26T12:4xZ. Verified PASS for
+# north-star-lastdb-schema-root-data-attribution and
+# north-star-lastdb-cloud-sync-resume at that oid.
+590ac314e168b84635b0532af08acff4b53aab76
