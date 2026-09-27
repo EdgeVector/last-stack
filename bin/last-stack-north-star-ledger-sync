@@ -597,6 +597,7 @@ class NsPlan:
     create_harness: bool = False
     harness_card_slug: str = ""
     mark_no_harness: bool = False
+    defer_harness: bool = False
     terminal_body_update: str = ""
     mark_ns_done: bool = False
     notes: list[str] = field(default_factory=list)
@@ -659,6 +660,12 @@ def plan_ns(
             if terminal_harness_exists(slug):
                 plan.create_terminal = True
                 plan.notes.append(f"terminal_missing:{terminal}")
+            elif not any(
+                str(m.get("state") or "").lower() in NONTERMINAL_MS
+                for m in milestones_by_ns.get(slug, [])
+            ):
+                plan.defer_harness = True
+                plan.notes.append(f"no_nonterminal_milestone:{slug}")
             else:
                 plan.create_harness = True
                 plan.harness_card_slug = terminal_harness_card_slug(slug)
@@ -670,13 +677,20 @@ def plan_ns(
             col = str(card.get("column") or "")
             plan.notes.append(f"terminal_column:{col}")
             if col != "done" and not terminal_harness_exists(slug):
-                # An existing proof shell with no registered harness can only
-                # collect blocker notes. File the harness work once and put
-                # one stable blocker line on the card.
-                plan.create_harness = True
-                plan.mark_no_harness = True
-                plan.harness_card_slug = terminal_harness_card_slug(slug)
-                plan.notes.append(f"terminal_harness_unregistered:{slug}")
+                if any(
+                    str(m.get("state") or "").lower() in NONTERMINAL_MS
+                    for m in milestones_by_ns.get(slug, [])
+                ):
+                    # An existing proof shell with no registered harness can
+                    # only collect blocker notes. File the harness work once
+                    # and put one stable blocker line on the card.
+                    plan.create_harness = True
+                    plan.mark_no_harness = True
+                    plan.harness_card_slug = terminal_harness_card_slug(slug)
+                    plan.notes.append(f"terminal_harness_unregistered:{slug}")
+                else:
+                    plan.defer_harness = True
+                    plan.notes.append(f"no_nonterminal_milestone:{slug}")
             healed_body, changed = rewrite_legacy_terminal_done_when(
                 str(card.get("body") or ""), slug
             )
@@ -855,6 +869,8 @@ def apply_plan(plan: NsPlan, raw_get: str, *, apply: bool) -> list[str]:
                 apply=apply,
             )
         )
+    elif plan.defer_harness:
+        actions.append(f"defer_harness_until_milestone:{plan.slug}")
     elif plan.create_harness and plan.terminal_slug:
         actions.append(
             ensure_terminal_harness_card(
@@ -1048,6 +1064,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "request_updates": plan.request_updates,
                 "create_terminal": plan.create_terminal,
                 "create_harness": plan.create_harness,
+                "defer_harness": plan.defer_harness,
                 "harness_card_slug": plan.harness_card_slug,
                 "heal_terminal_done_when": bool(plan.terminal_body_update),
                 "mark_ns_done": plan.mark_ns_done,
