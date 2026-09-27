@@ -721,8 +721,6 @@ ci_test tests/last-stack-migrate-repo-local-worktrees.sh
 ci_test tests/last-stack-milestone-factory-dashboard.sh
 ci_test tests/last-stack-papercut-lifecycle-close-budget.sh
 ci_test tests/last-stack-park-terminal-validation-todo.sh
-ci_test tests/last-stack-portfolio-auto-refill.sh
-ci_test tests/last-stack-portfolio-pass-record.sh
 ci_test tests/last-stack-post-merge-map-loom.sh
 ci_test tests/last-stack-pr-venue.sh
 ci_test tests/last-stack-product-feature-ns-reconcile.sh

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Run both feature drivers' admission gate against one admitted and one paused
-# fixture. The paused fixture must create no milestone and no Kind:pr card.
+# Run both feature drivers' admission gate against one admitted and one
+# explicitly paused fixture. The paused fixture must create no milestone and
+# no Kind:pr card.
 #
 # The gate command is extracted from each prompt, so prompt drift fails here.
-# decision-2026-08-31-two-admitted-feature-outcomes
+# decision-2026-09-27-portfolio-admission-allow-all
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -48,7 +49,7 @@ title:      Feature delivery portfolio admission
 Policy-Version: 1
 Primary: $admitted_ns
 Secondary: north-star-lastdb-no-scan-access
-Paused: all-other-feature-north-stars
+Paused: $paused_ns
 Updated-At: 2026-08-31T17:45:00Z
 REC
 export LAST_STACK_ADMISSION_FIXTURE="$fixture"

@@ -53,8 +53,11 @@ else:
 module["raise_if_board_milestone_mismatch"]('{"slug":"ok"}', "kanban add")
 PY
 
-# The live proof must follow the current admission pair. It must not require
-# this proof's North Star to retain a feature-creation slot forever.
+# The live proof must follow the current admission spotlight. It must not
+# require this proof's North Star to retain a feature-creation slot forever,
+# and it must prove decision-2026-09-27-portfolio-admission-allow-all: an
+# arbitrary unlisted North Star is admitted, and an explicitly Paused one is
+# refused.
 mkdir -p "$TMP/admission/get"
 cat >"$TMP/admission/get/preference-feature-delivery-portfolio-admission.txt" <<'EOF'
 [preference] preference-feature-delivery-portfolio-admission
@@ -63,7 +66,7 @@ title: Feature delivery portfolio admission
 Policy-Version: 1
 Primary: north-star-current-primary
 Secondary: north-star-current-secondary
-Paused: all-other-feature-north-stars
+Paused: north-star-current-retired
 Updated-At: 2026-08-31T23:00:00Z
 EOF
 python3 - "$BIN" "$ROOT" "$TMP/admission" <<'PY'
@@ -81,7 +84,13 @@ assert result["admitted_outcomes"] == [
     "north-star-current-primary",
     "north-star-current-secondary",
 ], result
-assert [case["verdict"] for case in cases] == ["admitted", "admitted", "paused"], result
+assert result["paused_outcomes"] == ["north-star-current-retired"], result
+assert [case["verdict"] for case in cases] == [
+    "admitted",
+    "admitted",
+    "paused",
+    "admitted",
+], result
 assert all(
     case["north_star"] != "north-star-feature-delivery-effective-flow"
     for case in cases

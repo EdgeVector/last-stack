@@ -28,14 +28,7 @@ printf 'cap=%s trigger=%s args=%s\n' \
   "$*" >> "$ROUTINES_LOG"
 EOF
 
-cat > "$TMP/bin/refill" <<'EOF'
-#!/bin/sh
-set -eu
-[ "${FAKE_REFILL:-no-trigger-supply-not-drained}" != fail ] || exit 1
-printf '{"verdict":"%s"}\n' "${FAKE_REFILL:-no-trigger-supply-not-drained}"
-EOF
-
-chmod +x "$TMP/bin/kanban" "$TMP/bin/routines" "$TMP/bin/refill"
+chmod +x "$TMP/bin/kanban" "$TMP/bin/routines"
 
 run_controller() {
   ready="$1"
@@ -45,7 +38,6 @@ run_controller() {
   ROUTINES_LOG="$TMP/routines.log" \
   LAST_STACK_READY_BUFFER_BOARD_CLI="$TMP/bin/kanban" \
   LAST_STACK_READY_BUFFER_ROUTINES_CLI="$TMP/bin/routines" \
-  LAST_STACK_READY_BUFFER_REFILL_CLI="$TMP/bin/refill" \
   LAST_STACK_READY_BUFFER_STATE_FILE="$state_file" \
   LAST_STACK_READY_BUFFER_NOW_EPOCH="$now_epoch" \
     "$CONTROLLER" --json
@@ -65,7 +57,7 @@ out="$(run_controller 3 "$TMP/state/three" 1000)"
 out="$(run_controller 6 "$TMP/state/six" 1000)"
 [ "$(printf '%s\n' "$out" | jq -r .action)" = none ]
 
-[ "$(wc -l < "$TMP/routines.log" | tr -d ' ')" -eq 2 ]
+[ "$(wc -l < "$TMP/routines.log" | tr -d ' ')" -eq 4 ]
 [ "$(grep -c 'cap=1 trigger=ready-buffer-controller args=run last-stack-milestone-driver --quiet' "$TMP/routines.log")" -eq 2 ]
 
 if FAIL_BOARD=1 \
@@ -78,13 +70,13 @@ if FAIL_BOARD=1 \
   exit 1
 fi
 [ "$(jq -r .detail "$TMP/unreadable.json")" = board-unreadable ]
-[ "$(wc -l < "$TMP/routines.log" | tr -d ' ')" -eq 2 ]
+[ "$(wc -l < "$TMP/routines.log" | tr -d ' ')" -eq 4 ]
 
 out="$(run_controller 0 "$TMP/state/cooldown" 2000)"
 [ "$(printf '%s\n' "$out" | jq -r .action)" = run ]
 out="$(run_controller 0 "$TMP/state/cooldown" 2001)"
 [ "$(printf '%s\n' "$out" | jq -r .detail)" = cooldown ]
-[ "$(wc -l < "$TMP/routines.log" | tr -d ' ')" -eq 3 ]
+[ "$(wc -l < "$TMP/routines.log" | tr -d ' ')" -eq 6 ]
 
 live_state="$TMP/state/live-lock"
 mkdir -p "$live_state.lock"
@@ -92,7 +84,7 @@ printf '%s\n' "$$" >"$live_state.lock/pid"
 printf '%s\n' 1000 >"$live_state.lock/started"
 out="$(run_controller 0 "$live_state" 5000)"
 [ "$(printf '%s\n' "$out" | jq -r .detail)" = controller-busy ]
-[ "$(wc -l < "$TMP/routines.log" | tr -d ' ')" -eq 3 ]
+[ "$(wc -l < "$TMP/routines.log" | tr -d ' ')" -eq 6 ]
 
 stale_state="$TMP/state/stale-lock"
 mkdir -p "$stale_state.lock"
@@ -102,39 +94,25 @@ out="$(run_controller 0 "$stale_state" 5000)"
 [ "$(printf '%s\n' "$out" | jq -r .action)" = run ]
 [ "$(printf '%s\n' "$out" | jq -r .lock_reclaimed)" = true ]
 [ ! -e "$stale_state.lock" ]
-[ "$(wc -l < "$TMP/routines.log" | tr -d ' ')" -eq 4 ]
+[ "$(wc -l < "$TMP/routines.log" | tr -d ' ')" -eq 8 ]
 
 out="$(run_controller 3 "$TMP/state/no-lock-recovery" 5000)"
 [ "$(printf '%s\n' "$out" | jq -r .lock_reclaimed)" = false ]
 [ "$(printf '%s\n' "$out" | jq -r .north_star_driver)" = null ]
 
-# Supply not drained: the milestone driver runs, the North Star driver does not.
-out="$(run_controller 0 "$TMP/state/ns-not-needed" 5000)"
-[ "$(printf '%s\n' "$out" | jq -r .north_star_driver)" = not-needed:no-trigger-supply-not-drained ]
-[ "$(grep -c 'last-stack-north-star-driver' "$TMP/routines.log")" -eq 0 ]
-
-# Drained portfolio: escalate to the North Star driver in the same pass.
-out="$(FAKE_REFILL=would-refill run_controller 0 "$TMP/state/ns-refill" 5000)"
+# The North Star driver always gets an early chance alongside the milestone
+# driver now — decision-2026-09-27-portfolio-admission-allow-all removed the
+# admitted-portfolio drain signal this used to gate on.
+: > "$TMP/routines.log"
+out="$(run_controller 0 "$TMP/state/ns-runs" 5000)"
 [ "$(printf '%s\n' "$out" | jq -r .action)" = run ]
 [ "$(printf '%s\n' "$out" | jq -r .north_star_driver)" = ran ]
 [ "$(grep -c 'args=run last-stack-north-star-driver --quiet' "$TMP/routines.log")" -eq 1 ]
 
-# An unreadable refill check never runs the North Star driver.
-out="$(FAKE_REFILL=fail run_controller 0 "$TMP/state/ns-fail" 5000)"
-[ "$(printf '%s\n' "$out" | jq -r .north_star_driver)" = refill-check-failed ]
-[ "$(grep -c 'last-stack-north-star-driver' "$TMP/routines.log")" -eq 1 ]
-
-# Cooldown still gates both drivers.
-out="$(FAKE_REFILL=would-refill run_controller 0 "$TMP/state/ns-refill" 5001)"
+# Cooldown still gates both drivers together.
+out="$(run_controller 0 "$TMP/state/ns-runs" 5001)"
 [ "$(printf '%s\n' "$out" | jq -r .detail)" = cooldown ]
-[ "$(grep -c 'last-stack-north-star-driver' "$TMP/routines.log")" -eq 1 ]
-
-# A jam backfill change (open or clear) also lands through the North Star driver.
-out="$(FAKE_REFILL=would-backfill run_controller 0 "$TMP/state/ns-backfill" 5000)"
-[ "$(printf '%s\n' "$out" | jq -r .north_star_driver)" = ran ]
-out="$(FAKE_REFILL=would-clear-backfill run_controller 0 "$TMP/state/ns-backfill-clear" 5000)"
-[ "$(printf '%s\n' "$out" | jq -r .north_star_driver)" = ran ]
-[ "$(grep -c 'last-stack-north-star-driver' "$TMP/routines.log")" -eq 3 ]
+[ "$(grep -c 'args=run last-stack-north-star-driver --quiet' "$TMP/routines.log")" -eq 1 ]
 
 # Ready cards that all overlap a doing card's surfaces are not supply.
 overlap='{"result":"none","dry_run":true,"scanned":2,"skipped":[{"slug":"a","reason":"surface overlap with doing card x"},{"slug":"b","reason":"surface overlap with doing card y"}]}'

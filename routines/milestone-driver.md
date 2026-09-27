@@ -174,9 +174,11 @@ If `MILESTONE_DRIVER_TARGET` is nonempty:
 
 ## Portfolio admission gate (before any Kind:pr create)
 
-The factory admits at most two feature North Stars. Read the admission
-record with **one exact Brain point get**. Never use a Brain list or a Brain
-search as this gate — enumeration under-reports.
+The factory admits every feature North Star by default
+(`decision-2026-09-27-portfolio-admission-allow-all`); only one named in the
+admission record's `Paused` field is refused. Read the admission record with
+**one exact Brain point get**. Never use a Brain list or a Brain search as
+this gate — enumeration under-reports.
 
 Run this once per milestone North Star, before you file any new `Kind: pr`
 card for it:
@@ -195,11 +197,13 @@ if [ "$admission_rc" -ne 0 ]; then
 fi
 ```
 
-- `rc=0` — continue and file the next-gate cards.
-- `rc=2` — the North Star is paused for new feature creation. File **no** new
-  `Kind: pr` card for that milestone. Still run `promote` and `complete_proof`
-  for it, because existing work must be able to finish. Report
-  `admission-paused north_star=<slug>` in the run line.
+- `rc=0` — the North Star is not named in `Paused`. Continue and file the
+  next-gate cards.
+- `rc=2` — the North Star is named in `Paused`, so it is refused for new
+  feature creation. File **no** new `Kind: pr` card for that milestone. Still
+  run `promote` and `complete_proof` for it, because existing work must be
+  able to finish. Report `admission-paused north_star=<slug>` in the run
+  line.
 - `rc=1` — the admission record is missing or malformed. File no new card at
   all this pass. Report `noop admission-record-unreadable` and stop.
 
@@ -724,12 +728,6 @@ Re-run:
   --artifact "${ROUTINES_RUN_DIR:?}/milestone-driver/gap-report.json" \
   | jq '{counts, work_queue, action_counts}'
 ```
-
-**Portfolio pass record:** the zero-LLM gate
-(`last-stack-milestone-driver-gate`) already wrote this pass's record for
-`last-stack-north-star-driver`'s auto-refill trigger before dispatch. Do not
-run `last-stack-portfolio-pass-record` here; a second record per pass would
-let the two-pass trigger fire after one real pass.
 
 Write 5–15 lines to automation memory. Heartbeat with exactly this command
 (fill in the counts; do not add other flags):

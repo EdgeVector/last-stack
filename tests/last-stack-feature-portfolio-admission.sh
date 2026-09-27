@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Hermetic fixtures for last-stack-feature-portfolio-admission.
-# Cases: admitted primary, admitted secondary, a paused outcome, a missing
-# record, malformed content, and a P0 secondary replacement.
-# decision-2026-08-31-two-admitted-feature-outcomes
+# Cases: admission allows every non-paused North Star, a spotlight (Primary)
+# North Star is admitted the same as any other, an explicitly Paused North
+# Star is refused, a missing record, and malformed content.
+# decision-2026-09-27-portfolio-admission-allow-all
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -67,22 +68,24 @@ title:      Feature delivery portfolio admission
 Policy-Version: 1
 Primary: north-star-feature-delivery-effective-flow
 Secondary: north-star-lastdb-no-scan-access
-Paused: all-other-feature-north-stars
-Updated-At: 2026-08-31T17:45:00Z
+Paused: north-star-retired-experiment
+Updated-At: 2026-09-27T17:00:00Z
 Updated-By: owner
-Reason: Permanent feature-delivery repair.
+Reason: Allow every North Star; only an explicit Paused entry is refused.
 REC
 
+# The spotlight (Primary) North Star is admitted.
 out="$(run 0 "$live" --north-star north-star-feature-delivery-effective-flow)"
 printf '%s' "$out" | jq -e '.verdict == "admitted" and .admitted == true' >/dev/null \
   || fail "primary must be admitted: $out"
-printf '%s' "$out" | jq -e '.reason | test("primary admission slot")' >/dev/null \
+printf '%s' "$out" | jq -e '.reason | test("primary spotlight")' >/dev/null \
   || fail "primary reason: $out"
 
+# The spotlight (Secondary) North Star is admitted.
 out="$(run 0 "$live" --north-star north-star-lastdb-no-scan-access)"
 printf '%s' "$out" | jq -e '.verdict == "admitted" and .admitted == true' >/dev/null \
   || fail "secondary must be admitted: $out"
-printf '%s' "$out" | jq -e '.reason | test("secondary admission slot")' >/dev/null \
+printf '%s' "$out" | jq -e '.reason | test("secondary spotlight")' >/dev/null \
   || fail "secondary reason: $out"
 
 # The gate reads one exact slug. It never enumerates.
@@ -91,28 +94,58 @@ printf '%s' "$out" | jq -e --arg s "$slug" '.point_gets == [$s]' >/dev/null \
 printf '%s' "$out" | jq -e '.brain_searches == [] and .brain_lists == []' >/dev/null \
   || fail "gate must not search or list: $out"
 
+# A North Star named nowhere in Primary/Secondary/Backfill is ALSO admitted —
+# admission allows all by default now.
+out="$(run 0 "$live" --north-star north-star-some-unrelated-feature)"
+printf '%s' "$out" | jq -e '.verdict == "admitted" and .admitted == true' >/dev/null \
+  || fail "an unlisted North Star must be admitted by default: $out"
+printf '%s' "$out" | jq -e '.reason | test("every North Star is admitted")' >/dev/null \
+  || fail "default-admit reason: $out"
+
 # Case is normalized; a slug is a slug.
 run 0 "$live" --north-star NORTH-STAR-FEATURE-DELIVERY-EFFECTIVE-FLOW >/dev/null
 
 # ------------------------------------------------------------------ paused
-out="$(run 2 "$live" --north-star north-star-some-other-feature)"
+out="$(run 2 "$live" --north-star north-star-retired-experiment)"
 printf '%s' "$out" | jq -e '.verdict == "paused" and .admitted == false' >/dev/null \
-  || fail "unlisted outcome must be paused: $out"
-printf '%s' "$out" | jq -e '.reason | test("paused for new feature creation")' >/dev/null \
+  || fail "a Paused-named outcome must be refused: $out"
+printf '%s' "$out" | jq -e '.reason | test("named in Paused")' >/dev/null \
   || fail "paused reason must be clear: $out"
 printf '%s' "$out" | jq -e --arg s "$slug" '.reason | test($s)' >/dev/null \
   || fail "paused reason must name the admission record: $out"
-grep -q 'paused for new feature creation' "$tmp/stderr.txt" \
+grep -q 'named in Paused' "$tmp/stderr.txt" \
   || fail "a refusal must print the reason on stderr: $(cat "$tmp/stderr.txt")"
 
 # A paused outcome can still close, prove, repair, and respond to an incident.
 for wc in closeout proof repair incident; do
-  out="$(run 0 "$live" --north-star north-star-some-other-feature --work-class "$wc")"
+  out="$(run 0 "$live" --north-star north-star-retired-experiment --work-class "$wc")"
   printf '%s' "$out" | jq -e '.verdict == "ungated" and .gated == false' >/dev/null \
     || fail "work-class $wc must stay ungated: $out"
   printf '%s' "$out" | jq -e '.point_gets == []' >/dev/null \
     || fail "work-class $wc must not read brain: $out"
 done
+
+# An empty/unset Paused field admits everything.
+unpaused="$tmp/unpaused"
+write_record "$unpaused" <<'REC'
+Policy-Version: 1
+Primary: north-star-feature-delivery-effective-flow
+Paused: none
+REC
+run 0 "$unpaused" --north-star north-star-anything-at-all >/dev/null
+
+# A Paused field with several names refuses each of them and admits everyone
+# else.
+multi_paused="$tmp/multi-paused"
+write_record "$multi_paused" <<'REC'
+Policy-Version: 1
+Primary: north-star-feature-delivery-effective-flow
+Paused: north-star-a, north-star-b
+REC
+run 2 "$multi_paused" --north-star north-star-a >/dev/null
+run 2 "$multi_paused" --north-star north-star-b >/dev/null
+run 0 "$multi_paused" --north-star north-star-c >/dev/null
+run 0 "$multi_paused" --north-star north-star-feature-delivery-effective-flow >/dev/null
 
 # ----------------------------------------------------------------- missing
 missing="$tmp/missing"
@@ -148,15 +181,14 @@ Primary: north-star-feature-delivery-effective-flow
 REC
 
 # Policy-Version is a change counter, not a schema version — a large but
-# well-formed counter value must stay admitted (last-stack-portfolio-auto-refill
-# bumps it by one on every rewrite; a fixed allowlist would fail-closed the
-# whole gate after enough rewrites).
+# well-formed counter value must stay admitted (a rewrite bumps it by one
+# each time; a fixed allowlist would fail-closed the whole gate after
+# enough rewrites).
 high_version="$tmp/high-version"
 write_record "$high_version" <<'REC'
 Policy-Version: 7
 Primary: north-star-feature-delivery-effective-flow
 Secondary: north-star-lastdb-no-scan-access
-Paused: all-other-feature-north-stars
 REC
 out="$(run 0 "$high_version" --north-star north-star-feature-delivery-effective-flow)"
 printf '%s' "$out" | jq -e '.verdict == "admitted"' >/dev/null \
@@ -173,17 +205,15 @@ Primary:
 Secondary: north-star-lastdb-no-scan-access
 REC
 
-malformed_case three-outcomes <<'REC'
+malformed_case two-slugs-in-primary <<'REC'
 Policy-Version: 1
 Primary: north-star-a, north-star-b
-Secondary: north-star-c
 REC
 
 malformed_case duplicate-primary <<'REC'
 Policy-Version: 1
 Primary: north-star-a
 Primary: north-star-b
-Secondary: north-star-c
 REC
 
 malformed_case secondary-repeats-primary <<'REC'
@@ -192,41 +222,13 @@ Primary: north-star-a
 Secondary: north-star-a
 REC
 
-# An explicitly empty secondary slot is valid, not malformed.
-one_slot="$tmp/one-slot"
-write_record "$one_slot" <<'REC'
+malformed_case paused-non-slug <<'REC'
 Policy-Version: 1
-Primary: north-star-feature-delivery-effective-flow
-Secondary: none
-Paused: all-other-feature-north-stars
+Primary: north-star-a
+Paused: not a slug!!
 REC
-out="$(run 0 "$one_slot" --north-star north-star-feature-delivery-effective-flow)"
-printf '%s' "$out" | jq -e '.secondary == "" and (.admitted_outcomes | length) == 1' >/dev/null \
-  || fail "an empty secondary slot admits one outcome: $out"
-run 2 "$one_slot" --north-star north-star-lastdb-no-scan-access >/dev/null
 
-# ------------------------------------------------- P0 secondary replacement
-# The controller rewrites the record first. Then the replacement is admitted
-# and the displaced outcome is paused. The primary never moves.
-replaced="$tmp/replaced"
-write_record "$replaced" <<'REC'
-Policy-Version: 1
-Primary: north-star-feature-delivery-effective-flow
-Secondary: north-star-p0-incident-recovery
-Paused: all-other-feature-north-stars
-Updated-At: 2026-08-31T19:00:00Z
-Updated-By: routine:pipeline-health
-Reason: P0 incident replaces the secondary slot.
-REC
-run 0 "$replaced" --north-star north-star-p0-incident-recovery >/dev/null
-run 0 "$replaced" --north-star north-star-feature-delivery-effective-flow >/dev/null
-out="$(run 2 "$replaced" --north-star north-star-lastdb-no-scan-access)"
-printf '%s' "$out" | jq -e '.verdict == "paused"' >/dev/null \
-  || fail "the displaced secondary must be paused: $out"
-printf '%s' "$out" | jq -e '(.admitted_outcomes | length) == 2' >/dev/null \
-  || fail "the record still admits exactly two outcomes: $out"
-
-# ------------------------------------------- live brain path: get, not list
+# ------------------------------------------------- live brain path: get, not list
 export ADMISSION_BRAIN_DIR="$live"
 export ADMISSION_BRAIN_LOG="$tmp/brain.log"
 : >"$ADMISSION_BRAIN_LOG"

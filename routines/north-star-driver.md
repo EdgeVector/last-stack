@@ -108,58 +108,6 @@ counts. If the requested slug or an equivalent nonterminal outcome now exists,
 reuse it and report `noop existing-milestone`; never create a parallel milestone
 merely because this pass began from an older snapshot.
 
-## Portfolio auto-refill (before selection)
-
-When both admitted
-North Stars have reported zero idle-promoteable and zero idle-empty
-milestones on two consecutive `last-stack-milestone-driver` passes, this
-driver refills the drained Secondary slot from the North Star ranking
-instead of leaving the factory idle. `last-stack-milestone-driver` writes one
-pass-history line per hourly run (`last-stack-portfolio-pass-record`); this
-step never reads a Brain list — only that file and one admission point get.
-
-```bash
-set +e
-"$last_stack/bin/last-stack-portfolio-auto-refill" --apply --json \
-  >/tmp/north-star-driver-auto-refill.json
-refill_rc=$?
-set -e
-refill_verdict="$(jq -r '.verdict // "unknown"' /tmp/north-star-driver-auto-refill.json 2>/dev/null || echo unknown)"
-printf 'AUTO_REFILL verdict=%s rc=%s\n' "$refill_verdict" "$refill_rc"
-```
-
-- `verdict=refilled` — the record was rewritten (Policy-Version bumped, a
-  Situations notice posted naming the admitted North Star). Re-read
-  `preference-feature-delivery-portfolio-admission` mentally as changed for
-  the rest of this pass; the newly admitted North Star is now eligible in the
-  admission gate below.
-- `verdict=would-refill` should never appear here (this step always passes
-  `--apply`); if it does, treat it the same as `refilled` failing and report
-  `noop auto-refill-apply-not-honored`.
-- `verdict=backfilled` / `backfill-cleared` — the jam backfill lane changed
-  (`decision-2026-09-26-portfolio-jam-backfill-third-lane`). An admitted
-  North Star had zero runnable milestones (`in_flight` or `idle_promoteable`)
-  on two consecutive passes, so the helper admitted a temporary `Backfill:`
-  North Star; or the jam ended and the helper removed it. The record changed
-  (Policy-Version bumped, a `--kind config` Situations notice posted). Print
-  `JAM jammed=<.jammed> reasons=<.jam_reasons>` from the JSON. The Backfill
-  keeps the factory busy; it does not repair the jam.
-- `verdict=would-backfill` / `would-clear-backfill` should never appear here;
-  report `noop auto-refill-apply-not-honored`.
-- `verdict=no-trigger-*` / `no-candidate` — nothing written. Continue
-  selection as usual. `.backfill_verdict` says why the jam lane did not
-  change (`no-backfill-no-jam`, `no-backfill-candidate`,
-  `no-backfill-change-still-jammed`, ...).
-- `rc=1` (admission record unreadable/malformed) or `rc=2` (pass-history file
-  unreadable) — do not block this pass on it; the admission gate below is the
-  authoritative fail-closed check. Report `WARN=auto-refill-check-failed` and
-  continue.
-
-This step never picks or scaffolds a milestone itself, never edits North Star
-intent, and never touches Kanban. It only rewrites the admission preference
-record. Tom keeps veto by editing that record directly — see
-`preference-feature-delivery-portfolio-admission`.
-
 ## Select one North Star outcome
 
 Use the milestone portfolio captured by the creation inventory gate. Then:
@@ -175,13 +123,16 @@ Use the milestone portfolio captured by the creation inventory gate. Then:
      --limit 30 --json` — treat hits as incomplete, never as membership.
    Then `brain get <slug> --type project` for each candidate slug. Skip misses.
 3. Ignore done, archived, retired, or definition-incomplete North Stars.
-   In an untargeted run, also drop every candidate that does not hold the
-   Primary, Secondary, or Backfill slot: run the admission gate below for each candidate
+   In an untargeted run, also drop every candidate named in the admission
+   record's `Paused` field: run the admission gate below for each candidate
    and keep only `rc=0`. Steps 4-6 choose among admitted North Stars only.
    A pending request on a paused North Star waits for admission; it must not
    consume the pass. (2026-09-25: a paused North Star's pending request won
    step 4 on every pass, the gate then reported `admission-paused`, and the
-   newly admitted Secondary never got a milestone.)
+   newly admitted Secondary never got a milestone. Since
+   `decision-2026-09-27-portfolio-admission-allow-all`, this only happens for
+   a North Star Tom explicitly names in `Paused` — every other North Star is
+   admitted by default.)
 4. Prefer the oldest explicit approved request marker in a North Star body:
    `MILESTONE_REQUEST slug=<slug> status=pending`, followed by its Outcome and
    Acceptance text.
@@ -223,9 +174,11 @@ guess. Report `noop needs-outcome-definition`.
 
 ## Portfolio admission gate (before any milestone create)
 
-The factory admits at most two feature North Stars. Read the admission
-record with **one exact Brain point get**. Never use a Brain list or a Brain
-search as this gate — enumeration under-reports.
+The factory admits every feature North Star by default
+(`decision-2026-09-27-portfolio-admission-allow-all`); only one named in the
+admission record's `Paused` field is refused. Read the admission record with
+**one exact Brain point get**. Never use a Brain list or a Brain search as
+this gate — enumeration under-reports.
 
 ```bash
 set +e
@@ -241,13 +194,14 @@ if [ "$admission_rc" -ne 0 ]; then
 fi
 ```
 
-- `rc=0` — the North Star holds the Primary, the Secondary, or the temporary
-  Backfill slot (`decision-2026-09-26-portfolio-jam-backfill-third-lane`).
-  Continue.
-- `rc=2` — the North Star is paused for new feature creation. Create no
-  milestone for it. Report `noop admission-paused north_star=<slug>` and pick
-  no replacement outcome in this pass. In an untargeted run this means no admitted
-  North Star had an eligible outcome after the selection filter above.
+- `rc=0` — the North Star is not named in `Paused`. Continue. `Primary`,
+  `Secondary`, and `Backfill` still validate and still report (dashboards
+  read them as the portfolio spotlight) but no longer gate anything.
+- `rc=2` — the North Star is named in `Paused`, so it is refused for new
+  feature creation. Create no milestone for it. Report
+  `noop admission-paused north_star=<slug>` and pick no replacement outcome in
+  this pass. In an untargeted run this means every candidate North Star with
+  an eligible outcome was named in `Paused`.
 - `rc=1` — the admission record is missing or malformed. Create nothing.
   Report `noop admission-record-unreadable` and stop. This is fail-closed by
   design.
@@ -255,10 +209,9 @@ fi
 The gate blocks **new feature creation only**. It never blocks closeout, proof,
 repair, or incident work; those paths pass `--work-class` and stay allowed.
 
-A P0 incident can replace the Secondary slot. The controller must update
-`preference-feature-delivery-portfolio-admission` **before** this driver
-creates a milestone for the replacement. This driver never edits the admission
-record and never admits a third outcome.
+A P0 incident is `--work-class incident`, which the gate never checks — it
+proceeds without touching the admission record. This driver never edits the
+admission record.
 
 ## Create one milestone scaffold
 
