@@ -74,8 +74,46 @@ if not module.valid_card_slug("lastdb-system-attribution-isolated-harness-setup-
     raise SystemExit("measure.py rejected the system attribution follow-up card slug")
 if module.valid_card_slug("not a card slug"):
     raise SystemExit("measure.py accepted an invalid card slug")
-if '(SCHEMA_SYSTEM, "system", "seeded", "create")' not in open(measure_path, encoding="utf-8").read():
-    raise SystemExit("measure.py does not seed a system-attributed object")
+PY
+
+# Run the producer against a short throwaway path. The routine scratch root can
+# make the Unix socket path exceed macOS's sockaddr_un limit.
+PRODUCER_LASTDBD="${SCHEMA_ROOT_ATTRIBUTION_PRODUCER_LASTDBD:-$(command -v lastdbd || true)}"
+[ -x "$PRODUCER_LASTDBD" ] || fail "lastdbd is required for the producer-level measurement test"
+PRODUCER_WORK="$(mktemp -d /tmp/sra-producer.XXXXXX)"
+PRODUCER_EVIDENCE="$WORK/producer-evidence.json"
+PRODUCER_TRACE="$WORK/producer-trace.json"
+python3 "$MEASURE" \
+  --lastdbd "$PRODUCER_LASTDBD" \
+  --work "$PRODUCER_WORK" \
+  --out "$PRODUCER_EVIDENCE" \
+  --trace "$PRODUCER_TRACE" \
+  >"$WORK/producer.out" 2>"$WORK/producer.err" || {
+  cat "$WORK/producer.err" >&2
+  fail "the isolated measurement producer failed"
+}
+python3 - "$PRODUCER_EVIDENCE" "$PRODUCER_TRACE" <<'PY'
+import json
+import sys
+
+evidence_path, trace_path = sys.argv[1:]
+evidence = json.load(open(evidence_path, encoding="utf-8"))
+trace = json.load(open(trace_path, encoding="utf-8"))
+restore = evidence.get("restore")
+system = restore.get("system_attributed_objects") if isinstance(restore, dict) else None
+if isinstance(system, bool) or not isinstance(system, int) or system < 1:
+    raise SystemExit("the isolated measurement did not produce a system-attributed object")
+if not any(
+    row.get("schema") == "sraproof/System"
+    and row.get("key") == "system"
+    and row.get("kind") == "create"
+    for row in trace.get("source_writes", [])
+    if isinstance(row, dict)
+):
+    raise SystemExit("the isolated measurement did not record the system seed mutation")
+after = trace["inventory_after_concurrent"]["inventory"]["attribution"]["objects"]
+if restore["system_attributed_objects"] != after["system_attributed"]:
+    raise SystemExit("generated evidence does not match the generated inventory trace")
 PY
 
 "$RUNNER" --list | grep -qx 'north-star-lastdb-schema-root-data-attribution' ||
