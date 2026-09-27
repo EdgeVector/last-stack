@@ -417,8 +417,12 @@ def soak_measure(text):
     started = measured_time(values, "soak_started_at")
     ended = measured_time(values, "soak_ended_at")
     canary = measured_time(values, "canary_started_at")
+    canary_result = values.get("canary_result")
     if upgrade is None or started is None or ended is None or canary is None:
         failures.append("The soak output has no measured window.")
+        return failures, []
+    if canary_result != "PASS":
+        failures.append("The measured canary result is not PASS.")
         return failures, []
     if upgrade > started:
         failures.append("The safe upgrade is not before the soak window.")
@@ -430,7 +434,7 @@ def soak_measure(text):
     notes = []
     if not failures:
         notes.append(
-            "- The soak window ran from %s to %s. The canary started at %s after the safe upgrade at %s."
+            "- The soak window ran from %s to %s. The canary started at %s after the safe upgrade at %s and reported PASS."
             % (
                 values["soak_started_at"],
                 values["soak_ended_at"],

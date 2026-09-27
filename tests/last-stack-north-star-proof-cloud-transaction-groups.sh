@@ -76,6 +76,7 @@ write_measured() {
   local cutover="${2:-false}"
   local soak_end="${3:-2026-08-31T22:59:52Z}"
   local published_after="${4:-1788069523520522000}"
+  local canary_result="${5:-PASS}"
   cat >"$path" <<EOF
 {
   "schema": "lastdb-cloud-transaction-groups-proof.v1",
@@ -87,7 +88,7 @@ write_measured() {
   },
   "cow_output": "frontier: 1787974212509104000\npublished_through_before: 1787900000000000000\npublished_through_after: ${published_after}\npin_rows_before: 12\npin_rows_after: 11\ndeleted: 0\nquarantined: 0\nfailed_upload_frontier_before: 1787974212509104000\nfailed_upload_frontier_after: 1787974212509104000\nretry_object_count: 4\nretry_new_keys: 0\n",
   "restore_output": "primary_records: 1046\nrestored_records: 1046\nprimary_projection_sha256: 24b454bc2a4368edcc45b53a423c08b14350c612fe52adfcbcd1b04cd6f2db9c\nrestored_projection_sha256: 24b454bc2a4368edcc45b53a423c08b14350c612fe52adfcbcd1b04cd6f2db9c\nv1_records: 3\nv1_restored_records: 3\npartial_group_frontier_before: 1787974212509104000\npartial_group_frontier_after: 1787974212509104000\n",
-  "soak_output": "safe_upgrade_at: 2026-08-30T22:59:52Z\nsoak_started_at: 2026-08-30T22:59:52Z\nsoak_ended_at: ${soak_end}\ncanary_started_at: 2026-08-31T23:00:00Z\n"
+  "soak_output": "safe_upgrade_at: 2026-08-30T22:59:52Z\nsoak_started_at: 2026-08-30T22:59:52Z\nsoak_ended_at: ${soak_end}\ncanary_started_at: 2026-08-31T23:00:00Z\ncanary_result: ${canary_result}\n"
 }
 EOF
 }
@@ -103,6 +104,8 @@ write_measured "$WORK/good.json" false
 write_measured "$WORK/short-soak.json" false "2026-08-30T23:59:52Z"
 write_measured "$WORK/undrained.json" false "2026-08-31T22:59:52Z" "1787000000000000000"
 write_measured "$WORK/cutover.json" true
+write_measured "$WORK/canary-fail.json" false "2026-08-31T22:59:52Z" "1788069523520522000" FAIL
+sed '/canary_result:/d' "$WORK/good.json" >"$WORK/canary-missing.json"
 
 MARKER="$WORK/home-opened"
 mkdir -p "$WORK/bin"
@@ -183,6 +186,8 @@ grep -q 'published_through 1787900000000000000 to 1788069523520522000' \
   "$WORK/good/north-star-lastdb-cloud-transaction-groups.md"
 grep -q 'The soak window ran from 2026-08-30T22:59:52Z to 2026-08-31T22:59:52Z' \
   "$WORK/good/north-star-lastdb-cloud-transaction-groups.md"
+grep -q 'reported PASS' \
+  "$WORK/good/north-star-lastdb-cloud-transaction-groups.md"
 "$EVALUATOR" --kind validation \
   --predicate "file $WORK/good/north-star-lastdb-cloud-transaction-groups.md matches /^PASS/" \
   >"$WORK/good-eval.out"
@@ -198,6 +203,28 @@ fi
 expect_verdict "$WORK/short/north-star-lastdb-cloud-transaction-groups.md" FAIL
 grep -q 'soak window is shorter than 24 hours' \
   "$WORK/short/north-star-lastdb-cloud-transaction-groups.md"
+
+if PATH="$WORK/bin:$PATH" \
+  CLOUD_TRANSACTION_GROUPS_PIN_LOG_FILE="$PINNED" \
+  CLOUD_TRANSACTION_GROUPS_PROOF_EVIDENCE_FILE="$WORK/canary-missing.json" \
+  NORTH_STAR_PROOF_DIR="$WORK/canary-missing" \
+  "$RUNNER" --offline north-star-lastdb-cloud-transaction-groups >"$WORK/canary-missing.out" 2>&1; then
+  fail "a canary timestamp without a result was accepted"
+fi
+expect_verdict "$WORK/canary-missing/north-star-lastdb-cloud-transaction-groups.md" FAIL
+grep -q 'measured canary result is not PASS' \
+  "$WORK/canary-missing/north-star-lastdb-cloud-transaction-groups.md"
+
+if PATH="$WORK/bin:$PATH" \
+  CLOUD_TRANSACTION_GROUPS_PIN_LOG_FILE="$PINNED" \
+  CLOUD_TRANSACTION_GROUPS_PROOF_EVIDENCE_FILE="$WORK/canary-fail.json" \
+  NORTH_STAR_PROOF_DIR="$WORK/canary-fail" \
+  "$RUNNER" --offline north-star-lastdb-cloud-transaction-groups >"$WORK/canary-fail.out" 2>&1; then
+  fail "a non-PASS canary result was accepted"
+fi
+expect_verdict "$WORK/canary-fail/north-star-lastdb-cloud-transaction-groups.md" FAIL
+grep -q 'measured canary result is not PASS' \
+  "$WORK/canary-fail/north-star-lastdb-cloud-transaction-groups.md"
 
 if PATH="$WORK/bin:$PATH" \
   CLOUD_TRANSACTION_GROUPS_PIN_LOG_FILE="$PINNED" \
