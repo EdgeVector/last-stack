@@ -423,6 +423,10 @@ def measure(lastdbd, work, system_attribution_follow_up=None):
             (SCHEMA_A, "a1", "alpha", "create"),
             (SCHEMA_A, "a2", "beta", "create"),
             (SCHEMA_B, "b1", "gamma", "create"),
+            # A declaration names a system schema, but it does not create a
+            # system-attributed object. Seed one real object in the throwaway
+            # source before the copy so inventory can measure its root class.
+            (SCHEMA_SYSTEM, "system", "seeded", "create"),
             (SCHEMA_ORPHAN, "orphan", "injected", "create"),
             (SCHEMA_A, "a1", "alpha-2", "update"),
         ):
