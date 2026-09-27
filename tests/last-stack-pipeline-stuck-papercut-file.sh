@@ -53,12 +53,30 @@ case "${1:-} ${2:-}" in
   "append "*)
     slug="$2"
     body="$(cat)"
+    exists="$(jq --arg slug "$slug" '[.[] | select(.slug == $slug)] | length' "$state")"
+    if [ "$exists" = "0" ]; then
+      echo "missing $slug" >&2
+      exit 1
+    fi
     jq --arg slug "$slug" --arg body "$body" \
       'map(if .slug == $slug then .body = (.body + "\n" + $body) else . end)' \
       "$state" >"$state.tmp"
     mv "$state.tmp" "$state"
     printf 'APPEND %s\n' "$slug" >>"$BRAIN_APPEND_LOG"
     printf '%s\n' "$body" >>"$BRAIN_APPEND_LOG"
+    ;;
+  "put --type")
+    # last-stack-papercut-ledger-append creates its first-ever ledger record
+    # (or a rollover successor) with a `slug:`-frontmatter reference body on
+    # stdin; materialize it in the same fake store `get`/`append` read.
+    text="$(cat)"
+    slug="$(printf '%s\n' "$text" | sed -n 's/^slug:[[:space:]]*//p' | head -1)"
+    body="$(printf '%s\n' "$text" | awk 'BEGIN{c=0} /^---$/{c++; next} c>=2{print}')"
+    jq --arg slug "$slug" --arg body "$body" \
+      '. + [{slug:$slug,title:"ledger",status:"active",body:$body}]' \
+      "$state" >"$state.tmp"
+    mv "$state.tmp" "$state"
+    printf 'PUT %s\n' "$slug" >>"$BRAIN_APPEND_LOG"
     ;;
   *)
     echo "unexpected brain args: $*" >&2

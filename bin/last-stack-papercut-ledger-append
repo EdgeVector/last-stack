@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""Append lines to the papercut reconciler ledger, rolling to a dated
+successor record before the active one hits LastDB's atom content limit.
+
+Both writers of this ledger (`last-stack-papercut-lifecycle-close` and the
+`papercut-reconciler` routine's Step 5) previously ran a bare
+`brain append <base-slug> --type reference` with no size check, no successor
+routing, and no way for one writer to discover a successor the other one
+created. The base record hit LastDB's 524288-byte atom limit on 2026-09-27
+(a 234-line reconciler pass could not append), a successor was created by
+hand, and — because nothing links the two — later passes kept appending to
+the now-almost-full base record anyway
+(papercut-reconciler-ledger-reaches-lastdb-atom-limit-20260927).
+
+This tool is the one place that decides which record is currently writable.
+It walks a `Successor: <slug>` pointer chain from the base slug, and when the
+record at the end of that chain does not have room for the new text, it:
+  1. mints the next dated successor slug (or reuses one that already exists
+     under that name, e.g. one created by hand before this tool existed),
+  2. appends a `Successor: <new-slug>` pointer line to the old tail so the
+     chain stays walkable by the next caller,
+  3. creates the new record if it is not already there, then appends the
+     text to it.
+
+Text to append is read from stdin, exactly as the callers' own
+`brain append` invocations already did. Prints the slug the text landed on
+to stdout (bare, for `SLUG=$(...)` capture); a human-readable line goes to
+stderr.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import subprocess
+import sys
+
+ATOM_LIMIT_BYTES = 524288
+# Leave headroom for the successor-pointer line this tool itself appends to
+# the outgoing tail, and for whatever the next caller sends before anyone
+# re-checks size.
+ROLLOVER_THRESHOLD_BYTES = ATOM_LIMIT_BYTES - 24288
+
+SUCCESSOR_RE = re.compile(r"(?im)^\s*Successor:\s*(\S+)\s*$")
+
+
+def run(argv: list[str], *, stdin: str | None = None, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        input=stdin,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=timeout,
+        env=os.environ,
+    )
+
+
+def brain_get_reference(brain_bin: str, slug: str) -> dict | None:
+    proc = run([brain_bin, "get", slug, "--type", "reference", "--json"], timeout=30)
+    if proc.returncode != 0:
+        return None
+    try:
+        value = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def body_bytes(record: dict | None) -> int:
+    if not record:
+        return 0
+    return len(str(record.get("body") or "").encode("utf-8"))
+
+
+def successor_of(record: dict | None) -> str:
+    if not record:
+        return ""
+    match = SUCCESSOR_RE.search(str(record.get("body") or ""))
+    return match.group(1).strip() if match else ""
+
+
+def walk_to_tail(brain_bin: str, base_slug: str) -> tuple[str, dict | None, list[str]]:
+    """Follow `Successor:` pointers from base_slug to the current tail.
+
+    Returns (tail_slug, tail_record_or_None, visited_slugs_in_order).
+    """
+    visited: list[str] = []
+    slug = base_slug
+    record = brain_get_reference(brain_bin, slug)
+    while True:
+        visited.append(slug)
+        nxt = successor_of(record)
+        if not nxt or nxt in visited:
+            return slug, record, visited
+        slug = nxt
+        record = brain_get_reference(brain_bin, slug)
+
+
+def mint_successor_slug(brain_bin: str, base_slug: str, visited: list[str]) -> str:
+    today = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d")
+    candidate = f"{base_slug}-{today}"
+    if candidate not in visited:
+        return candidate
+    n = 2
+    while f"{candidate}-{n}" in visited:
+        n += 1
+    return f"{candidate}-{n}"
+
+
+def append_pointer(brain_bin: str, slug: str, target: str) -> None:
+    proc = run([brain_bin, "append", slug, "--type", "reference"], stdin=f"\nSuccessor: {target}\n", timeout=30)
+    if proc.returncode != 0:
+        raise RuntimeError(f"brain append {slug} (successor pointer) failed: {proc.stderr.strip()}")
+
+
+def create_successor_record(brain_bin: str, slug: str, predecessor: str) -> None:
+    today = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+    frontmatter = (
+        "---\n"
+        "type: reference\n"
+        f"slug: {slug}\n"
+        f"title: Papercut reconciler ledger successor {today}\n"
+        "---\n\n"
+        f"Successor to `{predecessor}`, which reached (or was near) LastDB's atom "
+        "content limit. This record carries new routing lines until it, too, needs "
+        "a successor -- see `last-stack-papercut-ledger-append` and "
+        "papercut-reconciler-ledger-reaches-lastdb-atom-limit-20260927.\n"
+    )
+    proc = run([brain_bin, "put", "--type", "reference"], stdin=frontmatter, timeout=30)
+    if proc.returncode != 0:
+        raise RuntimeError(f"brain put {slug} failed: {proc.stderr.strip()}")
+
+
+def resolve_target_slug(brain_bin: str, base_slug: str, new_text_bytes: int) -> str:
+    tail_slug, tail_record, visited = walk_to_tail(brain_bin, base_slug)
+    if tail_record is None:
+        # Base record does not exist yet at all -- create it fresh, first use.
+        create_successor_record(brain_bin, tail_slug, predecessor="(none)")
+        return tail_slug
+    if body_bytes(tail_record) + new_text_bytes <= ROLLOVER_THRESHOLD_BYTES:
+        return tail_slug
+
+    slug = tail_slug
+    while True:
+        candidate = mint_successor_slug(brain_bin, base_slug, visited)
+        visited.append(candidate)
+        candidate_record = brain_get_reference(brain_bin, candidate)
+        if candidate_record is None:
+            append_pointer(brain_bin, slug, candidate)
+            create_successor_record(brain_bin, candidate, predecessor=slug)
+            return candidate
+        if body_bytes(candidate_record) + new_text_bytes <= ROLLOVER_THRESHOLD_BYTES:
+            append_pointer(brain_bin, slug, candidate)
+            return candidate
+        # The dated successor already exists AND is itself full (rare: several
+        # rollovers in one day) -- point the chain at it anyway and keep
+        # walking forward from there so the next candidate is not reused.
+        append_pointer(brain_bin, slug, candidate)
+        slug = candidate
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--base-slug", default="papercut-reconciler-ledger")
+    parser.add_argument("--brain-bin", default="brain")
+    args = parser.parse_args()
+
+    text = sys.stdin.read()
+    if not text.strip():
+        print("last-stack-papercut-ledger-append: empty stdin, nothing to append", file=sys.stderr)
+        return 2
+
+    target = resolve_target_slug(args.brain_bin, args.base_slug, len(text.encode("utf-8")))
+    proc = run([args.brain_bin, "append", target, "--type", "reference"], stdin=text, timeout=60)
+    if proc.returncode != 0:
+        print(f"last-stack-papercut-ledger-append: brain append {target} failed: {proc.stderr.strip()}", file=sys.stderr)
+        return 1
+
+    print(target)
+    print(f"last-stack-papercut-ledger-append: appended to {target}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

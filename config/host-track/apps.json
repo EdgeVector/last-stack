@@ -89,6 +89,10 @@
           "target": "$HOME/.local/bin/last-stack-papercut-lifecycle-close"
         },
         {
+          "source": "bin/last-stack-papercut-ledger-append",
+          "target": "$HOME/.local/bin/last-stack-papercut-ledger-append"
+        },
+        {
           "source": "bin/last-stack-papercut-queue",
           "target": "$HOME/.local/bin/last-stack-papercut-queue"
         },
