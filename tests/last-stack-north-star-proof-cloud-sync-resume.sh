@@ -124,7 +124,7 @@ PROBE_RESULT: cloud_status_exit=0
 PROBE_RESULT: snapshot_exit=0
 PROBE_RESULT: put_file_blob_exit=0
 EOF
-  log_sha256="$(sha256sum "$log" | awk '{print $1}')"
+  log_sha256="$(shasum -a 256 "$log" | awk '{print $1}')"
   python3 - "$path" "$log_sha256" <<'PY'
 import json
 import sys
