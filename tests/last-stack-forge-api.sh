@@ -24,7 +24,8 @@ if grep -E 'curl_args=\(-fsS|curl_args=\(-f' "$API" >/dev/null 2>&1; then
 fi
 
 # A fake situations CLI keeps the merge preflight guard hermetic. It answers
-# BLOCKED for EdgeVector/held and OK for every other repo.
+# BLOCKED for EdgeVector/held, crashes (rc=2, neither 0 nor 3) for
+# EdgeVector/crashy, and OK for every other repo.
 SIT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/forge-api-sit.XXXXXX")"
 cat >"$SIT_DIR/situations" <<'SH'
 #!/usr/bin/env bash
@@ -33,6 +34,10 @@ for a in "$@"; do
     echo "BLOCKED: merge-pr by test-hold"
     echo "  Hold merges for the test."
     exit 3
+  fi
+  if [ "$a" = EdgeVector/crashy ]; then
+    echo "service_timeout: node did not respond within 30000ms" >&2
+    exit 2
   fi
 done
 echo "OK: merge-pr"
@@ -376,6 +381,24 @@ LAST_STACK_SITUATIONS_BIN="$SIT_DIR/absent" "$API" --method POST --data '{"Do":"
 set -e
 grep -q 'POST /api/v1/repos/EdgeVector/held/pulls/8/merge' "$LOG_FILE" || { echo "FAIL: skip override should reach the forge" >&2; exit 1; }
 grep -q 'POST /api/v1/repos/EdgeVector/held/pulls/9/merge' "$LOG_FILE" || { echo "FAIL: missing situations CLI should fail open" >&2; exit 1; }
+echo "ok last-stack-forge-api merge preflight BLOCKED / cancel / override / missing-CLI"
+
+# --- Case 8: a preflight that RAN and crashed (rc neither 0 nor 3) fails CLOSED,
+# distinct from a missing CLI (Case 7 above), which stays fail-open.
+# papercut-forge-merge-preflight-fails-open-on-an-unreadable-policy-20260925
+set +e
+crash_out="$("$API" --method POST --data '{"Do":"merge"}' repos/EdgeVector/crashy/pulls/10/merge 2>&1 >/dev/null)"
+rc=$?
+set -e
+if [[ "$rc" -ne 3 || "$crash_out" != *"REFUSED merge on EdgeVector/crashy"* || "$crash_out" != *"exited 2"* ]]; then
+  echo "FAIL: a preflight that ran and exited non-0/non-3 should refuse the merge with exit 3, got rc=$rc: $crash_out" >&2
+  exit 1
+fi
+if grep -q 'POST /api/v1/repos/EdgeVector/crashy/pulls/10/merge' "$LOG_FILE"; then
+  echo "FAIL: the fail-closed merge still reached the forge" >&2
+  exit 1
+fi
+echo "ok last-stack-forge-api merge preflight fails CLOSED on a crashed (not missing) situations CLI"
 
 # The guard must not depend on WHICH documented path form the caller used. This
 # wrapper accepts `repos/...`, `/api/v1/repos/...` and a full URL, and anything
