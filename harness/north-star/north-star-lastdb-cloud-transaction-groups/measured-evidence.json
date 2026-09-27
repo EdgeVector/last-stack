@@ -1,0 +1,18 @@
+{
+  "schema": "lastdb-cloud-transaction-groups-proof.v1",
+  "provenance": {
+    "workflow": "isolated CoW copy, empty-home restore, and post-upgrade canary",
+    "primary_home_opened": false,
+    "primary_mutated": false,
+    "measured_at": "2026-09-01T23:00:00Z"
+  },
+  "surface": {
+    "kind": "cow",
+    "primary_home_opened": false,
+    "primary_mutated": false,
+    "live_cutover": false
+  },
+  "cow_output": "frontier: 1787974212509104000\npublished_through_before: 1787900000000000000\npublished_through_after: 1788069523520522000\npin_rows_before: 12\npin_rows_after: 11\ndeleted: 0\nquarantined: 0\nfailed_upload_frontier_before: 1787974212509104000\nfailed_upload_frontier_after: 1787974212509104000\nretry_object_count: 4\nretry_new_keys: 0\n",
+  "restore_output": "primary_records: 1046\nrestored_records: 1046\nprimary_projection_sha256: 24b454bc2a4368edcc45b53a423c08b14350c612fe52adfcbcd1b04cd6f2db9c\nrestored_projection_sha256: 24b454bc2a4368edcc45b53a423c08b14350c612fe52adfcbcd1b04cd6f2db9c\nv1_records: 3\nv1_restored_records: 3\npartial_group_frontier_before: 1787974212509104000\npartial_group_frontier_after: 1787974212509104000\n",
+  "soak_output": "safe_upgrade_at: 2026-08-30T22:59:52Z\nsoak_started_at: 2026-08-30T22:59:52Z\nsoak_ended_at: 2026-08-31T22:59:52Z\ncanary_started_at: 2026-08-31T23:00:00Z\n"
+}

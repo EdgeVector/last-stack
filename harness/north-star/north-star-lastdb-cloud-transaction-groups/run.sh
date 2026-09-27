@@ -123,7 +123,14 @@ if [ ! -s "$TMP/pin_log.rs" ]; then
   finish FAIL "The Fold pin-log source is empty."
 fi
 
-EVIDENCE="${CLOUD_TRANSACTION_GROUPS_PROOF_EVIDENCE_FILE:-}"
+# An unset variable selects the reviewed measured artifact. An explicitly
+# empty variable keeps the source-only failure path available to CI tests and
+# to callers that need to check the fail-closed behavior.
+if [ -z "${CLOUD_TRANSACTION_GROUPS_PROOF_EVIDENCE_FILE+x}" ]; then
+  EVIDENCE="$HERE/measured-evidence.json"
+else
+  EVIDENCE="${CLOUD_TRANSACTION_GROUPS_PROOF_EVIDENCE_FILE}"
+fi
 if [ -n "$EVIDENCE" ]; then
   refuse_primary "$EVIDENCE"
   [ -f "$EVIDENCE" ] || finish FAIL "The evidence file is absent."
@@ -142,6 +149,10 @@ fi
 BODY="${BODY}
 
 Source label: ${SOURCE_LABEL}"
+if [ -n "$EVIDENCE" ]; then
+  BODY="${BODY}
+Evidence file: ${EVIDENCE}"
+fi
 
 if [ "$RC" -ne 0 ]; then
   finish FAIL "$BODY"

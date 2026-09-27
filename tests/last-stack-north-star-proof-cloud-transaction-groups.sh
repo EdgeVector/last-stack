@@ -120,6 +120,7 @@ chmod +x "$WORK/bin/lastdb" "$WORK/bin/brain"
 
 PATH="$WORK/bin:$PATH" \
 CLOUD_TRANSACTION_GROUPS_PIN_LOG_FILE="$PINNED" \
+CLOUD_TRANSACTION_GROUPS_PROOF_EVIDENCE_FILE= \
 NORTH_STAR_PROOF_DIR="$WORK/absent" \
   "$RUNNER" --offline north-star-lastdb-cloud-transaction-groups >"$WORK/absent.out" 2>"$WORK/absent.err" || true
 [ ! -e "$MARKER" ] || fail "the offline proof called lastdb or brain"
@@ -134,6 +135,24 @@ if "$EVALUATOR" --kind validation \
   fail "a report without operational evidence satisfied /^PASS/"
 fi
 grep -q '^pending:' "$WORK/absent-eval.out" || fail "missing-evidence report was not pending"
+
+# An unset evidence variable loads the committed measured artifact. An empty
+# value above remains the explicit source-only failure path.
+if PATH="$WORK/bin:$PATH" \
+  env -u CLOUD_TRANSACTION_GROUPS_PROOF_EVIDENCE_FILE \
+  CLOUD_TRANSACTION_GROUPS_PIN_LOG_FILE="$PINNED" \
+  NORTH_STAR_PROOF_DIR="$WORK/committed" \
+  "$RUNNER" --offline north-star-lastdb-cloud-transaction-groups >"$WORK/committed.out"; then
+  :
+else
+  fail "the committed measured evidence did not pass"
+fi
+expect_verdict "$WORK/committed/north-star-lastdb-cloud-transaction-groups.md" PASS-OFFLINE
+grep -Fq "Evidence file: $ROOT/harness/north-star/north-star-lastdb-cloud-transaction-groups/measured-evidence.json" \
+  "$WORK/committed/north-star-lastdb-cloud-transaction-groups.md" ||
+  fail "the default evidence path is not measured-evidence.json"
+grep -q 'Operational evidence: PASS' \
+  "$WORK/committed/north-star-lastdb-cloud-transaction-groups.md"
 
 if PATH="$WORK/bin:$PATH" \
   CLOUD_TRANSACTION_GROUPS_PIN_LOG_FILE="$PINNED" \
