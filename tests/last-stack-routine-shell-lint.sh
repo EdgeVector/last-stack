@@ -249,6 +249,44 @@ expect 0 zsh zsh-word-split-positional-ok <<'EOF'
 for arg in "$@"; do echo "$arg"; done
 EOF
 
+# --- home-root-scan -----------------------------------------------------------
+expect 2 bash home-root-find-path-first <<'EOF'
+find "$HOME" -maxdepth 4 -name "feature_catalog.toml"
+EOF
+expect 2 bash home-root-find-unquoted <<'EOF'
+find $HOME -maxdepth 4 -name x
+EOF
+expect 2 bash home-root-find-tilde <<'EOF'
+find ~ -maxdepth 2
+EOF
+expect 2 bash home-root-du-flags-first <<'EOF'
+du -sh "$HOME" 2>/dev/null
+EOF
+expect 2 bash home-root-downloads-direct <<'EOF'
+ls -la ~/Downloads
+EOF
+expect 2 bash home-root-desktop-direct <<'EOF'
+du -sh "$HOME/Desktop" 2>/dev/null
+EOF
+expect 0 bash home-root-scoped-code-ok <<'EOF'
+find "$HOME/code" -maxdepth 4 -name "*.toml"
+EOF
+expect 0 bash home-root-scoped-dotdirs-ok <<'EOF'
+find "$HOME/.routines" "$HOME/.last-stack" "$HOME/.fkanban" -maxdepth 4 -name x
+EOF
+expect 0 bash home-root-unrelated-home-mention-ok <<'EOF'
+if [ -d "$HOME/code" ]; then find "$workspace" -maxdepth 3 -name x; fi
+EOF
+expect 0 bash home-root-prose-mention-ok <<'EOF'
+echo "the file was not found in Downloads"
+EOF
+expect 0 bash home-root-shell-lint-ok-escape <<'EOF'
+find "$HOME" -maxdepth 2  # shell-lint-ok: auditing top-level layout
+EOF
+expect 0 bash home-root-home-scan-ok-escape <<'EOF'
+find "$HOME" -maxdepth 4 \( -path "$HOME/Desktop" -o -path "$HOME/Downloads" \) -prune -o -print 2>/dev/null  # home-scan-ok: full audit
+EOF
+
 # --- escape hatch and usage --------------------------------------------------
 expect 0 bash escape-hatch <<'EOF'
 sed -i 's/a/b/' f   # shell-lint-ok: GNU sed on the PC
@@ -278,6 +316,10 @@ fi
 out="$(hook_json 'echo ok')"
 if [ -n "$out" ]; then
   echo "FAIL [hook-allow] want no output, got: $out" >&2; fail=1
+fi
+out="$(hook_json 'find "$HOME" -maxdepth 4 -name x')"
+if ! printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("home-root-scan")' >/dev/null; then
+  echo "FAIL [hook-home-root-scan] got: $out" >&2; fail=1
 fi
 out="$(printf 'not json' | LAST_STACK_ROUTINE_SHELL_LINT="$LINT" "$HOOK")"
 if [ -n "$out" ]; then
@@ -322,6 +364,15 @@ if command -v zsh >/dev/null 2>&1; then
   err="$(run_z "${routine_env[@]}" -- 'while true; do read -t 1 < /dev/zero; done' 2>&1)"; rc=$?
   set -e
   [ "$rc" = 2 ] || { echo "FAIL [snippet-lint-reject] want 2, got $rc: $err" >&2; fail=1; }
+
+  # The gap this rule closes: a Codex routine command (not a Claude Code
+  # Bash tool call, so hooks/no-home-root-scan.sh never runs) that scans the
+  # home root must still be rejected, by the shared lint alone.
+  set +e
+  err="$(run_z "${routine_env[@]}" -- 'find "$HOME" -maxdepth 4 -name x' 2>&1)"; rc=$?
+  set -e
+  [ "$rc" = 2 ] && printf '%s' "$err" | grep -q 'rule=home-root-scan' \
+    || { echo "FAIL [snippet-home-root-scan] want rc=2 rule=home-root-scan, got $rc: $err" >&2; fail=1; }
 
   got="$(run_z -- 'echo "${ZSH_VERSION:+zsh}"')"
   [ "$got" = zsh ] || { echo "FAIL [snippet-not-routine] want zsh, got '$got'" >&2; fail=1; }

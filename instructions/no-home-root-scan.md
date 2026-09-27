@@ -45,3 +45,13 @@ find "$HOME" -maxdepth 4 \( -path "$HOME/Desktop" -o -path "$HOME/Documents" \
 Under Claude Code the hook `~/.claude/hooks/no-home-root-scan.sh` denies the bad
 form and hands back the scoped one. Escape hatch, with a reason:
 `# home-scan-ok: <reason>`.
+
+**Codex routines are covered too (2026-09-27).** 78 of 80 registry routines run
+under `harness = "codex"`, which never read this Claude Code hook — that gap is
+why the same stall recurred (loom review, disk-reclaim, feature-prove) even
+after the hook shipped. The shared `bin/last-stack-routine-shell-lint` (the one
+source both Codex routines and Claude Code Bash calls run through, see
+`instructions/routine-shell.md`) now carries the same check as rule
+`home-root-scan`, so a Codex routine command gets the same rejection and fix
+text before it runs. Either escape phrase works there too: `# shell-lint-ok:
+<reason>` or `# home-scan-ok: <reason>`.
