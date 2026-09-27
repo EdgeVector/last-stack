@@ -59,8 +59,8 @@ venue="$(printf '%s\n' "$route_json" | jq -r .venue)"
 
 Use GitHub `gh` only when `venue=github`; use the local Forgejo SOP/API helper
 when `venue=forgejo`; use `lastgit cr` when `venue=lastgit`. LastGit routing is
-explicit opt-in only. For LastGit-native repos, read
-`brain get sop-lastgit-native-forge-workflow`, push the branch to the `lastgit`
+explicit opt-in only. For LastGit-native repos, use the native LastGit review
+path, push the branch to the `lastgit`
 remote, create `lastgit cr create <slug> --head <branch> --base main
 --auto-merge --require-status <context> --json`, and drive it with
 `lastgit cr view`, `lastgit ci status`, and `lastgit cr complete --once`. Do not
@@ -144,7 +144,8 @@ agent ran it / CI, not a human eyeballing). Match the proof to blast radius:
   throwaway data dir** (`mktemp -d`, `FOLDDB_DISABLE_KEYCHAIN=1`; never `~/.lastdb` or `~/.folddb`
   or the primary brain/keyring). It must cross a **process boundary** (restart /
   re-open) between the write and the read, and include a **negative case**. No
-  script yet? Write one from the SOP `sop-autonomous-acceptance-gate` template.
+  script yet? Write one with a throwaway data directory, a process restart, and
+  a negative case.
 
 Anchor the proof to the **user story, not the diff** — that is what catches
 half-built features ("set" shipped without "unlock", incident 2026-06-30). Record

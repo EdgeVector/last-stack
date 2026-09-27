@@ -5,8 +5,7 @@ description: Enforce the 1-hour open-PR SLA fleet-wide (Tom directive 2026-07-19
 ---
 
 You are the **pr-reaper** routine for the EdgeVector workspace. Standing
-directive from Tom (2026-07-19, brain `decision` record
-`decision-pr-one-hour-kill-slo-20260719`): **no PR or CR stays open longer
+directive from Tom on 2026-07-19: **no PR or CR stays open longer
 than ONE HOUR.** Other routines flag and defer; you terminalize. Run **ONE
 bounded pass**, then exit. No `sleep` loops.
 
@@ -117,8 +116,7 @@ driving, but cannot merge because the merge machinery is failing
 churn), is not "everything else". Closing it removes the CR from the open
 inventory, so `lastgit stuck` and `lastgit cr list --all-open` both report
 empty while the change is off main, and a later pipeline-health wake stamps
-noop over lost work. That happened three times on 2026-09-02
-(`papercut-lastgit-pr-reaper-closes-green-unmerged-cr`) and twice more in the
+noop over lost work. That happened three times on 2026-09-02 and twice more in the
 14 days to 2026-09-05. Prose did not stop it, so the missing branch is a
 command you RUN, not a rule you remember:
 

@@ -48,8 +48,7 @@ genuinely blocked.
 > only** via repo config (`git config laststack.pr-venue lastgit` or
 > `.last-stack/pr-venue`) or `LAST_STACK_LASTGIT_NATIVE_REPOS`; the helper
 > preserves today's GitHub/Forgejo defaults otherwise. If `.venue == "lastgit"`,
-> read `brain get sop-lastgit-native-forge-workflow` and use the returned
-> `.lastgit_slug` / `.ci_context`. Do not run LastGit CI watchers against Tom's
+> use the configured LastGit slug and CI context. Do not run LastGit CI watchers against Tom's
 > primary brain socket; pin `LASTGIT_SOCKET` to a dedicated non-primary lastdbd
 > socket, or use an explicit throwaway `--node-url`. Store secrets only as
 > LastSecrets locators; never put raw secret values in Brain/Kanban/logs/PR/CR
@@ -154,8 +153,8 @@ acceptance check: run the real binary/node on a **throwaway** data dir
 (`mktemp -d`, `FOLDDB_DISABLE_KEYCHAIN=1`) — NEVER `~/.lastdb`, `~/.folddb`, or the primary
 brain/keyring; **cross a process boundary** (restart / re-open) between the write
 and the read; include a **negative case**. Anchor it to the user story, not the
-diff ("a user can set a password and later unlock with it") — see the SOP
-`sop-autonomous-acceptance-gate` (brain). A card whose merged PR fails its
+diff ("a user can set a password and later unlock with it"). A card whose
+merged PR fails its
 VERIFY/END STATE goes in `todo` with a `PROOF:` note — not `done`. This is what
 stops "password sets but the app won't unlock with it" (incident 2026-06-30) from
 reaching a user.
@@ -198,8 +197,8 @@ Examples of **insufficient** proof:
 - PR merged to `fold` main while primary `lastdbd` still runs a pre-merge binary
   (needs safe-upgrade / live version evidence).
 
-Canonical SOP: brain `sop-done-when-requires-live-symptom-recheck` (generalizes
-`sop-primary-lastdb-fix-requires-safe-upgrade-deploy`). If you cannot recheck
+The rule is simple: recheck the original live signal in its original
+environment. If you cannot recheck
 the live signal this turn, leave the card in `todo`/`doing` with
 `PROOF: pending live recheck of <signal> on <env>` — do **not** move to `done`.
 
@@ -441,8 +440,7 @@ to `review`, append a one-line note explaining what's missing, and exit.
    returned PR URL and current branch on the card:
    `kanban add <slug> --pr-url "$pr_url" --branch "$branch"`.
 
-   For LastGit-native repos, use the CR path from
-   `sop-lastgit-native-forge-workflow` instead of Forgejo/GitHub:
+   For LastGit-native repos, use the native CR path instead of Forgejo/GitHub:
    ```bash
    "$last_stack/bin/last-stack-cli-preflight" git curl jq lastgit kanban brain
    git remote get-url lastgit >/dev/null || git remote add lastgit "lastdb:///$lastgit_slug"

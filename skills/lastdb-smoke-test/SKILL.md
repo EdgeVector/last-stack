@@ -27,10 +27,9 @@ stale copy here would silently regress the procedure.
 
 ## Do this, in order
 
-1. `brain_get slug:sop-lastdb-local-smoke-test` (paginate with `body_offset`
-   until `bodyNextOffset` is null — it's long). Read the **Hard rules** and
-   **Procedure** sections in full before touching anything; skimming has
-   caused real repeat failures (stub binaries, stale checkouts).
+1. Read this skill's **Never** rules and numbered procedure in full before
+   touching anything; skimming has caused real repeat failures (stub binaries,
+   stale checkouts).
 2. Note the last run number in the SOP's "Change log" — you're run N+1.
 3. Follow the numbered procedure exactly, including every pre-flight check
    (stale orphan node on port 8902, the shared `launch.json` getting
@@ -52,9 +51,9 @@ stale copy here would silently regress the procedure.
 5. Tear down cleanly (stop the preview server, remove any rebuild worktree,
    confirm the primary brain socket `~/.lastdb/data/folddb.sock` is still
    alive and the shared `fold` checkout's tracked files are untouched).
-6. Append a dated "Change log" entry to the SOP (`brain_put` on
-   `sop-lastdb-local-smoke-test`, appending — never silently rewriting past
-   entries) recording: run number, binary/commit built from (or the
+6. Append a dated "Change log" entry to the smoke-test Brain record, appending
+   — never silently rewriting past entries — recording: run number,
+   binary/commit built from (or the
    acceptable-stale justification), GREEN/RED result per tab, and anything
    filed. If you hit a new gotcha, add a numbered procedure step too — the
    next run (and the next agent) should inherit the improvement, not
@@ -81,8 +80,8 @@ stale copy here would silently regress the procedure.
 ## When NOT to use this
 
 There is no UI review path any more. The LastDB desktop app was deprecated on
-2026-08-26 (`decision-2026-08-26-lastdb-desktop-app-deprecated-no-ui`) and the
-`lastdb-ui-design-review` skill was retired with it; the new-user path is the
+2026-08-26. The `lastdb-ui-design-review` skill was retired with it; the
+new-user path is the
 CLI/llms.txt install (skill `llms-txt-install-smoke`).
 For the pre-release human-witnessed gate, that's
 a separate, heavier SOP (`north-star-lastdb-release-works-on-real-machine`) —

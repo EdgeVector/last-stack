@@ -126,8 +126,8 @@ grep -q 'last-stack-canary-candidate-gate' "$ROOT/routines/lastdb-canary-candida
 [ -f "$ROOT/routines/fleet-performance.md" ] || fail "fleet-performance prompt missing"
 grep -qi 'routines route' "$ROOT/routines/fleet-performance.md" \
   || fail "fleet-performance prompt missing no-route rule"
-grep -q 'sop-routines-registry-canonical' "$ROOT/routines/fleet-performance.md" \
-  || fail "fleet-performance prompt missing canonical-registry SOP"
+grep -q 'routine contract' "$ROOT/routines/fleet-performance.md" \
+  || fail "fleet-performance prompt missing registry contract"
 grep -q 'ROUTINES_HOME' "$ROOT/routines/fleet-performance.md" \
   || fail "fleet-performance prompt missing live registry path"
 grep -q 'New releases — working well' "$ROOT/routines/morning-sync.md" \

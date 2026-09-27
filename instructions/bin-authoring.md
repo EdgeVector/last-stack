@@ -10,7 +10,8 @@ argparse fought each other. The second draft found its config with
 `Path.rglob` under `~/.fkanban/worktrees`. That walk crosses ~20 checkouts
 and their cargo `target/` trees. It ran for minutes, the task timed out, and
 the timeout read as a product failure. Brain:
-`papercut-agent-zero-llm-cli-bash-python-heredoc-rglob`.
+The failure came from a bash wrapper with a Python heredoc and an unbounded
+workspace walk. The stable rule is one language per helper and a bounded walk.
 
 ### The rules
 

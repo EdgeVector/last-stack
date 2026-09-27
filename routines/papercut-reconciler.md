@@ -226,9 +226,8 @@ output; a stale doc that misled an agent; the same workaround across sessions.
 
   ```bash
   if [ "$snapshot_rc" -eq 3 ]; then
-    # Append the recurrence to the brain papercut that OWNS the repair, so the
+    # Append the recurrence to the Brain papercut that owns the repair, so the
     # condition keeps accruing evidence instead of vanishing into a noop.
-    #   papercut-brain-papercut-status-index-incomplete-blocks-file-20260828
     heartbeat "noop queue_snapshot_unavailable=<reason> no_board_mutation"
     printf '%s %s\n' 'ROUTINE_RESULT' \
       'outcome=noop detail=queue_snapshot_unavailable=<reason> no_board_mutation'

@@ -150,8 +150,7 @@ fail-closed; errors never auto-close a card.
      backups is a deliberate human/agent sprint (see checkpoint above), not a
      every-2h job. Report slugs under ⚠️ Needs a human → body-recovery.
    Prevention work stays on the board as real Kind:pr cards
-   (`fkanban-body-must-reject-script-source-overwrites-*`,
-   `papercut-fkanban-body-replace-clobber-guard`) — never park those for
+   (`fkanban-body-must-reject-script-source-overwrites-*`) — never park those for
    "missing milestone" alone (see §4a).
 
 3. **Respect gate headers — never promote a gated card.** A backlog card stays in

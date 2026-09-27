@@ -64,7 +64,8 @@ primary's LaunchAgent plist through the same helper `lastdb-safe-upgrade`
 uses (`skills/lastdb-safe-upgrade/scripts/live-lastdb-env.sh`). This matters.
 `LASTDB_ATOM_KEY_ENCODING=partition_prefix` decides whether the node can
 address the primary's atom bodies. A node without it reports data as missing.
-See brain `sop-lastdb-local-smoke-test`, rule HR-N1.
+Apply rule HR-N1: run the local smoke test against a copy, then verify the
+atom-key encoding before you trust a missing-row result.
 
 The node does not inherit `LASTDB_HOME`, `FOLDDB_HOME`, or any Sentry DSN.
 The clone has no `cloud_sync.json`, so the dev node never publishes a backup

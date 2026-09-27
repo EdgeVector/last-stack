@@ -211,8 +211,7 @@ continue — do not fail the whole run.
 4a. **LastDB backup retention (`~/.lastdb-backups/` ONLY).** Keep the newest 3
    `pre-*` backup dirs by their trailing timestamp; delete every older one
    (retention set with Tom 2026-07-19 after unbounded backups contributed to
-   the ENOSPC that killed routinesd — see brain
-   `papercut-lastdb-backups-unbounded-retention`). Before pruning older local
+   the ENOSPC that killed routinesd. Before pruning older local
    backups, confirm the off-machine backup path is currently healthy; if that
    cannot be proven, retain the older local backups, heartbeat
    `backup_retention_blocked=off_machine_unverified`, and escalate instead of
@@ -241,7 +240,8 @@ continue — do not fail the whole run.
    `flip-records/` before deletion. Do NOT issue `rm -rf` for these paths
    yourself: the managed execution policy rejects agent-issued `rm -rf`
    command lines, which is exactly why audited candidates sat undeleted for
-   days (papercut-disk-reclaim-deletion-policy-blocks-approved-candidates).
+   days. The managed policy blocks raw agent-issued deletion commands, so the
+   helper must own the approved deletion.
    Map the helper's `scratch_reclaimed=<n>` to the heartbeat token
    `lastdb_copies_pruned=<n>`; carry `scratch_delete_failed` /
    `scratch_board_unavailable` / `scratch_lsof_unavailable` into the

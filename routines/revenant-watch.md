@@ -43,7 +43,6 @@ This is a **session-miner profile**, not a new peer engine
 
 ```bash
 brain get sop-routine-shared-contract --type sop
-brain get sop-revenant-watch --type sop
 # optional override profile:
 brain get miner-profile-revenant-watch --type reference 2>/dev/null || true
 ```

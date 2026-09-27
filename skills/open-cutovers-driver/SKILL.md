@@ -12,7 +12,8 @@ description: >
 
 **Want:** every cutover reaches RESOLVED without Tom hunting.
 
-**Contract:** [[preference-open-cutovers-auto-close]] · [[sop-open-cutovers-closeout]]
+**Contract:** use the open-cutovers ledger, advance one phase per pass, and
+close only after the primary end state or an explicit deferred residual.
 
 ## Sole closer
 

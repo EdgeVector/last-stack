@@ -37,8 +37,8 @@ bodies cannot make `jq` abort.
 
 Before enumerating a repo, resolve its concrete checkout and run
 `"$last_stack/bin/last-stack-pr-venue" --json <owner/repo> "$target_repo"`.
-LastGit is opt-in only; if `.venue == "lastgit"`, read
-`brain get sop-lastgit-native-forge-workflow` and drain `lastgit cr` change
+LastGit is opt-in only; if `.venue == "lastgit"`, use the native LastGit review
+contract and drain `lastgit cr` change
 requests instead of Forgejo/GitHub PRs. Use `lastgit cr list/view`, `lastgit ci
 status`, `lastgit cr complete --once`, `lastgit cr merge --require-status`, and
 `lastgit cr close`; never run LastGit CI watchers against the primary brain

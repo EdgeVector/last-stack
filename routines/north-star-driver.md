@@ -110,7 +110,7 @@ merely because this pass began from an older snapshot.
 
 ## Portfolio auto-refill (before selection)
 
-`decision-2026-09-03-portfolio-auto-refill-from-ranking`: when both admitted
+When both admitted
 North Stars have reported zero idle-promoteable and zero idle-empty
 milestones on two consecutive `last-stack-milestone-driver` passes, this
 driver refills the drained Secondary slot from the North Star ranking
@@ -223,8 +223,7 @@ guess. Report `noop needs-outcome-definition`.
 
 ## Portfolio admission gate (before any milestone create)
 
-The factory admits at most two feature North Stars
-(`decision-2026-08-31-two-admitted-feature-outcomes`). Read the admission
+The factory admits at most two feature North Stars. Read the admission
 record with **one exact Brain point get**. Never use a Brain list or a Brain
 search as this gate — enumeration under-reports.
 

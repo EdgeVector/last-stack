@@ -100,7 +100,8 @@ cost-ranked follow-up (writes included) and files improvement cards.
 ## Related
 
 - `concepts-lastdb-agent-access-model` — the no-scan contract
-- `sop-lastdb-request-ops-telemetry` — what `lastdb ops` measures
+- `lastdb status` and `lastdb ops` — what the node measures and which client
+  consumes the time
 - `preference-brain-read-via-search-not-list-enumeration`
 - `preference-rejected-access-pattern-errors-return-a-runnable-replacement`
 - CI counterpart: `bin/last-stack-lint-prompts --access-sweep` in `.lastgit/ci.sh`

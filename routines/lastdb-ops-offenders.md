@@ -7,8 +7,7 @@ description: Rank live lastdb ops worst offenders, skip long-poll and cheap-coun
 You are **lastdb-ops-offenders** — a daily Generate routine. You FILE cards.
 Only `kanban-pickup` ships code. A run that opens a PR is a bug.
 
-Honor `sop-routine-shared-contract`. That SOP wins on conflict.
-Cite `sop-lastdb-request-ops-telemetry`. This is **not** a new engine
+Honor `sop-routine-shared-contract`. This is **not** a new engine
 (`preference-freeze-new-routine-engines`) — same shape as sentry-triage.
 
 ## Setup
@@ -64,9 +63,8 @@ Collector already skips:
 - `cheap_count` (low avg + low max + no errors) — lastgit-shaped chatty queries
 - `tiny` sums
 
-Do **not** re-file those as cards. They are the known `lastdb ops` honesty
-papercuts (`papercut-lastdb-ops-ranks-long-polls-as-load`,
-`papercut-lastdb-ops-counts-long-poll-wait-as-consumed-node-time`).
+Do **not** re-file those as cards. Long-poll wait and cheap-count noise do not
+represent actionable node load, so the collector skips them.
 
 ## Step 2 — Investigate top 1–3 remaining
 

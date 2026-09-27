@@ -72,9 +72,9 @@ lastdb ops --by-app   # compact app/verb rows for parsers
 Use the text tables or `--by-app`.
 
 This is Mini's in-process per-request ranking (`status.request_ops`). Clients
-self-identify via `X-LastDB-Client`. Full playbook:
-`brain get sop-lastdb-request-ops-telemetry --type sop`. Use it to fix or
-throttle the top client — do **not** restart primary `lastdbd` for load alone.
+self-identify via `X-LastDB-Client`. Use `lastdb status`, `lastdb ops`, and
+`lastdb ops --by-app` to name the top client. Fix or throttle that client; do
+**not** restart primary `lastdbd` for load alone.
 
 ## Reading the output / acting on it
 

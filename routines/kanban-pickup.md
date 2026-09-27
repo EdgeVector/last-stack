@@ -442,8 +442,8 @@ back to `todo` (or `pending_rollback=` in memory) per transport rules below.
   `"$last_stack/bin/last-stack-forge-json-jq"` rather than raw `jq`.
 - **LastGit-native repos:** resolve the concrete checkout and run
   `"$last_stack/bin/last-stack-pr-venue" --json <owner/repo> "$target_repo"`.
-  If `.venue == "lastgit"`, read `brain get sop-lastgit-native-forge-workflow`,
-  use `.lastgit_slug` and `.ci_context`, open a `lastgit cr` instead of a
+  If `.venue == "lastgit"`, use the configured repository slug and CI context,
+  open a `lastgit cr` instead of a
   Forgejo/GitHub PR, and drive it with `lastgit cr view` / `lastgit ci status` /
   `lastgit cr complete --once`. Never run LastGit CI against the primary brain
   socket.
@@ -597,8 +597,7 @@ ready set and must noop; a failed ranker never produces that noop.
 Why this runs after the claim, not before, as of 2026-09-05:
 
 - `pickup claim` does not consume the rank's output even when the rank
-  succeeds — brain `papercut-kanban-pickup-claim-ignores-hard-rank-order`,
-  open since 2026-08-26 with three recorded recurrences. Ordering the *next*
+  succeeds. Three recurrences since 2026-08-26 show that ordering the *next*
   fire's queue is the only value this step buys; it never affects this fire's
   claim.
 - The rank's cost (about 3,004 node queries per call, 83-179 s, sometimes over
