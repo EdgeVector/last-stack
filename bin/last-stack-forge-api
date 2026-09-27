@@ -64,10 +64,16 @@ Env:
 
 Merge preflight guard:
   POST .../pulls/<n>/merge first runs `situations preflight --action merge-pr
-  --repo OWNER/REPO`. BLOCKED (exit 3) refuses the call with exit 3 and the
-  Situation text. A missing or failing situations CLI does not block, but a
-  merge URL with no readable OWNER/REPO is refused: there is no repo to ask
-  about, and a silent fall-through cannot be told from an allow.
+  --repo OWNER/REPO`. Exit 0 allows. Exit 3 (BLOCKED) refuses with exit 3 and
+  the Situation text. Any OTHER exit (crash, timeout, busy node) also refuses
+  (exit 3) with a WARNING naming the repo and the exit code -- the preflight
+  RAN and could not answer, so this fails CLOSED per the workspace standing
+  rule (stay read-only until it succeeds or Tom clears it). Only a MISSING
+  situations CLI (not on PATH, not at ~/.local/bin) fails open, with a
+  WARNING on stderr naming the repo -- a broken install must not stop every
+  merge on the forge, but the skip is never silent. A merge URL with no
+  readable OWNER/REPO is refused: there is no repo to ask about, and a silent
+  fall-through cannot be told from an allow.
   DELETE .../pulls/<n>/merge (cancel a scheduled merge) is never guarded.
   Override (rare): LAST_STACK_FORGE_MERGE_PREFLIGHT_SKIP=1.
   Env: LAST_STACK_SITUATIONS_BIN (default: situations on PATH).
@@ -327,7 +333,10 @@ merge_preflight_guard() {
     echo "last-stack-forge-api: override (rare, needs clearance): LAST_STACK_FORGE_MERGE_PREFLIGHT_SKIP=1" >&2
     exit 3
   fi
-  sit_bin="$(situations_bin_for_merge)" || return 0
+  if ! sit_bin="$(situations_bin_for_merge)"; then
+    echo "last-stack-forge-api: WARNING merge on $repo: no situations CLI found (checked PATH and ~/.local/bin); merge-pr policy NOT checked, merge allowed." >&2
+    return 0
+  fi
   set +e
   out="$("$sit_bin" preflight --action merge-pr --repo "$repo" 2>&1)"
   rc=$?
@@ -336,6 +345,12 @@ merge_preflight_guard() {
     echo "last-stack-forge-api: REFUSED merge on $repo: Situations preflight says BLOCKED." >&2
     printf '%s\n' "$out" | head -5 | sed 's/^/last-stack-forge-api:   /' >&2
     echo "last-stack-forge-api: cancel a scheduled merge with --method DELETE on the same path." >&2
+    echo "last-stack-forge-api: override (rare, needs clearance): LAST_STACK_FORGE_MERGE_PREFLIGHT_SKIP=1" >&2
+    exit 3
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    echo "last-stack-forge-api: REFUSED merge on $repo: situations preflight exited $rc (not 0, not 3 BLOCKED) -- policy could not be confirmed, so this fails CLOSED per the workspace standing rule (stay read-only until it succeeds or Tom clears it)." >&2
+    printf '%s\n' "$out" | head -5 | sed 's/^/last-stack-forge-api:   /' >&2
     echo "last-stack-forge-api: override (rare, needs clearance): LAST_STACK_FORGE_MERGE_PREFLIGHT_SKIP=1" >&2
     exit 3
   fi
