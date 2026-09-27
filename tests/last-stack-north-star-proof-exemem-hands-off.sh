@@ -78,21 +78,21 @@ FIXTURE="$WORK/infra"
 write_fixture "$FIXTURE"
 write_evidence "$WORK/good.json" true
 
-MARKER="$WORK/gbrain-called"
+MARKER="$WORK/brain-called"
 mkdir -p "$WORK/bin"
-cat >"$WORK/bin/gbrain" <<EOF
+cat >"$WORK/bin/brain" <<EOF
 #!/bin/sh
 echo called >"$MARKER"
 exit 1
 EOF
-chmod +x "$WORK/bin/gbrain"
+chmod +x "$WORK/bin/brain"
 
 PATH="$WORK/bin:$PATH" \
 EXEMEM_HANDS_OFF_INFRA_ROOT="$FIXTURE" \
 EXEMEM_HANDS_OFF_PROOF_EVIDENCE_FILE="$WORK/good.json" \
 NORTH_STAR_PROOF_DIR="$WORK/reports" \
   "$RUNNER" --offline north-star-exemem-hands-off-prod-deploy >"$WORK/good.out"
-[ ! -e "$MARKER" ] || fail "the evidence-file path called gbrain"
+[ ! -e "$MARKER" ] || fail "the evidence-file path called brain"
 expect_verdict "$WORK/reports/north-star-exemem-hands-off-prod-deploy.md" PASS-OFFLINE
 grep -q 'The harness does not deploy.' "$WORK/reports/north-star-exemem-hands-off-prod-deploy.md"
 grep -q 'The harness does not open a LastDB home.' "$WORK/reports/north-star-exemem-hands-off-prod-deploy.md"

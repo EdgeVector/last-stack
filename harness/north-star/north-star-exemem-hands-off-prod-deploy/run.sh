@@ -102,14 +102,14 @@ if [ -z "$EVIDENCE" ] && [ -n "${EXEMEM_HANDS_OFF_PROOF_BRAIN_DIR:-}" ]; then
 elif [ -z "$EVIDENCE" ]; then
   NS_TEXT="$TMP/ns.txt"
   PROOF_TEXT="$TMP/proof.txt"
-  if command -v gbrain >/dev/null 2>&1; then
-    gbrain get projects/north-star-exemem-hands-off-prod-deploy >"$NS_TEXT" 2>"$TMP/ns.err" || true
-    gbrain get reference/proof-exemem-prod-live-fire-window-20260903 >"$PROOF_TEXT" 2>"$TMP/proof.err" || true
+  if command -v brain >/dev/null 2>&1; then
+    brain get north-star-exemem-hands-off-prod-deploy >"$NS_TEXT" 2>"$TMP/ns.err" || true
+    brain get proof-exemem-prod-live-fire-window-20260903 >"$PROOF_TEXT" 2>"$TMP/proof.err" || true
   fi
 fi
 
 set +e
-body="$(python3 - "$INFRA" "$EVIDENCE" "$NS_TEXT" "$PROOF_TEXT" "$MODE" "$OID" <<'PY'
+body="$(python3 - "$INFRA" "$EVIDENCE" "$NS_TEXT" "$PROOF_TEXT" "$MODE" "$OID" "$ROOT" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -120,6 +120,7 @@ ns_path = sys.argv[3]
 proof_path = sys.argv[4]
 mode = sys.argv[5]
 oid = sys.argv[6]
+stack = Path(sys.argv[7])
 
 notes = []
 failures = []
@@ -166,6 +167,23 @@ require_text(
     ),
     ("confirm_prod_sha",),
 )
+
+stack_config = stack / "config/deploy/repos.json"
+if not stack_config.is_file():
+    add_fail("config/deploy/repos.json is absent.")
+else:
+    config_text = stack_config.read_text(errors="replace")
+    for marker in (
+        '"repo": "exemem-infra"',
+        '"OBS_SENTRY_DSN": "lastsecrets://obs-sentry-dsn-exemem-backend"',
+    ):
+        if marker not in config_text:
+            add_fail(f"config/deploy/repos.json lacks {marker}.")
+    if all(marker in config_text for marker in (
+        '"repo": "exemem-infra"',
+        '"OBS_SENTRY_DSN": "lastsecrets://obs-sentry-dsn-exemem-backend"',
+    )):
+        add_pass("production deploy config resolves the ExeMem Sentry locator at launch.")
 require_text(
     ".lastgit/canary-ticker.sh",
     (

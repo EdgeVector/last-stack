@@ -52,7 +52,11 @@ routine deploys the merged tip.
 ## Config
 
 `config/deploy/repos.json`: `repo`, `enabled`, `context`, `deploy_script`,
-optional `env`, `verify_command`, `ref`, `source_url`. Defaults: forge root,
+optional `env`, `secret_env`, `verify_command`, `ref`, `source_url`. Values in
+`secret_env` are `ENV_NAME: lastsecrets://locator` pairs. The deploy graph
+resolves each configured production secret with `last-stack-secret-env-run`
+only at the child-process boundary; it never stores the raw value in the graph
+input or deploy receipt. Defaults: forge root,
 owner, ref, `state_root`. The four repos the launchd agents covered are all
 listed; only `fold_db_website` is enabled. The other three
 (`exemem-infra`, `schema-infra`, `ops-terminal`) were found disabled in

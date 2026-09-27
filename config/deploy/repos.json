@@ -22,6 +22,9 @@
       "context": "deploy-pipeline",
       "deploy_script": ".lastgit/deploy-pipeline.sh",
       "env": { "AWS_PROFILE": "default" },
+      "secret_env": {
+        "OBS_SENTRY_DSN": "lastsecrets://obs-sentry-dsn-exemem-backend"
+      },
       "notes": "Exemem cloud pipeline. launchd com.edgevector.lastgit-deploy-exemem-infra was found disabled on 2026-09-21; enable here when Tom decides."
     },
     {
