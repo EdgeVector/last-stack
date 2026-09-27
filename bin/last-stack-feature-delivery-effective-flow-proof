@@ -29,6 +29,7 @@ PROBE_CARD = "feature-delivery-effective-flow-proof-probe"
 PROBE_WORKER = "feature-delivery-effective-flow-proof"
 BOARD_MILESTONE_MISMATCH = "does not match milestone"
 SOAK_SECONDS = 24 * 60 * 60
+WARM_CACHE_LIMIT_BYTES = 4294967296
 
 FIXES: dict[str, list[dict[str, str]]] = {
     "fkanban": [
@@ -805,8 +806,17 @@ def evaluate_soak(soak: dict[str, Any]) -> dict[str, Any]:
         at = sample.get("sampled_at", "unknown")
         if resident is None or budget is None or budget <= 0:
             violations.append(f"sample {at} lacks the warm-cache byte contract")
-        elif resident > budget:
-            violations.append(f"sample {at} warm bytes {resident} exceed {budget}")
+        else:
+            if budget > WARM_CACHE_LIMIT_BYTES:
+                violations.append(
+                    f"sample {at} warm budget {budget} exceeds hard limit {WARM_CACHE_LIMIT_BYTES}"
+                )
+            if resident > WARM_CACHE_LIMIT_BYTES:
+                violations.append(
+                    f"sample {at} warm bytes {resident} exceed hard limit {WARM_CACHE_LIMIT_BYTES}"
+                )
+            elif resident > budget:
+                violations.append(f"sample {at} warm bytes {resident} exceed {budget}")
         if rss is not None and limit is not None and limit > 0 and rss > limit:
             violations.append(f"sample {at} RSS {rss} exceeds guard limit {limit}")
         if sample.get("runtime_degraded") is True:
@@ -849,7 +859,9 @@ def evaluate_soak(soak: dict[str, Any]) -> dict[str, Any]:
         "span_seconds": span,
         "process_start_ts": next(iter(process_starts)),
         "max_warm_resident_bytes": max(int(sample["warm_resident_bytes"]) for sample in valid),
+        "max_warm_budget_bytes": max(int(sample["warm_budget_bytes"]) for sample in valid),
         "warm_budget_bytes": min(int(sample["warm_budget_bytes"]) for sample in valid),
+        "warm_limit_bytes": WARM_CACHE_LIMIT_BYTES,
         "build": soak.get("build", ""),
     }
 
