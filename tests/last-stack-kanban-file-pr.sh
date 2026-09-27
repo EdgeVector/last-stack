@@ -27,8 +27,9 @@ export LAST_STACK_DECISION_FIXTURE="$tmp/empty-fixture"
 # fixtures never depend on the live ~/.cache/edgevector-git tree.
 export LAST_STACK_GIT_MIRROR_ROOT="$tmp/no-mirrors"
 
-# Offline admission record: ns-a is the admitted primary, ns-paused is not.
-# decision-2026-08-31-two-admitted-feature-outcomes
+# Offline admission record: ns-a is the primary spotlight, ns-paused is
+# explicitly refused. decision-2026-09-27-portfolio-admission-allow-all
+# admits every other North Star by default.
 admission_fix="$tmp/admission-fixture"
 mkdir -p "$admission_fix/get"
 cat >"$admission_fix/get/preference-feature-delivery-portfolio-admission.txt" <<'EOF'
@@ -38,7 +39,7 @@ title:      Feature delivery portfolio admission
 Policy-Version: 1
 Primary: ns-a
 Secondary: ns-b
-Paused: all-other-feature-north-stars
+Paused: ns-paused
 Updated-At: 2026-08-31T17:45:00Z
 EOF
 export LAST_STACK_ADMISSION_FIXTURE="$admission_fix"

@@ -68,7 +68,7 @@ cat >"$TMP/gate/adm/get/preference-feature-delivery-portfolio-admission.txt" <<'
 Policy-Version: 1
 Primary: ns-other
 Secondary: none
-Paused:
+Paused: ns-paused
 Updated-At: 2026-09-16
 Updated-By: test
 Reason: fixture

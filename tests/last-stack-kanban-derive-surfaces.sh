@@ -67,7 +67,7 @@ cat >"$tmp/admission/get/preference-feature-delivery-portfolio-admission.txt" <<
 Policy-Version: 1
 Primary: ns-a
 Secondary: ns-b
-Paused: all-other-feature-north-stars
+Paused: none
 TXT
 cat >"$tmp/bin/kanban" <<'SH'
 #!/usr/bin/env bash

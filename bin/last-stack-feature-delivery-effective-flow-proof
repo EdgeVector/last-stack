@@ -464,6 +464,11 @@ def proof_command(root: Path, name: str) -> Path:
 
 
 def probe_admission() -> dict[str, Any]:
+    # decision-2026-09-27-portfolio-admission-allow-all: the gate admits
+    # every North Star by default now. Prove both halves live — a
+    # spotlighted (Primary/Secondary/Backfill) slug is admitted, an
+    # explicitly Paused slug is refused, and an arbitrary unlisted slug is
+    # ALSO admitted (the default, not a fixed allowlist of 1-2).
     command = proof_command(installed_root("last-stack"), "last-stack-feature-portfolio-admission")
     policy = parse_json(
         run([str(command), "--json"], timeout=90).stdout,
@@ -472,18 +477,25 @@ def probe_admission() -> dict[str, Any]:
     if policy.get("verdict") != "report":
         raise ProofError(f"admission policy returned {policy.get('verdict')!r}, not 'report'")
     admitted = policy.get("admitted_outcomes")
-    if not isinstance(admitted, list) or not 1 <= len(admitted) <= 2:
+    if not isinstance(admitted, list) or not 1 <= len(admitted) <= 3:
         raise ProofError(f"admission policy returned invalid outcomes: {admitted!r}")
     if not all(isinstance(slug, str) and slug for slug in admitted):
         raise ProofError(f"admission policy returned invalid outcome slugs: {admitted!r}")
     if len(set(admitted)) != len(admitted):
         raise ProofError(f"admission policy returned duplicate outcomes: {admitted!r}")
+    paused_list = policy.get("paused_outcomes")
+    if not isinstance(paused_list, list) or not all(
+        isinstance(slug, str) and slug for slug in paused_list
+    ):
+        raise ProofError(f"admission policy returned invalid paused_outcomes: {paused_list!r}")
 
-    paused = "north-star-feature-delivery-proof-paused"
-    while paused in admitted:
-        paused += "-control"
+    taken = set(admitted) | set(paused_list)
+    unlisted = "north-star-feature-delivery-proof-unlisted"
+    while unlisted in taken:
+        unlisted += "-control"
     cases = [(slug, 0, "admitted") for slug in admitted]
-    cases.append((paused, 2, "paused"))
+    cases += [(slug, 2, "paused") for slug in paused_list]
+    cases.append((unlisted, 0, "admitted"))
     results = []
     for slug, rc, verdict in cases:
         cp = run([str(command), "--north-star", slug, "--json"], allowed=(rc,), timeout=90)
@@ -494,6 +506,7 @@ def probe_admission() -> dict[str, Any]:
     return {
         "policy_version": policy.get("policy_version"),
         "admitted_outcomes": admitted,
+        "paused_outcomes": paused_list,
         "cases": results,
     }
 

@@ -85,14 +85,14 @@ if (( inventory_line >= target_line )); then
   exit 1
 fi
 
-# Two-outcome portfolio admission (decision-2026-08-31-two-admitted-feature-outcomes)
+# Admit-all portfolio admission (decision-2026-09-27-portfolio-admission-allow-all)
 require 'Portfolio admission gate' "$north"
 require 'last-stack-feature-portfolio-admission' "$north"
 require '--work-class feature' "$north"
 require 'admission-record-unreadable' "$north"
 require 'admission-paused' "$north"
 require 'Steps 4-6 choose among admitted North Stars only' "$north"
-require 'never admits a third outcome' "$north"
+require 'admits every feature North Star by default' "$north"
 
 require 'Portfolio admission gate' "$milestone"
 require 'last-stack-feature-portfolio-admission' "$milestone"
