@@ -97,16 +97,26 @@ grep -Fxq 'todo' "$tmp/created-harness-args"
 ! test -e "$tmp/created-card.md"
 
 # A terminal card without a live milestone creates a Kind:pr backlog card.
-# The milestone driver promotes it after it creates a milestone.
-MOCK_HARNESS_ARGS="$tmp/no-milestone-harness-args.md" \
-MOCK_HARNESS_BODY="$tmp/no-milestone-harness-card-1.md" \
-  HOME="$tmp/home" PATH="$tmp/bin:$PATH" NORTH_STAR_HARNESS_ROOT="$tmp/harness" \
-  python3 "$BIN" --apply --ns north-star-example --json >"$tmp/no-milestone-1.json"
-jq -e '.reports[0].actions | map(select(. == "created_harness_unverified:north-star-example-terminal-proof-harness")) | length == 1' \
-  "$tmp/no-milestone-1.json" >/dev/null
-grep -Fxq 'backlog' "$tmp/no-milestone-harness-args.md"
-grep -Fq 'Kind: pr' "$tmp/no-milestone-harness-card-1.md"
-! grep -Fq 'error_create_harness' "$tmp/no-milestone-1.json"
+# The milestone driver promotes it after it creates a milestone. Run the
+# scheduled ledger-sync path three times: each report must exit successfully
+# and must never record an error_create_harness action.
+for pass in 1 2 3; do
+  no_milestone_report="$tmp/no-milestone-$pass.json"
+  no_milestone_args="$tmp/no-milestone-harness-args-$pass.md"
+  no_milestone_body="$tmp/no-milestone-harness-card-$pass.md"
+  if ! MOCK_HARNESS_ARGS="$no_milestone_args" \
+    MOCK_HARNESS_BODY="$no_milestone_body" \
+    HOME="$tmp/home" PATH="$tmp/bin:$PATH" NORTH_STAR_HARNESS_ROOT="$tmp/harness" \
+    python3 "$BIN" --apply --ns north-star-example --json >"$no_milestone_report"; then
+    echo "FAIL: no-milestone ledger-sync pass $pass did not exit successfully" >&2
+    exit 1
+  fi
+  jq -e '.reports[0].actions | map(select(. == "created_harness_unverified:north-star-example-terminal-proof-harness")) | length == 1' \
+    "$no_milestone_report" >/dev/null
+  grep -Fxq 'backlog' "$no_milestone_args"
+  grep -Fq 'Kind: pr' "$no_milestone_body"
+  ! grep -Fq 'error_create_harness' "$no_milestone_report"
+done
 
 # A live milestone continues to create a pickup-ready todo card.
 MOCK_NONTERMINAL_MILESTONE=1 MOCK_HARNESS_BODY="$tmp/later-harness-card.md" \
