@@ -132,4 +132,34 @@ assert slugs == ["item-one", "item-two", "item-three"], f"Got slugs {slugs}"
 print("Multiple REAL_HUMAN headings parse correctly into separate buckets")
 PY
 
+
+# A non-bucket heading after REAL_HUMAN must end that bucket, not carry it
+# forward — papercut-real-human-notify-markdown-bucket-never-resets-20260925.
+# Reproduces the human-gate-audit digest template shape: REAL_HUMAN followed
+# by "Waiting on recommendation" / "Cleared this run" headings that do not
+# literally start with a bucket word.
+cat >"$tmp/carryover.md" <<'CARRY'
+## REAL_HUMAN (1)
+- schema-pow-prod-terminal-proof — status=open actionable=yes
+
+## Waiting on recommendation (Tom yes/no after evidence)
+- some-recommendation — status=open actionable=yes
+
+## Cleared this run
+- cleared-item — status=open actionable=yes
+CARRY
+python3 "$BIN" --input "$tmp/carryover.md" --json >"$tmp/carryover.json"
+python3 - "$tmp/carryover.json" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert r["paged_count"] == 1, f"Expected 1 paged, got {r['paged_count']}: {r['paged']}"
+assert r["paged"][0]["slug"] == "schema-pow-prod-terminal-proof", r["paged"]
+# Bullets under a non-bucket heading carry no bucket at all, so they are
+# dropped by the parser, not merely skipped — neither shows up anywhere.
+seen_slugs = {p["slug"] for p in r["paged"]} | {s["slug"] for s in r["skipped"]}
+assert "some-recommendation" not in seen_slugs, seen_slugs
+assert "cleared-item" not in seen_slugs, seen_slugs
+print("Non-bucket heading after REAL_HUMAN ends that bucket")
+PY
+
 echo "last-stack-real-human-notify tests ok"
