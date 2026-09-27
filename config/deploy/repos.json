@@ -18,14 +18,14 @@
     },
     {
       "repo": "exemem-infra",
-      "enabled": false,
+      "enabled": true,
       "context": "deploy-pipeline",
       "deploy_script": ".lastgit/deploy-pipeline.sh",
       "env": { "AWS_PROFILE": "default" },
       "secret_env": {
         "OBS_SENTRY_DSN": "lastsecrets://obs-sentry-dsn-exemem-backend"
       },
-      "notes": "Exemem cloud pipeline. launchd com.edgevector.lastgit-deploy-exemem-infra was found disabled on 2026-09-21; enable here when Tom decides."
+      "notes": "Exemem cloud pipeline. Production deploys use the LastSecrets-backed OBS_SENTRY_DSN locator at the deploy child boundary."
     },
     {
       "repo": "schema-infra",
