@@ -244,16 +244,12 @@ def section(data, name, failures):
 def verify_log_hash(evidence_data, log_path):
     """Verify that the run log matches the provenance hash.
 
-    Returns True if hash matches or no log is provided, False otherwise.
-    Updates evidence_data['provenance']['log_verification'] with status.
+    Returns True only when the log exists and its hash matches.
     """
     import hashlib
 
     provenance = evidence_data.get("provenance", {})
     log_sha256 = provenance.get("run_log_sha256")
-
-    if not log_sha256:
-        return True
 
     if not log_path or not Path(log_path).is_file():
         return False
@@ -394,8 +390,7 @@ def evidence_failures(path, log_path=None):
         run_start = req_time(provenance, "run_start_at", failures)
         run_end = req_time(provenance, "run_end_at", failures)
         home_path = req_string(provenance, "ephemeral_home_path", failures)
-        # run_log_sha256 is optional; only check it if present
-        log_hash = provenance.get("run_log_sha256") if isinstance(provenance, dict) else None
+        log_hash = req_string(provenance, "run_log_sha256", failures)
 
         if run_start is not None and run_end is not None and run_start >= run_end:
             failures.append("The run start time is not before run end time.")
@@ -403,9 +398,8 @@ def evidence_failures(path, log_path=None):
         if home_path and any(marker in home_path for marker in PRIMARY_MARKERS):
             failures.append("The ephemeral home path names a primary home or a secret.")
 
-        if log_hash:
-            if not isinstance(log_hash, str) or not SHA_RE.fullmatch(log_hash):
-                failures.append("The run log hash is not a valid SHA-256.")
+        if log_hash and not SHA_RE.fullmatch(log_hash):
+            failures.append("The run log hash is not a valid SHA-256.")
 
         if log_hash:
             if not log_path:

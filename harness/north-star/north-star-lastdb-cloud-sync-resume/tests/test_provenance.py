@@ -80,6 +80,26 @@ def test_evidence_without_provenance_fails():
     print("✓ test_evidence_without_provenance_fails")
 
 
+def test_evidence_without_run_log_hash_fails():
+    """Schema-valid evidence must name the log that proves its run provenance."""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        json.dump({
+            "schema": "lastdb-cloud-sync-resume-proof.v1",
+            "provenance": {
+                "command": "measure.sh",
+                "run_start_at": "2026-09-26T11:00:00Z",
+                "run_end_at": "2026-09-26T11:01:30Z",
+                "ephemeral_home_path": "/tmp/ephemeral"
+            }
+        }, f)
+        evidence_path = f.name
+
+    failures = check_contract.evidence_failures(Path(evidence_path))
+    assert any("run_log_sha256" in failure for failure in failures), failures
+    Path(evidence_path).unlink()
+    print("✓ test_evidence_without_run_log_hash_fails")
+
+
 def test_evidence_with_invalid_log_hash_fails():
     """Evidence with invalid log hash should FAIL."""
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
@@ -407,6 +427,7 @@ def test_probe_transcript_without_markers_is_ignored():
 if __name__ == '__main__':
     try:
         test_evidence_without_provenance_fails()
+        test_evidence_without_run_log_hash_fails()
         test_evidence_with_invalid_log_hash_fails()
         test_evidence_with_matching_log_passes()
         test_evidence_with_log_hash_but_no_log_file_fails()
