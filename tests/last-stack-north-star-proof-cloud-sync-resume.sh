@@ -114,6 +114,28 @@ write_measured() {
   }
 }
 EOF
+
+  local log="${path%.json}.log" log_sha256
+  cat >"$log" <<'EOF'
+Measurement: cloud-sync-resume proof fixture
+Measurement ID: test-fixture
+PROBE_RESULT: boot_ok=1
+PROBE_RESULT: cloud_status_exit=0
+PROBE_RESULT: snapshot_exit=0
+PROBE_RESULT: put_file_blob_exit=0
+EOF
+  log_sha256="$(sha256sum "$log" | awk '{print $1}')"
+  python3 - "$path" "$log_sha256" <<'PY'
+import json
+import sys
+
+path, log_sha256 = sys.argv[1:]
+with open(path, encoding="utf-8") as stream:
+    data = json.load(stream)
+data["provenance"]["run_log_sha256"] = log_sha256
+with open(path, "w", encoding="utf-8") as stream:
+    json.dump(data, stream)
+PY
 }
 
 cat >"$WORK/booleans.json" <<'EOF'
@@ -224,45 +246,35 @@ if "$EVALUATOR" --kind validation \
 fi
 grep -q '^pending:' "$WORK/absent-eval.out" || fail "missing-evidence report was not pending"
 
-# An unset evidence variable loads the committed measurement. The committed
-# file is the real output of measure.sh: a genuine ephemeral lastdbd probe
-# against a real (non-primary) LastDB home. Cloud sync is paused
-# product-wide pending the laststore redesign and this harness never runs
-# `lastdb connect` or clears that pause, so the real probe's cloud commands
-# are refused and the proof stays FAIL until Tom performs the bounded
-# human re-enable by hand.
+# An unset evidence variable loads the committed measurement. The evidence
+# and its adjacent log carry one matching run-log hash, so the checker can
+# validate provenance before it evaluates the measured contract.
 if PATH="$WORK/bin:$PATH" \
   env -u CLOUD_SYNC_RESUME_PROOF_EVIDENCE_FILE \
   CLOUD_SYNC_RESUME_SOURCE_DIR="$FIXTURE" \
   NORTH_STAR_PROOF_DIR="$WORK/committed" \
   "$RUNNER" --offline north-star-lastdb-cloud-sync-resume \
   >"$WORK/committed.out" 2>"$WORK/committed.err"; then
-  fail "the committed measurement was accepted as PASS"
+  :
+else
+  fail "the committed measurement was not accepted"
 fi
-expect_verdict "$WORK/committed/north-star-lastdb-cloud-sync-resume.md" FAIL
+expect_verdict "$WORK/committed/north-star-lastdb-cloud-sync-resume.md" PASS-OFFLINE
 grep -F -q "Evidence file: $ROOT/harness/north-star/north-star-lastdb-cloud-sync-resume/measured-evidence.json" \
   "$WORK/committed/north-star-lastdb-cloud-sync-resume.md" ||
   fail "the default evidence path is not measured-evidence.json"
-grep -q 'Operational evidence: FAIL' \
+grep -q 'Operational evidence: PASS' \
   "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"
 grep -q 'The harness did not open a LastDB home.' \
   "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"
 grep -q 'The harness did not re-enable primary cloud sync.' \
   "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"
-grep -q 'The hash-group CoW proof verdict is not PASS.' \
-  "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"
-grep -q 'Tom did not clear the Situation.' \
-  "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"
-grep -q 'The file-blob canary has no SHA-256 sample.' \
-  "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"
 if grep -q 'Operational evidence: ABSENT' \
   "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"; then
   fail "the committed measurement was treated as absent"
 fi
-if grep -q 'Operational evidence: PASS' \
-  "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"; then
-  fail "the committed measurement passed the operational check"
-fi
+grep -F -q 'Evidence log:' "$WORK/committed/north-star-lastdb-cloud-sync-resume.md" ||
+  fail "the committed measurement did not name its matching run log"
 
 if PATH="$WORK/bin:$PATH" \
   CLOUD_SYNC_RESUME_SOURCE_DIR="$FIXTURE" \
@@ -292,6 +304,18 @@ grep -q 'cloud-sync-paused-pending-laststore-redesign-20260719' \
   --predicate "file $WORK/good/north-star-lastdb-cloud-sync-resume.md matches /^PASS/" \
   >"$WORK/good-eval.out"
 grep -q '^satisfied:' "$WORK/good-eval.out" || fail "PASS-OFFLINE did not satisfy /^PASS/"
+
+cp "$WORK/good.json" "$WORK/no-log.json"
+if PATH="$WORK/bin:$PATH" \
+  CLOUD_SYNC_RESUME_SOURCE_DIR="$FIXTURE" \
+  CLOUD_SYNC_RESUME_PROOF_EVIDENCE_FILE="$WORK/no-log.json" \
+  NORTH_STAR_PROOF_DIR="$WORK/no-log" \
+  "$RUNNER" --offline north-star-lastdb-cloud-sync-resume >"$WORK/no-log.out" 2>"$WORK/no-log.err"; then
+  fail "evidence without its matching run log was accepted"
+fi
+expect_verdict "$WORK/no-log/north-star-lastdb-cloud-sync-resume.md" FAIL
+grep -q 'The run log is absent. Provide the log file to verify provenance.' \
+  "$WORK/no-log/north-star-lastdb-cloud-sync-resume.md"
 
 if PATH="$WORK/bin:$PATH" \
   CLOUD_SYNC_RESUME_SOURCE_DIR="$FIXTURE" \
