@@ -15,7 +15,6 @@ import json
 import os
 import re
 import shutil
-import signal
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -195,13 +194,16 @@ class Node:
     def stop(self):
         if self.proc is None or self.proc.poll() is not None:
             return
-        os.killpg(self.proc.pid, signal.SIGTERM)
+        # The daemon starts a UDS worker pool. Signal the daemon process only;
+        # a process-group signal can reach the shell that owns this probe when
+        # a runner does not preserve the requested session boundary.
+        self.proc.terminate()
         deadline = time.time() + 20
         while time.time() < deadline:
             if self.proc.poll() is not None:
                 return
             time.sleep(0.2)
-        os.killpg(self.proc.pid, signal.SIGKILL)
+        self.proc.kill()
         self.proc.wait(timeout=5)
 
 
@@ -423,6 +425,10 @@ def measure(lastdbd, work, system_attribution_follow_up=None):
             (SCHEMA_A, "a1", "alpha", "create"),
             (SCHEMA_A, "a2", "beta", "create"),
             (SCHEMA_B, "b1", "gamma", "create"),
+            # A declaration names a system schema, but it does not create a
+            # system-attributed object. Seed one real object in the throwaway
+            # source before the copy so inventory can measure its root class.
+            (SCHEMA_SYSTEM, "system", "seeded", "create"),
             (SCHEMA_ORPHAN, "orphan", "injected", "create"),
             (SCHEMA_A, "a1", "alpha-2", "update"),
         ):

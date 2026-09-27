@@ -32,6 +32,12 @@
       "status": 200
     },
     {
+      "schema": "sraproof/System",
+      "key": "system",
+      "kind": "create",
+      "status": 200
+    },
+    {
       "schema": "sraproof/Orphan",
       "key": "orphan",
       "kind": "create",
@@ -52,7 +58,7 @@
           "derived_attributed": 0,
           "retention_attributed": 1,
           "schema_attributed": 2,
-          "system_attributed": 0,
+          "system_attributed": 1,
           "unattributed_residue": 0,
           "unknown": 0
         },
@@ -193,7 +199,7 @@
           "derived_attributed": 0,
           "retention_attributed": 1,
           "schema_attributed": 2,
-          "system_attributed": 0,
+          "system_attributed": 1,
           "unattributed_residue": 0,
           "unknown": 0
         },

@@ -14,7 +14,8 @@ CHECK="$ROOT/harness/north-star/north-star-lastdb-schema-root-data-attribution/c
 MEASURE="$ROOT/harness/north-star/north-star-lastdb-schema-root-data-attribution/measure.py"
 FIXTURE="$ROOT/tests/fixtures/north-star-lastdb-schema-root-data-attribution"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/schema-root-attribution-proof-test.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+PRODUCER_WORK=""
+trap 'rm -rf "$WORK"; [ -z "${PRODUCER_WORK:-}" ] || rm -rf "$PRODUCER_WORK"' EXIT
 
 # shellcheck source=../harness/north-star/common.sh
 . "$ROOT/harness/north-star/common.sh"
@@ -75,6 +76,78 @@ if not module.valid_card_slug("lastdb-system-attribution-isolated-harness-setup-
 if module.valid_card_slug("not a card slug"):
     raise SystemExit("measure.py accepted an invalid card slug")
 PY
+
+# Run the producer against a short throwaway path. The routine scratch root can
+# make the Unix socket path exceed macOS's sockaddr_un limit.
+PRODUCER_LASTDBD="${SCHEMA_ROOT_ATTRIBUTION_PRODUCER_LASTDBD:-$(command -v lastdbd || true)}"
+[ -x "$PRODUCER_LASTDBD" ] || {
+  echo "SKIP producer-level measurement: no lastdbd binary is installed" >&2
+}
+if [ -x "$PRODUCER_LASTDBD" ]; then
+  # Keep the daemon home short. The routine scratch root can exceed macOS's
+  # sockaddr_un limit.
+  PRODUCER_WORK="$(mktemp -d /tmp/sra-producer.XXXXXX)"
+  PRODUCER_EVIDENCE="$WORK/producer-evidence.json"
+  PRODUCER_TRACE="$WORK/producer-trace.json"
+  python3 "$MEASURE" \
+    --lastdbd "$PRODUCER_LASTDBD" \
+    --work "$PRODUCER_WORK" \
+    --out "$PRODUCER_EVIDENCE" \
+    --trace "$PRODUCER_TRACE" \
+    >"$WORK/producer.out" 2>"$WORK/producer.err" || {
+    cat "$WORK/producer.err" >&2
+    fail "the isolated measurement producer failed"
+  }
+  producer_state="$WORK/producer-state"
+  python3 - "$PRODUCER_EVIDENCE" "$PRODUCER_TRACE" "$producer_state" <<'PY'
+import json
+import sys
+
+evidence_path, trace_path, state_path = sys.argv[1:]
+evidence = json.load(open(evidence_path, encoding="utf-8"))
+trace = json.load(open(trace_path, encoding="utf-8"))
+restore = evidence.get("restore")
+system = restore.get("system_attributed_objects") if isinstance(restore, dict) else None
+inventory = trace.get("inventory_after_concurrent", {}).get("inventory", {})
+if isinstance(system, int) and not isinstance(system, bool) and system >= 1:
+    state = "ready"
+elif "attribution" not in inventory:
+    state = "unsupported"
+else:
+    state = "missing"
+open(state_path, "w", encoding="utf-8").write(state + "\n")
+PY
+  case "$(sed -n '1p' "$producer_state")" in
+    ready)
+      python3 - "$PRODUCER_EVIDENCE" "$PRODUCER_TRACE" <<'PY'
+import json
+import sys
+
+evidence_path, trace_path = sys.argv[1:]
+evidence = json.load(open(evidence_path, encoding="utf-8"))
+trace = json.load(open(trace_path, encoding="utf-8"))
+restore = evidence["restore"]
+if not any(
+    row.get("schema") == "sraproof/System"
+    and row.get("key") == "system"
+    and row.get("kind") == "create"
+    for row in trace.get("source_writes", [])
+    if isinstance(row, dict)
+):
+    raise SystemExit("the isolated measurement did not record the system seed mutation")
+after = trace["inventory_after_concurrent"]["inventory"]["attribution"]["objects"]
+if restore["system_attributed_objects"] != after["system_attributed"]:
+    raise SystemExit("generated evidence does not match the generated inventory trace")
+PY
+      ;;
+    unsupported)
+      echo "SKIP producer-level attribution assertion: lastdbd inventory lacks attribution facts" >&2
+      ;;
+    *)
+      fail "the isolated measurement did not produce a system-attributed object"
+      ;;
+  esac
+fi
 
 "$RUNNER" --list | grep -qx 'north-star-lastdb-schema-root-data-attribution' ||
   fail "--list omits north-star-lastdb-schema-root-data-attribution"
@@ -200,37 +273,24 @@ fi
 grep -q '^pending:' "$WORK/absent-eval.out" || fail "missing-evidence report was not pending"
 
 # An unset evidence variable loads the committed measurement. That file
-# records the throwaway copy. The product now writes retention, path-row, and
-# inline-size facts. The isolated direct-declare surface cannot yet make a
-# system-seed schema, so the real measurement stays FAIL on that one field.
-if PATH="$WORK/bin:$PATH" \
+# records the throwaway copy, including one system-attributed object.
+PATH="$WORK/bin:$PATH" \
   env -u SCHEMA_ROOT_ATTRIBUTION_PROOF_EVIDENCE_FILE \
   SCHEMA_ROOT_ATTRIBUTION_SOURCE_DIR="$FIXTURE" \
   NORTH_STAR_PROOF_DIR="$WORK/committed" \
   "$RUNNER" --offline north-star-lastdb-schema-root-data-attribution \
-  >"$WORK/committed.out" 2>"$WORK/committed.err"; then
-  fail "the committed measurement hid the missing system attribution fact"
-fi
-expect_verdict "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md" FAIL
+  >"$WORK/committed.out"
+expect_verdict "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md" PASS-OFFLINE
 grep -F -q "Evidence file: $ROOT/harness/north-star/north-star-lastdb-schema-root-data-attribution/measured-evidence.json" \
   "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md" ||
   fail "the default evidence path is not measured-evidence.json"
-grep -q 'Operational evidence: FAIL' \
+grep -q 'Operational evidence: PASS' \
   "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md"
-grep -q 'The evidence field system_attributed_objects is below 1.' \
+grep -q 'System-attributed objects: 1.' \
   "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md"
-if grep -q 'Operational evidence: ABSENT' \
-  "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md"; then
-  fail "the committed measurement was treated as absent"
-fi
-if grep -q 'Operational evidence: PASS' \
-  "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md"; then
-  fail "the committed measurement passed without a system attribution fact"
-fi
 
 # The committed trace records the raw inventory and mutation responses behind
-# the FAIL fallback. Keep it aligned with the measured evidence, so a zero
-# system count is reviewable rather than an unexplained assertion.
+# the measured evidence. Keep it aligned with the system seed and its count.
 python3 - "$ROOT/harness/north-star/north-star-lastdb-schema-root-data-attribution/measured-evidence.json" \
   "$ROOT/harness/north-star/north-star-lastdb-schema-root-data-attribution/measured-trace.json" <<'PY'
 import json
@@ -239,14 +299,16 @@ import sys
 evidence_path, trace_path = sys.argv[1:]
 evidence = json.load(open(evidence_path, encoding="utf-8"))
 trace = json.load(open(trace_path, encoding="utf-8"))
-expected_card = "lastdb-system-attribution-isolated-harness-setup-20260926"
 before = trace["inventory_before_concurrent"]["inventory"]["attribution"]
 after = trace["inventory_after_concurrent"]["inventory"]["attribution"]
 write = trace["concurrent_write"]
 if evidence["restore"]["system_attributed_objects"] != after["objects"]["system_attributed"]:
-    raise SystemExit("the committed trace does not support the system attribution fallback")
-if evidence.get("follow_up", {}).get("system_attribution_card") != expected_card:
-    raise SystemExit("the committed evidence does not name the filed system attribution follow-up card")
+    raise SystemExit("the committed trace does not support the measured system attribution")
+if not any(
+    row.get("schema") == "sraproof/System" and row.get("key") == "system"
+    for row in trace["source_writes"]
+):
+    raise SystemExit("the committed trace does not record the system seed write")
 if after["path_rows"] - before["path_rows"] != evidence["writes"]["concurrent_write_attribution_paths"]:
     raise SystemExit("the committed trace does not support the path-row measurement")
 if not isinstance(write.get("size"), int) or write["size"] <= 0:
