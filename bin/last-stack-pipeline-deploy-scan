@@ -128,7 +128,11 @@ for dir in "$root"/deploy-*/; do
   fi
 
   # Latest deploy event from a bounded tail window (ignore skip / JSON telemetry).
-  last_term="$(last_matching_line "$log" '^(success|failure) ')"
+  # Two producer shapes emit a terminal line:
+  #   line-anchored:      "success <sha> deploy-pipeline ..."       (deploy-prod.sh's own log line)
+  #   timestamp-prefixed: "<ts>Z deploy success oid=<sha> rc=<n>"   (deploy-run.sh's log(), the
+  #                        common case: every deploy-run.sh copy logs its own outcome this way)
+  last_term="$(last_matching_line "$log" '^(success|failure) |deploy (success|failure)([[:space:]]|$)')"
   last_any="$(last_matching_line "$log" '^(success|failure|pending) ')"
 
   mtime="$(log_mtime "$log")"
@@ -138,10 +142,19 @@ for dir in "$root"/deploy-*/; do
   reason="no success/failure/pending lines"
 
   if [ -n "$last_term" ]; then
-    # e.g. "failure abcdef deploy-pipeline"
-    pipe_status="${last_term%% *}"
-    rest="${last_term#* }"
-    sha="${rest%% *}"
+    if [[ "$last_term" =~ ^(success|failure)[[:space:]] ]]; then
+      # e.g. "failure abcdef deploy-pipeline"
+      pipe_status="${last_term%% *}"
+      rest="${last_term#* }"
+      sha="${rest%% *}"
+    else
+      # e.g. "2026-09-23T08:14:00Z deploy success oid=8697e686 rc=0"
+      case "$last_term" in
+        *"deploy failure"*) pipe_status="failure" ;;
+        *"deploy success"*) pipe_status="success" ;;
+      esac
+      sha="$(printf '%s' "$last_term" | sed -n 's/.*oid=\([^[:space:]]*\).*/\1/p')"
+    fi
     if [ "$pipe_status" = "failure" ]; then
       blocked=1
       reason="latest terminal status is failure for $sha"

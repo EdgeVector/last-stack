@@ -8,7 +8,8 @@ chmod +x "$SCAN"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-mkdir -p "$tmp/deploy-ok-repo" "$tmp/deploy-bad-repo" "$tmp/deploy-pending-repo"
+mkdir -p "$tmp/deploy-ok-repo" "$tmp/deploy-bad-repo" "$tmp/deploy-pending-repo" \
+  "$tmp/deploy-ts-ok-repo" "$tmp/deploy-ts-bad-repo"
 # deploy-run's checkout root: never a producer, never a row.
 mkdir -p "$tmp/deploy-checkouts/ok-repo"
 
@@ -22,6 +23,21 @@ pending bbb deploy-pipeline from x:refs/heads/main:accepted
 success bbb deploy-pipeline
 pending ccc deploy-pipeline from y:refs/heads/main:accepted
 failure ccc deploy-pipeline
+EOF
+
+# papercut-pipeline-deploy-scan-timestamp-prefixed-status-line-unmatched:
+# deploy-run.sh's own log() prepends a timestamp and writes "deploy <status>
+# oid=<sha> rc=<n>", not the line-anchored "<status> <sha> ..." shape above.
+# Every deploy-run.sh copy (ops-terminal, schema-infra, fold_db_website — all
+# but exemem-infra's separate deploy-prod.sh line) emits this shape.
+cat >"$tmp/deploy-ts-ok-repo/deploy.log" <<'EOF'
+2026-09-23T08:13:30Z deploy-run: repo=ts-ok-repo context=deploy-prod venue=forgejo ref=refs/heads/main
+2026-09-23T08:14:00Z deploy success oid=8697e6862be42019c7cdbdd8ea3ed199f1a33908 rc=0
+EOF
+
+cat >"$tmp/deploy-ts-bad-repo/deploy.log" <<'EOF'
+2026-09-23T08:13:30Z deploy-run: repo=ts-bad-repo context=deploy-prod venue=forgejo ref=refs/heads/main
+2026-09-23T08:14:00Z deploy failure oid=0a4d0dbed703660799d24ed5db13c5181bcb6a16 rc=1
 EOF
 
 # pending only — force old mtime so grace expires
@@ -58,6 +74,33 @@ if [ "$pend_blocked" = "true" ] || [ "$pend_blocked" = "1" ]; then
 else
   echo "pending-repo not blocked (mtime touch may be unsupported) — soft-ok"
 fi
+
+ts_ok_status="$(echo "$out" | jq -r '.[] | select(.repo=="ts-ok-repo") | .status')"
+ts_ok_blocked="$(echo "$out" | jq -r '.[] | select(.repo=="ts-ok-repo") | .blocked')"
+ts_ok_sha="$(echo "$out" | jq -r '.[] | select(.repo=="ts-ok-repo") | .sha')"
+[ "$ts_ok_status" = "success" ] || {
+  echo "expected ts-ok-repo status=success (timestamp-prefixed line), got $ts_ok_status / $out" >&2
+  exit 1
+}
+[ "$ts_ok_blocked" = "false" ] || [ "$ts_ok_blocked" = "0" ] || {
+  echo "expected ts-ok-repo unblocked, got $ts_ok_blocked / $out" >&2
+  exit 1
+}
+[ "$ts_ok_sha" = "8697e6862be42019c7cdbdd8ea3ed199f1a33908" ] || {
+  echo "expected ts-ok-repo sha extracted from oid=..., got '$ts_ok_sha' / $out" >&2
+  exit 1
+}
+
+ts_bad_status="$(echo "$out" | jq -r '.[] | select(.repo=="ts-bad-repo") | .status')"
+ts_bad_blocked="$(echo "$out" | jq -r '.[] | select(.repo=="ts-bad-repo") | .blocked')"
+[ "$ts_bad_status" = "failure" ] || {
+  echo "expected ts-bad-repo status=failure (timestamp-prefixed line), got $ts_bad_status / $out" >&2
+  exit 1
+}
+[ "$ts_bad_blocked" = "true" ] || [ "$ts_bad_blocked" = "1" ] || {
+  echo "expected ts-bad-repo blocked, got $ts_bad_blocked / $out" >&2
+  exit 1
+}
 
 # --repo: a repo WITH a producer reports that producer
 one="$("$SCAN" --json --root "$tmp" --pending-max-s 3600 --repo ok-repo)"
