@@ -34,12 +34,13 @@ Proof and artifact paths are known, not searched:
 `~/.last-stack/north-star-proofs`, `~/.last-stack/feature-proofs`,
 `~/.local/state/last-stack/artifacts`, `~/.fkanban/worktrees`.
 
-If you truly need the whole tree, prune the protected folders:
+If you truly need the whole tree, prune the protected folders and say why:
 
 ```bash
 find "$HOME" -maxdepth 4 \( -path "$HOME/Desktop" -o -path "$HOME/Documents" \
   -o -path "$HOME/Downloads" -o -path "$HOME/Pictures" -o -path "$HOME/Movies" \
-  -o -path "$HOME/Music" -o -path "$HOME/Library" \) -prune -o -print 2>/dev/null
+  -o -path "$HOME/Music" -o -path "$HOME/Library" \) -prune -o -print 2>/dev/null \
+  # home-scan-ok: pruned example, names the protected folders only to exclude them
 ```
 
 Under Claude Code the hook `~/.claude/hooks/no-home-root-scan.sh` denies the bad
