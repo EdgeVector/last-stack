@@ -394,9 +394,18 @@ For each pattern worth fixing now:
   or too large → one `backlog` card with what you know.
 
 ## Step 5 — Mark what you reconciled
-- Append one line per handled papercut to the ledger record
-  (`brain append papercut-reconciler-ledger --type reference`), newest on top:
+- Append one line per handled papercut to the ledger record, newest on top:
   `<ISO-UTC> <papercut-slug> -> card:<card-slug> | pattern:<name> | skip:<reason>`
+  Pipe all of this pass's lines through `last-stack-papercut-ledger-append
+  --base-slug papercut-reconciler-ledger` (reads the lines on stdin) rather
+  than a bare `brain append`. A large pass (this record's own recurrence:
+  234 routing lines in one append) can push the active record past LastDB's
+  524288-byte atom limit; the helper rolls to a dated successor and links it
+  from the outgoing record before that happens, so no writer has to guess
+  which ledger slug is currently active
+  (papercut-reconciler-ledger-reaches-lastdb-atom-limit-20260927). If the
+  helper is not on PATH, use the absolute path
+  `"$HOME/.last-stack/bin/last-stack-papercut-ledger-append"`.
 - Do not change the typed papercut repair status merely because it was carded.
   `RECONCILED` is routing state in the reconciler ledger; the typed record stays
   `open` until `brain papercut close` moves it to `fixed`, `verified`,

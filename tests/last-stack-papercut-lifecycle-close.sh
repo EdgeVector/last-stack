@@ -37,6 +37,10 @@ if [ "${1:-}" = papercut ] && [ "${2:-}" = close ]; then
   printf 'CLOSE %s\n' "$*" >>"$BRAIN_APPEND_LOG"
   exit 0
 fi
+if [ "$1" = get ] && [ "${3:-}" = --type ] && [ "${4:-}" = reference ]; then
+  printf '{"slug":"%s","body":""}\n' "$2"
+  exit 0
+fi
 if [ "$1" = append ]; then
   slug="$2"
   cat >>"$BRAIN_APPEND_LOG"
@@ -130,6 +134,9 @@ case "$*" in
   papercut\ close\ papercut-pipeline-stuck-cr-last-stack-typed*)
     printf 'CLOSE %s\n' "$*" >>"$BRAIN_TYPED_LOG"
     ;;
+  "get papercut-reconciler-ledger --type reference --json")
+    printf '{"slug":"papercut-reconciler-ledger","body":""}\n'
+    ;;
   "append papercut-reconciler-ledger --type reference")
     cat >>"$BRAIN_TYPED_LOG"
     ;;
@@ -163,6 +170,9 @@ case "$*" in
     ;;
   papercut\ close\ papercut-pipeline-stuck-cr-last-stack-cr-msfkhqbn*)
     printf 'CLOSE %s\n' "$*" >>"$BRAIN_SLUG_LOG"
+    ;;
+  "get papercut-reconciler-ledger --type reference --json")
+    printf '{"slug":"papercut-reconciler-ledger","body":""}\n'
     ;;
   "append papercut-reconciler-ledger --type reference")
     cat >>"$BRAIN_SLUG_LOG"
@@ -232,6 +242,9 @@ EOF
   papercut\ close\ papercut-pipeline-stuck-cr-last-stack-cr-msfkhqbn*)
     printf 'CLOSE %s\n' "$*" >>"$BRAIN_DEFAULT_LOG"
     ;;
+  "get papercut-reconciler-ledger --type reference --json")
+    printf '{"slug":"papercut-reconciler-ledger","body":""}\n'
+    ;;
   "append papercut-reconciler-ledger --type reference")
     cat >>"$BRAIN_DEFAULT_LOG"
     ;;
@@ -292,6 +305,9 @@ case "$*" in
     ;;
   papercut\ close\ *)
     printf 'CLOSE %s\n' "$*" >>"$BRAIN_TERMINAL_LOG"
+    ;;
+  "get papercut-reconciler-ledger --type reference --json")
+    printf '{"slug":"papercut-reconciler-ledger","body":""}\n'
     ;;
   "append papercut-reconciler-ledger --type reference")
     cat >>"$BRAIN_TERMINAL_LOG"

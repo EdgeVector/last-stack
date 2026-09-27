@@ -31,6 +31,13 @@ grep -q 'budget_hold=released' "$prompt"
 
 queue_helper="$ROOT/bin/last-stack-papercut-queue"
 [ -x "$queue_helper" ] || { echo "missing executable queue helper" >&2; exit 1; }
+ledger_helper="$ROOT/bin/last-stack-papercut-ledger-append"
+[ -x "$ledger_helper" ] || { echo "missing executable ledger-append helper" >&2; exit 1; }
+jq -e '
+  .apps[] | select(.app == "last-stack") | .links[] |
+  select(.source == "bin/last-stack-papercut-ledger-append" and
+         .target == "$HOME/.local/bin/last-stack-papercut-ledger-append")
+' "$ROOT/config/host-track/apps.json" >/dev/null
 jq -e '
   .apps[] | select(.app == "last-stack") | .links[] |
   select(.source == "bin/last-stack-papercut-queue" and
@@ -71,6 +78,9 @@ EOF
     ;;
   papercut\ close\ papercut-demo-helper-drift*)
     printf 'CLOSE %s\n' "$*" >>"$TEST_CLOSE_LOG"
+    ;;
+  "get papercut-reconciler-ledger --type reference --json")
+    printf '{"slug":"papercut-reconciler-ledger","body":""}\n'
     ;;
   "append papercut-reconciler-ledger --type reference")
     cat >>"$TEST_LEDGER_LOG"

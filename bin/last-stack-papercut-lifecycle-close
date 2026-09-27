@@ -1077,7 +1077,17 @@ def review_state(args: argparse.Namespace, ref: ReviewRef) -> tuple[str, str]:
 def append_brain(args: argparse.Namespace, slug: str, text: str) -> None:
     if args.dry_run:
         return
-    proc = run([args.brain_bin, "append", slug, "--type", "reference"], stdin=text, timeout=60)
+    # Route through the rollover-aware helper rather than a bare `brain append
+    # <slug>`: a ledger slug appended to on every close eventually reaches
+    # LastDB's atom content limit, and the helper is the one place that mints
+    # and links a dated successor when that happens
+    # (papercut-reconciler-ledger-reaches-lastdb-atom-limit-20260927).
+    ledger_helper = Path(__file__).resolve().parent / "last-stack-papercut-ledger-append"
+    proc = run(
+        [str(ledger_helper), "--base-slug", slug, "--brain-bin", args.brain_bin],
+        stdin=text,
+        timeout=60,
+    )
     if proc.returncode != 0:
         raise RuntimeError(f"brain append {slug} failed: {proc.stderr.strip()}")
 
