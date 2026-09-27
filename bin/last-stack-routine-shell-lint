@@ -28,6 +28,7 @@
 #   bin-path          /bin/sed, /bin/grep, the /bin temp-file tool ... do not exist on macOS (they are in /usr/bin)
 #   zsh-status        (--shell zsh only) status is read-only in zsh
 #   zsh-mapfile       (--shell zsh only) mapfile/readarray do not exist in zsh
+#   zsh-word-split    (--shell zsh only) for x in $VAR does not split; one pass over the whole string
 #
 # Text inside a heredoc body is data, so only heredoc-backticks looks there.
 # Escape hatch: put "shell-lint-ok: <reason>" anywhere in the command.
@@ -58,7 +59,7 @@ while [ "$#" -gt 0 ]; do
     --quiet) quiet=1; shift ;;
     --list-rules)
       printf '%s\n' spin-wait heredoc-backticks dquote-backticks jq-optional-call jq-escaped-quote \
-        awk-match-array sed-inplace date-nanos printf-dash bin-path zsh-status zsh-mapfile
+        awk-match-array sed-inplace date-nanos printf-dash bin-path zsh-status zsh-mapfile zsh-word-split
       exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 64 ;;
@@ -91,6 +92,7 @@ rule_slug() {
     printf-dash) echo papercut-routine-printf-leading-dash-format-20260923 ;;
     bin-path) echo papercut-routine-hard-coded-bin-mktemp-20260923 ;;  # fix form: mktemp "$TMPDIR/x.XXXXXX"
     zsh-status|zsh-mapfile) echo papercut-routine-shell-word-splitting ;;
+    zsh-word-split) echo papercut-claude-zsh-for-loop-over-an-unquoted-scalar-does-not-word-split-20260926 ;;
   esac
 }
 
@@ -133,6 +135,9 @@ rule_fix() {
     zsh-mapfile) printf '%s\n' \
       "mapfile and readarray are bash builtins; zsh does not have them." \
       "Use: while IFS= read -r line; do ...; done < \"\$file\"" ;;
+    zsh-word-split) printf '%s\n' \
+      "zsh has no SH_WORD_SPLIT: an unquoted \$VAR in a for-list is ONE word, so the loop runs once over the whole string (bash would split it)." \
+      "Use an array: FILES=(a b c); for x in \"\${FILES[@]}\"; do ...; done -- or a line reader: printf '%s\n' \$FILES | while IFS= read -r x; do ...; done" ;;
   esac
 }
 
@@ -169,6 +174,13 @@ re_bin_path='(^|[^[:alnum:]_./-])/bin/(mk[t]emp|sed|grep|egrep|awk|find|xargs|so
 re_date_nanos='(^|[^[:alnum:]_-])date[[:space:]][^;|&]*%[0-9]*N'
 re_zsh_status='(^|;|&&|[|][|]|[({]|(^|[^[:alnum:]_])(do|then|else|export|local|typeset|declare))[[:space:]]*status=|(^|[^[:alnum:]_])read[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*([[:alpha:]_][[:alnum:]_]*[[:space:]]+)*status([[:space:]]|;|$)|(^|[^[:alnum:]_])(local|typeset|declare|integer)[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*status([=[:space:]]|$)|(^|[^[:alnum:]_$])for[[:space:]]+status[[:space:]]+in([[:space:]]|$)'
 re_zsh_mapfile='(^|[;&|({[:space:]])(mapfile|readarray)[[:space:]]'
+# Matches `for x in $VAR` / `for x in ${VAR}`, an unquoted bare scalar
+# expansion immediately ending the for-list (whitespace, ;, or end of line).
+# Does NOT match "${ARR[@]}" (a [ follows the name, so the required
+# terminator right after the optional trailing brace never appears),
+# $(...)/`...` command substitution (the char after $ is not a letter/_/{),
+# or a quoted "$VAR" (the " before $ breaks the immediately-preceding `in `).
+re_zsh_word_split='(^|[^[:alnum:]_])for[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]+in[[:space:]]+\$\{?[A-Za-z_][A-Za-z0-9_]*\}?([[:space:]]|;|$)'
 
 check_command_line() {
   local line="$1"
@@ -207,6 +219,9 @@ check_command_line() {
     fi
     if [[ $line =~ $re_zsh_mapfile ]]; then
       reject zsh-mapfile "$line"
+    fi
+    if [[ $line =~ $re_zsh_word_split ]]; then
+      reject zsh-word-split "$line"
     fi
   fi
 }
