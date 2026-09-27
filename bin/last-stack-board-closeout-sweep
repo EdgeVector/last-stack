@@ -649,8 +649,9 @@ function ensureAwaitingDeployTag(slug, card) {
 /**
  * `kanban list --column doing` serves BoardCards rows that can lag the Card
  * tip: a card already moved to done can still be listed in doing. Confirm the
- * column against `show` (Card truth) before any move. Fail OPEN: when show is
- * unavailable or unparsable, keep the legacy list-driven behavior.
+ * column against `show` (Card truth) before any move. Fail CLOSED: when show
+ * is unavailable or unparsable, return null and let the caller skip the card
+ * rather than mutate it against a stale preview.
  */
 function confirmDoing(slug) {
   const out = run(boardCli, ["show", slug, "--json"], { timeout: 45000 });
@@ -1591,7 +1592,8 @@ def confirm_doing(slug):
 
     `kanban list --column doing` serves a lightweight BoardCards preview that
     can lag the Card tip. Return the keyed Card read for body-only headers.
-    Fail OPEN: an unavailable or unparsable show keeps preview behavior.
+    Fail CLOSED: an unavailable or unparsable show returns None, and the
+    caller must skip the card rather than mutate it against a stale preview.
     """
     ok, out, _ = run([board_cli, "show", slug, "--json"], timeout=45)
     if not ok:
