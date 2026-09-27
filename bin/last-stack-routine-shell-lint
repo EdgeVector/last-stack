@@ -29,9 +29,20 @@
 #   zsh-status        (--shell zsh only) status is read-only in zsh
 #   zsh-mapfile       (--shell zsh only) mapfile/readarray do not exist in zsh
 #   zsh-word-split    (--shell zsh only) for x in $VAR does not split; one pass over the whole string
+#   home-root-scan    a scanner walks $HOME itself, or reads a macOS
+#                     TCC-protected folder (Desktop/Documents/Downloads/
+#                     Pictures/Movies/Music); the walk BLOCKS on a privacy
+#                     prompt attributed to `routines` (measured 2026-09-05,
+#                     brain instructions/no-home-root-scan.md). 71+ of the
+#                     fleet runs under Codex, which had no guard for this
+#                     until now (only the Claude Code hook did) — that gap is
+#                     why the same stall recurred in loom review, disk-reclaim
+#                     and feature-prove.
 #
 # Text inside a heredoc body is data, so only heredoc-backticks looks there.
 # Escape hatch: put "shell-lint-ok: <reason>" anywhere in the command.
+# home-root-scan also honors the older "home-scan-ok: <reason>" phrase, so a
+# command already annotated for the standalone Claude Code hook still passes.
 #
 # Usage:
 #   last-stack-routine-shell-lint [--shell bash|zsh] [--command STR] [--quiet]
@@ -59,7 +70,8 @@ while [ "$#" -gt 0 ]; do
     --quiet) quiet=1; shift ;;
     --list-rules)
       printf '%s\n' spin-wait heredoc-backticks dquote-backticks jq-optional-call jq-escaped-quote \
-        awk-match-array sed-inplace date-nanos printf-dash bin-path zsh-status zsh-mapfile zsh-word-split
+        awk-match-array sed-inplace date-nanos printf-dash bin-path zsh-status zsh-mapfile zsh-word-split \
+        home-root-scan
       exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 64 ;;
@@ -79,6 +91,14 @@ case "$command_text" in
   *"shell-lint-ok:"*) exit 0 ;;
 esac
 
+# home-root-scan keeps the standalone Claude Code hook's own escape phrase
+# too, so a command already annotated for that hook is not double-blocked
+# here.
+home_scan_escaped=0
+case "$command_text" in
+  *"home-scan-ok:"*) home_scan_escaped=1 ;;
+esac
+
 # Rule table: id | canonical papercut | fix line.
 rule_slug() {
   case "$1" in
@@ -93,6 +113,7 @@ rule_slug() {
     bin-path) echo papercut-routine-hard-coded-bin-mktemp-20260923 ;;  # fix form: mktemp "$TMPDIR/x.XXXXXX"
     zsh-status|zsh-mapfile) echo papercut-routine-shell-word-splitting ;;
     zsh-word-split) echo papercut-claude-zsh-for-loop-over-an-unquoted-scalar-does-not-word-split-20260926 ;;
+    home-root-scan) echo papercut-codex-routines-lack-home-root-scan-guard-20260927 ;;
   esac
 }
 
@@ -138,6 +159,10 @@ rule_fix() {
     zsh-word-split) printf '%s\n' \
       "zsh has no SH_WORD_SPLIT: an unquoted \$VAR in a for-list is ONE word, so the loop runs once over the whole string (bash would split it)." \
       "Use an array: FILES=(a b c); for x in \"\${FILES[@]}\"; do ...; done -- or a line reader: printf '%s\n' \$FILES | while IFS= read -r x; do ...; done" ;;
+    home-root-scan) printf '%s\n' \
+      "macOS treats \$HOME/Desktop, \$HOME/Documents, \$HOME/Downloads and the Photos library as protected. A routine agent runs under routinesd, so the walk raises a privacy prompt attributed to \`routines\` and BLOCKS until a human clicks it." \
+      "Name the root you actually need: find \"\$HOME/code\" -maxdepth 4 -name '<what>'   or   find \"\$HOME/.routines\" \"\$HOME/.last-stack\" \"\$HOME/.fkanban\" -maxdepth 4 -name '<what>'" \
+      "If you truly need the whole tree, prune the protected folders and say why: find \"\$HOME\" -maxdepth 4 \\( -path \"\$HOME/Desktop\" -o -path \"\$HOME/Documents\" -o -path \"\$HOME/Downloads\" -o -path \"\$HOME/Pictures\" -o -path \"\$HOME/Movies\" -o -path \"\$HOME/Music\" -o -path \"\$HOME/Library\" \\) -prune -o -print 2>/dev/null   # home-scan-ok: <reason>" ;;
   esac
 }
 
@@ -182,6 +207,33 @@ re_zsh_mapfile='(^|[;&|({[:space:]])(mapfile|readarray)[[:space:]]'
 # or a quoted "$VAR" (the " before $ breaks the immediately-preceding `in `).
 re_zsh_word_split='(^|[^[:alnum:]_])for[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]+in[[:space:]]+\$\{?[A-Za-z_][A-Za-z0-9_]*\}?([[:space:]]|;|$)'
 
+# home-root-scan: normalize $HOME / ${HOME} / ~ to the real home path (as
+# text, not by expanding anything) so a scanner pointed at any written form
+# of the home root matches one regex. Mirrors hooks/no-home-root-scan.sh.
+home="${HOME:-}"
+normalize_home_line() {
+  local line="$1"
+  [ -n "$home" ] || { printf '%s' "$line"; return; }
+  printf '%s' "$line" | sed \
+    -e "s#\${HOME}#$home#g" -e "s#\$HOME#$home#g" -e "s#~/#$home/#g" \
+    -e "s#\([[:space:]]\)~\([[:space:]]\)#\1$home\2#g" \
+    -e "s#\([[:space:]]\)~\$#\1$home#" \
+    -e "s#^~\([[:space:]/]\)#$home\1#" -e "s#^~\$#$home#"
+}
+re_home_scanner_words='(find|fd|du|ncdu|tree|rg|ag|grep|ls|wc|shasum)'
+# A command starts at line-start, after a separator (;&|(), after && / ||,
+# or right after a shell keyword (do/then/else/elif) that always begins a
+# new command wherever it sits on the line -- `while ...; do find "$HOME"
+# ...; done` and `if ...; then du -sh "$HOME"; fi` are the idioms routine
+# agents write constantly (measured: both slipped through an earlier draft
+# anchored only on ;&|( / && / ||).
+re_home_anchor='(^|[;&|(]|&& |\| |(^|[^[:alnum:]_])(do|then|else|elif)[[:space:]])'
+# `find <path> <expr>` puts the path BEFORE its flags (the common, natural
+# form); du/ls/rg/grep put flags before the path. Allow optional flags on
+# EITHER side of the (optionally quoted) home token so both orders match.
+re_home_root_scan="${re_home_anchor}[[:space:]]*(sudo[[:space:]]+)?(time[[:space:]]+)?${re_home_scanner_words}([[:space:]]+-[^[:space:]]+)*[[:space:]]+[\"']?${home}[\"']?([[:space:]]+-[^[:space:]]+)*([[:space:]]|[;&|)]|/\\*|\$)"
+re_home_protected="${home}/(Desktop|Documents|Downloads|Pictures|Movies|Music)"
+
 check_command_line() {
   local line="$1"
   if [[ $line =~ $re_spin ]] || [[ $line =~ $re_spin_b ]]; then
@@ -222,6 +274,13 @@ check_command_line() {
     fi
     if [[ $line =~ $re_zsh_word_split ]]; then
       reject zsh-word-split "$line"
+    fi
+  fi
+  if [ -n "$home" ] && [ "$home_scan_escaped" -eq 0 ]; then
+    local hline
+    hline="$(normalize_home_line "$line")"
+    if [[ $hline =~ $re_home_root_scan ]] || [[ $hline =~ $re_home_protected ]]; then
+      reject home-root-scan "$line"
     fi
   fi
 }

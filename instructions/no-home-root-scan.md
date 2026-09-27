@@ -34,14 +34,25 @@ Proof and artifact paths are known, not searched:
 `~/.last-stack/north-star-proofs`, `~/.last-stack/feature-proofs`,
 `~/.local/state/last-stack/artifacts`, `~/.fkanban/worktrees`.
 
-If you truly need the whole tree, prune the protected folders:
+If you truly need the whole tree, prune the protected folders and say why:
 
 ```bash
 find "$HOME" -maxdepth 4 \( -path "$HOME/Desktop" -o -path "$HOME/Documents" \
   -o -path "$HOME/Downloads" -o -path "$HOME/Pictures" -o -path "$HOME/Movies" \
-  -o -path "$HOME/Music" -o -path "$HOME/Library" \) -prune -o -print 2>/dev/null
+  -o -path "$HOME/Music" -o -path "$HOME/Library" \) -prune -o -print 2>/dev/null \
+  # home-scan-ok: pruned example, names the protected folders only to exclude them
 ```
 
 Under Claude Code the hook `~/.claude/hooks/no-home-root-scan.sh` denies the bad
 form and hands back the scoped one. Escape hatch, with a reason:
 `# home-scan-ok: <reason>`.
+
+**Codex routines are covered too (2026-09-27).** 78 of 80 registry routines run
+under `harness = "codex"`, which never read this Claude Code hook — that gap is
+why the same stall recurred (loom review, disk-reclaim, feature-prove) even
+after the hook shipped. The shared `bin/last-stack-routine-shell-lint` (the one
+source both Codex routines and Claude Code Bash calls run through, see
+`instructions/routine-shell.md`) now carries the same check as rule
+`home-root-scan`, so a Codex routine command gets the same rejection and fix
+text before it runs. Either escape phrase works there too: `# shell-lint-ok:
+<reason>` or `# home-scan-ok: <reason>`.
