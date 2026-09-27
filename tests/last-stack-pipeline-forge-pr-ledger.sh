@@ -597,6 +597,47 @@ jq -e '[.ledger.actions[] | select(.action=="file" and .slug=="papercut-pipeline
 if grep -q -- '--severity p0' "$tmp/brain/calls.log"; then echo "FAIL a cancelled run was filed p0"; cat "$tmp/brain/calls.log"; exit 1; fi
 echo "ok   a cancelled required run is filed p1"
 
+# 11. a busy brain must not silently kill the whole run (papercut-pr-reaper-forge-ledger-empty):
+#     --budget-sec bounds the per-row loop from the INSIDE so the process always
+#     prints a valid, non-empty report, even when individual calls are slow.
+cat >"$tmp/brain-slow" <<SH
+#!/usr/bin/env bash
+sleep 2
+exec "$tmp/brain-bin" "\$@"
+SH
+chmod +x "$tmp/brain-slow"
+# A fresh, isolated state file: the shared $state carries several old
+# "close-deferred" tracked rows from earlier cases in this file (their PR
+# numbers have no individual pulls/<n> fixture, so the close loop can never
+# resolve them) and those would inflate budget_skipped_slugs unpredictably.
+bstate="$tmp/budget-state.json"
+echo '[]' | put "repos/$R/pulls?state=open&limit=50"
+pulls_open 61 62 63 | put "repos/$R/pulls?state=open&limit=50"
+for n in 61 62 63; do cp "$fx/repos_EdgeVector_fold_commits_head7_status.json" "$fx/repos_EdgeVector_fold_commits_head${n}_status.json"; done
+sync --apply --state-file "$bstate" --brain-bin "$tmp/brain-slow" --budget-sec 1
+jq -e '.ledger.budget_exceeded == true and (.ledger.budget_skipped_slugs | length) == 2' "$tmp/out.json" >/dev/null \
+  || { echo "FAIL budget must skip the rows it had no time for and say so"; cat "$tmp/out.json"; exit 1; }
+[ -s "$tmp/out.json" ] || { echo "FAIL budget-exceeded pass produced zero bytes"; exit 1; }
+echo "ok   a busy brain hits --budget-sec and still emits a valid partial report"
+
+# mutation probe: reverting the over_budget() check (i.e. never skipping) must
+# make the guard fail — prove the assertion actually depends on the budget, not
+# on something else true by coincidence (e.g. the fixture only has 3 PRs).
+sync --apply --state-file "$bstate" --brain-bin "$tmp/brain-slow" --budget-sec 3600
+jq -e '(.ledger.budget_exceeded // false) == false' "$tmp/out.json" >/dev/null \
+  || { echo "FAIL a generous budget must not report budget_exceeded"; cat "$tmp/out.json"; exit 1; }
+echo "ok   a budget wide enough to finish never sets budget_exceeded"
+
+# 12. an unanticipated exception must still print valid JSON, never a bare
+#     traceback (papercut-pr-reaper-forge-ledger-empty): --state-file pointed
+#     at an existing DIRECTORY makes save_state()'s file replace raise.
+mkdir -p "$tmp/state-is-a-dir"
+if sync --apply --state-file "$tmp/state-is-a-dir"; then rc=0; else rc=$?; fi
+[ "$rc" -eq 1 ] || { echo "FAIL an escaping exception must exit 1, got $rc"; cat "$tmp/out.json"; exit 1; }
+jq -e '.error and .error_type' "$tmp/out.json" >/dev/null \
+  || { echo "FAIL an escaping exception must still be valid JSON with error/error_type"; cat "$tmp/out.json"; exit 1; }
+echo "ok   an unanticipated exception is reported as valid JSON, not a bare traceback"
+
 # 10. the prompt uses the ledger and forbids per-state slugs
 grep -Fq 'last-stack-pipeline-forge-pr-ledger" reap-plan' "$ROOT/routines/pr-reaper.md" \
   || { echo "FAIL pr-reaper.md must read the reap plan"; exit 1; }

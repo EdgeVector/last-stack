@@ -78,6 +78,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -478,6 +479,8 @@ def heartbeat_fields(report: dict[str, Any]) -> str:
         ]
         if counts.get("skip-busy"):
             fields.append(f"brain_busy={counts['skip-busy']}")
+        if ledger.get("budget_exceeded"):
+            fields.append(f"budget_exceeded={len(ledger.get('budget_skipped_slugs') or [])}")
     return " ".join(fields)
 
 
@@ -756,6 +759,12 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
     brain = args.brain_bin
     open_prs = {(p["repo"], p["number"]): p for p in report["prs"]}
     unreadable = {u["repo"] for u in report["unreadable"]}
+    budget_sec = getattr(args, "budget_sec", 0) or 0
+    deadline = time.monotonic() + budget_sec if budget_sec > 0 else None
+    skipped_on_budget: list[str] = []
+
+    def over_budget() -> bool:
+        return deadline is not None and time.monotonic() >= deadline
 
     def act(kind: str, slug: str, **extra: Any) -> dict[str, Any]:
         row = {"action": kind, "slug": slug, **extra}
@@ -812,6 +821,9 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         if pr["stuck"]:
             grouped.setdefault(pr["ledger_slug"], []).append(pr)
     for slug, prs in grouped.items():
+        if over_budget():
+            skipped_on_budget.append(slug)
+            continue
         pr = prs[0]
         fingerprint = ";".join(sorted(f"{p['number']}:{p['head_sha']}:{p['shape']}" for p in prs))
         prior = tracked.get(slug) or {}
@@ -931,6 +943,11 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             }
 
     # 2. tracked rows whose PR left the open set (or whose main went green) → close verified
+    # The budget is checked just before each ACTUAL subprocess call below, not
+    # at the top of this loop: most tracked rows hit the cheap in-memory
+    # "still open" / "still red" continues with no call at all, and gating
+    # those on the budget too would report far more skipped rows than the
+    # budget actually cost (indistinguishable from a real defect otherwise).
     for slug, meta in sorted(tracked.items()):
         repo = meta.get("repo") or ""
         if repo in unreadable:
@@ -953,6 +970,9 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             numbers = meta.get("prs") or []
             if any((repo, n) in open_prs for n in numbers):
                 continue
+            if over_budget():
+                skipped_on_budget.append(slug)
+                continue
             facts = []
             try:
                 for n in numbers:
@@ -965,6 +985,9 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                 continue
             evidence = f"{repo} PR left the open set: {'; '.join(facts)}"
             verified_by = f"forge point read GET repos/{repo}/pulls/<n> at {checked_at}: {'; '.join(facts)}"
+        if over_budget():
+            skipped_on_budget.append(slug)
+            continue
         row = act("close", slug, evidence=evidence)
         if args.apply:
             try:
@@ -992,6 +1015,12 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         state["updated_at"] = checked_at
         save_state(path, state)
     report["ledger"] = {"apply": bool(args.apply), "state_file": str(path), "actions": actions, "tracked": sorted(tracked)}
+    if skipped_on_budget:
+        # Some rows never got their brain/kanban calls this pass. Still a
+        # VALID report - never zero bytes - but the caller must know coverage
+        # is partial rather than reading a short actions list as "nothing to do".
+        report["ledger"]["budget_exceeded"] = True
+        report["ledger"]["budget_skipped_slugs"] = skipped_on_budget
     report["heartbeat_fields"] = heartbeat_fields(report)
     return report
 
@@ -1014,8 +1043,14 @@ def reap_plan(args: argparse.Namespace) -> dict[str, Any]:
     """
     report = scan(args)
     plan = []
+    budget_sec = getattr(args, "budget_sec", 0) or 0
+    deadline = time.monotonic() + budget_sec if budget_sec > 0 else None
+    skipped_on_budget: list[str] = []
     for pr in report["prs"]:
         if pr["age_min"] is None or pr["age_min"] <= args.reap_age_min:
+            continue
+        if deadline is not None and time.monotonic() >= deadline:
+            skipped_on_budget.append(f"{pr['repo']}#{pr['number']}")
             continue
         name = pr["repo"].rsplit("/", 1)[-1]
         proc = run([guard_bin(), "--venue", "forgejo", "--repo", name, "--pr", str(pr["number"]), "--json"], timeout=120)
@@ -1060,6 +1095,9 @@ def reap_plan(args: argparse.Namespace) -> dict[str, Any]:
         )
     report["reap_plan"] = plan
     report["plan_valid"] = not bool(report["unreadable"])
+    if skipped_on_budget:
+        report["budget_exceeded"] = True
+        report["budget_skipped_prs"] = skipped_on_budget
     return report
 
 
@@ -1264,6 +1302,23 @@ def main() -> int:
         sp.add_argument("--root-causes-file", default=os.environ.get("LAST_STACK_PIPELINE_ROOT_CAUSES", str(DEFAULT_ROOT_CAUSES_FILE)),
                         help="TSV: repo, required context, root-cause papercut slug")
         sp.add_argument("--json", action="store_true", dest="json_out")
+        if name in ("reap-plan", "sync"):
+            # Both loop once per stuck PR / tracked row making 2-4 SEQUENTIAL
+            # subprocess calls (brain, kanban, forge-api), each individually
+            # bounded but not the loop as a whole. A busy brain (calls taking
+            # close to their own 60s timeout) can push total wall-clock past
+            # whatever external timeout the caller enforces, and this script
+            # only prints once, at the very end - so the whole process is
+            # silently killed with zero bytes on stdout AND stderr
+            # (papercut-pr-reaper-forge-ledger-empty, 4x on 2026-09-23/26).
+            # A budget bounds the loop from the INSIDE so a partial, valid
+            # report is always ready well before that external kill can land.
+            sp.add_argument(
+                "--budget-sec", type=int,
+                default=int(os.environ.get("LAST_STACK_FORGE_LEDGER_BUDGET_SEC", "90")),
+                help="stop making further per-row brain/kanban calls after this many seconds "
+                     "and emit a partial report with budget_exceeded=true instead of nothing (0 = unbounded)",
+            )
         if name == "reap-plan":
             sp.add_argument("--reap-age-min", type=int, default=60, help="only PRs open longer than this (the one-hour SLA)")
             sp.add_argument("--kanban-bin", default=os.environ.get("KANBAN_BIN", "kanban"),
@@ -1294,7 +1349,21 @@ def main() -> int:
     mg.add_argument("--style", default="merge", choices=["merge", "rebase", "rebase-merge", "squash"])
     mg.add_argument("--json", action="store_true", dest="json_out")
     args = parser.parse_args()
-    report = {"scan": scan, "sync": sync, "reap-plan": reap_plan, "merge-green": merge_green}[args.cmd](args)
+    try:
+        report = {"scan": scan, "sync": sync, "reap-plan": reap_plan, "merge-green": merge_green}[args.cmd](args)
+    except Exception as exc:  # noqa: BLE001 - any escape must still be parseable JSON, never a bare traceback
+        # A caller passing --json expects a JSON document even when this
+        # process hits a bug it did not anticipate; a raw traceback on stderr
+        # left every --json caller with an unparseable stream and, when the
+        # exception raced an external kill, sometimes zero bytes on both
+        # streams (papercut-pr-reaper-forge-ledger-empty).
+        err = {"error": str(exc), "error_type": type(exc).__name__, "cmd": args.cmd,
+               "traceback": traceback.format_exc()[-2000:]}
+        if args.json_out:
+            print(json.dumps(err, indent=2, sort_keys=True))
+        else:
+            print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
     if args.json_out:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
