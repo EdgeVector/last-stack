@@ -2,14 +2,15 @@
 # deploy-main graph steps: STAGE → DEPLOY (checked effect) → VERIFY.
 #
 # Input (LOOM_INPUT JSON): repo, oid, source_url, deploy_script, context,
-# state_root, optional verify_command and env. Every path is derived from
+# state_root, optional verify_command, env, and secret_env. Every path is derived from
 # state_root/<repo>/<oid>, so two repos or two OIDs never share a directory,
 # and a resumed execution finds what the first attempt left.
 #
 # The deploy script is the repo's own (.lastgit/deploy-prod.sh or
 # deploy-pipeline.sh), run from the staged checkout with the same variables
 # the old launchd watcher gave it (LASTGIT_CI_OID / _CONTEXT / _REPO). This
-# runner adds nothing to what gets deployed; it adds durability around it.
+# runner adds nothing to what gets deployed; it adds durability around it. Secret
+# locators are resolved by last-stack-secret-env-run at the child boundary.
 set -euo pipefail
 step="${1:?step}"
 exec python3 - "$step" <<'PY'
@@ -33,6 +34,7 @@ context = str(ctx.get("context") or "deploy-prod")
 verify_command = str(ctx.get("verify_command") or "")
 state_root = Path(str(ctx.get("state_root") or ""))
 extra_env = ctx.get("env") if isinstance(ctx.get("env"), dict) else {}
+secret_env = ctx.get("secret_env") if isinstance(ctx.get("secret_env"), dict) else {}
 for name, value in (("repo", repo), ("oid", oid), ("source_url", source_url),
                     ("deploy_script", deploy_script), ("state_root", str(state_root))):
     if not value:
@@ -69,6 +71,35 @@ def git_env():
         env["GIT_CONFIG_KEY_0"] = "http.http://localhost:3300/.extraHeader"
         env["GIT_CONFIG_VALUE_0"] = f"Authorization: token {token}"
     return env
+
+
+def deploy_command():
+    """Build the deploy command without placing any resolved secret in argv."""
+    command = ["bash", deploy_script]
+    if not secret_env:
+        return command
+
+    runner = os.environ.get("LAST_STACK_SECRET_ENV_RUN", "")
+    if not runner:
+        root = Path(os.environ.get("LAST_STACK_ROOT", str(Path.home() / ".last-stack")))
+        candidate = root / "bin" / "last-stack-secret-env-run"
+        runner = str(candidate) if candidate.is_file() else shutil.which("last-stack-secret-env-run") or ""
+    if not runner:
+        print("deploy-main: last-stack-secret-env-run is unavailable", file=sys.stderr)
+        raise SystemExit(127)
+
+    # Nest the resolver wrappers. Each wrapper resolves one locator and then
+    # execs the next wrapper, so every raw value stays in process memory and
+    # reaches only the final deploy child.
+    for name, ref in reversed(list(secret_env.items())):
+        if not isinstance(name, str) or not name or not name.replace("_", "a").isalnum() or name[0].isdigit():
+            print("deploy-main: secret_env name must be a shell variable", file=sys.stderr)
+            raise SystemExit(2)
+        if not isinstance(ref, str) or not ref.startswith("lastsecrets://") or ref == "lastsecrets://":
+            print("deploy-main: secret_env value must be a lastsecrets:// locator", file=sys.stderr)
+            raise SystemExit(2)
+        command = [runner, "--env", name, "--ref", ref, "--", *command]
+    return command
 
 
 if step == "STAGE":
@@ -126,7 +157,7 @@ elif step == "DEPLOY":
     with log.open("a", encoding="utf-8") as fh:
         fh.write(f"== deploy-main DEPLOY repo={repo} oid={oid} script={deploy_script} at {started}\n")
         fh.flush()
-        proc = subprocess.run(["bash", deploy_script], cwd=str(stage), env=env, stdout=fh, stderr=subprocess.STDOUT, check=False)
+        proc = subprocess.run(deploy_command(), cwd=str(stage), env=env, stdout=fh, stderr=subprocess.STDOUT, check=False)
     finished = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     receipt.write_text(json.dumps({
         "repo": repo, "oid": oid, "context": context, "deploy_script": deploy_script,

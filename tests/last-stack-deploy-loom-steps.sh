@@ -18,6 +18,8 @@ mkdir -p "$tmp/src/.lastgit"
 cat >"$tmp/src/.lastgit/deploy-prod.sh" <<'SH'
 #!/usr/bin/env bash
 echo "deploy oid=$LASTGIT_CI_OID context=$LASTGIT_CI_CONTEXT repo=$LASTGIT_CI_REPO extra=${EXTRA_VAR:-none} pwd=$PWD"
+[ "${OBS_SENTRY_DSN:-}" = "fixture-sentry-dsn-not-real" ] || exit 8
+[ "${OBS_SENTRY_DSN:-}" != "lastsecrets://obs-sentry-dsn-exemem-backend" ] || exit 9
 [ "${DEPLOY_FAIL:-0}" = 1 ] && { echo "boom" >&2; exit 7; }
 exit 0
 SH
@@ -26,10 +28,24 @@ oid="$(git -C "$tmp/src" rev-parse HEAD)"
 git clone -q --bare "$tmp/src" "$tmp/repo.git"
 state="$tmp/state"
 
+mkdir -p "$tmp/bin"
+cat >"$tmp/bin/lastsecrets" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "${1:-}" = get ] && [ "${2:-}" = obs-sentry-dsn-exemem-backend ] || exit 1
+printf '%s\n' fixture-sentry-dsn-not-real
+SH
+chmod +x "$tmp/bin/lastsecrets"
+
+# Resolve the runner from this checkout, not the CI host's install state:
+# the DEPLOY step's own lookup falls back to $LAST_STACK_ROOT/bin or $PATH,
+# neither of which a CI runner is guaranteed to have populated.
+secret_env_run="$ROOT/bin/last-stack-secret-env-run"
+
 input() {
   jq -cn --arg repo demo --arg oid "$oid" --arg src "$tmp/repo.git" --arg script "${1:-.lastgit/deploy-prod.sh}" \
     --arg state "$state" --arg verify "${2:-}" \
-    '{repo:$repo, oid:$oid, source_url:$src, deploy_script:$script, context:"deploy-prod", state_root:$state, verify_command:$verify, env:{EXTRA_VAR:"from-config"}}'
+    '{repo:$repo, oid:$oid, source_url:$src, deploy_script:$script, context:"deploy-prod", state_root:$state, verify_command:$verify, env:{EXTRA_VAR:"from-config"}, secret_env:{OBS_SENTRY_DSN:"lastsecrets://obs-sentry-dsn-exemem-backend"}}'
 }
 
 # STAGE
@@ -43,17 +59,20 @@ if LOOM_INPUT="$(input .lastgit/missing.sh)" "$STEP" STAGE >/dev/null 2>&1; then
 if LOOM_INPUT="$(input)" "$STEP" CHECK; then fail "CHECK passed before any deploy"; fi
 
 # DEPLOY
-out="$(LOOM_INPUT="$(input)" "$STEP" DEPLOY)" || fail "DEPLOY failed: $out"
+out="$(PATH="$tmp/bin:$PATH" LAST_STACK_SECRET_ENV_RUN="$secret_env_run" LOOM_INPUT="$(input)" "$STEP" DEPLOY)" || fail "DEPLOY failed: $out"
 grep -q '^LOOM_EFFECT_INTENT:{"kind":"deploy","target":"demo"}' <<<"$out" || fail "no effect intent: $out"
 grep -q '"deployed":true' <<<"$out" || fail "DEPLOY patch: $out"
 receipt="$state/demo/$oid/deploy-receipt.json"
 [ "$(jq -r .rc "$receipt")" = 0 ] || fail "receipt rc"
 grep -q "deploy oid=$oid context=deploy-prod repo=demo extra=from-config pwd=.*/state/demo/$oid/src" "$state/demo/$oid/deploy.log" \
   || fail "deploy script env/cwd: $(cat "$state/demo/$oid/deploy.log")"
+if grep -Fq 'lastsecrets://obs-sentry-dsn-exemem-backend' "$state/demo/$oid/deploy.log"; then
+  fail "the secret locator leaked into the deploy log"
+fi
 
 # CHECK after deploy → 0; second DEPLOY reuses the receipt (no second run)
 LOOM_INPUT="$(input)" "$STEP" CHECK || fail "CHECK failed after a landed deploy"
-out="$(LOOM_INPUT="$(input)" "$STEP" DEPLOY)" || fail "second DEPLOY failed"
+out="$(PATH="$tmp/bin:$PATH" LAST_STACK_SECRET_ENV_RUN="$secret_env_run" LOOM_INPUT="$(input)" "$STEP" DEPLOY)" || fail "second DEPLOY failed"
 grep -q '"deploy_reused":true' <<<"$out" || fail "second DEPLOY did not reuse: $out"
 [ "$(grep -c '^== deploy-main DEPLOY' "$state/demo/$oid/deploy.log")" = 1 ] || fail "deploy ran twice"
 
@@ -70,7 +89,7 @@ grep -q "did not pass before the deadline" "$tmp/v.err" || fail "VERIFY deadline
 # A failing deploy: non-zero, receipt rc=7, log tail on stderr, CHECK stays 1.
 rm -rf "$state"
 LOOM_INPUT="$(input)" "$STEP" STAGE >/dev/null
-if DEPLOY_FAIL=1 LOOM_INPUT="$(input)" "$STEP" DEPLOY >/dev/null 2>"$tmp/d.err"; then fail "DEPLOY passed a failing script"; fi
+if DEPLOY_FAIL=1 PATH="$tmp/bin:$PATH" LAST_STACK_SECRET_ENV_RUN="$secret_env_run" LOOM_INPUT="$(input)" "$STEP" DEPLOY >/dev/null 2>"$tmp/d.err"; then fail "DEPLOY passed a failing script"; fi
 grep -q "exited 7" "$tmp/d.err" && grep -q "boom" "$tmp/d.err" || fail "DEPLOY failure detail: $(cat "$tmp/d.err")"
 [ "$(jq -r .rc "$state/demo/$oid/deploy-receipt.json")" = 7 ] || fail "failed receipt rc"
 if LOOM_INPUT="$(input)" "$STEP" CHECK; then fail "CHECK passed after a failed deploy"; fi

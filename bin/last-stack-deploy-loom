@@ -60,11 +60,12 @@ deploy_script="$(printf '%s' "$entry" | jq -r '.deploy_script // ".lastgit/deplo
 context="$(printf '%s' "$entry" | jq -r '.context // "deploy-prod"')"
 verify_command="$(printf '%s' "$entry" | jq -r '.verify_command // ""')"
 env_json="$(printf '%s' "$entry" | jq -c '(.env // {}) | with_entries(.value |= gsub("\\$HOME"; env.HOME))')"
+secret_env_json="$(printf '%s' "$entry" | jq -c '.secret_env // {}')"
 key="deploy-$REPO-$OID"
 input="$(jq -cn --arg repo "$REPO" --arg oid "$OID" --arg source_url "$source_url" \
   --arg deploy_script "$deploy_script" --arg context "$context" --arg verify_command "$verify_command" \
-  --arg state_root "$state_root" --argjson env "$env_json" \
-  '{repo:$repo, oid:$oid, source_url:$source_url, deploy_script:$deploy_script, context:$context, verify_command:$verify_command, state_root:$state_root, env:$env}')"
+  --arg state_root "$state_root" --argjson env "$env_json" --argjson secret_env "$secret_env_json" \
+  '{repo:$repo, oid:$oid, source_url:$source_url, deploy_script:$deploy_script, context:$context, verify_command:$verify_command, state_root:$state_root, env:$env, secret_env:$secret_env}')"
 
 emit() {
   local outcome="$1" status="$2" state="$3" execution="$4"
