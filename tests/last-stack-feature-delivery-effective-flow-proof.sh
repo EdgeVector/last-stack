@@ -149,6 +149,8 @@ PY
 
 "$BIN" --live --fixture "$TMP/pass.json" --report "$TMP/pass.md" >/dev/null
 [ "$(head -n 1 "$TMP/pass.md")" = PASS ] || fail "a complete fixture must write PASS"
+grep -q 'warm_limit_bytes.*4294967296' "$TMP/pass.md" \
+  || fail "a passing soak must report the 4 GiB warm-cache limit"
 for commit in \
   ec51f37a1502fd8cf0ad21e10b293ffca0ae9a7d \
   b3868f5c0bdb7a14d41a391432ac51fbc3a75528 \
@@ -165,6 +167,56 @@ grep -q 'installed `' "$TMP/pass.md" || fail "report omits installed heads"
 grep -q 'start `' "$TMP/pass.md" || fail "report omits probe start times"
 grep -q 'finish `' "$TMP/pass.md" || fail "report omits probe finish times"
 grep -q 'verdict `PASS`' "$TMP/pass.md" || fail "report omits probe verdicts"
+
+python3 - "$TMP/pass.json" "$TMP/boundary.json" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1]))
+limit = 4294967296
+for sample in data["lastdb"]["samples"]:
+    sample["warm_resident_bytes"] = limit
+    sample["warm_budget_bytes"] = limit
+json.dump(data, open(sys.argv[2], "w"))
+PY
+
+"$BIN" --live --fixture "$TMP/boundary.json" --report "$TMP/boundary.md" >/dev/null
+[ "$(head -n 1 "$TMP/boundary.md")" = PASS ] \
+  || fail "the exact 4 GiB boundary must remain valid"
+
+python3 - "$TMP/pass.json" "$TMP/over-budget.json" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1]))
+data["lastdb"]["samples"][0]["warm_budget_bytes"] = 4294967297
+json.dump(data, open(sys.argv[2], "w"))
+PY
+
+if "$BIN" --live --fixture "$TMP/over-budget.json" --report "$TMP/over-budget.md" >/dev/null 2>&1; then
+  fail "a warm-cache budget above 4 GiB must fail"
+fi
+[ "$(head -n 1 "$TMP/over-budget.md")" = FAIL ] \
+  || fail "an over-budget soak must write FAIL"
+grep -q 'hard limit 4294967296' "$TMP/over-budget.md" \
+  || fail "an over-budget soak must name the 4 GiB hard limit"
+
+python3 - "$TMP/pass.json" "$TMP/over-resident.json" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1]))
+data["lastdb"]["samples"][0]["warm_resident_bytes"] = 4294967297
+json.dump(data, open(sys.argv[2], "w"))
+PY
+
+if "$BIN" --live --fixture "$TMP/over-resident.json" --report "$TMP/over-resident.md" >/dev/null 2>&1; then
+  fail "a warm-cache sample above 4 GiB must fail"
+fi
+[ "$(head -n 1 "$TMP/over-resident.md")" = FAIL ] \
+  || fail "an over-resident soak must write FAIL"
+grep -q 'hard limit 4294967296' "$TMP/over-resident.md" \
+  || fail "an over-resident soak must name the 4 GiB hard limit"
 
 python3 - "$TMP/pass.json" "$TMP/short.json" <<'PY'
 import json
