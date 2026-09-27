@@ -516,6 +516,7 @@
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
       "install_root": "$HOME/.host-track/apps/fkanban",
+      "registry_follow": false,
       "links": [
         {
           "source": "dist/kanban",
@@ -527,7 +528,7 @@
           "target": "$HOME/.local/bin/fkanban"
         }
       ],
-      "notes": "Gate of record is Forgejo since 2026-09-05 (brain decision-2026-09-05-factory-repos-venue-back-to-forgejo); lastdb:///fkanban is disabled. The Forge CI publish job on every push to main builds the artifact, publishes it into artifact_root and promotes stable with `lastgit artifact promote --gate forgejo` (EdgeVector/lastgit#591). track_gate_main is false on purpose: the node's ref for this repo no longer moves, and promote-to-main from a frozen LastGit tip would roll the channel back. host-track follows the stable channel head. One registration for the fkanban artifact bundle. Public CLI is kanban only. retired_links drops the leftover fkanban PATH symlink on refresh when it still points at this install_root. The LastGit slug and install_root stay fkanban. track_gate_main follows fkanban green+published main.",
+      "notes": "Gate of record is Forgejo since 2026-09-05 (brain decision-2026-09-05-factory-repos-venue-back-to-forgejo); lastdb:///fkanban is disabled. The Forge CI publish job on every push to main builds the artifact, publishes it into artifact_root and promotes stable with `lastgit artifact promote --gate forgejo` (EdgeVector/lastgit#591). track_gate_main is false on purpose: the node's ref for this repo no longer moves, and promote-to-main from a frozen LastGit tip would roll the channel back. host-track follows the stable channel head. One registration for the fkanban artifact bundle. Public CLI is kanban only. retired_links drops the leftover fkanban PATH symlink on refresh when it still points at this install_root. The LastGit slug and install_root stay fkanban. track_gate_main follows fkanban green+published main. registry_follow=false because fkanban has never published to the LastDB app registry's `next` channel (papercut-host-track-refresh-stale-stable-channel-fkanban-20260927): registry-pin resolution silently held the stamp current instead of comparing the real stable-channel head.",
       "track_gate_main": false,
       "safe_upgrade": {
         "soak_hours": 1,

@@ -212,4 +212,16 @@ HOST_TRACK_REGISTRY="$thin_waived" "$ROOT/bin/host-track" validate-registry --js
 printf '%s\n' "$default_report" | jq -e '.missing_soak == 0 and .thin_probes == 0' >/dev/null \
   || fail "default registry should have no missing_soak/thin_probes: $default_report"
 
+# kanban's artifact app (fkanban) has never published to the LastDB app
+# registry's `next` channel (only `stable` — Forgejo-gated builds go there
+# directly). Without registry_follow=false the app silently inherits
+# defaults.registry_channel="next", the registry index fetch for it never
+# resolves a row, and the pin logic's own "no proved row -> hold current"
+# rule (by design for apps that DO follow the registry) makes `refresh`
+# report "already current" forever, even against a newer published stable
+# build. papercut-host-track-refresh-stale-stable-channel-fkanban-20260927.
+jq -e 'any(.apps[]; .app == "kanban" and .registry_follow == false)' \
+  "$ROOT/config/host-track/apps.json" >/dev/null \
+  || fail "kanban must opt out of registry-pin (registry_follow: false) — it only ever publishes to the stable artifact channel, not the app registry's next channel"
+
 printf 'ok: host-track registry compliance\n'
