@@ -36,6 +36,10 @@ derive() { printf '%s\n' "$1" | "$bin" --repo EdgeVector/demo; }
 [ "$(derive 'Edit `bin/host-track:120`.')" = "bin/host-track" ] || fail "exact path"
 # A tracked directory named with a slash reserves that directory.
 [ "$(derive 'Touch lib/deploy/ only.')" = "lib/deploy/**" ] || fail "directory"
+# The shared tracked-path lookup supplies concrete candidates for a broad
+# surface refusal.
+[ "$(printf '\n' | "$bin" --repo EdgeVector/demo --suggest lib/deploy)" = "lib/deploy/step.sh" ] \
+  || fail "surface suggestions"
 # A file name with an extension resolves to its one tracked path.
 [ "$(derive 'recovery.sh misreads GNU stat')" = "skills/a/scripts/recovery.sh" ] || fail "basename"
 # A hyphenated command family resolves to its small file set.
@@ -90,6 +94,28 @@ grep -q 'derived surfaces' "$tmp/filer.err" || fail "filer must say it derived s
 : >"$FAKE_ADD_LOG"
 file_card explicit --surfaces src/x.ts || fail "filer explicit run"
 grep -q -- '--surfaces src/x.ts' "$FAKE_ADD_LOG" || fail "explicit surfaces win"
+: >"$FAKE_ADD_LOG"
+set +e
+bare_out="$(printf '%s' "$body" | "$filer" bare-dir --board-cli "$tmp/bin/kanban" --title t \
+  --repo EdgeVector/demo --north-star ns-a --milestone ms --skip-decision-check \
+  --admission-fixture "$tmp/admission" --surfaces lib/deploy 2>&1)"
+bare_rc=$?
+set -e
+[ "$bare_rc" -eq 2 ] || fail "bare directory surface should fail: $bare_out"
+printf '%s\n' "$bare_out" | grep -q "surface 'lib/deploy'" \
+  || fail "bare directory refusal must name token: $bare_out"
+printf '%s\n' "$bare_out" | grep -q 'lib/deploy/step.sh' \
+  || fail "bare directory refusal must suggest tracked files: $bare_out"
+[ ! -s "$FAKE_ADD_LOG" ] || fail "bare directory refusal wrote add: $(cat "$FAKE_ADD_LOG")"
+: >"$FAKE_ADD_LOG"
+file_card broad-ok --surfaces lib/deploy --allow-broad-surface \
+  || fail "allow-broad-surface should file"
+grep -q -- '--surfaces lib/deploy' "$FAKE_ADD_LOG" \
+  || fail "allow-broad-surface must preserve token"
+: >"$FAKE_ADD_LOG"
+file_card glob --surfaces 'lib/deploy/**' || fail "glob surface should file"
+grep -q -- '--surfaces lib/deploy/\*\*' "$FAKE_ADD_LOG" \
+  || fail "glob surface must remain unchanged"
 : >"$FAKE_ADD_LOG"
 file_card optout --no-derive-surfaces || fail "filer opt-out run"
 grep -q -- '--surfaces' "$FAKE_ADD_LOG" && fail "opt-out must not pass surfaces"
