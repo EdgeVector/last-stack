@@ -52,4 +52,5 @@ exit 0
 - Do **not** set `default_enabled=true` or announce publicly from this routine.
 - Do **not** clear Tom's local `features.toml` dogfood enables.
 - Incomplete North Star ⇒ feature stays blacklisted from GA/public (script enforces).
-- Design: brain `design-product-feature-gates`, SOP `sop-product-feature-gates`.
+- Design: brain `design-product-feature-gates`. Keep the feature gate rules in
+  the design and the catalog before admission.

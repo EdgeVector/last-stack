@@ -259,8 +259,8 @@ error. That failure is not a pipeline block and not a papercut.
 - Do not file or append `papercut-pipeline-stuck-merges-<repo>` rows for
   Forgejo PRs. `last-stack-pipeline-stuck-papercut-file` is the LastGit-only
   filer; it names "LastGit CRs" in its title and must not carry Forgejo data.
-- Only when `LAST_STACK_LASTGIT_NATIVE_REPOS` names a repo: read
-  `sop-lastgit-native-forge-workflow`, use the primary socket
+- Only when `LAST_STACK_LASTGIT_NATIVE_REPOS` names a repo: use the native
+  LastGit review contract and the primary socket
   (`LASTGIT_SOCKET="${LASTGIT_PRIMARY_SOCKET:-$HOME/.lastdb/data/folddb.sock}"`),
   check CI coverage with `last-stack-lastgit-ci-coverage --repo <slug> --json`
   (the supervisor is `lastgit forge run --all --context ci-required`), heal a
@@ -451,9 +451,8 @@ mutation. The list can be stale: a PR that the point read shows closed, or a
        --repo <owner/repo> --pr <n> --checkout <worktree>
    ```
    Supersede pushes the same commits to a fresh branch, opens a new PR, closes
-   the dead one, and arms auto-merge on the fresh PR. Source papercut:
-   `papercut-forge-recreated-branch-stops-triggering-ci` /
-   card `papercut-forge-recreated-branch-ci-trigger-dead`.
+   the dead one, and arms auto-merge on the fresh PR. A recreated branch must
+   get a fresh CI trigger before the new PR can merge.
 6. **Human-gated prod cutover** (title/body say so) → leave + papercut only.
 
 Never use `gh` for forge-hot source-of-truth PRs. Never push the read-only

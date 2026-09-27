@@ -133,7 +133,7 @@ Card slugs don't always string-match the worktree dir/branch name — cross-chec
 on branch `app-iso/dev-deploy-code-signature`). `~/.cline/worktrees/` is now empty/legacy.
 
 ### 2. Git hygiene (safe, always do)
-**Shared-checkout mirror contract** (brain: `sop-shared-checkout-mirror-contract`):
+**Shared-checkout mirror contract:**
 the ambient checkout in `~/code/edgevector/<repo>` is nobody's working copy. It
 stays on `main`, tracks the repo's **venue** remote (`.last-stack/pr-venue` →
 lastgit/forgejo/github — NOT blindly `origin`), and is never edited in place;

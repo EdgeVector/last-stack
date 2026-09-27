@@ -119,8 +119,8 @@ shell-visible CLI and daemon binary agree. The helper never restarts/kills
 - Write a settled call as its own `type: decision` record (`brain put` with
   `type: decision` and real `program` / `gate_slug` / `decided_by` /
   `decided_on` columns). Do NOT append to the archived `decisions-log`
-  monolith. That path retired 2026-07-06
-  (`decision-2026-07-06-decisions-log-migrated-to-decision-type`).
+  monolith. That path retired on 2026-07-06. Write each settled call as its
+  own typed decision record.
 
 ### ALWAYS file papercuts — the default is FILE, not judge
 
@@ -283,5 +283,6 @@ Or read `status.request_ops` on `GET /api/status` over the socket. Rankings:
 `top_by_total_ms` (who eats wall time), `top_by_count` (chatty callers),
 `top_by_duration` (slowest singles in the ring). Clients self-identify with
 header `X-LastDB-Client: <name>` (`brain`, `kanban`, `lastgit`, …) — not a
-security boundary; missing → `unknown`. Full playbook:
-`brain get sop-lastdb-request-ops-telemetry --type sop`.
+security boundary; missing → `unknown`. Full playbook: inspect `lastdb status`,
+`lastdb ops`, and `lastdb ops --by-app` before you call the node wedged or
+restart it.

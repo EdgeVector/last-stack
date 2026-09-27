@@ -33,8 +33,7 @@ Tom's primary brain is `~/.lastdb` (~multi-GB). Past upgrades have bricked real
 data. **Standing rule (Tom, 2026-07-14):** every version change uses this skill so
 Tom does **not** experience primary-brain downtime as the first feedback that a
 release is broken — fail on the ephemeral copy; keep live on last known-good until
-GREEN. Brain: `preference-lastdb-upgrade-ephemeral-probe-first`,
-`sop-lastdb-safe-upgrade`.
+GREEN. The candidate must pass on an ephemeral copy before the primary changes.
 
 This skill and its Loom `lastdb-safe-upgrade` graph are the **only** allowed
 path for a live binary change on this machine. The shell driver remains the
@@ -162,10 +161,8 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
    (`LASTDB_PROBE_LAT_CORR_SKIP=1`) requires Tom's explicit clearance. Live
    post-check re-times **hot point-read and `kanban list` scan** vs the
    candidate's own hot probe numbers (`LASTDB_LIVE_LAT_ENFORCE=1` makes
-   either RED). Brain:
-   `papercut-safe-upgrade-latency-bar-blind-to-correlated-regression`,
-   `papercut-safe-upgrade-point-read-bar-cold-first-boot-vs-subfloor-baseline`,
-   `lastdb-canary-cutover-rolled-the-primary-back-four-days-20260805`.
+   either RED). The bar also checks correlated hot-operation regressions and
+   avoids a cold sub-floor baseline as a raw ratio denominator.
 8. **Candidate-class bar (no debug / dirty / oversized):** before backup or
    probe, refuse candidates that look like a Cargo **debug** build
    (`…/target/debug/…`), a **-dirty** version stamp (uncommitted tree at
@@ -212,9 +209,8 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
     HTTP 400 is still RED before any live change. After the cutover it
     re-reads each nonce on the new daemon. A sentinel that reads back with the PREVIOUS
     run's nonce is **RED**: the old daemon acknowledged a write the new daemon
-    does not have — the exact loss shape of
-    `papercut-lastdb-acked-write-lost-loom-terminal-status-regressed`
-    (2026-08-18: two read-back-confirmed loom terminal-status writes vanished
+    does not have. On 2026-08-18, two read-back-confirmed loom terminal-status
+    writes vanished
     across a restart whose shutdown "did not complete its clean drain").
     Before the first daemon stop, the driver also writes
     `restart-intent.json` with the prior session PID and `cause: upgrade`.
@@ -280,8 +276,7 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
     rejects a legacy receipt, a stale time, a future time, another candidate,
     a production URL, or an overlapping home. Skip
     (`LASTDB_PROBE_DEV_STAMP_SKIP=1`) needs Tom's clearance. Brain:
-    `preference-lastdb-upgrade-ephemeral-probe-first`,
-    `sop-lastdb-safe-upgrade`.
+    `preference-lastdb-upgrade-ephemeral-probe-first`.
 
     On RED, the helper writes an owner-only evidence bundle under
     `~/.local/state/last-stack/lastdb-safe-upgrade/dev-photograph-failures/`.
@@ -304,8 +299,7 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
     right after a successful `bootout` can fail with
     `Bootstrap failed: 5: Input/output error`. Treating that as terminal left
     the primary UNLOADED three times; the third, unattended, ran 4h34m and
-    took brain, board, Situations, LastGit CI and every routine down with it
-    (`papercut-lastdb-safe-upgrade-bootout-bootstrap-left-primary-unloaded`).
+    took brain, board, Situations, LastGit CI and every routine down with it.
     So the driver retries `bootstrap` with backoff — `2 5 15 30 30 30`
     seconds, override with `LASTDB_LAUNCHD_BOOTSTRAP_RETRY_DELAYS`.
 
@@ -345,16 +339,15 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
     its whole budget on a dead file (2026-08-26: bootstrap EIO, leftover sock
     from hours earlier, `VERDICT: RED`). The driver unlinks that leftover
     **only when no process holds it**, then waits until a listener pid **and**
-    `/health` are ok. Helper: `scripts/live-socket-health.sh`. Brain:
-    `papercut-lastdb-safe-upgrade-stale-socket-health-after-bootout`.
+    `/health` are ok. Helper: `scripts/live-socket-health.sh`. A socket inode
+    without a listener is not proof of service health.
 17. **A nohup start is not GREEN.** After bootout, if `launchctl print` cannot
     find the primary job, the driver retries `bootstrap` so KeepAlive owns
-    lastdbd (unattended bootstrap of an unloaded primary is allowed:
-    `decision-2026-08-23-unattended-lastdbd-bootstrap-self-heal`). A leftover
+    lastdbd. An unattended bootstrap of an unloaded primary is allowed when
+    `launchctl print` verifies the job. A leftover
     listener plus `nohup lastdbd --data-dir ~/.lastdb` may restore `/health`,
     but `VERDICT: GREEN` is refused until print succeeds and the live pid is
-    that job. `LIVE_CONFIG_DRIFT` still names missing plist env keys. Brain:
-    `papercut-lastdb-safe-upgrade-fallback-start-leaves-launchd-unloaded`.
+    that job. `LIVE_CONFIG_DRIFT` still names missing plist env keys.
 
 ## Do this, in order
 
@@ -539,7 +532,8 @@ kanban list
 > renames; only this hand-run rollback used the in-place form, which is exactly
 > backwards from where you want the sharp edge.
 >
-> Papercut: `papercut-lastdb-safe-upgrade-rollback-cp-a-trips-codesigning`.
+> The rollback must copy to a new inode. In-place replacement can preserve a
+> cached code signature and make launchd kill every exec.
 
 **Data (only if home corrupted and the run is RED):**
 
@@ -615,5 +609,3 @@ multi-second→60s until bak rollback (candidate-class bar + live scan post-chec
 2026-08-05 canary `0.23.3-canary.20260801` passed per-op 3× while slower on
 every axis (1.6–2.4×) — a 4-day git rollback promoted as a semver "upgrade";
 correlated latency term + canary ancestry/soak-write gates close the hole.
-Brain: `lastdb-canary-cutover-rolled-the-primary-back-four-days-20260805`,
-`papercut-safe-upgrade-latency-bar-blind-to-correlated-regression`.

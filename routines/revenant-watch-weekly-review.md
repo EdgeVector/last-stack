@@ -33,7 +33,6 @@ Standing contract:
 
 ```bash
 brain get sop-routine-shared-contract --type sop
-brain get sop-revenant-watch --type sop
 brain get north-star-revenant-watch --type project
 ```
 
@@ -94,7 +93,6 @@ last-stack install / git main when available. Do not restart `lastdbd`.
 brain get revenant-watch-ledger --type reference
 # targeted gets only — do NOT use brain list as a census
 brain get miner-profile-revenant-watch --type reference
-brain get sop-revenant-watch --type sop
 ```
 
 For each recent ledger block / known `revenant-*` slug from the ledger:
@@ -148,8 +146,8 @@ Allowed autonomous improvements (small, reversible):
 1. Clarify `skills/session-miner` `revenant-watch` profile text (examples,
    skip rules) via last-stack worktree + CR if product edit needed.
 2. Fix registry/prompt path / group / cadence so daily + weekly fire.
-3. Append better topic examples to `sop-revenant-watch` /
-   `miner-profile-revenant-watch` via `brain append` (search-first; no shrink).
+3. Append better topic examples to `miner-profile-revenant-watch` via
+   `brain append` (search-first; no shrink).
 4. Dedupe or `Status: FIXED` / `AGED_OUT` on junk `revenant-*` records via
    `brain append` (do not delete history).
 
@@ -229,7 +227,7 @@ revenant-watch-weekly-review <ISO-UTC> noop reason=<…>
 
 ## Related
 
-- Daily miner: `last-stack-revenant-watch` / [[sop-revenant-watch]]
+- Daily miner: `last-stack-revenant-watch` and its profile
 - NS: [[north-star-revenant-watch]]
 - Classifier: `bin/last-stack-revenant-classify`
 - Proof: `harness/north-star/revenant-watch/run.sh`

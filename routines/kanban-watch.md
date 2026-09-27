@@ -154,8 +154,8 @@ and exit. A handoff with a live card is an `ok` routine result, not `error`.
   and never act on a read-only GitHub mirror of a forge-hosted repo.
 - **LastGit-native repos:** before PR/CR lookup or advance, resolve the concrete
   checkout and run `"$last_stack/bin/last-stack-pr-venue" --json <owner/repo>
-  "$target_repo"`. If `.venue == "lastgit"`, read
-  `brain get sop-lastgit-native-forge-workflow`, treat `lastgit://<slug>/cr/<id>`
+  "$target_repo"`. If `.venue == "lastgit"`, use the native LastGit review
+  contract and treat `lastgit://<slug>/cr/<id>`
   card lines as review artifacts, and use `lastgit cr view/list`, `lastgit ci
   status`, and `lastgit cr complete --once` instead of Forgejo/GitHub commands.
   LastGit routing is opt-in only; all other repos keep their existing route.

@@ -10,8 +10,7 @@
 - **Never print a raw environment.** `env`, `printenv`, `export -p` and
   `env | grep -E 'CARGO|RUST|FOLD'` write every exported credential into the
   run log and the chat transcript. That is how a raw OpenRouter key reached
-  both on 2026-08-18 (brain
-  `papercut-routine-shell-exports-raw-openrouter-secret`). Use
+  both on 2026-08-18. Use
   `bin/last-stack-env-dump` instead — same output, secret-shaped names masked —
   or pipe any diagnostic through `bin/last-stack-mask-secrets`. To hand a
   credential to one child process, resolve it at exec time with

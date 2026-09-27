@@ -197,7 +197,8 @@ continue — do not fail the whole run.
    It is venue-aware, salvage-first, skips repos with fresh edits, and never
    resets or pushes. Surface every `FLAG` line in your report verbatim —
    `ahead`/`diverged` flags need an interactive audit, not an unattended fix.
-   Contract: brain `sop-shared-checkout-mirror-contract`.
+   Contract: keep the ambient checkout on `main`, use the venue remote, and
+   make all edits in isolated worktrees.
 7. **Reclaim disk if needed** (see the `disk-reclaim` routine for the full,
    safer procedure — this routine may reuse it). Delete build-artifact dirs
    (`target/`, `node_modules/` in throwaway worktrees, caches) — removing a build

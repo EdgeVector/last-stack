@@ -50,5 +50,5 @@ depth="$(jq -r '.checks[] | select(.name=="inbox_backlog") | .detail.pending // 
 Use `error ... rc=<drain_rc>` instead of `ok` when the drain call failed.
 
 No board writes, no PR, no card claim — this routine only keeps the Search
-inbox bounded. Ground truth: brain
-`papercut-search-app-inbox-never-drained-semantic-plane-at-10-percent-coverage`.
+inbox bounded. The drain exists because an undrained inbox reduces semantic
+coverage and leaves index changes pending.

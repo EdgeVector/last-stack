@@ -4,14 +4,14 @@ cadence: every 2 hours
 description: >
   GENERIC auto-closer for all half-live cutovers. Reads brain open-cutovers,
   advances each live line one phase step (ops/proof/blocked/defer), resolves
-  when primary END STATE holds. Sole automatic closer — see sop-open-cutovers-closeout.
+  when primary END STATE holds. Sole automatic closer for this ledger.
 ---
 
 You are the **open-cutovers-driver** — the **generic automatic closer** for every
 half-live cutover. Run **one bounded pass**, then exit.
 
-Canonical process: brain `sop-open-cutovers-closeout` and
-`preference-open-cutovers-auto-close`. Do not invent a parallel ledger or engine.
+Canonical process: use the `open-cutovers` ledger and the automatic closer.
+Do not invent a parallel ledger or engine.
 
 ```
 brain get open-cutovers

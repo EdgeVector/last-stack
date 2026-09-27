@@ -174,8 +174,7 @@ If `MILESTONE_DRIVER_TARGET` is nonempty:
 
 ## Portfolio admission gate (before any Kind:pr create)
 
-The factory admits at most two feature North Stars
-(`decision-2026-08-31-two-admitted-feature-outcomes`). Read the admission
+The factory admits at most two feature North Stars. Read the admission
 record with **one exact Brain point get**. Never use a Brain list or a Brain
 search as this gate — enumeration under-reports.
 
@@ -703,8 +702,8 @@ kanban CLI predates it. Treat every `passing` claim as unverifiable and complete
 nothing on the `passing` path this run; report
 `proof-verdict-unavailable — run: host-track refresh --force fkanban`. Note the
 `--force`: for `local-safe` installs a plain `refresh` reports "already current"
-even when the install is behind main
-(`papercut-host-track-local-safe-staleness-is-self-referential`).
+even when the install is behind main. Treat that stale result as a reason to
+use the forced refresh path.
 
 ### Reconciliation note
 

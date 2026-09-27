@@ -223,7 +223,8 @@ delete or wholesale rewrite existing tooling.
 
 Source routine: `last-stack-revenant-watch` (thin daily trigger; North Star
 `north-star-revenant-watch`). Prefer brain overrides:
-`brain get miner-profile-revenant-watch` and `brain get sop-revenant-watch`.
+`brain get miner-profile-revenant-watch`; keep the settled-dead truth and skip
+rules in that profile.
 
 Purpose: Detect **revenants** — agent sessions that treat settled-dead product
 truth as still alive (building a retired surface, reopening a closed North Star

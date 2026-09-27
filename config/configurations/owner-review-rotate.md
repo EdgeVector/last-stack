@@ -13,8 +13,8 @@ rationale, not registry membership.
 - **retired_charters**: `owner-lastdb-desktop` — retired 2026-09-07. Its whole
   owned surface (embedded node UI, onboarding wizard, DMG release gate,
   desktop telemetry) no longer exists. Tom deprecated the desktop app on
-  2026-08-26 (`decision-2026-08-26-lastdb-desktop-app-deprecated-no-ui`) and
-  the `fold_db_node` tree was deleted in the 2026-07-12 Mini-only cutover.
+  2026-08-26. The `fold_db_node` tree was deleted in the 2026-07-12 Mini-only
+  cutover.
   The surviving daemon surface (`lastdb_node/`, `lastdb_host/`,
   `lastdb_identity/`) is owned by `owner-fold`, so this leaves no ownership
   hole. Do not re-add this charter.

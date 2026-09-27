@@ -21,8 +21,8 @@ The recurring failure mode this skill exists to prevent: an agent builds a
 nice ad-hoc HTML dashboard, it renders great in the session, and then it's
 gone — no file committed anywhere, no note of the Artifact URL, so the next
 person who wants "that velocity dashboard from earlier" can't find it and
-ends up rebuilding it from zero. See brain
-`papercut-kanban-updated-at-not-completion-time` for the concrete incident.
+ends up rebuilding it from zero. The concrete incident showed that update time
+does not equal completion time.
 
 ## Before building anything
 
@@ -42,8 +42,7 @@ ends up rebuilding it from zero. See brain
 
 kanban's own timestamps are lossy: `updated_at` gets stomped by every daily
 groom sweep, so it is NOT a reliable completion-time signal (only a small
-fraction of `done` cards carry a real `done_at` — see
-`papercut-kanban-updated-at-not-completion-time`). Until that's fixed
+fraction of `done` cards carry a real `done_at`). Until that's fixed
 upstream, prefer:
 - **Velocity / throughput**: commit-count-on-main per day per repo
   (`git log origin/main --since="21 days ago" --no-merges --date=short`) as

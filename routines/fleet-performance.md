@@ -10,8 +10,7 @@ fleet is earning its fires*. You read historical run outcomes and make a
 or add **at most one** missing routine. You do not fix product code, do
 not groom the board, and do not mine session transcripts for new skills.
 
-Each run starts cold. Honor `brain get sop-routine-shared-contract --type sop`
-and `brain get sop-routines-registry-canonical --type sop` (heartbeat LAST,
+Each run starts cold. Honor the routine contract: heartbeat LAST,
 FILE papercuts to brain only, Kind:pr via `last-stack-kanban-file-pr`, no Mini
 restart, no `sleep` polls).
 
