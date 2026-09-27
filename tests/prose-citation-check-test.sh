@@ -160,9 +160,23 @@ awk 'NF && $0 !~ /^#/ { if (NF < 2) { print "unreasoned: " $0; bad=1 } } END { e
   || bad "case10: config/prose-citation-ignore.txt has an entry with no reason"
 note "case10 ignore-file reasons ok"
 
+# ------------- case 11: a dangling preference- citation must be caught too.
+# papercut-prose-citation-check-does-not-scan-preference-prefixed-tokens-20260927:
+# the checker only extracted papercut-/sop-/decision- tokens and silently
+# reported 0 dangling while a real dangling preference- slug sat in shipped
+# frontmatter (skills/*/SKILL.md `description:`, which is plain text to this
+# checker, not YAML-parsed).
+R="$TMP/r11"; make_root "$R" 'Standing rule: preference-lastdb-upgrade-ephemeral-probe-first.'
+printf 'preference-lastdb-upgrade-ephemeral-probe-first=missing\n' > "$TMP/v11"
+run_check "$R" "$TMP/v11"
+[ "$(rc)" = 1 ] || bad "case11 preference dangling: rc $(rc) != 1"
+[ "$(slugs dangling)" = "preference-lastdb-upgrade-ephemeral-probe-first" ] \
+  || bad "case11 preference dangling: slugs '$(slugs dangling)'"
+note "case11 preference dangling rc=$(rc) slug=$(slugs dangling)"
+
 rm -rf -- "$TMP"
 if [ "$fail" -ne 0 ]; then
   echo "prose-citation-check guard: FAILED" >&2
   exit 1
 fi
-echo "ok prose-citation-check guard: 10 cases"
+echo "ok prose-citation-check guard: 11 cases"

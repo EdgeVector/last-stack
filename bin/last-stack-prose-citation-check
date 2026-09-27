@@ -48,6 +48,7 @@ CITED_TYPES = {
     "papercut": "papercut",
     "decision": "decision",
     "sop": "sop",
+    "preference": "preference",
 }
 
 TOKEN_RE = re.compile(r"(?<![A-Za-z0-9-])(" + "|".join(CITED_TYPES) + r")-[a-z0-9][a-z0-9-]*")
