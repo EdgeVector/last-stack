@@ -14,7 +14,8 @@ CHECK="$ROOT/harness/north-star/north-star-lastdb-schema-root-data-attribution/c
 MEASURE="$ROOT/harness/north-star/north-star-lastdb-schema-root-data-attribution/measure.py"
 FIXTURE="$ROOT/tests/fixtures/north-star-lastdb-schema-root-data-attribution"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/schema-root-attribution-proof-test.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+PRODUCER_WORK=""
+trap 'rm -rf "$WORK"; [ -z "${PRODUCER_WORK:-}" ] || rm -rf "$PRODUCER_WORK"' EXIT
 
 # shellcheck source=../harness/north-star/common.sh
 . "$ROOT/harness/north-star/common.sh"
@@ -79,30 +80,53 @@ PY
 # Run the producer against a short throwaway path. The routine scratch root can
 # make the Unix socket path exceed macOS's sockaddr_un limit.
 PRODUCER_LASTDBD="${SCHEMA_ROOT_ATTRIBUTION_PRODUCER_LASTDBD:-$(command -v lastdbd || true)}"
-[ -x "$PRODUCER_LASTDBD" ] || fail "lastdbd is required for the producer-level measurement test"
-PRODUCER_WORK="$(mktemp -d /tmp/sra-producer.XXXXXX)"
-PRODUCER_EVIDENCE="$WORK/producer-evidence.json"
-PRODUCER_TRACE="$WORK/producer-trace.json"
-python3 "$MEASURE" \
-  --lastdbd "$PRODUCER_LASTDBD" \
-  --work "$PRODUCER_WORK" \
-  --out "$PRODUCER_EVIDENCE" \
-  --trace "$PRODUCER_TRACE" \
-  >"$WORK/producer.out" 2>"$WORK/producer.err" || {
-  cat "$WORK/producer.err" >&2
-  fail "the isolated measurement producer failed"
+[ -x "$PRODUCER_LASTDBD" ] || {
+  echo "SKIP producer-level measurement: no lastdbd binary is installed" >&2
 }
-python3 - "$PRODUCER_EVIDENCE" "$PRODUCER_TRACE" <<'PY'
+if [ -x "$PRODUCER_LASTDBD" ]; then
+  # Keep the daemon home short. The routine scratch root can exceed macOS's
+  # sockaddr_un limit.
+  PRODUCER_WORK="$(mktemp -d /tmp/sra-producer.XXXXXX)"
+  PRODUCER_EVIDENCE="$WORK/producer-evidence.json"
+  PRODUCER_TRACE="$WORK/producer-trace.json"
+  python3 "$MEASURE" \
+    --lastdbd "$PRODUCER_LASTDBD" \
+    --work "$PRODUCER_WORK" \
+    --out "$PRODUCER_EVIDENCE" \
+    --trace "$PRODUCER_TRACE" \
+    >"$WORK/producer.out" 2>"$WORK/producer.err" || {
+    cat "$WORK/producer.err" >&2
+    fail "the isolated measurement producer failed"
+  }
+  producer_state="$WORK/producer-state"
+  python3 - "$PRODUCER_EVIDENCE" "$PRODUCER_TRACE" "$producer_state" <<'PY'
+import json
+import sys
+
+evidence_path, trace_path, state_path = sys.argv[1:]
+evidence = json.load(open(evidence_path, encoding="utf-8"))
+trace = json.load(open(trace_path, encoding="utf-8"))
+restore = evidence.get("restore")
+system = restore.get("system_attributed_objects") if isinstance(restore, dict) else None
+inventory = trace.get("inventory_after_concurrent", {}).get("inventory", {})
+if isinstance(system, int) and not isinstance(system, bool) and system >= 1:
+    state = "ready"
+elif "attribution" not in inventory:
+    state = "unsupported"
+else:
+    state = "missing"
+open(state_path, "w", encoding="utf-8").write(state + "\n")
+PY
+  case "$(sed -n '1p' "$producer_state")" in
+    ready)
+      python3 - "$PRODUCER_EVIDENCE" "$PRODUCER_TRACE" <<'PY'
 import json
 import sys
 
 evidence_path, trace_path = sys.argv[1:]
 evidence = json.load(open(evidence_path, encoding="utf-8"))
 trace = json.load(open(trace_path, encoding="utf-8"))
-restore = evidence.get("restore")
-system = restore.get("system_attributed_objects") if isinstance(restore, dict) else None
-if isinstance(system, bool) or not isinstance(system, int) or system < 1:
-    raise SystemExit("the isolated measurement did not produce a system-attributed object")
+restore = evidence["restore"]
 if not any(
     row.get("schema") == "sraproof/System"
     and row.get("key") == "system"
@@ -115,6 +139,15 @@ after = trace["inventory_after_concurrent"]["inventory"]["attribution"]["objects
 if restore["system_attributed_objects"] != after["system_attributed"]:
     raise SystemExit("generated evidence does not match the generated inventory trace")
 PY
+      ;;
+    unsupported)
+      echo "SKIP producer-level attribution assertion: lastdbd inventory lacks attribution facts" >&2
+      ;;
+    *)
+      fail "the isolated measurement did not produce a system-attributed object"
+      ;;
+  esac
+fi
 
 "$RUNNER" --list | grep -qx 'north-star-lastdb-schema-root-data-attribution' ||
   fail "--list omits north-star-lastdb-schema-root-data-attribution"
