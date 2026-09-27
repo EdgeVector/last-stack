@@ -221,10 +221,17 @@ normalize_home_line() {
     -e "s#^~\([[:space:]/]\)#$home\1#" -e "s#^~\$#$home#"
 }
 re_home_scanner_words='(find|fd|du|ncdu|tree|rg|ag|grep|ls|wc|shasum)'
+# A command starts at line-start, after a separator (;&|(), after && / ||,
+# or right after a shell keyword (do/then/else/elif) that always begins a
+# new command wherever it sits on the line -- `while ...; do find "$HOME"
+# ...; done` and `if ...; then du -sh "$HOME"; fi` are the idioms routine
+# agents write constantly (measured: both slipped through an earlier draft
+# anchored only on ;&|( / && / ||).
+re_home_anchor='(^|[;&|(]|&& |\| |(^|[^[:alnum:]_])(do|then|else|elif)[[:space:]])'
 # `find <path> <expr>` puts the path BEFORE its flags (the common, natural
 # form); du/ls/rg/grep put flags before the path. Allow optional flags on
 # EITHER side of the (optionally quoted) home token so both orders match.
-re_home_root_scan="(^|[;&|(]|&& |\\| )[[:space:]]*(sudo[[:space:]]+)?(time[[:space:]]+)?${re_home_scanner_words}([[:space:]]+-[^[:space:]]+)*[[:space:]]+[\"']?${home}[\"']?([[:space:]]+-[^[:space:]]+)*([[:space:]]|/\\*|\$)"
+re_home_root_scan="${re_home_anchor}[[:space:]]*(sudo[[:space:]]+)?(time[[:space:]]+)?${re_home_scanner_words}([[:space:]]+-[^[:space:]]+)*[[:space:]]+[\"']?${home}[\"']?([[:space:]]+-[^[:space:]]+)*([[:space:]]|[;&|)]|/\\*|\$)"
 re_home_protected="${home}/(Desktop|Documents|Downloads|Pictures|Movies|Music)"
 
 check_command_line() {

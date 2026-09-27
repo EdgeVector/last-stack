@@ -277,6 +277,21 @@ EOF
 expect 0 bash home-root-unrelated-home-mention-ok <<'EOF'
 if [ -d "$HOME/code" ]; then find "$workspace" -maxdepth 3 -name x; fi
 EOF
+expect 2 bash home-root-while-do-find <<'EOF'
+while true; do find "$HOME" -maxdepth 2 -name x; break; done
+EOF
+expect 2 bash home-root-if-then-du <<'EOF'
+if true; then du -sh "$HOME"; fi
+EOF
+expect 2 bash home-root-for-do-find <<'EOF'
+for d in a b; do find "$HOME" -maxdepth 2 -name x; done
+EOF
+expect 0 bash home-root-then-du-scoped-ok <<'EOF'
+if true; then du -sh "$HOME/code"; fi
+EOF
+expect 0 bash home-root-todo-word-not-do-keyword-ok <<'EOF'
+todo find "$HOME/code" -maxdepth 2 -name x
+EOF
 expect 0 bash home-root-prose-mention-ok <<'EOF'
 echo "the file was not found in Downloads"
 EOF
