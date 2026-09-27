@@ -72,7 +72,10 @@ case "${1:-} ${2:-}" in
     fi
     ;;
   "add example-ns-terminal-verification") cat >"$MOCK_CARD_BODY" ;;
-  "add north-star-example-terminal-proof-harness") cat >"$MOCK_HARNESS_BODY" ;;
+  "add north-star-example-terminal-proof-harness")
+    printf '%s\n' "$@" >"${MOCK_HARNESS_ARGS:-/dev/null}"
+    cat >"$MOCK_HARNESS_BODY"
+    ;;
   "mark example-ns-terminal-verification") printf '%s\n' "${3:-}" >>"${MOCK_MARKS:?}" ;;
   *) exit 2 ;;
 esac
@@ -81,6 +84,7 @@ chmod +x "$tmp/bin/brain" "$tmp/bin/kanban"
 
 MOCK_NONTERMINAL_MILESTONE=1 MOCK_CARD_BODY="$tmp/created-card.md" \
 MOCK_HARNESS_BODY="$tmp/created-harness-card.md" \
+MOCK_HARNESS_ARGS="$tmp/created-harness-args" \
   HOME="$tmp/home" PATH="$tmp/bin:$PATH" \
   NORTH_STAR_HARNESS_ROOT="$tmp/harness" \
   python3 "$BIN" --apply --ns north-star-example --json >"$tmp/create.json"
@@ -89,29 +93,29 @@ MOCK_HARNESS_BODY="$tmp/created-harness-card.md" \
 # pickup card and waits for that card to add the registered harness path.
 grep -Fq 'created_harness_unverified:north-star-example-terminal-proof-harness' "$tmp/create.json"
 grep -Fq 'Kind: pr' "$tmp/created-harness-card.md"
+grep -Fxq 'todo' "$tmp/created-harness-args"
 ! test -e "$tmp/created-card.md"
 
-# A terminal card without a live milestone cannot create a Kind:pr todo card.
-# Repeating the apply keeps the result stable and does not repeat a board write.
+# A terminal card without a live milestone creates a Kind:pr backlog card.
+# The milestone driver promotes it after it creates a milestone.
+MOCK_HARNESS_ARGS="$tmp/no-milestone-harness-args.md" \
 MOCK_HARNESS_BODY="$tmp/no-milestone-harness-card-1.md" \
   HOME="$tmp/home" PATH="$tmp/bin:$PATH" NORTH_STAR_HARNESS_ROOT="$tmp/harness" \
   python3 "$BIN" --apply --ns north-star-example --json >"$tmp/no-milestone-1.json"
-MOCK_HARNESS_BODY="$tmp/no-milestone-harness-card-2.md" \
-  HOME="$tmp/home" PATH="$tmp/bin:$PATH" NORTH_STAR_HARNESS_ROOT="$tmp/harness" \
-  python3 "$BIN" --apply --ns north-star-example --json >"$tmp/no-milestone-2.json"
-jq -e '.reports[0].actions | map(select(. == "defer_harness_until_milestone:north-star-example")) | length == 1' \
+jq -e '.reports[0].actions | map(select(. == "created_harness_unverified:north-star-example-terminal-proof-harness")) | length == 1' \
   "$tmp/no-milestone-1.json" >/dev/null
-jq -e '.reports[0].actions | map(select(. == "defer_harness_until_milestone:north-star-example")) | length == 1' \
-  "$tmp/no-milestone-2.json" >/dev/null
-! test -e "$tmp/no-milestone-harness-card-1.md"
-! test -e "$tmp/no-milestone-harness-card-2.md"
+grep -Fxq 'backlog' "$tmp/no-milestone-harness-args.md"
+grep -Fq 'Kind: pr' "$tmp/no-milestone-harness-card-1.md"
+! grep -Fq 'error_create_harness' "$tmp/no-milestone-1.json"
 
-# A later live milestone releases the harness path.
+# A live milestone continues to create a pickup-ready todo card.
 MOCK_NONTERMINAL_MILESTONE=1 MOCK_HARNESS_BODY="$tmp/later-harness-card.md" \
+MOCK_HARNESS_ARGS="$tmp/later-harness-args.md" \
   HOME="$tmp/home" PATH="$tmp/bin:$PATH" NORTH_STAR_HARNESS_ROOT="$tmp/harness" \
   python3 "$BIN" --apply --ns north-star-example --json >"$tmp/later-milestone.json"
 grep -Fq 'created_harness_unverified:north-star-example-terminal-proof-harness' "$tmp/later-milestone.json"
 grep -Fq 'Kind: pr' "$tmp/later-harness-card.md"
+grep -Fxq 'todo' "$tmp/later-harness-args.md"
 
 mkdir -p "$tmp/harness/north-star-example"
 printf '%s\n' '#!/usr/bin/env bash' >"$tmp/harness/north-star-example/run.sh"
