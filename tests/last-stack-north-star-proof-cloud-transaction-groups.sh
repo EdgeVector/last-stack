@@ -105,7 +105,9 @@ write_measured "$WORK/short-soak.json" false "2026-08-30T23:59:52Z"
 write_measured "$WORK/undrained.json" false "2026-08-31T22:59:52Z" "1787000000000000000"
 write_measured "$WORK/cutover.json" true
 write_measured "$WORK/canary-fail.json" false "2026-08-31T22:59:52Z" "1788069523520522000" FAIL
-sed '/canary_result:/d' "$WORK/good.json" >"$WORK/canary-missing.json"
+# Remove only the escaped result entry. The measured output is one JSON string,
+# so deleting a physical line would make the fixture invalid JSON.
+sed 's/\\ncanary_result: PASS//' "$WORK/good.json" >"$WORK/canary-missing.json"
 
 MARKER="$WORK/home-opened"
 mkdir -p "$WORK/bin"
