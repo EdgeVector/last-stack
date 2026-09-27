@@ -23,6 +23,7 @@ fix, and the command does not run.
 | bin-path | `/bin/mktemp` does not exist on macOS | `mktemp "$TMPDIR/x.XXXXXX"` (a bare call ignores TMPDIR) |
 | zsh-status (Claude) | `status` is read-only in zsh | `rc`, `pr_state`, `ci_state` |
 | zsh-mapfile (Claude) | zsh has no `mapfile` | `while IFS= read -r x; do ...; done < "$file"` |
+| zsh-word-split (Claude) | `for x in $VAR` does not split; one pass over the whole string | `FILES=(a b c)` and `for x in "${FILES[@]}"`, in a bash script file |
 
 Hazards that no guard can see:
 

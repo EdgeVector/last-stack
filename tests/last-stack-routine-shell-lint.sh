@@ -212,6 +212,43 @@ expect 0 bash bash-mapfile-ok <<'EOF'
 mapfile -t slugs < slugs.txt
 EOF
 
+expect 2 zsh zsh-word-split-scalar <<'EOF'
+FILES="a.rs b.rs c.rs"; for rel in $FILES; do echo "$rel"; done
+EOF
+expect 2 zsh zsh-word-split-braced <<'EOF'
+for rel in ${FILES}; do echo "$rel"; done
+EOF
+expect 2 zsh zsh-word-split-before-do-on-next-line <<'EOF'
+for slug in $slugs
+do
+  echo "$slug"
+done
+EOF
+expect 0 bash bash-word-split-ok <<'EOF'
+FILES="a.rs b.rs c.rs"; for rel in $FILES; do echo "$rel"; done
+EOF
+expect 0 zsh zsh-word-split-array-ok <<'EOF'
+FILES=(a.rs b.rs c.rs); for rel in "${FILES[@]}"; do echo "$rel"; done
+EOF
+expect 0 zsh zsh-word-split-array-unquoted-ok <<'EOF'
+FILES=(a.rs b.rs c.rs); for rel in ${FILES[@]}; do echo "$rel"; done
+EOF
+expect 0 zsh zsh-word-split-quoted-ok <<'EOF'
+for rel in "$FILES"; do echo "$rel"; done
+EOF
+expect 0 zsh zsh-word-split-cmdsub-ok <<'EOF'
+for rel in $(git diff --name-only); do echo "$rel"; done
+EOF
+expect 0 zsh zsh-word-split-literal-ok <<'EOF'
+for rel in a.rs b.rs c.rs; do echo "$rel"; done
+EOF
+expect 0 zsh zsh-word-split-glob-ok <<'EOF'
+for rel in *.rs; do echo "$rel"; done
+EOF
+expect 0 zsh zsh-word-split-positional-ok <<'EOF'
+for arg in "$@"; do echo "$arg"; done
+EOF
+
 # --- escape hatch and usage --------------------------------------------------
 expect 0 bash escape-hatch <<'EOF'
 sed -i 's/a/b/' f   # shell-lint-ok: GNU sed on the PC
