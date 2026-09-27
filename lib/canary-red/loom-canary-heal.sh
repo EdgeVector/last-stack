@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # HEAL node: investigate the RED canary and LAND a fix.
 # Default is a contract stand-in (CI). LOOM_LIVE=1 / LOOM_CANARY_RED_LIVE=1
-# runs grok/claude. Do not file a kanban card and stop — merge a real change.
-# Never restarts primary lastdbd. Never skips the probe latency bar.
+# runs a harness resolved by `routines agent-exec` (the same fleet-wide
+# provider-order tracker every other routine dispatch reads), falling back
+# to a direct Situations-gated grok/claude order only if that dispatcher
+# itself is unreachable. Do not file a kanban card and stop — merge a real
+# change. Never restarts primary lastdbd. Never skips the probe latency bar.
 set -euo pipefail
 
 python3 <<'PY'
@@ -45,13 +48,17 @@ if not live:
     sys.exit(0)
 
 def blocked_harnesses():
-    """Harnesses an active Situation forbids dispatching to.
+    """Direct Situations fence — the resilience floor used only when
+    `resolve_route` below cannot reach the shared dispatcher at all.
 
-    routinesd honours `harness-outage-*` through its fallback chain, but this
-    node re-execs a harness itself, so it must read the same source. A harness
-    in usage-limit outage answers 402 and prints no HEAL_RESULT line, which the
-    fallback below records as "agent produced no HEAL_RESULT line" — a true
-    statement that names neither the outage nor the cause
+    routinesd honours `harness-outage-*` through its fallback chain, and
+    `routines agent-exec` (the normal path now) reads the same feed, so this
+    duplicate check must stay OFF the happy path — it exists only so an
+    outage of `routines` itself doesn't silently revert this node to a blind
+    grok-first dispatch. A harness in usage-limit outage answers 402 and
+    prints no HEAL_RESULT line, which the fallback below records as "agent
+    produced no HEAL_RESULT line" — a true statement that names neither the
+    outage nor the cause
     (papercut-canary-heal-adapter-dispatches-grok-during-active-harness-outage).
 
     Fails OPEN: an unreadable Situations list must never stop a heal, because
@@ -81,34 +88,112 @@ def blocked_harnesses():
     return blocked, ",".join(sorted(s for s in slugs if s))
 
 
-CANDIDATES = ("grok", "claude")
-fenced, outage_slugs = blocked_harnesses()
-on_path = [c for c in CANDIDATES if shutil.which(c)]
-agent = next((c for c in on_path if c not in fenced), None)
-if not agent:
-    if on_path:
-        # Every harness we could run is fenced by an active outage. Say so, so
-        # the execution record explains itself instead of blaming the agent.
-        payload = {
-            "heal_status": "blocked",
-            "diagnosis": (
-                "every heal harness is fenced by an active Situation: "
-                f"{'/'.join(on_path)} blocked by {outage_slugs or 'harness outage'}"
-            ),
-            "repo": "",
-            "pr_url": "",
-            "merge_sha": "",
-            "attempt": attempt,
-        }
-        emit(payload, f"canary-heal fenced exec={exec_id or '-'} harnesses={'/'.join(on_path)}")
-        sys.exit(0)
-    print("loom-canary-heal: grok/claude not on PATH", file=sys.stderr)
-    sys.exit(2)
-if fenced:
+FALLBACK_ORDER = ("grok", "claude")
+SUPPORTED = ("codex", "grok", "claude", "gemini")
+
+
+def resolve_route():
+    """Resolve a harness+model from the SAME fleet-wide provider-order
+    tracker `routines agent-exec` reads (`~/.routines/routing-matrix.json`),
+    instead of this node's own hardcoded grok-first order.
+
+    Before this fix, the 2026-09-26 fleet-wide reroute (providerOrder ->
+    codex-first, filed after a live Grok 402 usage-limit outage) fixed every
+    ordinary routine dispatch but not this node, because this node picked
+    its own harness directly, bypassing the shared tracker
+    (papercut-canary-heal-adapter-dispatches-grok-during-active-harness-outage,
+    recurrence 2026-09-27 lastgit-era-3-builder run 39).
+
+    Returns a dict: {"status": "resolved", "harness":..., "model":...} on a
+    live route, {"status": "empty", "detail": "..."} when every provider is
+    fenced, or {"status": "unreachable", "detail": "..."} when the shared
+    dispatcher itself could not be run or parsed — the caller then falls
+    back to the direct Situations check so an outage of `routines` itself
+    never silently reverts to a blind grok-first dispatch.
+    """
+    exe = shutil.which("routines")
+    if not exe:
+        return {"status": "unreachable", "detail": "routines not on PATH"}
+    try:
+        p = subprocess.run(
+            [exe, "agent-exec", "--difficulty", "hard", "--mode", "write",
+             "--request-id", key],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception as err:
+        return {"status": "unreachable", "detail": f"routines agent-exec failed: {err}"}
+    try:
+        route = json.loads(p.stdout or "{}")
+    except json.JSONDecodeError:
+        route = {}
+    if p.returncode == 3:
+        reasons = "; ".join(route.get("reasons") or []) or "all providers fenced"
+        return {"status": "empty", "detail": reasons}
+    if p.returncode != 0 or not isinstance(route, dict) or not route.get("harness"):
+        detail = (p.stderr or p.stdout or "").strip()[:200]
+        return {"status": "unreachable", "detail": f"routines agent-exec rc={p.returncode}: {detail}"}
+    return {"status": "resolved", "harness": str(route["harness"]), "model": route.get("model")}
+
+
+agent = None
+model = None
+route = resolve_route()
+
+if route["status"] == "empty":
+    payload = {
+        "heal_status": "blocked",
+        "diagnosis": f"every heal harness is fenced by the fleet routing matrix: {route['detail']}",
+        "repo": "",
+        "pr_url": "",
+        "merge_sha": "",
+        "attempt": attempt,
+    }
+    emit(payload, f"canary-heal fenced exec={exec_id or '-'} source=routing-matrix")
+    sys.exit(0)
+
+if route["status"] == "resolved" and route["harness"] in SUPPORTED and shutil.which(route["harness"]):
+    agent = route["harness"]
+    model = route.get("model")
+elif route["status"] == "resolved":
     print(
-        f"loom-canary-heal: skipping fenced harness(es) {'/'.join(sorted(fenced))}; using {agent}",
+        f"loom-canary-heal: routing matrix selected unsupported/missing harness "
+        f"{route['harness']!r}; falling back to Situations-gated order",
         file=sys.stderr,
     )
+
+if agent is None:
+    if route["status"] == "unreachable":
+        print(
+            f"loom-canary-heal: {route['detail']}; falling back to Situations-gated order",
+            file=sys.stderr,
+        )
+    fenced, outage_slugs = blocked_harnesses()
+    on_path = [c for c in FALLBACK_ORDER if shutil.which(c)]
+    agent = next((c for c in on_path if c not in fenced), None)
+    if not agent:
+        if on_path:
+            # Every harness we could run is fenced by an active outage. Say so, so
+            # the execution record explains itself instead of blaming the agent.
+            payload = {
+                "heal_status": "blocked",
+                "diagnosis": (
+                    "every heal harness is fenced by an active Situation: "
+                    f"{'/'.join(on_path)} blocked by {outage_slugs or 'harness outage'}"
+                ),
+                "repo": "",
+                "pr_url": "",
+                "merge_sha": "",
+                "attempt": attempt,
+            }
+            emit(payload, f"canary-heal fenced exec={exec_id or '-'} harnesses={'/'.join(on_path)}")
+            sys.exit(0)
+        print("loom-canary-heal: grok/claude not on PATH", file=sys.stderr)
+        sys.exit(2)
+    if fenced:
+        print(
+            f"loom-canary-heal: skipping fenced harness(es) {'/'.join(sorted(fenced))}; using {agent}",
+            file=sys.stderr,
+        )
 
 
 def recover_child_evidence():
@@ -238,6 +323,7 @@ prompt_file = tempfile.NamedTemporaryFile(
 prompt_file.write(prompt)
 prompt_file.close()
 
+stdin_input = None
 if agent == "grok":
     cmd = [
         "grok",
@@ -246,11 +332,27 @@ if agent == "grok":
         "--cwd", cwd,
         "--prompt-file", prompt_file.name,
     ]
+    if model:
+        cmd += ["-m", model]
+elif agent == "codex":
+    cmd = ["codex", "exec", "-C", cwd, "-s", "workspace-write", "--approve-for-me"]
+    if model:
+        cmd += ["-m", model]
+    cmd += ["-"]
+    stdin_input = prompt
+elif agent == "gemini":
+    cmd = ["gemini", "--approval-mode", "yolo", "-p", prompt]
+    if model:
+        cmd += ["-m", model]
 else:
     cmd = ["claude", "-p", prompt, "--dangerously-skip-permissions"]
+    if model:
+        cmd += ["--model", model]
 
 try:
-    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=3500)
+    proc = subprocess.run(
+        cmd, cwd=cwd, capture_output=True, text=True, timeout=3500, input=stdin_input
+    )
 except subprocess.TimeoutExpired:
     payload = {
         "heal_status": "blocked",
