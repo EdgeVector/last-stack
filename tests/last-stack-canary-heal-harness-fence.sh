@@ -1,10 +1,21 @@
 #!/usr/bin/env bash
-# The HEAL node re-execs a harness itself, so it must honour the same
-# harness-outage Situations routinesd honours. Before this gate, a bare PATH
-# probe always chose grok; during the 2026-08-18 grok usage-limit outage grok
-# answered 402, printed no HEAL_RESULT line, and every lastdb-canary-release
+# The HEAL node re-execs a harness itself. Tests 1-6 below exercise the
+# fallback path (no `routines` on PATH): a direct Situations-gated
+# grok/claude order, so it must honour the same harness-outage Situations
+# routinesd honours. Before that gate existed, a bare PATH probe always
+# chose grok; during the 2026-08-18 grok usage-limit outage grok answered
+# 402, printed no HEAL_RESULT line, and every lastdb-canary-release
 # execution reached FAILED with the diagnosis "agent produced no HEAL_RESULT
 # line" — a true statement naming neither the outage nor the cause.
+#
+# Tests 7-8 exercise the PRIMARY path: `routines agent-exec` resolves a
+# harness from the same fleet-wide provider-order tracker every other
+# routine dispatch reads, instead of this node's own hardcoded grok-first
+# order — the 2026-09-26 fleet reroute (providerOrder -> codex-first) fixed
+# every ordinary dispatch but not this node, because this node picked its
+# own harness directly
+# (papercut-canary-heal-adapter-dispatches-grok-during-active-harness-outage,
+# recurrence 2026-09-27 lastgit-era-3-builder run 39).
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
@@ -44,6 +55,21 @@ $1
 JSON
 EOF
   chmod +x "$tmp/bin/situations"
+}
+
+mk_routines() { # $1 = agent-exec JSON body, $2 = exit code (default 0)
+  local body="$1" code="${2:-0}"
+  cat > "$tmp/bin/routines" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = "agent-exec" ]; then
+  cat <<'JSON'
+$body
+JSON
+  exit $code
+fi
+exit 2
+EOF
+  chmod +x "$tmp/bin/routines"
 }
 
 run_heal() {
@@ -129,5 +155,56 @@ case "$out" in
   *'402 Payment Required'*) : ;;
   *) fail "diagnosis must carry the agent's last output; got: $out" ;;
 esac
+
+# 7. `routines` on PATH and resolving an available harness -> that harness
+#    wins over the hardcoded grok-first order, and its model reaches the
+#    agent. grok is on PATH and unfenced, so a regression here means the
+#    node ignored the fleet routing matrix.
+cat > "$tmp/bin/grok" <<'EOF'
+#!/usr/bin/env bash
+echo "POISONED_GROK_WAS_INVOKED" >&2
+exit 0
+EOF
+chmod +x "$tmp/bin/grok"
+cat > "$tmp/bin/codex" <<'EOF'
+#!/usr/bin/env bash
+stdin="$(cat)"
+echo "CODEX_INVOKED argv=$* stdin_bytes=${#stdin}"
+EOF
+chmod +x "$tmp/bin/codex"
+mk_routines '{"harness":"codex","model":"test-model-x","empty":false,"reasons":["selected=codex model=test-model-x"]}' 0
+out="$(run_heal)" || fail "heal exited non-zero when the routing matrix resolves codex"
+case "$out" in
+  *POISONED_GROK_WAS_INVOKED*) fail "dispatched grok even though the routing matrix resolved codex" ;;
+esac
+case "$out" in
+  *CODEX_INVOKED*) : ;;
+  *) fail "expected codex to be invoked (routing matrix resolved codex); got: $out" ;;
+esac
+case "$out" in
+  *"-m test-model-x"*) : ;;
+  *) fail "expected the routing matrix's resolved model to reach codex; got: $out" ;;
+esac
+case "$out" in
+  *"stdin_bytes=0"*) fail "codex must receive the prompt via stdin, got zero bytes; got: $out" ;;
+esac
+
+# 8. Every provider fenced by the routing matrix itself (rc=3, empty route)
+#    -> blocked, and the diagnosis carries the matrix's own reasons. Never
+#    fall back to a blind grok dispatch just because the matrix said no.
+mk_routines '{"harness":null,"empty":true,"reasons":["provider-order=codex,grok,claude,gemini","fenced=codex,grok,claude,gemini by harness-outage-all"]}' 3
+out="$(run_heal)" || fail "heal exited non-zero with every provider fenced by the routing matrix"
+case "$out" in
+  *POISONED_GROK_WAS_INVOKED*) fail "dispatched grok while the routing matrix reported every provider fenced" ;;
+esac
+case "$out" in
+  *'"heal_status":"blocked"'*) : ;;
+  *) fail "expected blocked when the routing matrix reports an empty route; got: $out" ;;
+esac
+case "$out" in
+  *"fleet routing matrix"*harness-outage-all*) : ;;
+  *) fail "blocked diagnosis must carry the routing matrix's own reasons; got: $out" ;;
+esac
+rm -f "$tmp/bin/routines"
 
 printf 'PASS %s\n' "$(basename "$0")"
