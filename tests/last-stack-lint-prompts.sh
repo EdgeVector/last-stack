@@ -848,7 +848,7 @@ grep -q 'skills/kanban-agent/SKILL.md` from the resolved' "$pickup"
 
 agent="$ROOT/skills/kanban-agent/SKILL.md"
 grep -q 'last-stack-pr-venue' "$agent"
-grep -q 'sop-lastgit-native-forge-workflow' "$agent"
+grep -q 'use the native CR path instead of Forgejo/GitHub' "$agent"
 grep -q 'lastgit cr complete' "$agent"
 grep -q 'PR/CR opened is not done' "$agent"
 grep -q 'there is no separate background driver' "$agent"
