@@ -20,6 +20,14 @@ git -C "$repo" branch -M main
 initial_head="$(git -C "$repo" rev-parse HEAD)"
 git -C "$repo" update-ref refs/remotes/origin/main "$initial_head"
 
+# The host environment can carry a real, live LAST_STACK_LASTGIT_NATIVE_REPOS
+# (set ambient by routinesd/launchd as repos migrate venue) that would leak
+# into the "defaults without marker" checks below and make this fixture
+# depend on today's live migration state instead of the tool's own default
+# logic. Unset it so every assertion in this file tests the code path, not
+# the machine it happens to run on.
+unset LAST_STACK_LASTGIT_NATIVE_REPOS
+
 # Defaults without marker. 2026-09-06 (Tom): every EdgeVector repo is a Forgejo
 # gate of record; LastGit is opt-in only; GitHub copies are read-only mirrors,
 # so an unknown repo defaults to forgejo, never github or lastgit.
