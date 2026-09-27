@@ -37,6 +37,8 @@
 #   --surfaces a,b          file surfaces claim-v2 compares; when absent the
 #                           helper derives them from repo paths the body
 #                           names (last-stack-kanban-derive-surfaces)
+#   --allow-broad-surface   allow an intentional whole-directory surface such
+#                           as dir/** or an unresolved bare directory token
 #   --no-derive-surfaces    keep an empty surface list (reserve the repo)
 #   --board BOARD           default: default
 #   --ensure-milestone      create the milestone if it is missing
@@ -120,6 +122,7 @@ difficulty=""
 tags=""
 deps=""
 surfaces=""
+allow_broad_surface=0
 derive_surfaces=1
 board="default"
 ensure_ms=0
@@ -144,6 +147,7 @@ while [ "$#" -gt 0 ]; do
     --difficulty) difficulty="${2:-}"; shift 2 ;;
     --deps) deps="${2:-}"; shift 2 ;;
     --surfaces) surfaces="${2:-}"; shift 2 ;;
+    --allow-broad-surface) allow_broad_surface=1; shift ;;
     --no-derive-surfaces) derive_surfaces=0; shift ;;
     --board) board="${2:-}"; shift 2 ;;
     --ensure-milestone) ensure_ms=1; shift ;;
@@ -399,8 +403,8 @@ fi
 # 2026-09-25T21:45Z: 13 ready cards, none with surfaces, claim result=none.
 # Derive them from the paths the brief names; an empty answer keeps the
 # whole-repo reservation.
+derive_bin="$ROOT/bin/last-stack-kanban-derive-surfaces"
 if [ "$kind" = "pr" ] && [ -z "$surfaces" ] && [ "$derive_surfaces" -eq 1 ]; then
-  derive_bin="$ROOT/bin/last-stack-kanban-derive-surfaces"
   if [ -x "$derive_bin" ]; then
     surfaces="$(printf '%s\n' "$body" | "$derive_bin" --repo "$repo" --base "$base" 2>/dev/null || true)"
   fi
@@ -410,6 +414,63 @@ if [ "$kind" = "pr" ] && [ -z "$surfaces" ] && [ "$derive_surfaces" -eq 1 ]; the
     printf 'last-stack-kanban-file-pr: WARNING %s names no repo path; it reserves all of %s and runs alone there. Pass --surfaces a,b or name files in the body.\n' "$slug" "$repo" >&2
   fi
 fi
+
+surface_is_bare_directory() {
+  local token="$1" base ext
+  case "$token" in
+    */*) ;;
+    *) return 1 ;;
+  esac
+  case "$token" in
+    *'/**'|*'*'*|*'?'*|*'['*) return 1 ;;
+  esac
+  base="${token##*/}"
+  case "$base" in
+    *.*)
+      ext="${base##*.}"
+      [ -n "$ext" ] || return 0
+      return 1
+      ;;
+    *) return 0 ;;
+  esac
+}
+
+validate_surfaces() {
+  local raw token candidates
+  local -a tokens
+  [ -n "$surfaces" ] || return 0
+  [ "$allow_broad_surface" -eq 1 ] && return 0
+  IFS=',' read -r -a tokens <<< "$surfaces"
+  for raw in "${tokens[@]}"; do
+    token="$(printf '%s' "$raw" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    [ -n "$token" ] || continue
+    case "$token" in
+      */*) ;;
+      *) continue ;;
+    esac
+    case "$token" in
+      *'/**'|*'*'*|*'?'*|*'['*) continue ;;
+    esac
+    candidates=""
+    if [ -x "$derive_bin" ]; then
+      candidates="$(printf '\n' | "$derive_bin" --repo "$repo" --base "$base" --suggest "$token" 2>/dev/null || true)"
+    fi
+    # An extensionless tracked file is a safe exact surface. A directory
+    # returns its child files, so the same lookup gives the caller a useful
+    # correction without duplicating mirror traversal here.
+    case ",$candidates," in
+      *,"$token",*) continue ;;
+    esac
+    if [ -n "$candidates" ]; then
+      die "surface '$token' is a bare directory; name real files or use '$token/**' (tracked candidates: $candidates), or pass --allow-broad-surface to reserve the whole directory"
+    fi
+    if surface_is_bare_directory "$token"; then
+      die "surface '$token' is a bare directory or unresolved extensionless path; name real files or a glob such as '$token/**', or pass --allow-broad-surface to reserve the whole directory"
+    fi
+  done
+}
+
+validate_surfaces
 
 add_args=(
   add "$slug"

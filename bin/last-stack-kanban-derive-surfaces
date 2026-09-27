@@ -3,7 +3,7 @@
 
 Usage:
   last-stack-kanban-derive-surfaces --repo OWNER/NAME [--base main]
-      [--mirror PATH] [--max N] < body.md
+      [--mirror PATH] [--max N] [--suggest TOKEN] < body.md
 
 Prints a comma-separated list of repository-relative paths on stdout (empty
 when nothing matches) and always exits 0 unless the arguments are wrong.
@@ -35,6 +35,7 @@ import sys
 TOKEN_RE = re.compile(r"[A-Za-z0-9_.\-/]+")
 MAX_BASENAME_HITS = 3
 MAX_SUBSTRING_HITS = 6
+MAX_SUGGESTIONS = 5
 
 
 def strip_decision_check(body: str) -> str:
@@ -133,6 +134,15 @@ def derive(body: str, paths: list, max_out: int) -> list:
     return found[:max_out]
 
 
+def suggest_paths(token: str, paths: list) -> list:
+    """Return tracked files that explain or refine a surface token."""
+    token = normalize_token(token)
+    if token in paths:
+        return [token]
+    prefix = token.rstrip("/") + "/"
+    return [path for path in paths if path.startswith(prefix)][:MAX_SUGGESTIONS]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--repo", required=True, help="OWNER/NAME")
@@ -140,6 +150,7 @@ def main() -> int:
     ap.add_argument("--mirror", default="", help="bare mirror path (default: <mirror root>/<name>.git)")
     ap.add_argument("--max", type=int, default=20, dest="max_out")
     ap.add_argument("--timeout", type=int, default=30, help="seconds for the git read")
+    ap.add_argument("--suggest", default="", help="print tracked file candidates for a surface token")
     args = ap.parse_args()
 
     if "/" not in args.repo:
@@ -157,6 +168,9 @@ def main() -> int:
     paths = tracked_paths(mirror, "refs/remotes/origin/" + args.base, args.timeout)
     if not paths:
         paths = tracked_paths(mirror, "refs/heads/" + args.base, args.timeout)
+    if args.suggest:
+        print(",".join(suggest_paths(args.suggest, paths)))
+        return 0
     print(",".join(derive(body, paths, args.max_out)))
     return 0
 
