@@ -53,11 +53,26 @@ if [ "${1:-}" = artifact ] && [ "${2:-}" = publish ]; then
   exit 0
 fi
 if [ "${1:-}" = ref ] && [ "${2:-}" = last-stack ] && [ "${3:-}" = main ]; then
-  jq -n --arg oid "${LASTGIT_TEST_MAIN_OID:-$LASTGIT_CI_OID}" \
+  main_oid="${LASTGIT_TEST_MAIN_OID:-$LASTGIT_CI_OID}"
+  if [ -n "${LASTGIT_TEST_MAIN_OID_FILE:-}" ]; then
+    main_oid="$(cat "$LASTGIT_TEST_MAIN_OID_FILE")"
+  fi
+  if [ "${LASTGIT_TEST_BLOCK_REF_OID:-}" = "$LASTGIT_CI_OID" ]; then
+    : > "$LASTGIT_TEST_REF_BLOCKED"
+    while [ ! -e "$LASTGIT_TEST_RELEASE_REF" ]; do sleep 0.02; done
+  fi
+  jq -n --arg oid "$main_oid" \
     '{repo:"last-stack",name:"refs/heads/main",oid:$oid,source:"point"}'
   exit 0
 fi
 if [ "${1:-}" = artifact ] && [ "${2:-}" = promote ]; then
+  if [ -n "${LASTGIT_TEST_PROMOTE_ORDER:-}" ]; then
+    printf '%s\n' "$LASTGIT_CI_OID" >> "$LASTGIT_TEST_PROMOTE_ORDER"
+  fi
+  if [ "${LASTGIT_TEST_PROMOTE_SUCCEED_FIRST:-0}" = 1 ]; then
+    printf 'ARTIFACT promote app=last-stack\n'
+    exit 0
+  fi
   count=0
   [ ! -f "$LASTGIT_TEST_ATTEMPTS" ] || count="$(cat "$LASTGIT_TEST_ATTEMPTS")"
   count=$((count + 1))
@@ -139,6 +154,83 @@ grep -q "skip stable promotion for superseded oid=$oid current_main=$newer_oid" 
   || fail "superseded release did not report why it skipped promotion"
 grep -q 'last-stack artifact release PASSED (superseded)' "$tmp/superseded.out" \
   || fail "superseded release did not report success"
+
+# Hold the same lock across the main-tip read and the channel update. This
+# forces an older job that already read main to finish before a newer promotion.
+# Without the lock, the blocked old ref returns after the new promotion and
+# moves stable backward.
+: > "$calls"
+old_oid="$(printf 'a%.0s' {1..40})"
+new_oid="$(printf 'b%.0s' {1..40})"
+main_oid_file="$tmp/main-oid"
+ref_blocked="$tmp/ref-blocked"
+release_ref="$tmp/release-ref"
+promote_order="$tmp/promote-order"
+promotion_lock="$tmp/stable.lock"
+fake_bin="$tmp/fake-bin"
+mkdir -p "$fake_bin"
+cat > "$fake_bin/git" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = rev-parse ] && [ "${2:-}" = HEAD ]; then
+  printf '%s\n' "$LASTGIT_CI_OID"
+  exit 0
+fi
+exec /usr/bin/git "$@"
+SH
+chmod +x "$fake_bin/git"
+printf '%s\n' "$old_oid" > "$main_oid_file"
+
+PATH="$fake_bin:$PATH" \
+LASTGIT_BIN="$fake_lastgit" \
+LASTGIT_CI_CONTEXT=artifact-release \
+LASTGIT_CI_REPO=last-stack \
+LASTGIT_CI_OID="$old_oid" \
+LASTGIT_TEST_CALLS="$calls" \
+LASTGIT_TEST_ATTEMPTS="$tmp/old-attempts" \
+LASTGIT_TEST_MAIN_OID_FILE="$main_oid_file" \
+LASTGIT_TEST_BLOCK_REF_OID="$old_oid" \
+LASTGIT_TEST_REF_BLOCKED="$ref_blocked" \
+LASTGIT_TEST_RELEASE_REF="$release_ref" \
+LASTGIT_TEST_PROMOTE_ORDER="$promote_order" \
+LASTGIT_TEST_PROMOTE_SUCCEED_FIRST=1 \
+LAST_STACK_ARTIFACT_RELEASE_LOCK="$promotion_lock" \
+LAST_STACK_ARTIFACT_RELEASE_RETRY_SECONDS=1 \
+LAST_STACK_ARTIFACT_RELEASE_MAX_ATTEMPTS=10 \
+  "$release_script" > "$tmp/old-release.out" 2> "$tmp/old-release.err" &
+old_pid=$!
+for ((wait_attempt=1; wait_attempt<=100; wait_attempt++)); do
+  [ ! -e "$ref_blocked" ] || break
+  sleep 0.02
+done
+[ -e "$ref_blocked" ] || fail "old release did not pause after its main-tip read"
+
+printf '%s\n' "$new_oid" > "$main_oid_file"
+PATH="$fake_bin:$PATH" \
+LASTGIT_BIN="$fake_lastgit" \
+LASTGIT_CI_CONTEXT=artifact-release \
+LASTGIT_CI_REPO=last-stack \
+LASTGIT_CI_OID="$new_oid" \
+LASTGIT_TEST_CALLS="$calls" \
+LASTGIT_TEST_ATTEMPTS="$tmp/new-attempts" \
+LASTGIT_TEST_MAIN_OID_FILE="$main_oid_file" \
+LASTGIT_TEST_PROMOTE_ORDER="$promote_order" \
+LASTGIT_TEST_PROMOTE_SUCCEED_FIRST=1 \
+LAST_STACK_ARTIFACT_RELEASE_LOCK="$promotion_lock" \
+LAST_STACK_ARTIFACT_RELEASE_RETRY_SECONDS=1 \
+LAST_STACK_ARTIFACT_RELEASE_MAX_ATTEMPTS=10 \
+  "$release_script" > "$tmp/new-release.out" 2> "$tmp/new-release.err" &
+new_pid=$!
+
+: > "$release_ref"
+wait "$old_pid" || fail "old release failed during the promotion race"
+wait "$new_pid" || fail "new release failed during the promotion race"
+[ "$(sed -n '1p' "$promote_order")" = "$old_oid" ] \
+  || fail "new release promoted before the locked old release"
+[ "$(sed -n '2p' "$promote_order")" = "$new_oid" ] \
+  || fail "old release promoted after the newer release"
+[ "$(wc -l < "$promote_order" | tr -d ' ')" = 2 ] \
+  || fail "promotion race wrote an unexpected number of channel updates"
 
 jq -e '
   .apps[] | select(.app == "last-stack")
