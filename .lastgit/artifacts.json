@@ -4,6 +4,8 @@
       "app": "last-stack",
       "context": "artifact-release",
       "paths": [
+        ".forgejo",
+        ".lastgit/artifacts.json",
         "VERSION",
         "setup",
         "bin",

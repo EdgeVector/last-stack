@@ -113,6 +113,8 @@ git -C "$source_repo" config commit.gpgsign true
 mkdir -p "$source_repo/.lastgit"
 cp "$ROOT/.lastgit/artifact-release.sh" "$source_repo/.lastgit/artifact-release.sh"
 cp "$ROOT/.lastgit/artifacts.json" "$source_repo/.lastgit/artifacts.json"
+mkdir -p "$source_repo/.forgejo/workflows"
+cp "$ROOT/.forgejo/workflows/ci.yml" "$source_repo/.forgejo/workflows/ci.yml"
 cat >"$source_repo/.lastgit/ci-required.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
