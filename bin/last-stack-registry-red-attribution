@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# Attribute a llms-txt-install-smoke proof's fails[] entries to the app each
+# one names, or to "shared" when the check says something about the isolated
+# node or its install pipeline as a whole rather than about one app.
+#
+# Extracted out of last-stack-registry-publish-next so the attribution rules
+# have their own fixture test (tests/last-stack-registry-red-attribution.sh)
+# that needs no lastdb signing key, no forge, and no git clone — just proof
+# JSON in, a verdict out.
+#
+# Check-name shapes the smoke (skills/llms-txt-install-smoke/run.sh) emits:
+#   install-apps:<app>:<mode> ...   -> <app>
+#   cli:<app>=... / cli:<app> ...   -> <app>
+#   <app>:<check> ...                -> <app>  (only when <app> is known)
+#   prereq:*, setup, daemon:*, health:*, brew-service:*, resolver:*,
+#   "install-apps missing", or a RED verdict with no fails[] at all
+#                                     -> shared (the harness itself, or the
+#                                        install pipeline as a whole, failed)
+#
+# A shared fail means the proof is worthless for every app: write zero rows.
+# A RED with only per-app fails means the apps with none of their own may
+# still be proved.
+set -euo pipefail
+
+PROOF_JSON=""
+KNOWN_APPS="${LAST_STACK_REGISTRY_KNOWN_APPS:-brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser}"
+
+usage() {
+  cat <<'USAGE'
+last-stack-registry-red-attribution --proof FILE [--known-apps "a b c"]
+
+Prints, on stdout:
+  verdict=GREEN
+or
+  verdict=RED
+  shared_fail=0|1
+  passed_apps=<space-separated known apps with no fail of their own>
+  failed_apps=<space-separated known apps attributed at least one fail>
+
+Env: LAST_STACK_REGISTRY_KNOWN_APPS (space-separated; same default as
+     last-stack-registry-publish-next)
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --proof) PROOF_JSON="$2"; shift 2 ;;
+    --known-apps) KNOWN_APPS="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+
+die() { printf 'last-stack-registry-red-attribution: %s\n' "$*" >&2; exit 1; }
+[ -n "$PROOF_JSON" ] && [ -f "$PROOF_JSON" ] || die "--proof FILE is required"
+command -v jq >/dev/null 2>&1 || die "jq is required"
+
+verdict="$(jq -r '.verdict // empty' "$PROOF_JSON")"
+if [ "$verdict" = GREEN ]; then
+  printf 'verdict=GREEN\n'
+  exit 0
+fi
+
+fails_count="$(jq -r '(.fails // []) | length' "$PROOF_JSON" 2>/dev/null || echo 0)"
+shared_fail=0
+attributed_apps=""
+if [ "$fails_count" -eq 0 ]; then
+  # No fails[] to attribute (e.g. the bare prereqs-shape RED verdict) names
+  # nothing, so it is unattributable and therefore shared.
+  shared_fail=1
+fi
+
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  app=""
+  case "$f" in
+    install-apps:*)
+      app="${f#install-apps:}"
+      app="${app%%:*}"
+      ;;
+    cli:*)
+      rest="${f#cli:}"
+      app="${rest%% *}"
+      app="${app%%=*}"
+      ;;
+    *)
+      for a in $KNOWN_APPS; do
+        case "$f" in
+          "$a":*) app="$a" ;;
+        esac
+      done
+      ;;
+  esac
+  known=0
+  for a in $KNOWN_APPS; do
+    [ "$app" = "$a" ] && known=1 && break
+  done
+  if [ "$known" -eq 1 ]; then
+    case " $attributed_apps " in
+      *" $app "*) ;;
+      *) attributed_apps="$attributed_apps $app" ;;
+    esac
+  else
+    shared_fail=1
+  fi
+done < <(jq -r '(.fails // [])[]' "$PROOF_JSON" 2>/dev/null || true)
+
+passed_apps=""
+for a in $KNOWN_APPS; do
+  case " $attributed_apps " in
+    *" $a "*) ;;
+    *) passed_apps="$passed_apps $a" ;;
+  esac
+done
+
+printf 'verdict=RED\n'
+printf 'shared_fail=%s\n' "$shared_fail"
+printf 'passed_apps=%s\n' "${passed_apps# }"
+printf 'failed_apps=%s\n' "${attributed_apps# }"
