@@ -526,6 +526,13 @@ decompose the entry as fresh idle_empty:
    `sentry_failure_visible`, `restore_from_empty_home`). One card carries the
    next concrete slice for those clauses only. Do not invent unrelated scope —
    the goal is making the *existing* proof pass, not a new feature slice.
+   Same column rule as Decompose step 4: unblocked → `--column todo`;
+   dep-held → `--column backlog` + `--deps`. A repair card is a `Kind: pr`,
+   not a proof/validation card — do not default it to `--column backlog` by
+   analogy with proof cards. An unblocked repair card filed to `backlog`
+   sits invisible to pickup until the next `last-stack-groom-board` sweep
+   (its cadence can be hours), stalling the exact repair this path exists to
+   unblock.
 4. Do not waive or reclassify the FAIL. `complete_proof` only fires later,
    from fresh PASS evidence produced by step 2 or by the repair card's own
    merged fix and re-run. When that re-run writes a PASS verdict line last,
