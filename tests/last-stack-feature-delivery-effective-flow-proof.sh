@@ -158,6 +158,8 @@ PY
 
 "$BIN" --live --fixture "$TMP/pass.json" --report "$TMP/pass.md" >/dev/null
 [ "$(head -n 1 "$TMP/pass.md")" = PASS ] || fail "a complete fixture must write PASS"
+grep -qx 'PROOF: PASS' "$TMP/pass.md" \
+  || fail "a passing proof must write the terminal PROOF: PASS marker"
 grep -q 'warm_limit_bytes.*4294967296' "$TMP/pass.md" \
   || fail "a passing soak must report the 4 GiB warm-cache limit"
 for commit in \
@@ -281,6 +283,9 @@ if "$BIN" --live --fixture "$TMP/fail.json" --report "$TMP/fail.md" >/dev/null 2
   fail "a failed live probe must fail the command"
 fi
 [ "$(head -n 1 "$TMP/fail.md")" = FAIL ] || fail "a failed probe must write FAIL"
+if grep -qx 'PROOF: PASS' "$TMP/fail.md"; then
+  fail "a failed proof must not write the terminal PROOF: PASS marker"
+fi
 
 NORTH_STAR_PROOF_DIR="$TMP/offline" "$BIN" --offline >/dev/null
 [ "$(head -n 1 "$TMP/offline/north-star-feature-delivery-effective-flow.md")" = PENDING-OFFLINE ] \

@@ -87,6 +87,15 @@ def now() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def after(hours: int) -> str:
+    return (
+        (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=hours))
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
 def board_milestone_mismatch_line(text: str) -> str | None:
     for line in text.splitlines():
         if BOARD_MILESTONE_MISMATCH in line:
@@ -632,7 +641,7 @@ def probe_provider_fallback() -> dict[str, Any]:
                     "kind": "usage-limit",
                     "lastSeenAt": now(),
                     "situationSlug": "feature-provider-proof",
-                    "expiresAt": "2099-01-01T00:00:00Z",
+                    "expiresAt": after(24),
                 }
             )
             + "\n"
@@ -1050,6 +1059,8 @@ def render(report: dict[str, Any], offline: bool = False) -> str:
         f"Verdict: {first_line}",
         "",
     ]
+    if not offline and verdict == "PASS":
+        lines[2:2] = ["PROOF: PASS", ""]
     components = report.get("components", {})
     probes = report.get("probes", {})
     for clause in report.get("clauses", []):
