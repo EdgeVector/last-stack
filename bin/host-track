@@ -915,6 +915,7 @@ artifact_promote_channel_to_main() {
     --repo "$repo" \
     --oid "$deploy_oid" \
     --context ci-required \
+    --require-current-ref "refs/heads/$ref" \
     --root "$artifact_root" \
     --json >/dev/null 2>&1; then
     printf 'host-track: %s promote failed for oid=%s (will install current channel if any)\n' \

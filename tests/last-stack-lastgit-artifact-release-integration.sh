@@ -234,16 +234,32 @@ printf '%s\n' "$resolved_after_replay" | jq -e --arg oid "$merge_oid" \
 
 ref_oid="$("${lastgit_env[@]}" "$lastgit_bin" ref last-stack main | cut -f1)"
 [ "$ref_oid" = "$merge_oid" ] || fail "LastGit main ref does not name the merge"
-ci_required_json="$("${lastgit_env[@]}" "$lastgit_bin" ci status "$merge_oid" \
-  --repo last-stack --context ci-required --json)"
-ci_release_json="$("${lastgit_env[@]}" "$lastgit_bin" ci status "$merge_oid" \
-  --repo last-stack --context artifact-release --json)"
-printf '%s\n' "$ci_required_json" | jq -e '
-  .context == "ci-required" and .state == "success"
-' >/dev/null || fail "ci-required watcher did not pass for the merge: $ci_required_json"
-printf '%s\n' "$ci_release_json" | jq -e '
-  .context == "artifact-release" and .state == "success"
-' >/dev/null || fail "artifact-release watcher did not pass for the merge: $ci_release_json"
+
+# The watcher records its terminal ci-verdict AFTER its child script exits,
+# while `artifact resolve` (polled above) reflects the promote CAS write made
+# DURING that script. These are two independent writes, so a verdict can
+# still read "pending" for an instant after resolve already shows the new
+# oid. Poll instead of a single point read.
+wait_for_ci_success() {
+  local context="$1" oid="$2" json=""
+  for _ in $(seq 1 40); do
+    kill -0 "$required_pid" 2>/dev/null || fail "ci-required watcher exited"
+    kill -0 "$release_pid" 2>/dev/null || fail "artifact-release watcher exited"
+    json="$("${lastgit_env[@]}" "$lastgit_bin" ci status "$oid" \
+      --repo last-stack --context "$context" --json 2>/dev/null || true)"
+    if printf '%s\n' "$json" | jq -e --arg ctx "$context" '
+      .context == $ctx and .state == "success"
+    ' >/dev/null 2>&1; then
+      printf '%s\n' "$json"
+      return 0
+    fi
+    sleep 0.25
+  done
+  fail "$context watcher did not pass for the merge: ${json:-<no response>}"
+}
+
+ci_required_json="$(wait_for_ci_success ci-required "$merge_oid")"
+ci_release_json="$(wait_for_ci_success artifact-release "$merge_oid")"
 
 cat >"$registry" <<JSON
 {
