@@ -32,10 +32,13 @@ pauses their live registry entries.
    per app from `config/registry/apps.json`: the app's artifact channel head
    (built and green-published), else `main` of the app's gate of record. Since
    LastGit era 3 the gate of record is the `lastgit` field
-   (`lastdb:///<repo>`). The Forgejo copy (`forge`) is frozen, and the set
-   uses it only when `git-remote-lastdb` is not on PATH (with a WARNING). Each
-   row records `source` (the clone source for `--pins`, and the `next` row
-   source), `source_venue`, `source_reachable`, and `public_source`. Output:
+   (`lastdb:///<repo>`). The Forgejo copy (`forge`) is frozen. The set probes
+   each pin on LastGit first and then on Forgejo, and takes the first source
+   that serves it. A commit released before the cutover to a LastGit repo that
+   was seeded from a squash is on Forgejo only (NOTE, `source_fallback_from`).
+   A pin that no source serves gets a WARNING and `source_reachable: false`.
+   Each row records `source` (the clone source for `--pins`, and the `next`
+   row source), `source_venue`, and `public_source`. Output:
    `$ROUTINES_RUN_DIR/candidate-set.json`.
 4. **smoke** — `skills/llms-txt-install-smoke/run.sh --json` with
    `SMOKE_LASTDBD_BIN=<candidate lastdbd>` and `SMOKE_CANDIDATE_SET=<file>`.
@@ -53,7 +56,11 @@ pauses their live registry entries.
    adds one compat row per app to `registry/next.json` on the tap repo, writes
    `registry/proofs/<proof_run>.json`, signs with
    `~/.lastdb/registry-index-signing.key` through `lastdb app index sign`, and
-   opens an auto-merging Forgejo PR on `EdgeVector/homebrew-lastdb`.
+   opens an auto-merging LastGit CR on `lastdb:///homebrew-lastdb`
+   (`--require-status ci-required`). Since LastGit era 3 (2026-09-27) the tap's
+   GitHub mirror, which `lastdb app resolve` reads, follows LastGit. A row
+   merged on the frozen Forgejo copy never reaches a reader.
+   `LAST_STACK_REGISTRY_TAP_VENUE=forgejo` keeps the old Forgejo PR path.
 
 ## Promote material and the automatic publish
 

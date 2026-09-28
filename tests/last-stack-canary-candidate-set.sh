@@ -93,6 +93,30 @@ run_set "$work/auto.json" "$helper_bin:$PATH" || { cat "$work/auto.json.stderr" 
 [ "$(jq -r .apps.noart.forge_source "$work/auto.json")" = "$work/forge-noart.git" ] || fail "forge_source missing"
 if grep -q WARNING "$work/auto.json.stderr"; then fail "auto run warned: $(cat "$work/auto.json.stderr")"; fi
 
+# --- 1b. a LastGit repo seeded from a squash does not have a commit released
+# before the cutover; the frozen Forgejo copy does (situations, 2026-09-28).
+# auto falls back to Forgejo, and a warm version cache that already holds the
+# commit must not hide the gap.
+jq -n --arg oid "$(cat "$work/old-withart")" '{source_oid: $oid}' >"$work/artifacts/channels/withart/stable.json"
+squash="$work/src-squash"
+git init --quiet -b main "$squash"
+commit "$squash" 9.9.9 >"$work/squash-seed"
+rm -rf "$work/lastgit-withart.git"
+git clone --quiet --bare "$squash" "$work/lastgit-withart.git"
+# Warm the cache through the Forgejo copy first.
+run_set "$work/auto.json" "$helper_bin:$PATH" --source-venue forge || { cat "$work/auto.json.stderr" >&2; fail "cache warm run failed"; }
+run_set "$work/auto.json" "$helper_bin:$PATH" || { cat "$work/auto.json.stderr" >&2; fail "squash run failed"; }
+[ "$(jq -r .apps.withart.sha "$work/auto.json")" = "$(cat "$work/old-withart")" ] || fail "squash: pin moved"
+[ "$(jq -r .apps.withart.source "$work/auto.json")" = "$work/forge-withart.git" ] || fail "squash: no fallback to the copy that has the commit"
+[ "$(jq -r .apps.withart.source_venue "$work/auto.json")" = forge ] || fail "squash: venue"
+[ "$(jq -r .apps.withart.source_fallback_from "$work/auto.json")" = lastgit ] || fail "squash: fallback not recorded"
+[ "$(jq -r .apps.withart.source_reachable "$work/auto.json")" = true ] || fail "squash: reachable"
+grep -q 'NOTE withart' "$work/auto.json.stderr" || fail "squash: fallback was silent"
+# Put the full-history LastGit copy and the new artifact head back.
+rm -rf "$work/lastgit-withart.git"
+git clone --quiet --bare "$work/src-withart" "$work/lastgit-withart.git"
+jq -n --arg oid "$(cat "$work/new-withart")" '{source_oid: $oid}' >"$work/artifacts/channels/withart/stable.json"
+
 # --- 2. forge venue: the frozen copy ----------------------------------------
 run_set "$work/forge.json" "$helper_bin:$PATH" --source-venue forge || { cat "$work/forge.json.stderr" >&2; fail "forge run failed"; }
 [ "$(jq -r .apps.noart.sha "$work/forge.json")" = "$(cat "$work/old-noart")" ] || fail "forge venue did not read the frozen main"
