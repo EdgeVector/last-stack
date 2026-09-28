@@ -18,6 +18,16 @@ fail() {
 jq -e '.artifacts[] | select(.app == "last-stack") | .paths | index("launchd")' \
   "$ROOT/.lastgit/artifacts.json" >/dev/null || fail "artifact bundle omits LaunchAgent templates"
 
+# The proof runner is invoked from the installed artifact. Include its Forge
+# workflow and manifest so it verifies the same release contract as a checkout.
+jq -e '
+  .artifacts[]
+  | select(.app == "last-stack")
+  | .paths
+  | index(".forgejo") != null and index(".lastgit/artifacts.json") != null
+' "$ROOT/.lastgit/artifacts.json" >/dev/null \
+  || fail "artifact bundle omits the Forge workflow or artifact manifest"
+
 export HOME="$tmp/home"
 compat="$HOME/.last-stack"
 install_root="$HOME/.local/state/last-stack/artifacts"
