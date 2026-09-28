@@ -70,11 +70,14 @@ reject() {
 new_run() { run_id="$1";run_dir="$TMP/$1";artifact="$run_dir/milestone-driver/gap-report.json";capture >/dev/null; }
 file_card() { guard "$TMP/bin/last-stack-kanban-file-pr" "$1" --milestone release --north-star ns --repo EdgeVector/fold --title title --column todo --surfaces src/a.ts; }
 
-# Preflight rejects before any board read and clears old snapshot artifacts.
+# Preflight rejects before any board read and preserves the prior artifact
+# (papercut-milestone-driver-final-capture-silent-artifact-loss-20260926:
+# a mid-capture failure must never delete a good artifact with nothing to
+# replace it).
 mkdir -p "$run_dir/milestone-driver"
 echo '{}' >"$artifact"
 if PREFLIGHT_RC=75 capture >"$TMP/preflight.out" 2>"$TMP/preflight.err"; then fail 'preflight accepted';fi
-[ ! -e "$artifact" ] || fail 'old snapshot survived failed preflight'
+[ -e "$artifact" ] || fail 'old snapshot lost on failed preflight'
 [ ! -s "$FIXTURE_READS" ] || fail 'failed preflight read board'
 grep -q 'no_board_commands=1' "$TMP/preflight.err" || fail 'preflight diagnostic missing'
 capture >"$TMP/capture.json"
@@ -236,7 +239,11 @@ python3 "$TMP/timeout.py" "$HELPER"
 
 # Prior busy/error inventory diagnostics remain visible.
 new_run portfolio-failure
+prior_run_epoch="$(jq -r '._milestone_driver_run.created_epoch' "$artifact")"
 if FAIL_PORTFOLIO=1 capture >"$TMP/pf.out" 2>"$TMP/pf.err";then fail 'portfolio failure accepted';fi
 grep -q 'board-read-failed step=portfolio rc=1' "$TMP/pf.err" || fail 'portfolio diagnostic lost'
 grep -q 'permission refused' "$TMP/pf.err" || fail 'stderr detail lost'
+[ -e "$artifact" ] || fail 'good gap-report lost after board-read failure'
+[ "$(jq -r '._milestone_driver_run.created_epoch' "$artifact")" = "$prior_run_epoch" ] || fail 'gap-report replaced despite board-read failure'
+"$HELPER" verify --run-dir "$run_dir" --run-id portfolio-failure --artifact "$artifact" >/dev/null || fail 'surviving artifact from the prior successful capture no longer verifies'
 printf '%s\n' 'ok: milestone driver preserves proof, prerequisite gates, scope, cap, ledger, lock, freshness and preflight'
