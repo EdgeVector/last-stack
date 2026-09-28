@@ -129,4 +129,84 @@ PATH="$old_bin:$PATH" "$BIN" --no-brew --source-only --dir "$legacy_dir" >"$work
 grep -q 'has no `app resolve`' "$work/legacy.out" || fail "legacy note missing"
 [ "$(jq -r .mode "$legacy_dir/.lastdb-app-receipts/brain.json")" = unproved-main ] || fail "legacy receipt mode"
 
+# --- 4. one broken pin does not cost the other apps their install ------------
+# Regression: papercut-canary-primary-rows-smoke-red-0-23-3-2375-ga7bac36f1.
+# routines (4th in install order) pinned a commit its source did not have, the
+# installer exited at once, and the 5 apps after it had no receipt at all.
+bad_sha="0123456789abcdef0123456789abcdef01234567"
+jq --arg sha "$bad_sha" '.apps.routines.sha = $sha' "$work/cset.json" >"$work/cset-broken.json"
+broken_dir="$work/apps-broken"
+if "$BIN" --no-brew --source-only --pins "$work/cset-broken.json" --dir "$broken_dir" >"$work/broken.out" 2>&1; then
+  cat "$work/broken.out" >&2; fail "a broken pin exited 0"
+fi
+for app in "${APPS[@]}"; do
+  [ "$app" = routines ] && continue
+  [ "$(git -C "$broken_dir/$app" rev-parse HEAD 2>/dev/null)" = "$(first "$app")" ] \
+    || { cat "$work/broken.out" >&2; fail "$app was not installed after routines failed"; }
+  [ "$(jq -r .mode "$broken_dir/.lastdb-app-receipts/$app.json" 2>/dev/null)" = pinned ] \
+    || fail "$app has no pinned receipt after routines failed"
+done
+[ "$(jq -r .mode "$broken_dir/.lastdb-app-receipts/routines.json")" = failed ] || fail "routines receipt is not failed"
+[ "$(jq -r .stage "$broken_dir/.lastdb-app-receipts/routines.json")" = source ] || fail "routines receipt stage"
+[ "$(jq -r .sha "$broken_dir/.lastdb-app-receipts/routines.json")" = "$bad_sha" ] || fail "routines receipt sha"
+grep -q 'FAILED routines (stage: source)' "$work/broken.out" || fail "summary does not name routines: $(tail -5 "$work/broken.out")"
+grep -q '1 of 9 apps FAILED' "$work/broken.out" || fail "summary count missing: $(tail -5 "$work/broken.out")"
+
+# A failed rerun must overwrite an earlier good receipt, never leave it.
+jq --arg sha "$bad_sha" '.apps.brain.sha = $sha' "$work/cset.json" >"$work/cset-brain-broken.json"
+"$BIN" --no-brew --source-only --pins "$work/cset-brain-broken.json" --dir "$apps_dir" >"$work/rerun.out" 2>&1 \
+  && fail "a broken brain pin exited 0"
+[ "$(jq -r .mode "$apps_dir/.lastdb-app-receipts/brain.json")" = failed ] || fail "stale pinned receipt survived a failed rerun"
+
+# --- 5. the pinned source wins over the clone's old origin -------------------
+# LastGit era 3 froze each app's Forgejo copy. A clone made from the frozen
+# copy must follow the candidate set's new source, not keep fetching the old
+# origin that will never have the commit.
+frozen="$work/frozen-search.git"
+git clone --quiet --bare "$work/src-search" "$frozen"
+git -C "$frozen" update-ref refs/heads/main "$(first search)"
+git -C "$frozen" reflog expire --expire=now --all 2>/dev/null || true
+git -C "$frozen" gc --quiet --prune=now 2>/dev/null || true
+moved_dir="$work/apps-moved"
+mkdir -p "$moved_dir"
+git clone --quiet "$frozen" "$moved_dir/search"
+if git -C "$moved_dir/search" cat-file -e "$(second search)^{commit}" 2>/dev/null; then
+  fail "fixture: the frozen clone already has the newer commit"
+fi
+jq --arg sha "$(second search)" --arg src "$work/search.git" \
+  '.apps = {search: (.apps.search + {sha: $sha, source: $src})}' "$work/cset.json" >"$work/cset-moved.json"
+"$BIN" --no-brew --source-only --pins "$work/cset-moved.json" --dir "$moved_dir" >"$work/moved.out" 2>&1 || true
+[ "$(git -C "$moved_dir/search" rev-parse HEAD)" = "$(second search)" ] \
+  || { cat "$work/moved.out" >&2; fail "existing clone did not follow the pinned source"; }
+[ "$(git -C "$moved_dir/search" remote get-url origin)" = "$work/search.git" ] || fail "origin was not moved to the pinned source"
+
+# --- 6. lastdb:// (LastGit) sources ------------------------------------------
+# The candidate set names lastdb:///<repo> since era 3. git reaches it through
+# the git-remote-lastdb helper; without the helper the app fails by name and
+# the rest still install. With it, the pinned commit installs from LastGit.
+# An insteadOf rewrite stands the local bare repo in for the LastGit remote.
+nohelper="$work/nohelper-bin"
+mkdir -p "$nohelper"
+for tool in git jq; do ln -s "$(command -v "$tool")" "$nohelper/$tool"; done
+jq '.apps.routines.source = "lastdb:///routines"' "$work/cset.json" >"$work/cset-lastgit.json"
+lg_dir="$work/apps-lastgit-nohelper"
+if PATH="$nohelper:/usr/bin:/bin" "$BIN" --no-brew --source-only --pins "$work/cset-lastgit.json" --dir "$lg_dir" \
+  >"$work/lg-nohelper.out" 2>&1; then
+  fail "a lastdb:// source without git-remote-lastdb exited 0"
+fi
+grep -q 'git-remote-lastdb is not on PATH' "$work/lg-nohelper.out" || fail "missing-helper message: $(tail -5 "$work/lg-nohelper.out")"
+[ "$(jq -r .mode "$lg_dir/.lastdb-app-receipts/search.json")" = pinned ] || fail "search did not install next to a lastdb:// failure"
+
+helper_bin="$work/helper-bin"
+mkdir -p "$helper_bin"
+printf '#!/bin/sh\necho "fixture helper must not run (insteadOf rewrites the URL)" >&2\nexit 1\n' >"$helper_bin/git-remote-lastdb"
+chmod +x "$helper_bin/git-remote-lastdb"
+lg_ok="$work/apps-lastgit"
+PATH="$helper_bin:$PATH" GIT_CONFIG_COUNT=1 \
+  GIT_CONFIG_KEY_0="url.$work/routines.git.insteadOf" GIT_CONFIG_VALUE_0="lastdb:///routines" \
+  "$BIN" --no-brew --source-only --pins "$work/cset-lastgit.json" --dir "$lg_ok" >"$work/lg.out" 2>&1 || {
+    cat "$work/lg.out" >&2; fail "lastdb:// pinned install failed"; }
+[ "$(git -C "$lg_ok/routines" rev-parse HEAD)" = "$(first routines)" ] || fail "routines not at the LastGit pin"
+[ "$(jq -r .source "$lg_ok/.lastdb-app-receipts/routines.json")" = "lastdb:///routines" ] || fail "receipt does not name the LastGit source"
+
 echo "PASS last-stack-install-apps-pins"

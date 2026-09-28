@@ -2,11 +2,18 @@
 # Write one candidate set's proved rows to the registry `next` channel.
 #
 # Input: the candidate set the smoke installed (last-stack-canary-candidate-set)
-# and the smoke's JSON verdict. Output: one PR on the Forgejo tap repo
+# and the smoke's JSON verdict. Output: one change on the tap repo
 # (EdgeVector/homebrew-lastdb) that adds a compat row per app to
 # registry/next.json, writes registry/proofs/<proof_run>.json, re-signs the
-# index, and arms auto-merge. Forge CI on the tap checks the digest and the
-# proof record, then merges; the GitHub mirror serves the file.
+# index, and arms auto-merge. The tap's CI checks the digest and the proof
+# record, then merges; the GitHub mirror serves the file to `lastdb app resolve`.
+#
+# Venue: since LastGit era 3 (2026-09-27) the tap's gate of record is LastGit
+# (lastdb:///homebrew-lastdb), and its GitHub mirror follows LastGit. The
+# Forgejo copy is frozen: a row merged there never reaches GitHub, so
+# `lastdb app resolve` never sees it. The default venue is therefore `lastgit`
+# (push + `lastgit cr create --auto-merge --require-status ci-required`);
+# LAST_STACK_REGISTRY_TAP_VENUE=forgejo keeps the old Forgejo PR path.
 #
 # Nothing here touches the primary node.
 #
@@ -34,7 +41,15 @@ export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 
 FORGE_ROOT_URL="${FORGE_ROOT_URL:-http://localhost:3300}"
 TAP_REPO="${LAST_STACK_REGISTRY_TAP_REPO:-EdgeVector/homebrew-lastdb}"
-TAP_URL="${LAST_STACK_REGISTRY_TAP_URL:-$FORGE_ROOT_URL/$TAP_REPO.git}"
+TAP_VENUE="${LAST_STACK_REGISTRY_TAP_VENUE:-lastgit}"   # lastgit | forgejo
+TAP_LASTGIT_SLUG="${LAST_STACK_REGISTRY_TAP_LASTGIT_SLUG:-${TAP_REPO#*/}}"
+TAP_CI_CONTEXT="${LAST_STACK_REGISTRY_TAP_CI_CONTEXT:-ci-required}"
+LASTGIT_BIN="${LASTGIT_BIN:-lastgit}"
+case "$TAP_VENUE" in
+  lastgit) TAP_URL="${LAST_STACK_REGISTRY_TAP_URL:-lastdb:///$TAP_LASTGIT_SLUG}" ;;
+  forgejo) TAP_URL="${LAST_STACK_REGISTRY_TAP_URL:-$FORGE_ROOT_URL/$TAP_REPO.git}" ;;
+  *) printf 'last-stack-registry-publish-next: LAST_STACK_REGISTRY_TAP_VENUE must be lastgit or forgejo, not %s\n' "$TAP_VENUE" >&2; exit 2 ;;
+esac
 TAP_DIR="${LAST_STACK_REGISTRY_TAP_DIR:-$HOME/.local/state/last-stack/registry-tap}"
 SIGNING_KEY="${LASTDB_REGISTRY_SIGNING_KEY:-$HOME/.lastdb/registry-index-signing.key}"
 FORGE_API="${FORGE_API_BIN:-$ROOT/bin/last-stack-forge-api}"
@@ -56,7 +71,8 @@ usage() {
 last-stack-registry-publish-next --candidate-set FILE --proof FILE [--proof-run ID] [--dry-run]
 
 Adds one compat row per app in the candidate set to registry/next.json on the
-tap repo, records the proof, signs, and opens an auto-merging Forgejo PR.
+tap repo, records the proof, signs, and opens an auto-merging change: a LastGit
+CR (default, the tap's gate of record since era 3) or a Forgejo PR.
 
   --candidate-set FILE  output of last-stack-canary-candidate-set
   --proof FILE          the smoke's JSON verdict. GREEN proves every app in
@@ -71,8 +87,11 @@ tap repo, records the proof, signs, and opens an auto-merging Forgejo PR.
   --strict-green        require verdict GREEN, exactly like before per-app
                          attribution existed; a RED proof of any shape dies
 
-Env: LAST_STACK_REGISTRY_TAP_URL, LAST_STACK_REGISTRY_TAP_DIR,
-     LASTDB_REGISTRY_SIGNING_KEY (default ~/.lastdb/registry-index-signing.key),
+Env: LAST_STACK_REGISTRY_TAP_VENUE (lastgit|forgejo, default lastgit),
+     LAST_STACK_REGISTRY_TAP_URL, LAST_STACK_REGISTRY_TAP_DIR,
+     LAST_STACK_REGISTRY_TAP_LASTGIT_SLUG, LAST_STACK_REGISTRY_TAP_CI_CONTEXT,
+     LASTGIT_BIN, LASTDB_REGISTRY_SIGNING_KEY (default
+     ~/.lastdb/registry-index-signing.key),
      LAST_STACK_REGISTRY_KNOWN_APPS (space-separated, for tests)
 
 Per-app attribution of a RED proof's fails[] entries:
@@ -165,6 +184,11 @@ if [ "$DRY_RUN" -eq 1 ]; then
   trap 'rm -rf "$TAP_DIR"' EXIT
 fi
 if [ -d "$TAP_DIR/.git" ]; then
+  # Follow the venue: a checkout cloned from the frozen Forgejo copy would
+  # rebase onto rows that stopped moving at the era-3 cutover.
+  if [ "$(git -C "$TAP_DIR" remote get-url origin 2>/dev/null || true)" != "$TAP_URL" ]; then
+    git -C "$TAP_DIR" remote set-url origin "$TAP_URL"
+  fi
   git -C "$TAP_DIR" fetch --quiet origin main
   git -C "$TAP_DIR" checkout --quiet -B main origin/main
   git -C "$TAP_DIR" reset --quiet --hard origin/main
@@ -252,6 +276,36 @@ fi
 if [ "$DRY_RUN" -eq 1 ]; then
   printf 'REGISTRY_NEXT status=dry-run build=%s apps=%s proof_run=%s dir=%s\n' "$build" "$count" "$PROOF_RUN" "$TAP_DIR"
   git -C "$TAP_DIR" show --stat HEAD | head -20
+  exit 0
+fi
+
+if [ "$TAP_VENUE" = lastgit ]; then
+  command -v "$LASTGIT_BIN" >/dev/null 2>&1 || die "lastgit CLI not found ($LASTGIT_BIN); set LASTGIT_BIN or LAST_STACK_REGISTRY_TAP_VENUE=forgejo"
+  # The CR opens on the node's $TAP_LASTGIT_SLUG. A branch pushed anywhere
+  # else is invisible to it, and a test that overrides only the tap URL would
+  # reach the real node. Only a caller that also supplies its own lastgit
+  # (a fake) may point the tap elsewhere.
+  case "$TAP_URL" in
+    lastdb://*) ;;
+    *)
+      [ "$LASTGIT_BIN" != lastgit ] \
+        || die "LastGit venue but the tap URL $TAP_URL is not a lastdb:// remote; set LAST_STACK_REGISTRY_TAP_VENUE=forgejo or a lastdb:// URL"
+      ;;
+  esac
+  git -C "$TAP_DIR" push --quiet origin "$branch:$branch"
+  if [ "$PARTIAL" -eq 1 ]; then
+    body="$(jq -rn --arg build "$build" --arg run "$PROOF_RUN" --arg n "$count" --arg passed "$PASSED_APPS" \
+      '"## What\n\n`registry/next.json`: " + $n + " compat rows proved with lastdb `" + $build + "` by `" + $run + "` (partial: the smoke was RED, but every fail attributed to a named app, and these apps had none). Apps proved: `" + $passed + "`. Proof record: `registry/proofs/" + $run + ".json`.\n\nWritten by the canary lane. `stable` is untouched.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"')"
+  else
+    body="$(jq -rn --arg build "$build" --arg run "$PROOF_RUN" --arg n "$count" \
+      '"## What\n\n`registry/next.json`: " + $n + " compat rows proved with lastdb `" + $build + "` by `" + $run + "`. Proof record: `registry/proofs/" + $run + ".json`.\n\nWritten by the canary lane after the isolated llms-txt install smoke passed on this candidate set. `stable` is untouched.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"')"
+  fi
+  cr_json="$("$LASTGIT_BIN" cr create "$TAP_LASTGIT_SLUG" --head "$branch" --base main \
+    --title "$commit_subject" --body "$body" \
+    --auto-merge --require-status "$TAP_CI_CONTEXT" --json)" || die "lastgit cr create failed for $TAP_LASTGIT_SLUG $branch"
+  cr_id="$(printf '%s\n' "$cr_json" | jq -r '.cr_id // empty')"
+  [ -n "$cr_id" ] || die "lastgit cr create returned no cr_id: $cr_json"
+  printf 'REGISTRY_NEXT status=cr build=%s apps=%s proof_run=%s pr=lastgit://%s/cr/%s\n' "$build" "$count" "$PROOF_RUN" "$TAP_LASTGIT_SLUG" "$cr_id"
   exit 0
 fi
 

@@ -396,7 +396,11 @@ if [ -x "$HOME/.last-stack/bin/last-stack-install-apps" ]; then
       elif [ "${SMOKE_ALLOW_UNPROVED:-0}" = "1" ]; then
         live "  note: $app installed as $mode (SMOKE_ALLOW_UNPROVED=1)"
       else
-        note_fail "install-apps:$app:$mode (wanted $want_mode; lastdb=$(command -v lastdb || echo none))"
+        # A `failed` receipt names the stage and the source it tried, so the
+        # RED line says which app broke and where it looked for its commit.
+        fail_detail="$(jq -r 'select(.mode == "failed") | "; stage=\(.stage // "-") sha=\((.sha // "-")[0:12]) source=\(.source // "-")"' \
+          "$receipts/$app.json" 2>/dev/null || true)"
+        note_fail "install-apps:$app:$mode (wanted $want_mode; lastdb=$(command -v lastdb || echo none)${fail_detail})"
       fi
     done
   fi

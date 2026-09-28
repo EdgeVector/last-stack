@@ -12,10 +12,22 @@
 #   install-apps:<app>:<mode> ...   -> <app>
 #   cli:<app>=... / cli:<app> ...   -> <app>
 #   <app>:<check> ...                -> <app>  (only when <app> is known)
+#   install-apps exit=<n>            -> covered by the per-app lines when
+#                                        at least one install-apps:<app>:...
+#                                        line names an app; shared otherwise
 #   prereq:*, setup, daemon:*, health:*, brew-service:*, resolver:*,
 #   "install-apps missing", or a RED verdict with no fails[] at all
 #                                     -> shared (the harness itself, or the
 #                                        install pipeline as a whole, failed)
+#
+# Why `install-apps exit=<n>` is not shared by itself (2026-09-28): the smoke
+# prints it whenever last-stack-install-apps exits nonzero, next to one
+# install-apps:<app>:<mode> line per app whose receipt is not the wanted mode.
+# last-stack-install-apps attempts every app and exits 1 only after naming
+# each failed app (papercut-canary-primary-rows-smoke-red-0-23-3-2375-ga7bac36f1),
+# so an exit with named app lines is the sum of those apps' own failures. An
+# exit with NO named app line is a failure before or outside any one app
+# (missing git/jq, a bad --pins file), and stays shared.
 #
 # A shared fail means the proof is worthless for every app: write zero rows.
 # A RED with only per-app fails means the apps with none of their own may
@@ -70,11 +82,18 @@ if [ "$fails_count" -eq 0 ]; then
   shared_fail=1
 fi
 
+install_apps_exit=0
+install_apps_app_lines=0
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   app=""
   case "$f" in
+    "install-apps exit="*)
+      install_apps_exit=1
+      continue
+      ;;
     install-apps:*)
+      install_apps_app_lines=$((install_apps_app_lines + 1))
       app="${f#install-apps:}"
       app="${app%%:*}"
       ;;
@@ -104,6 +123,9 @@ while IFS= read -r f; do
     shared_fail=1
   fi
 done < <(jq -r '(.fails // [])[]' "$PROOF_JSON" 2>/dev/null || true)
+if [ "$install_apps_exit" -eq 1 ] && [ "$install_apps_app_lines" -eq 0 ]; then
+  shared_fail=1
+fi
 
 passed_apps=""
 for a in $KNOWN_APPS; do

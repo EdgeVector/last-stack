@@ -98,4 +98,27 @@ out="$(LAST_STACK_REGISTRY_KNOWN_APPS="$apps9" "$BIN" --proof "$WORK/all9.json")
 [ "$(field "$out" shared_fail)" = 0 ] || fail "all9: shared_fail should be 0"
 [ -z "$(field "$out" passed_apps)" ] || fail "all9: passed_apps should be empty, got [$(field "$out" passed_apps)]"
 
+# --- the smoke also prints `install-apps exit=1` whenever any app fails -------
+# last-stack-install-apps attempts every app and exits 1 only after naming each
+# failed one, so the exit line next to named app lines is those apps' failure,
+# not a shared one. Real shape, 2026-09-28 (one app failed at its source).
+cat >"$WORK/exit-with-app.json" <<'EOF'
+{"verdict":"RED","sandbox":"/x","fails":[
+  "install-apps exit=1",
+  "install-apps:situations:failed (wanted pinned; lastdb=/x; stage=source sha=38b0b7f6d689 source=lastdb:///situations)"
+]}
+EOF
+out="$(LAST_STACK_REGISTRY_KNOWN_APPS="$apps9" "$BIN" --proof "$WORK/exit-with-app.json")"
+[ "$(field "$out" shared_fail)" = 0 ] || fail "exit+app: shared_fail should be 0, got [$out]"
+[ "$(field "$out" failed_apps)" = situations ] || fail "exit+app: failed_apps [$(field "$out" failed_apps)]"
+[ "$(field "$out" passed_apps)" = "brain kanban routines dogfood-graph org lastsecrets search lastdb-browser" ] \
+  || fail "exit+app: passed_apps [$(field "$out" passed_apps)]"
+
+# An exit with no named app line failed before or outside any one app: shared.
+cat >"$WORK/exit-alone.json" <<'EOF'
+{"verdict":"RED","sandbox":"/x","fails":["install-apps exit=127"]}
+EOF
+out="$(LAST_STACK_REGISTRY_KNOWN_APPS="$apps9" "$BIN" --proof "$WORK/exit-alone.json")"
+[ "$(field "$out" shared_fail)" = 1 ] || fail "exit alone: shared_fail should be 1, got [$out]"
+
 echo "OK: last-stack-registry-red-attribution"

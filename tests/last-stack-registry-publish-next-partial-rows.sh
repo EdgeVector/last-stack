@@ -89,9 +89,21 @@ out = {
 json.dump(out, sys.stdout)
 PY
 
+# This test covers the Forgejo PR path (status=pr). Pin that venue, and hand
+# lastgit a fake that fails loudly: the LastGit default would otherwise reach
+# the real node (tests/last-stack-registry-publish-next-venue.sh covers it).
+cat >"$WORK/lastgit" <<'FAKE'
+#!/usr/bin/env bash
+echo "fake lastgit: this test must not reach LastGit: $*" >&2
+exit 97
+FAKE
+chmod +x "$WORK/lastgit"
+
 run_publish() {
   local proof="$1" run_id="$2" tap_dir="$3"
   shift 3
+  LAST_STACK_REGISTRY_TAP_VENUE=forgejo \
+  LASTGIT_BIN="$WORK/lastgit" \
   LAST_STACK_REGISTRY_TAP_URL="$WORK/tap.git" \
   LAST_STACK_REGISTRY_TAP_DIR="$tap_dir" \
   LASTDB_REGISTRY_SIGNING_KEY="$WORK/signing.key" \

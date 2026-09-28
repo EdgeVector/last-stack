@@ -41,14 +41,15 @@ Step 0 comes first and never stops the gate:
 2. **resolve** — the candidate build, the primary build, the cutover-hold
    policy. Same build → `noop`. Hold → `noop`.
 3. **set** — `last-stack-canary-candidate-set` fixes one commit per app
-   (`config/registry/apps.json`): the artifact channel head, else Forge main.
+   (`config/registry/apps.json`): the artifact channel head, else `main` of
+   the app's LastGit repo (its gate of record since era 3).
 4. **smoke** — the isolated llms-txt install smoke boots the **candidate**
    `lastdbd` and installs exactly that set (`SMOKE_LASTDBD_BIN`,
    `SMOKE_CANDIDATE_SET`). RED stops here: no cutover, no rows, a
    build-subject line event in the ledger.
 5. **cutover** — the bounded safe-upgrade probe + primary cutover.
 6. **rows** — `last-stack-registry-publish-next` writes one compat row per
-   app to registry `next` and opens an auto-merging PR on the tap repo.
+   app to registry `next` and opens an auto-merging LastGit CR on the tap repo.
 
 Cargo release builds take 20–40 minutes; the smoke 6–9. Stay on this turn
 until the gate exits. Do not background it.

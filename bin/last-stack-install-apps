@@ -138,7 +138,7 @@ clone_or_update() {
     return 0
   elif [ -e "$dest" ]; then
     echo "refusing to overwrite non-git path: $dest" >&2
-    exit 1
+    return 1
   else
     echo "==> cloning $name"
     if ! git clone "$url" "$dest"; then
@@ -154,13 +154,56 @@ clone_or_update() {
   fi
 }
 
+# A candidate set can name a LastGit source (lastdb:///<repo>): since LastGit
+# era 3 (2026-09-26/27) that is every app's gate of record, and the Forgejo
+# copy is frozen. Only the internal proving path (Tom's machine) writes such a
+# set; a public install resolves GitHub sources and never reaches this.
+#
+# git reaches lastdb:// through the `git-remote-lastdb` helper, which finds
+# the node socket and its schema map under $HOME. The install smoke runs under
+# a throwaway HOME, so point the helper at the login user's node unless the
+# caller already chose one. The helper only reads refs and packs here.
+LASTGIT_TRANSPORT_READY=""
+prepare_lastgit_transport() {
+  local name="$1" login sock map
+  [ -z "$LASTGIT_TRANSPORT_READY" ] || return 0
+  if ! command -v git-remote-lastdb >/dev/null 2>&1; then
+    echo "$name: the pinned source is a lastdb:// LastGit remote, and git-remote-lastdb is not on PATH" >&2
+    return 1
+  fi
+  login="$(login_home)"
+  if [ -n "$login" ] && [ "${HOME:-}" != "$login" ]; then
+    sock="$login/.lastdb/data/folddb.sock"
+    map="$login/.lastgit/schema-map.json"
+    if [ -z "${LASTGIT_SOCKET:-}" ] && [ -S "$sock" ]; then
+      export LASTGIT_SOCKET="$sock"
+    fi
+    if [ -z "${LASTGIT_SCHEMA_MAP:-}" ] && [ -f "$map" ]; then
+      export LASTGIT_SCHEMA_MAP="$map"
+    fi
+  fi
+  LASTGIT_TRANSPORT_READY=1
+  return 0
+}
+
 # Check out `sha` from `url` at $TARGET_DIR/$name. An existing clone is
 # fetched and moved; a fresh directory is cloned. HEAD is verified.
 install_pinned() {
   local name="$1" url="$2" sha="$3" why="$4"
-  local dest="$TARGET_DIR/$name" head
+  local dest="$TARGET_DIR/$name" head origin
+  case "$url" in
+    lastdb://*) prepare_lastgit_transport "$name" || return 1 ;;
+  esac
   if [ -d "$dest/.git" ]; then
     echo "==> pinning $name to ${sha:0:12} ($why)"
+    # The pinned source wins over whatever an earlier run cloned from. Since
+    # LastGit era 3 an app's gate of record moved from Forgejo to LastGit, so
+    # a clone made from the frozen Forgejo copy never sees a newer commit.
+    origin="$(git -C "$dest" remote get-url origin 2>/dev/null || true)"
+    if [ -n "$url" ] && [ "$origin" != "$url" ]; then
+      git -C "$dest" remote set-url origin "$url" 2>/dev/null \
+        || git -C "$dest" remote add origin "$url" || return 1
+    fi
     if ! git -C "$dest" cat-file -e "${sha}^{commit}" 2>/dev/null; then
       git -C "$dest" fetch --quiet origin || git -C "$dest" fetch --quiet origin "$sha" || {
         echo "failed to fetch $name from $(git -C "$dest" remote get-url origin 2>/dev/null || echo origin)" >&2
@@ -171,12 +214,12 @@ install_pinned() {
       fi
     fi
     git -C "$dest" checkout --quiet --detach "$sha" || {
-      echo "proved commit ${sha:0:12} for $name is not in its source" >&2
+      echo "proved commit ${sha:0:12} for $name is not in its source $(git -C "$dest" remote get-url origin 2>/dev/null || echo origin)" >&2
       return 1
     }
   elif [ -e "$dest" ]; then
     echo "refusing to overwrite non-git path: $dest" >&2
-    exit 1
+    return 1
   else
     echo "==> cloning $name at ${sha:0:12} ($why)"
     git clone --quiet --no-checkout "$url" "$dest" || {
@@ -222,15 +265,23 @@ lastdb_can_resolve() {
 # Install `name` (registry app id == install name for this bundle) from the
 # candidate set, else by proof, else the legacy main clone.
 #   returns 0 installed, 1 hard failure
+#   APP_ATTEMPT_SHA / APP_ATTEMPT_SOURCE name what it tried, for the receipt
+#   of a failed app.
+APP_ATTEMPT_SHA=""
+APP_ATTEMPT_SOURCE=""
 install_app_source() {
   local name="$1" url="$2" optional="${3:-}"
   local pin_json sha psrc resolved err
+  APP_ATTEMPT_SHA=""
+  APP_ATTEMPT_SOURCE="$url"
   if [ -n "$PINS_FILE" ]; then
     pin_json="$(jq -c --arg n "$name" '.apps | to_entries[] | select(.value.install_name == $n or .key == $n) | .value' "$PINS_FILE" 2>/dev/null | head -n1 || true)"
     if [ -n "$pin_json" ]; then
       sha="$(printf '%s' "$pin_json" | jq -r '.sha')"
       psrc="$(printf '%s' "$pin_json" | jq -r '.source // empty')"
       [ -n "$psrc" ] || psrc="$url"
+      APP_ATTEMPT_SHA="$sha"
+      APP_ATTEMPT_SOURCE="$psrc"
       install_pinned "$name" "$psrc" "$sha" "candidate set" || return 1
       write_receipt "$name" "$(jq -cn --arg n "$name" --arg sha "$sha" --arg src "$psrc" --arg mode pinned --arg pins "$PINS_FILE" \
         '{app_id:$n, sha:$sha, source:$src, mode:$mode, pins:$pins}')"
@@ -245,6 +296,8 @@ install_app_source() {
     if [ "$err" -eq 0 ]; then
       sha="$(printf '%s' "$resolved" | jq -r '.sha')"
       psrc="$(printf '%s' "$resolved" | jq -r '.source')"
+      APP_ATTEMPT_SHA="$sha"
+      APP_ATTEMPT_SOURCE="$psrc"
       install_pinned "$name" "$psrc" "$sha" "proved with lastdb $(printf '%s' "$resolved" | jq -r '.lastdb_version') by $(printf '%s' "$resolved" | jq -r '.proof_run')" || return 1
       write_receipt "$name" "$(printf '%s' "$resolved" | jq -c '. + {mode:"proved"}')"
       rm -f "$TARGET_DIR/.resolve.err"
@@ -314,7 +367,8 @@ install_lastdb_browser() {
   # directory ("Missing: <dir-name>@0.1.0 from lock file"), while a plain
   # `npm ci` in <dir> passes. It turned the 2026-09-24 canary smoke RED, so
   # no registry row was proved for LastDB 2321 and kanban could not install.
-  (cd "$dest" && npm ci --no-audit --no-fund && npm run build)
+  # Explicit `|| return 1`: the caller checks the result, so set -e is off here.
+  (cd "$dest" && npm ci --no-audit --no-fund && npm run build) || return 1
   test -f "$dest/dist/index.html" || {
     echo "lastdb-browser build did not produce dist/index.html" >&2
     return 1
@@ -444,8 +498,9 @@ link_cli() {
       ;;
     brain)
       echo "==> linking brain CLI"
-      link_existing_cli "$dest/bin/brain" brain
-      link_existing_cli "$dest/bin/brain-mcp" brain-mcp
+      # Chained: link_cli runs inside a failure check, where set -e is off.
+      link_existing_cli "$dest/bin/brain" brain &&
+        link_existing_cli "$dest/bin/brain-mcp" brain-mcp
       ;;
     lastsecrets)
       echo "==> linking lastsecrets CLI"
@@ -496,35 +551,80 @@ mkdir -p "$TARGET_DIR"
 
 # All required apps are public on GitHub so invitees can cold-install without
 # LastGit, without a running node, and without GitHub org membership.
-# Failures here must abort — invite/join needs org + lastsecrets linked.
+# A failed app still fails the install (invite/join needs org + lastsecrets
+# linked), but only after every other app has had its own attempt.
+#
+# Why per-app (2026-09-28): this loop used to `exit 1` on the first failure.
+# `routines` is 4th; when its pinned commit was not on its source, the 5 apps
+# after it were never tried, got no receipt, and the canary smoke reported all
+# 6 as `missing`. That hid which app was broken and kept every registry `next`
+# row unwritten for days.
+# papercut-canary-primary-rows-smoke-red-0-23-3-2375-ga7bac36f1
 if [ -n "$PINS_FILE" ]; then
   [ -f "$PINS_FILE" ] || { echo "--pins file not found: $PINS_FILE" >&2; exit 2; }
   echo "==> candidate set: $PINS_FILE (lastdb $(jq -r '.lastdb.build // "?"' "$PINS_FILE"))"
 fi
-install_app_source brain "https://github.com/EdgeVector/brain.git" || exit 1
-install_app_source kanban "https://github.com/EdgeVector/fkanban.git" || exit 1
-install_app_source situations "https://github.com/EdgeVector/situations.git" || exit 1
-install_app_source routines "https://github.com/EdgeVector/routines.git" || exit 1
-install_app_source dogfood-graph "https://github.com/EdgeVector/dogfood-graph.git" || exit 1
-install_app_source org "https://github.com/EdgeVector/org.git" || exit 1
-install_app_source lastsecrets "https://github.com/EdgeVector/lastsecrets.git" || exit 1
-install_app_source search "https://github.com/EdgeVector/search.git" || exit 1
-install_app_source lastdb-browser "https://github.com/EdgeVector/lastdb-browser.git" || exit 1
+
+BUNDLE_APPS="brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser"
+FAILED_APPS=""      # "<app>:<stage>" words, in install order
+app_failed() {
+  case " $FAILED_APPS " in
+    *" $1:"*) return 0 ;;
+  esac
+  return 1
+}
+record_failure() {
+  # record_failure <app> <stage>: remember it and overwrite the receipt, so a
+  # receipt from an earlier good run never claims this run installed the app.
+  local name="$1" stage="$2" sha="$APP_ATTEMPT_SHA" src="$APP_ATTEMPT_SOURCE" prior
+  FAILED_APPS="${FAILED_APPS:+$FAILED_APPS }$name:$stage"
+  if [ "$stage" != source ]; then
+    # The source step passed and wrote a receipt; keep the commit it names.
+    prior="${RECEIPTS_DIR:-$TARGET_DIR/.lastdb-app-receipts}/$name.json"
+    sha="$(jq -r '.sha // ""' "$prior" 2>/dev/null || true)"
+    src="$(jq -r '.source // ""' "$prior" 2>/dev/null || true)"
+  fi
+  write_receipt "$name" "$(jq -cn --arg n "$name" --arg stage "$stage" \
+    --arg sha "$sha" --arg src "$src" \
+    '{app_id:$n, mode:"failed", stage:$stage, sha:$sha, source:$src}')"
+  echo "    FAILED $name ($stage); continuing with the other apps" >&2
+}
+public_source_for() {
+  case "$1" in
+    kanban) printf '%s\n' "https://github.com/EdgeVector/fkanban.git" ;;
+    *) printf 'https://github.com/EdgeVector/%s.git\n' "$1" ;;
+  esac
+}
+
+for app in $BUNDLE_APPS; do
+  if ! install_app_source "$app" "$(public_source_for "$app")"; then
+    record_failure "$app" source
+  fi
+done
 # Optional UI: animated live theater for the board (Node; no package install).
 # Soft-fail so a private/unreachable mirror never blocks the core stack. It is
 # not part of the proved set, so it always tracks main.
 clone_or_update kanban-factory "https://github.com/EdgeVector/kanban-factory.git" optional || true
 
-for app in brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser; do
+for app in $BUNDLE_APPS; do
   if [ "$SOURCE_ONLY" -eq 1 ]; then
     continue
   fi
+  # No dependencies and no links for an app whose source did not install:
+  # its directory is absent or holds an older checkout.
+  app_failed "$app" && continue
   if [ "$app" = "lastdb-browser" ]; then
-    install_lastdb_browser
-  else
-    run_bun_install "$app"
+    if ! install_lastdb_browser; then
+      record_failure "$app" dependencies
+      continue
+    fi
+  elif ! run_bun_install "$app"; then
+    record_failure "$app" dependencies
+    continue
   fi
-  link_cli "$app"
+  if ! link_cli "$app"; then
+    record_failure "$app" link
+  fi
 done
 
 # Report every declared `requires` edge that this bundle leaves unmet: the app
@@ -551,9 +651,25 @@ report_unmet_requires() {
 }
 # Resolve $0 first: behind a ~/.local/bin symlink dirname "$0"/.. is ~/.local.
 INSTALL_APPS_ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
+INSTALLED_APPS=""
+for app in $BUNDLE_APPS; do
+  app_failed "$app" || INSTALLED_APPS="$INSTALLED_APPS $app"
+done
 report_unmet_requires "$INSTALL_APPS_ROOT/config/registry/apps.json" \
-  "$(printf '%s\n' brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser \
-      $BREW_APPS_INSTALLED | jq -R . | jq -sc 'map(select(length > 0))')"
+  "$(printf '%s\n' $INSTALLED_APPS $BREW_APPS_INSTALLED | jq -R . | jq -sc 'map(select(length > 0))')"
+
+if [ -n "$FAILED_APPS" ]; then
+  n_failed=0
+  for f in $FAILED_APPS; do n_failed=$((n_failed + 1)); done
+  printf '\n' >&2
+  printf 'install-apps: %s of %s apps FAILED; every other app was attempted.\n' \
+    "$n_failed" "$(printf '%s\n' $BUNDLE_APPS | wc -l | tr -d ' ')" >&2
+  for f in $FAILED_APPS; do
+    printf '  FAILED %s (stage: %s)\n' "${f%%:*}" "${f#*:}" >&2
+  done
+  printf 'Receipts: %s\n' "${RECEIPTS_DIR:-$TARGET_DIR/.lastdb-app-receipts}" >&2
+  exit 1
+fi
 
 printf '\n'
 printf 'Installed LastDB apps under:\n'
