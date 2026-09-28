@@ -34,6 +34,24 @@ fi
   exit 2
 }
 
+shlock_bin="${SHLOCK_BIN:-/usr/bin/shlock}"
+[ -x "$shlock_bin" ] || {
+  echo "artifact-release.sh cannot find an executable shlock" >&2
+  exit 2
+}
+
+artifact_root="${LASTGIT_ARTIFACT_ROOT:-$HOME/.lastgit/artifacts}"
+promotion_lock="${LAST_STACK_ARTIFACT_RELEASE_LOCK:-$artifact_root/locks/last-stack-stable.lock}"
+promotion_lock_held=0
+release_promotion_lock() {
+  if [ "$promotion_lock_held" -eq 1 ]; then
+    rm -f -- "$promotion_lock"
+    promotion_lock_held=0
+  fi
+}
+trap release_promotion_lock EXIT
+mkdir -p "$(dirname "$promotion_lock")"
+
 config="$ROOT/.lastgit/artifacts.json"
 app="$(jq -r '.artifacts[] | select(.app == "last-stack" and .context == "artifact-release") | .app' "$config")"
 paths="$(jq -r '.artifacts[] | select(.app == "last-stack" and .context == "artifact-release") | .paths | join(",")' "$config")"
@@ -83,6 +101,39 @@ esac
 
 promoted=0
 for ((attempt=1; attempt<=max_attempts; attempt++)); do
+  # Serialize the main recheck and channel flip. If an older job pauses before
+  # this lock, a newer job can promote first and the older job then observes the
+  # new main tip. If it pauses after this lock, the newer job promotes last.
+  if ! "$shlock_bin" -f "$promotion_lock" -p "$$"; then
+    printf 'stable promotion lock attempt %s/%s is busy; retry follows\n' \
+      "$attempt" "$max_attempts" >&2
+    [ "$attempt" -eq "$max_attempts" ] || [ "$retry_seconds" -eq 0 ] || sleep "$retry_seconds"
+    continue
+  fi
+  promotion_lock_held=1
+
+  # A delayed watcher job must not move stable behind the current main tip.
+  main_json=""
+  if ! main_json="$("$lastgit_bin" ref last-stack main --json)"; then
+    printf 'main tip read attempt %s/%s failed; retry follows\n' \
+      "$attempt" "$max_attempts" >&2
+  fi
+  main_oid="$(printf '%s\n' "$main_json" | jq -r '.oid // empty')"
+  if [[ ! "$main_oid" =~ ^[0-9a-f]{40}$ ]]; then
+    printf 'main tip read attempt %s/%s returned no oid; retry follows\n' \
+      "$attempt" "$max_attempts" >&2
+    release_promotion_lock
+    [ "$attempt" -eq "$max_attempts" ] || [ "$retry_seconds" -eq 0 ] || sleep "$retry_seconds"
+    continue
+  fi
+  if [ "$main_oid" != "$oid" ]; then
+    printf 'skip stable promotion for superseded oid=%s current_main=%s\n' \
+      "$oid" "$main_oid"
+    release_promotion_lock
+    echo "last-stack artifact release PASSED (superseded)"
+    exit 0
+  fi
+
   if "$lastgit_bin" artifact promote \
       --app "$app" \
       --channel stable \
@@ -92,8 +143,10 @@ for ((attempt=1; attempt<=max_attempts; attempt++)); do
       --gate lastgit \
       --context ci-required; then
     promoted=1
+    release_promotion_lock
     break
   fi
+  release_promotion_lock
   printf 'promote attempt %s/%s did not pass ci-required; retry follows\n' \
     "$attempt" "$max_attempts" >&2
   [ "$attempt" -eq "$max_attempts" ] || [ "$retry_seconds" -eq 0 ] || sleep "$retry_seconds"
