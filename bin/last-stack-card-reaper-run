@@ -430,6 +430,16 @@ function protectLoomClaim(card) {
   const branchId = branch.match(/^(lx-[A-Za-z0-9.-]+)#(?:IMPLEMENT|REVISE)$/);
   if (branchId) { associated = true; if (!ids.length) ids.push(branchId[1]); }
   if (!associated) return false;
+
+  // A claim-v2 client failure can stamp `assignee` and the synthetic
+  // "claim recovery pending" hold before any loom execution ever starts --
+  // no body PROGRESS/BLOCKER line, no branch, no PR. There is no resume to
+  // race in that case; let the doing-loop's claim-recovery-pending handling
+  // decide instead of protecting a claim that never actually claimed work.
+  if (isClaimRecoveryPending(card) && !ids.length && !branch && !openPrSignal(card)) {
+    return false;
+  }
+
   const id = ids.at(-1);
   let detail = "unknown";
   if (id) {
@@ -468,6 +478,24 @@ function isNeedsHuman(card) {
   const br = String(card.block_reason || card.blockReason || "").toLowerCase();
   return bs.includes("needs_human") || br.includes("needs_human") || br.includes("needs human");
 }
+
+// `kanban pickup claim-v2` writes this exact block_reason as a tentative
+// in-flight marker before a second phase confirms or clears it. When the
+// CLIENT call times out (observed under lastdbd load), nothing else in the
+// fleet ever finishes that second phase, so the card is stuck in doing,
+// needs_human, forever -- with zero work ever started. This is a synthetic
+// hold the claim machinery wrote about itself, not a human decision, so it
+// does not belong under the general isNeedsHuman exemption below.
+// papercut-kanban-pickup-claimv2-timeout-stuck-needs-human-20260928 (5
+// confirmed instances, 2026-09-28).
+const CLAIM_RECOVERY_PENDING_RE = /claim recovery pending for worker/i;
+function isClaimRecoveryPending(card) {
+  return CLAIM_RECOVERY_PENDING_RE.test(String(card.block_reason || card.blockReason || ""));
+}
+// Below this age the claim may still be completing normally; recoveries as
+// fast as ~12 minutes after a prior recovery have been observed, so this
+// stays well short of the hours-long stalls the bug otherwise causes.
+const CLAIM_RECOVERY_STUCK_HOURS = 0.25;
 
 function openPrSignal(card) {
   return Boolean(String(card.pr_url || card.prUrl || card.pr || "").trim());
@@ -794,6 +822,16 @@ try {
     if (!card) continue;
     if (protectLoomClaim(card)) continue;
     if (card.column !== "doing") { res.flagged.push(`doing-column-changed:${slug}`); continue; }
+    if (isClaimRecoveryPending(card) && !openPrSignal(card) && !branchOf(card)) {
+      const hrs = doingAgeHours(card);
+      if (hrs !== null && hrs >= CLAIM_RECOVERY_STUCK_HOURS) {
+        if (withCardGuard(card, () => rollbackDoing(card,
+          `claim-v2 recovery-pending stuck >${Math.round(CLAIM_RECOVERY_STUCK_HOURS * 60)}m; age=${hrs.toFixed(2)}h`))) actions++;
+      } else {
+        res.flagged.push(`claim-recovery-pending-fresh:${slug}`);
+      }
+      continue;
+    }
     if (isNeedsHuman(card)) {
       if (ageHours(card) > 168) {
         res.exempt_needs_human++;

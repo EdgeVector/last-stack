@@ -318,6 +318,62 @@ printf '%s\n' "$doing_out" | grep -q '^would_kill doing-squatter: doing squatter
 printf '%s\n' "$doing_out" | grep -q '^card-reaper 2026-07-20T13:31:08Z ok live=3 killed=<backlog=0,todo=0,doing=1> rolled_back=1 parked=1 salvaged=0 exempt_needs_human=0 flagged=dry-run$'
 printf '%s\n' "$doing_out" | grep -q '^ROUTINE_RESULT outcome=ok'
 
+# A synthetic "claim recovery pending" needs_human hold (kanban pickup
+# claim-v2 client timeout, papercut-kanban-pickup-claimv2-timeout-stuck-needs-human-20260928)
+# must be rolled back once stuck past CLAIM_RECOVERY_STUCK_HOURS with no real
+# work started, bypassing both the generic needs_human exemption and the
+# assignee-prefix loom-claim protection. A fresh hold, or one where a branch
+# shows real work in flight, must NOT be touched.
+claim_board="$tmp/claim-recovery-board.json"
+cat >"$claim_board" <<'JSON'
+[
+  {
+    "slug": "claim-recovery-stuck",
+    "title": "Stuck claim recovery",
+    "column": "doing",
+    "assignee": "loom:last-stack-fkanban-pickup-w2",
+    "created_at": "2026-09-28T13:05:00Z",
+    "first_doing_at": "2026-09-28T13:11:08Z",
+    "block_status": "needs_human",
+    "block_reason": "claim recovery pending for worker \"loom:last-stack-fkanban-pickup-w2\": do not work this card until the claim completes"
+  },
+  {
+    "slug": "claim-recovery-fresh",
+    "title": "Fresh claim recovery",
+    "column": "doing",
+    "assignee": "loom:last-stack-fkanban-pickup-w4",
+    "created_at": "2026-09-28T13:06:00Z",
+    "first_doing_at": "2026-09-28T13:26:08Z",
+    "block_status": "needs_human",
+    "block_reason": "claim recovery pending for worker \"loom:last-stack-fkanban-pickup-w4\": do not work this card until the claim completes"
+  },
+  {
+    "slug": "claim-recovery-with-branch",
+    "title": "Claim recovery but real work already started",
+    "column": "doing",
+    "assignee": "loom:last-stack-fkanban-pickup-w6",
+    "branch": "kanban/claim-recovery-with-branch-20260928",
+    "created_at": "2026-09-28T13:07:00Z",
+    "first_doing_at": "2026-09-28T13:11:08Z",
+    "block_status": "needs_human",
+    "block_reason": "claim recovery pending for worker \"loom:last-stack-fkanban-pickup-w6\": do not work this card until the claim completes"
+  }
+]
+JSON
+
+claim_out="$("$REAPER" \
+  --dry-run \
+  --skip-preflight \
+  --board-json "$claim_board" \
+  --memory "$tmp/claim-memory.md" \
+  --now 2026-09-28T13:31:08Z)"
+
+printf '%s\n' "$claim_out" | grep -q '^would_roll_back claim-recovery-stuck: claim-v2 recovery-pending stuck >15m; age=0.33h$'
+! printf '%s\n' "$claim_out" | grep -q '^would_roll_back claim-recovery-fresh:'
+! printf '%s\n' "$claim_out" | grep -q '^would_roll_back claim-recovery-with-branch:'
+printf '%s\n' "$claim_out" | grep -q '^card-reaper 2026-09-28T13:31:08Z ok live=3 killed=<backlog=0,todo=0,doing=0> rolled_back=1 parked=0 salvaged=0 exempt_needs_human=0 flagged=claim-recovery-pending-fresh:claim-recovery-fresh,loom-claim-protected:claim-recovery-with-branch:unknown,dry-run$'
+test ! -e "$tmp/claim-memory.md"
+
 # Closeout noop + reaper pass must still emit card-reaper heartbeat +
 # ROUTINE_RESULT. A completed pass must not become outcome=error
 # flagged=runner-no-heartbeat (scheduled run 2026-08-20T14-30-57-829Z).
