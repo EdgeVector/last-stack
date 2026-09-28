@@ -33,7 +33,8 @@ case "$1" in
       "t	lx-fenced-shut	parked	AWAIT_HUMAN	land-card" \
       "t	lx-running	running	WAIT_CI	land-card" \
       "t	lx-unreadable	parked	AWAIT_HUMAN	land-card" \
-      "t	lx-dead	parked	AWAIT_HUMAN	land-card"
+      "t	lx-dead	parked	AWAIT_HUMAN	land-card" \
+      "t	lx-cachettl	parked	AWAIT_HUMAN	land-card"
     ;;
   show)
     case "$2" in
@@ -110,6 +111,17 @@ context.park_reason: "node error"
 node PARK#1 succeeded: {"reason":"node error"}
 V
       ;;
+      lx-cachettl) cat <<'V'
+lx-cachettl
+status: parked
+state: AWAIT_HUMAN
+error: node `IMPLEMENT` exited TimedOut: 2026-09-28T02:22:52.555744Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_parallel_tool_calls` at line 140 column 5
+context.card: "card-cachettl"
+context.card_difficulty: "hard"
+context.park_reason: "node error"
+context.pr_url: "http://forge.test/EdgeVector/fold/pulls/7"
+V
+      ;;
       *) echo "no such execution" >&2; exit 1 ;;
     esac
     ;;
@@ -146,13 +158,14 @@ fail() { echo "FAIL: $*" >&2; cat "$CALLS" >&2; exit 1; }
 
 # Dry run: classifies, signals nothing, writes no state.
 out="$("$bin")"
-tail -1 <<<"$out" | grep -qx 'parked_seen=8 escalated=1 resumed=2 handed_off=0 requeued=1 left=3 errors=1' || fail "dry-run counts: $out"
+tail -1 <<<"$out" | grep -qx 'parked_seen=9 escalated=1 resumed=3 handed_off=0 requeued=1 left=3 errors=1' || fail "dry-run counts: $out"
 grep -q '^escalate	lx-stall	card-stall' <<<"$out" || fail "stall not escalated"
 grep -q '^resume	lx-merged	card-merged' <<<"$out" || fail "merged not resumed"
 grep -q '^left	lx-normal' <<<"$out" || fail "normal walk must stay parked"
 grep -q '^left	lx-other' <<<"$out" || fail "unknown park must stay parked"
 grep -q '^requeue	lx-dead	card-dead	node error before a PR' <<<"$out" || fail "no-PR node error not requeued"
 grep -q '^unfence	lx-fenced-open	card-fenced-open' <<<"$out" || fail "cleared fence not resumed"
+grep -q '^retry_transient	lx-cachettl	card-cachettl	codex model-cache TTL error' <<<"$out" || fail "cache-TTL node error not retried"
 grep -q '^left	lx-fenced-shut	card-fenced-shut	situation still blocks merge-pr on EdgeVector/fold' <<<"$out" \
   || fail "blocked fence must stay parked"
 grep -q 'signal' "$CALLS" && fail "dry run signalled"
@@ -162,15 +175,16 @@ grep -q '^loom list land-card --window-hours 168 --limit 1000$' "$CALLS" || fail
 # Apply: exactly three detached signals with the right payloads, one mark each.
 "$bin" --apply >/dev/null
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  [ "$(grep -c '^signal-ran' "$CALLS")" -ge 3 ] && break
+  [ "$(grep -c '^signal-ran' "$CALLS")" -ge 4 ] && break
   sleep 0.5
 done
 grep -q '^loom signal lx-stall card-decision --payload {"human_decision": "retry", "card_difficulty": "normal", "triage_escalated": true}' "$CALLS" \
   || fail "escalate payload"
 grep -q '^loom signal lx-merged card-decision --payload {"human_decision": "merge"}' "$CALLS" || fail "resume payload"
 grep -q '^loom signal lx-fenced-open card-decision --payload {"human_decision": "merge"}' "$CALLS" || fail "unfence payload"
-[ "$(grep -c '^loom signal' "$CALLS")" -eq 3 ] || fail "signal count"
-[ "$(grep -c '^kanban mark' "$CALLS")" -eq 4 ] || fail "mark count"
+grep -q '^loom signal lx-cachettl card-decision --payload {"human_decision": "retry"}' "$CALLS" || fail "transient retry payload"
+[ "$(grep -c '^loom signal' "$CALLS")" -eq 4 ] || fail "signal count"
+[ "$(grep -c '^kanban mark' "$CALLS")" -eq 5 ] || fail "mark count"
 grep -q '^loom cancel lx-dead$' "$CALLS" || fail "requeue must cancel the dead walk"
 grep -q '^kanban set card-dead --block-status none --block-reason $' "$CALLS" || fail "requeue must clear block_status"
 grep -q '^kanban move card-dead todo$' "$CALLS" || fail "requeue must move the card to todo"
@@ -180,14 +194,15 @@ grep -q '^kanban move card-dead todo$' "$CALLS" || fail "requeue must move the c
 # Second apply: escalation is once per walk; resume is rate-limited.
 : >"$CALLS"
 out="$("$bin" --apply)"
-tail -1 <<<"$out" | grep -qx 'parked_seen=8 escalated=0 resumed=0 handed_off=0 requeued=0 left=7 errors=1' || fail "second pass counts: $out"
+tail -1 <<<"$out" | grep -qx 'parked_seen=9 escalated=0 resumed=0 handed_off=0 requeued=0 left=8 errors=1' || fail "second pass counts: $out"
 sleep 1
 grep -q '^loom signal' "$CALLS" && fail "second pass signalled again"
 grep -q '^left	lx-dead	card-dead	no-PR node error again after a requeue' <<<"$out" || fail "requeue must happen once per card"
+grep -q '^left	lx-cachettl	card-cachettl	codex cache-TTL error again after a retry' <<<"$out" || fail "transient retry must happen once per walk"
 
 # Gate form: applies, prints the routinesd trailer, exits 0.
 out="$("$bin" --gate)" || fail "gate exit"
-grep -q '^ROUTINE_RESULT outcome=noop detail=parked_seen=8,escalated=0' <<<"$out" || fail "gate trailer: $out"
+grep -q '^ROUTINE_RESULT outcome=noop detail=parked_seen=9,escalated=0' <<<"$out" || fail "gate trailer: $out"
 
 age_resume() {
   python3 - "$tmp/state/state.json" "$@" <<'PY'
@@ -204,7 +219,7 @@ PY
 age_resume lx-merged lx-fenced-open
 : >"$CALLS"
 out="$("$bin" --apply)"
-tail -1 <<<"$out" | grep -qx 'parked_seen=8 escalated=0 resumed=1 handed_off=1 requeued=0 left=5 errors=1' || fail "handoff pass counts: $out"
+tail -1 <<<"$out" | grep -qx 'parked_seen=9 escalated=0 resumed=1 handed_off=1 requeued=0 left=6 errors=1' || fail "handoff pass counts: $out"
 grep -q '^handoff	lx-merged	card-merged	merged; parked again after resume' <<<"$out" || fail "merged walk not handed off"
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   [ "$(grep -c '^signal-ran' "$CALLS")" -ge 2 ] && break
