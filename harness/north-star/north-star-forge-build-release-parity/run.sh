@@ -87,7 +87,7 @@ fi
 # local artifact CAS lives on that host, as the workflow documents.
 require_text "$WORKFLOW" "Forge workflow" "jobs:"
 require_text "$WORKFLOW" "required CI job" "ci-required:"
-require_text "$WORKFLOW" "required CI lane" "runs-on: pc-linux"
+require_text "$WORKFLOW" "required CI lane" "runs-on: macos-arm64"
 require_text "$WORKFLOW" "stable publication dependency" "needs: ci-required"
 require_text "$WORKFLOW" "stable publication lane" "runs-on: macos-arm64"
 require_text "$WORKFLOW" "stable artifact publish command" "lastgit artifact publish"
