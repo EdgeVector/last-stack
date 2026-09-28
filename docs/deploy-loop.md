@@ -58,9 +58,9 @@ resolves each configured production secret with `last-stack-secret-env-run`
 only at the child-process boundary; it never stores the raw value in the graph
 input or deploy receipt. Defaults: forge root,
 owner, ref, `state_root`. The four repos the launchd agents covered are all
-listed; only `fold_db_website` is enabled. The other three
-(`exemem-infra`, `schema-infra`, `ops-terminal`) were found disabled in
-launchd on 2026-09-21 and stay off until Tom enables them here.
+listed; `fold_db_website` and `exemem-infra` are enabled. The other two
+(`schema-infra`, `ops-terminal`) stay disabled because their launchd agents
+were disabled on 2026-09-21.
 
 ## Venue
 
