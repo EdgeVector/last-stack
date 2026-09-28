@@ -296,6 +296,7 @@ run_artifact_promote_upgrade() {
     --repo "$repo" \
     --oid "$oid" \
     --context ci-required \
+    --require-current-ref refs/heads/main \
     --root "$artifact_root" \
     --json >/dev/null
   log "refreshing host-track $app from promoted artifact ..."

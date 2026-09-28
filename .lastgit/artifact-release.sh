@@ -90,7 +90,8 @@ for ((attempt=1; attempt<=max_attempts; attempt++)); do
       --repo last-stack \
       --oid "$oid" \
       --gate lastgit \
-      --context ci-required; then
+      --context ci-required \
+      --require-current-ref refs/heads/main; then
     promoted=1
     break
   fi
