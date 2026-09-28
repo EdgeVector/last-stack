@@ -224,8 +224,10 @@ assert_field repo laststore
 assert_field repo_source flag
 assert_field covered false
 
-# 11) launchd plists must not ship a last-stack ci-required watch unit
-if grep -n 'ci watch --repo last-stack' "$ROOT/launchd"/*.plist >/dev/null 2>&1; then
+# 11) launchd plists must not ship a duplicate ci-required watch. Other
+# contexts, such as artifact-release, have separate work and are valid.
+if grep -n 'ci watch --repo last-stack' "$ROOT/launchd"/*.plist 2>/dev/null \
+    | grep -E -- '--context(=|[[:space:]])ci-required' >/dev/null; then
   fail "launchd/*.plist contains a last-stack ci watch unit; forge-primary already covers ci-required"
 fi
 

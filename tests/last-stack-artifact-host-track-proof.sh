@@ -27,13 +27,12 @@ jq -e '
       and (.artifact_exemption.rationale | length > 0))
 ' "$default_registry" >/dev/null || fail "default registry has checkout entries without documented exemptions"
 
-# 2026-09-06: every artifact app is a Forgejo gate of record; each repo's
-# Forge CI publish job promotes the stable channel, so track_gate_main is
-# false on purpose (decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default;
-# the four factory apps moved 2026-09-05).
+# Last Stack returned to LastGit in era 3. Its release watcher promotes stable,
+# so Host Track reports LastGit main but does not perform a second promotion.
+# The other entries below still use their recorded Forgejo contracts.
 jq -e '
   def app($name): .apps[] | select(.app == $name);
-  (app("last-stack") | .install_mode == "artifact" and .artifact_app == "last-stack" and .gate == "forgejo" and .track_gate_main == false)
+  (app("last-stack") | .install_mode == "artifact" and .artifact_app == "last-stack" and .gate == "lastgit" and .gate_main == "lastdb:///last-stack#main" and .track_gate_main == false)
   and (app("lastgit") | .install_mode == "checkout" and .artifact_exemption.kind == "bootstrap-recovery")
   and (app("brain") | .install_mode == "artifact" and .gate == "forgejo" and .track_gate_main == false and (.links | length) >= 2)
   and (app("reconciler") | .install_mode == "artifact" and .gate == "forgejo" and .track_gate_main == false and .install_root == "$HOME/.host-track/apps/reconciler" and .post_install == "$HOME/.host-track/apps/reconciler/current/bin/reconciler-host-track-post-install" and any(.links[]; .source == "src/cli.ts" and .target == "$HOME/.local/bin/reconciler") and (.safe_upgrade.probes | length) == 2)
