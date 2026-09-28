@@ -89,6 +89,17 @@ git --git-dir "$work/lastgit.git" show "$branch:registry/next.json" \
   || fail "next row does not carry the candidate set's LastGit source"
 git --git-dir "$work/lastgit.git" cat-file -e "$branch:registry/proofs/run-venue.json" || fail "proof record missing"
 
+# The real lastgit with a non-LastGit tap URL is refused before any CR call:
+# a test that overrides only the tap URL must never reach the real node.
+if env -u LASTGIT_BIN LAST_STACK_REGISTRY_TAP_URL="$work/lastgit.git" LAST_STACK_REGISTRY_TAP_DIR="$work/tapdir2" \
+  LASTDB_REGISTRY_SIGNING_KEY="$work/signing.key" LASTDB_BIN="$fake/lastdb" \
+  FORGE_API_BIN="$fake/forge-api" FORGE_GIT_BIN="$fake/forge-api" PATH="$fake:$PATH" \
+  "$BIN" --candidate-set "$work/set.json" --proof "$work/proof.json" --proof-run run-guard >/dev/null 2>"$work/guard.err"; then
+  fail "a non-lastdb tap URL with the real lastgit was accepted"
+fi
+grep -q 'is not a lastdb:// remote' "$work/guard.err" || fail "guard message: $(cat "$work/guard.err")"
+if grep -q 'run-guard' "$work/lastgit.calls"; then fail "the guard case reached lastgit"; fi
+
 # An unknown venue is refused before any write.
 if LAST_STACK_REGISTRY_TAP_VENUE=gitlab "$BIN" --candidate-set "$work/set.json" --proof "$work/proof.json" >/dev/null 2>&1; then
   fail "an unknown venue was accepted"

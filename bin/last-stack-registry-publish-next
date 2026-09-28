@@ -2,7 +2,7 @@
 # Write one candidate set's proved rows to the registry `next` channel.
 #
 # Input: the candidate set the smoke installed (last-stack-canary-candidate-set)
-# and the smoke's GREEN JSON verdict. Output: one change on the tap repo
+# and the smoke's JSON verdict. Output: one change on the tap repo
 # (EdgeVector/homebrew-lastdb) that adds a compat row per app to
 # registry/next.json, writes registry/proofs/<proof_run>.json, re-signs the
 # index, and arms auto-merge. The tap's CI checks the digest and the proof
@@ -15,7 +15,25 @@
 # (push + `lastgit cr create --auto-merge --require-status ci-required`);
 # LAST_STACK_REGISTRY_TAP_VENUE=forgejo keeps the old Forgejo PR path.
 #
-# Nothing here touches the primary node. A RED smoke never reaches this script.
+# Nothing here touches the primary node.
+#
+# GREEN path (unchanged): every app in the candidate set gets a row.
+#
+# RED, per-app-isolated path: a RED verdict used to zero out every app in the
+# set, even one that never touched the failing check (2026-09-28: one missing
+# ~/Library/LaunchAgents dir in the smoke's isolated HOME broke install-apps
+# for 6 of 9 apps; brain, kanban, situations passed every check of their own
+# and still got no row). The smoke's `fails[]` array names each failed check
+# (`install-apps:<app>:<mode>`, `cli:<app>=...`, `<app>:<check>` for the
+# per-app CLI probes) or a shared/cross-cutting one (`prereq:*`, `setup`,
+# `daemon:*`, `health:*`, `brew-service:*`, `resolver:*`, `install-apps
+# missing`) that says the isolated node itself, or its install pipeline as a
+# whole, never came up — in that case the proof is worthless for every app
+# and this script writes zero rows, exactly as before. When every failure
+# attributes to a named app, rows are written only for the apps in the
+# candidate set with zero fails under their own name. This is a strictly
+# NARROWER gate than GREEN-only: it can only shrink the row set, never write
+# a row for an app that failed one of its own checks.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
@@ -42,6 +60,11 @@ CANDIDATE_SET=""
 PROOF_JSON=""
 PROOF_RUN=""
 LASTDB_BIN_OVERRIDE=""
+STRICT_GREEN=0
+# The 9 apps the candidate set and the smoke both know about. Overridable for
+# tests against a synthetic candidate set; the production caller never sets
+# this, so it always uses the real roster.
+KNOWN_APPS="${LAST_STACK_REGISTRY_KNOWN_APPS:-brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser}"
 
 usage() {
   cat <<'USAGE'
@@ -52,16 +75,33 @@ tap repo, records the proof, signs, and opens an auto-merging change: a LastGit
 CR (default, the tap's gate of record since era 3) or a Forgejo PR.
 
   --candidate-set FILE  output of last-stack-canary-candidate-set
-  --proof FILE          the smoke's GREEN JSON verdict (verdict must be GREEN)
+  --proof FILE          the smoke's JSON verdict. GREEN proves every app in
+                         the candidate set. A RED verdict whose fails[] all
+                         attribute to named apps (see below) proves the
+                         remaining apps only; a RED verdict with any
+                         shared/cross-cutting fail proves nothing, same as
+                         before.
   --proof-run ID        proof record name (default: llms-smoke-<UTC>-<build>)
   --lastdb-bin PATH     lastdb used to sign (default: $LASTDB_BIN, then PATH)
   --dry-run             write the rows in a scratch clone; no push, no PR
+  --strict-green        require verdict GREEN, exactly like before per-app
+                         attribution existed; a RED proof of any shape dies
 
 Env: LAST_STACK_REGISTRY_TAP_VENUE (lastgit|forgejo, default lastgit),
      LAST_STACK_REGISTRY_TAP_URL, LAST_STACK_REGISTRY_TAP_DIR,
      LAST_STACK_REGISTRY_TAP_LASTGIT_SLUG, LAST_STACK_REGISTRY_TAP_CI_CONTEXT,
      LASTGIT_BIN, LASTDB_REGISTRY_SIGNING_KEY (default
-     ~/.lastdb/registry-index-signing.key)
+     ~/.lastdb/registry-index-signing.key),
+     LAST_STACK_REGISTRY_KNOWN_APPS (space-separated, for tests)
+
+Per-app attribution of a RED proof's fails[] entries:
+  install-apps:<app>:<mode> ...   -> <app>
+  cli:<app>=... / cli:<app> ...   -> <app>
+  <app>:<check> ...               -> <app>  (only when <app> is a known app)
+  anything else (prereq:*, setup, daemon:*, health:*, brew-service:*,
+  resolver:*, install-apps missing, a bare {"verdict":"RED","reason":...}
+  proof with no fails[] at all) -> shared: the isolated node or its install
+  pipeline never came up, so the proof is worthless for every app.
 USAGE
 }
 
@@ -72,6 +112,7 @@ while [ "$#" -gt 0 ]; do
     --proof-run) PROOF_RUN="$2"; shift 2 ;;
     --lastdb-bin) LASTDB_BIN_OVERRIDE="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --strict-green) STRICT_GREEN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
@@ -83,8 +124,31 @@ die() { printf 'last-stack-registry-publish-next: %s\n' "$*" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || die "jq is required"
 [ -f "$SIGNING_KEY" ] || die "signing key not found at $SIGNING_KEY"
 
+RED_ATTRIBUTION_BIN="${LAST_STACK_REGISTRY_RED_ATTRIBUTION_BIN:-$ROOT/bin/last-stack-registry-red-attribution}"
 verdict="$(jq -r '.verdict // empty' "$PROOF_JSON")"
-[ "$verdict" = GREEN ] || die "proof verdict is '${verdict:-absent}', not GREEN; rows are written only for a GREEN proof"
+PASSED_APPS=""
+PARTIAL=0
+if [ "$verdict" = GREEN ]; then
+  : # every app in the candidate set is proved, exactly as before
+elif [ "$STRICT_GREEN" -eq 1 ]; then
+  die "proof verdict is '${verdict:-absent}', not GREEN; --strict-green requires GREEN"
+else
+  # Delegate the fails[] -> app-or-shared classification to a standalone,
+  # separately fixture-tested helper (tests/last-stack-registry-red-attribution.sh)
+  # rather than re-deriving it here. See that script for the attribution rules.
+  attribution="$(LAST_STACK_REGISTRY_KNOWN_APPS="$KNOWN_APPS" "$RED_ATTRIBUTION_BIN" --proof "$PROOF_JSON")"
+  shared_fail="$(printf '%s\n' "$attribution" | sed -n 's/^shared_fail=//p')"
+  attributed_apps="$(printf '%s\n' "$attribution" | sed -n 's/^failed_apps=//p')"
+  PASSED_APPS="$(printf '%s\n' "$attribution" | sed -n 's/^passed_apps=//p')"
+
+  if [ "$shared_fail" != 0 ]; then
+    die "proof verdict is RED with a shared/cross-cutting fail (the isolated node or its install pipeline did not come up); rows are written for no app. fails: $(jq -c '.fails // .reason // empty' "$PROOF_JSON")"
+  fi
+  [ -n "$PASSED_APPS" ] || die "proof verdict is RED and every known app failed its own check; rows are written for no app"
+  PARTIAL=1
+  printf 'last-stack-registry-publish-next: RED proof, per-app isolated: failed=[%s] passed=[%s]\n' \
+    "$attributed_apps" "$PASSED_APPS" >&2
+fi
 build="$(jq -r '.lastdb.build // empty' "$CANDIDATE_SET")"
 [ -n "$build" ] || die "candidate set has no lastdb.build"
 proof_build="$(jq -r '.lastdb_build // empty' "$PROOF_JSON")"
@@ -143,6 +207,12 @@ api_version="$(jq -r '.lastdb.api_version // empty' "$CANDIDATE_SET")"
 count=0
 while IFS=$'\t' read -r app sha app_version source description; do
   [ -n "$app" ] || continue
+  if [ "$PARTIAL" -eq 1 ]; then
+    case " $PASSED_APPS " in
+      *" $app "*) ;;
+      *) continue ;;  # this app's own check failed; no row for it
+    esac
+  fi
   args=(add-row --index "$index" --channel "$CHANNEL" --app "$app" --source "$source"
         --app-version "$app_version" --sha "$sha" --lastdb-version "$build"
         --proved-at "$proved_at" --proof-run "$PROOF_RUN")
@@ -151,21 +221,49 @@ while IFS=$'\t' read -r app sha app_version source description; do
   "$ROOT/bin/last-stack-registry-index" "${args[@]}"
   count=$((count + 1))
 done < <(jq -r '.apps | to_entries[] | [.key, .value.sha, (.value.app_version // "0.0.0"), .value.source, (.value.description // "")] | @tsv' "$CANDIDATE_SET")
-[ "$count" -gt 0 ] || die "candidate set has no apps"
+[ "$count" -gt 0 ] || die "candidate set has no apps that passed their own checks"
 
-# The proof record: what was proved, with what, by which run.
+# The proof record: what was proved, with what, by which run. On a partial
+# (RED, per-app-isolated) proof, apps_proved names exactly the rows written
+# above, so a reader of the tap history can tell a full GREEN proof from a
+# narrower one without re-deriving the attribution.
 jq -n --arg run "$PROOF_RUN" --arg build "$build" --arg at "$proved_at" --arg channel "$CHANNEL" \
+  --arg partial "$PARTIAL" --arg passed "$PASSED_APPS" \
   --slurpfile set "$CANDIDATE_SET" --slurpfile proof "$PROOF_JSON" \
   '{proof_run: $run, kind: "llms-txt-install-smoke", channel: $channel, lastdb_build: $build, proved_at: $at,
+    partial: ($partial == "1"),
+    apps_proved: (if $partial == "1" then ($passed | split(" ") | map(select(length > 0))) else null end),
     candidate_set: ($set[0] | {created_at, lastdb, apps: (.apps | with_entries(.value |= {sha, app_version, source}))}),
-    verdict: ($proof[0] | {verdict, pass, sandbox})}' >"$TAP_DIR/registry/proofs/$PROOF_RUN.json"
+    verdict: ($proof[0] | {verdict, pass, fails, sandbox})}' >"$TAP_DIR/registry/proofs/$PROOF_RUN.json"
 
 "$ROOT/bin/last-stack-registry-index" sign --index "$index" --key-file "$SIGNING_KEY" --lastdb-bin "$lastdb_for_sign"
 "$lastdb_for_sign" app index verify --index "$index" >/dev/null
 
+commit_subject="registry(next): lastdb $build + $count apps proved by $PROOF_RUN"
+if [ "$PARTIAL" -eq 1 ]; then
+  # KNOWN_APPS is deliberately unquoted here so `set --` splits it on spaces.
+  # shellcheck disable=SC2086
+  known_count=$(set -- $KNOWN_APPS; echo "$#")
+  commit_subject="registry(next): lastdb $build + $count/$known_count apps (partial) proved by $PROOF_RUN"
+fi
 git -C "$TAP_DIR" add registry
-git -C "$TAP_DIR" -c user.name="last-stack canary" -c user.email="canary@edgevector.local" commit --quiet -F - <<EOF
-registry(next): lastdb $build + $count apps proved by $PROOF_RUN
+if [ "$PARTIAL" -eq 1 ]; then
+  git -C "$TAP_DIR" -c user.name="last-stack canary" -c user.email="canary@edgevector.local" commit --quiet -F - <<EOF
+$commit_subject
+
+The isolated llms-txt install smoke was RED, but every fail attributed to a
+named app's own check (none was shared/cross-cutting), so the apps that
+passed every check of their own are proved pairs with lastdb $build. Rows
+land on \`next\` for those apps only; \`stable\` waits for the human publish
+command.
+
+Apps proved: $PASSED_APPS
+
+Proof: registry/proofs/$PROOF_RUN.json
+EOF
+else
+  git -C "$TAP_DIR" -c user.name="last-stack canary" -c user.email="canary@edgevector.local" commit --quiet -F - <<EOF
+$commit_subject
 
 The isolated llms-txt install smoke passed on this candidate set, so each
 app commit in it is a proved pair with lastdb $build. Rows land on \`next\`;
@@ -173,6 +271,7 @@ app commit in it is a proved pair with lastdb $build. Rows land on \`next\`;
 
 Proof: registry/proofs/$PROOF_RUN.json
 EOF
+fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
   printf 'REGISTRY_NEXT status=dry-run build=%s apps=%s proof_run=%s dir=%s\n' "$build" "$count" "$PROOF_RUN" "$TAP_DIR"
@@ -182,11 +281,27 @@ fi
 
 if [ "$TAP_VENUE" = lastgit ]; then
   command -v "$LASTGIT_BIN" >/dev/null 2>&1 || die "lastgit CLI not found ($LASTGIT_BIN); set LASTGIT_BIN or LAST_STACK_REGISTRY_TAP_VENUE=forgejo"
+  # The CR opens on the node's $TAP_LASTGIT_SLUG. A branch pushed anywhere
+  # else is invisible to it, and a test that overrides only the tap URL would
+  # reach the real node. Only a caller that also supplies its own lastgit
+  # (a fake) may point the tap elsewhere.
+  case "$TAP_URL" in
+    lastdb://*) ;;
+    *)
+      [ "$LASTGIT_BIN" != lastgit ] \
+        || die "LastGit venue but the tap URL $TAP_URL is not a lastdb:// remote; set LAST_STACK_REGISTRY_TAP_VENUE=forgejo or a lastdb:// URL"
+      ;;
+  esac
   git -C "$TAP_DIR" push --quiet origin "$branch:$branch"
-  body="$(jq -rn --arg build "$build" --arg run "$PROOF_RUN" --arg n "$count" \
-    '"## What\n\n`registry/next.json`: " + $n + " compat rows proved with lastdb `" + $build + "` by `" + $run + "`. Proof record: `registry/proofs/" + $run + ".json`.\n\nWritten by the canary lane after the isolated llms-txt install smoke passed on this candidate set. `stable` is untouched.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"')"
+  if [ "$PARTIAL" -eq 1 ]; then
+    body="$(jq -rn --arg build "$build" --arg run "$PROOF_RUN" --arg n "$count" --arg passed "$PASSED_APPS" \
+      '"## What\n\n`registry/next.json`: " + $n + " compat rows proved with lastdb `" + $build + "` by `" + $run + "` (partial: the smoke was RED, but every fail attributed to a named app, and these apps had none). Apps proved: `" + $passed + "`. Proof record: `registry/proofs/" + $run + ".json`.\n\nWritten by the canary lane. `stable` is untouched.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"')"
+  else
+    body="$(jq -rn --arg build "$build" --arg run "$PROOF_RUN" --arg n "$count" \
+      '"## What\n\n`registry/next.json`: " + $n + " compat rows proved with lastdb `" + $build + "` by `" + $run + "`. Proof record: `registry/proofs/" + $run + ".json`.\n\nWritten by the canary lane after the isolated llms-txt install smoke passed on this candidate set. `stable` is untouched.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"')"
+  fi
   cr_json="$("$LASTGIT_BIN" cr create "$TAP_LASTGIT_SLUG" --head "$branch" --base main \
-    --title "registry(next): lastdb $build + $count apps proved by $PROOF_RUN" --body "$body" \
+    --title "$commit_subject" --body "$body" \
     --auto-merge --require-status "$TAP_CI_CONTEXT" --json)" || die "lastgit cr create failed for $TAP_LASTGIT_SLUG $branch"
   cr_id="$(printf '%s\n' "$cr_json" | jq -r '.cr_id // empty')"
   [ -n "$cr_id" ] || die "lastgit cr create returned no cr_id: $cr_json"
@@ -200,9 +315,14 @@ else
   git -C "$TAP_DIR" push --quiet -u origin "$branch"
 fi
 [ -x "$FORGE_API" ] || die "forge api helper missing at $FORGE_API"
-body="$(jq -n --arg build "$build" --arg run "$PROOF_RUN" --arg n "$count" \
-  '"## What\n\n`registry/next.json`: " + $n + " compat rows proved with lastdb `" + $build + "` by `" + $run + "`. Proof record: `registry/proofs/" + $run + ".json`.\n\nWritten by the nightly canary lane after the isolated llms-txt install smoke passed on this candidate set. `stable` is untouched.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"')"
-pr_json="$(jq -n --arg t "registry(next): lastdb $build + $count apps proved by $PROOF_RUN" --arg h "$branch" --arg b "$body" \
+if [ "$PARTIAL" -eq 1 ]; then
+  body="$(jq -n --arg build "$build" --arg run "$PROOF_RUN" --arg n "$count" --arg passed "$PASSED_APPS" \
+    '"## What\n\n`registry/next.json`: " + $n + " compat rows proved with lastdb `" + $build + "` by `" + $run + "` (partial: the smoke was RED, but every fail attributed to a named app, and these apps had none). Apps proved: `" + $passed + "`. Proof record: `registry/proofs/" + $run + ".json`.\n\nWritten by the nightly canary lane. `stable` is untouched.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"')"
+else
+  body="$(jq -n --arg build "$build" --arg run "$PROOF_RUN" --arg n "$count" \
+    '"## What\n\n`registry/next.json`: " + $n + " compat rows proved with lastdb `" + $build + "` by `" + $run + "`. Proof record: `registry/proofs/" + $run + ".json`.\n\nWritten by the nightly canary lane after the isolated llms-txt install smoke passed on this candidate set. `stable` is untouched.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"')"
+fi
+pr_json="$(jq -n --arg t "$commit_subject" --arg h "$branch" --arg b "$body" \
   '{title:$t, head:$h, base:"main", body:$b}')"
 pr_number="$("$FORGE_API" POST --data "$pr_json" "repos/$TAP_REPO/pulls" --jq '.number')"
 [ -n "$pr_number" ] && [ "$pr_number" != null ] || die "PR create returned no number"
