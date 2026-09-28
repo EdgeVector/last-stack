@@ -73,11 +73,16 @@ point read. `may_close=true` means: guard `close-ok`, still open, head
 unchanged, and NOT owned by an active Loom recovery. `may_merge=true` means: every required context green, still open,
 head unchanged. Act only on those rows, one explicit API call per row.
 
-**Ownership check:** `.owned_by` names a kanban card when the PR's head branch
-is `kanban/<slug>`, the card is in doing, has an assignee, and was updated
-within `--owner-fresh-min` (default 120 min). If `.owned_by` is not empty, the
-reaper does NOT close the PR or requeue the card — it belongs to an active
-Loom recovery and will be re-reaped next round if still over-age.
+**Ownership check:** `.owned_by` names a kanban card when the PR's head
+branch matches a `doing`-column card's own `branch` field, that card has an
+assignee, and it was updated within `--owner-fresh-min` (default 120 min).
+This does NOT key on a `kanban/<slug>` branch name — Loom never pushes one
+(`loom_pr_open` always pushes the execution id itself, e.g.
+`lx-<timestamp>-<pid>-<n>#IMPLEMENT`, so a `kanban/` prefix match never fired
+for a real Loom-driven PR; see
+papercut-pr-reaper-requeues-owned-loom-recovery-20260925). If `.owned_by` is
+not empty, the reaper does NOT close the PR or requeue the card — it belongs
+to an active Loom recovery and will be re-reaped next round if still over-age.
 
 CAUTION: do not write your own loop over `"repo pr"` strings, and do not re-run
 the guard in a loop. Under zsh, `set -- $spec` does not word-split, `set -u`
