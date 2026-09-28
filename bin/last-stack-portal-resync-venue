@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# last-stack-portal-resync-venue — heal stale portal venue/remote markers
+# against the canonical registry (~/.lastgit/github-mirrors.tsv source_url
+# column), instead of the hand-diff-and-edit procedure repeated by hand at
+# least three times on 2026-09-26/27
+# (papercut-loom-venue-from-stale-workspace-checkout-20260926).
+#
+# A portal's .portal/remote, .portal/venue, and portal-root
+# .last-stack/pr-venue all go stale the instant that repo's bare mirror
+# flips venue (e.g. the lastgit-era-3-builder migration), because nothing
+# refreshes a portal a human or agent already checked out locally. This
+# tool detects (default) or heals (--fix) that drift for one portal or
+# every portal under ~/code/edgevector.
+set -euo pipefail
+
+MIRRORS_TSV="${LAST_STACK_GITHUB_MIRRORS_TSV:-$HOME/.lastgit/github-mirrors.tsv}"
+PORTALS_ROOT="${LAST_STACK_PORTALS_ROOT:-$HOME/code/edgevector}"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: last-stack-portal-resync-venue [--fix] [--portal <dir> | --sweep]
+
+Detect (default) or heal (--fix) stale .portal/remote, .portal/venue, and
+.last-stack/pr-venue markers against the canonical source_url column of
+~/.lastgit/github-mirrors.tsv (the same registry the live
+lastgit-mirror-primary launchd job reads). Detect mode exits 1 when any
+checked portal is stale; --fix mode rewrites the stale files and exits 0.
+
+  --sweep         check every portal under $HOME/code/edgevector (default)
+  --portal <dir>  check a single portal directory
+  --fix           rewrite stale markers instead of only reporting them
+EOF
+}
+
+fix=0
+target=""
+mode=sweep
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --fix) fix=1 ;;
+    --portal)
+      mode=single
+      target="${2:-}"
+      shift
+      ;;
+    --sweep) mode=sweep ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "last-stack-portal-resync-venue: unknown arg: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [ ! -f "$MIRRORS_TSV" ]; then
+  echo "last-stack-portal-resync-venue: no registry at $MIRRORS_TSV" >&2
+  exit 2
+fi
+
+# slug -> source_url (4th tab-separated column; skip comments/blank/short rows).
+canonical_source_url() {
+  awk -F'\t' -v slug="$1" '
+    $0 !~ /^#/ && NF >= 4 && $1 == slug { print $4; exit }
+  ' "$MIRRORS_TSV"
+}
+
+venue_of_url() {
+  case "$1" in
+    lastdb:///*) echo lastgit ;;
+    http://localhost:3300/*|http://127.0.0.1:3300/*) echo forgejo ;;
+    *github.com*) echo github ;;
+    *) echo "" ;;
+  esac
+}
+
+any_stale=0
+
+check_portal() {
+  local d="$1" slug canon_url canon_venue remote_f venue_f pr_venue_f
+  local cur_remote cur_venue cur_pr stale=0
+
+  [ -f "$d/.portal/remote" ] || return 0
+  slug="$(basename "$d")"
+  canon_url="$(canonical_source_url "$slug")"
+  [ -n "$canon_url" ] || return 0
+  canon_venue="$(venue_of_url "$canon_url")"
+  [ -n "$canon_venue" ] || return 0
+
+  remote_f="$d/.portal/remote"
+  venue_f="$d/.portal/venue"
+  pr_venue_f="$d/.last-stack/pr-venue"
+
+  cur_remote="$(tr -d '[:space:]' <"$remote_f" 2>/dev/null || true)"
+  cur_venue=""
+  [ -f "$venue_f" ] && cur_venue="$(tr -d '[:space:]' <"$venue_f")"
+  cur_pr=""
+  [ -f "$pr_venue_f" ] && cur_pr="$(sed -n '1{s/[[:space:]]*$//;p;}' "$pr_venue_f")"
+
+  if [ "$cur_remote" != "$canon_url" ]; then
+    stale=1
+    printf 'STALE %s .portal/remote: %s -> %s\n' "$slug" "${cur_remote:-<absent>}" "$canon_url"
+  fi
+  if [ "$cur_venue" != "$canon_venue" ]; then
+    stale=1
+    printf 'STALE %s .portal/venue: %s -> %s\n' "$slug" "${cur_venue:-<absent>}" "$canon_venue"
+  fi
+  if [ -f "$pr_venue_f" ] && [ "$cur_pr" != "$canon_venue" ]; then
+    stale=1
+    printf 'STALE %s .last-stack/pr-venue: %s -> %s\n' "$slug" "${cur_pr:-<absent>}" "$canon_venue"
+  fi
+
+  if [ "$stale" -eq 1 ]; then
+    any_stale=1
+    if [ "$fix" -eq 1 ]; then
+      printf '%s\n' "$canon_url" > "$remote_f"
+      printf '%s\n' "$canon_venue" > "$venue_f"
+      [ -f "$pr_venue_f" ] && printf '%s\n' "$canon_venue" > "$pr_venue_f"
+      printf 'FIXED %s\n' "$slug"
+    fi
+  fi
+}
+
+if [ "$mode" = single ]; then
+  if [ -z "$target" ]; then
+    echo "last-stack-portal-resync-venue: --portal requires a directory" >&2
+    exit 2
+  fi
+  check_portal "$(cd "$target" && pwd -P)"
+else
+  for d in "$PORTALS_ROOT"/*/; do
+    [ -d "$d" ] || continue
+    check_portal "${d%/}"
+  done
+fi
+
+if [ "$fix" -eq 1 ]; then
+  exit 0
+fi
+exit "$any_stale"
