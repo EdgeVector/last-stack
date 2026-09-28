@@ -21,12 +21,26 @@ ROOT="$(cd "$(dirname "$0")/../../.." && pwd -P)"
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 CHECK_SCRIPT="$HERE/check_contract.py"
 
-for cmd in lastdb lastdbd shasum python3; do
+for cmd in lastdb lastdbd python3; do
   command -v "$cmd" >/dev/null 2>&1 || {
     echo "measure.sh requires '$cmd' on PATH; cannot run a real probe." >&2
     exit 1
   }
 done
+command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1 || {
+  echo "measure.sh requires 'shasum' or 'sha256sum' on PATH; cannot run a real probe." >&2
+  exit 1
+}
+
+# shasum is a macOS built-in; sha256sum lives at /sbin on macOS, which a
+# stripped-PATH CI shell does not always inherit (rc=127).
+sha256_of() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    sha256sum "$1" | awk '{print $1}'
+  fi
+}
 
 MEASURE_ID="csr-$(date -u +'%Y%m%d-%H%M%S')-$$"
 
@@ -68,7 +82,7 @@ MEASUREMENT_START="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
 echo -n "csr-canary-$MEASURE_ID" >"$CANARY_FILE"
 CANARY_BYTES="$(wc -c <"$CANARY_FILE" | tr -d ' ')"
-CANARY_SHA256="$(shasum -a 256 "$CANARY_FILE" | awk '{print $1}')"
+CANARY_SHA256="$(sha256_of "$CANARY_FILE")"
 
 echo "Booting an ephemeral lastdbd (never the primary home)..."
 lastdbd --data-dir "$EPHEMERAL_HOME" >"$DAEMON_LOG" 2>&1 &
@@ -180,7 +194,7 @@ else
   DEGRADED="false"
 fi
 
-LOG_SHA256="$(shasum -a 256 "$RUN_LOG" | awk '{print $1}')"
+LOG_SHA256="$(sha256_of "$RUN_LOG")"
 
 # Build the evidence file from the variables derived above. There is no
 # catchup to report: cloud sync was never connected on this ephemeral home,

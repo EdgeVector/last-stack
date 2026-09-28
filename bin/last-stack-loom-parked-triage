@@ -39,6 +39,23 @@ by hand and found only two shapes, and neither needed judgement:
             a second such park stays for a human. Before this rule two cards
             sat in backlog as needs_human for 36h (2026-09-26).
 
+  retry_transient
+            The node exited TimedOut with the Codex CLI's own known-broken
+            model-cache log line ("failed to renew cache TTL" / "failed to
+            load models cache", both naming a missing
+            supports_parallel_tool_calls field). This is Codex runtime
+            infrastructure noise, not evidence about the work the walk was
+            doing, on IMPLEMENT or REVISE, with or without a PR already
+            open. A retry re-runs the same failed node on the same walk
+            (no difficulty change; the model was never the problem). Once
+            per walk (tracked like escalate, keyed by exec id, since a
+            resumed walk keeps its exec id); a second park with the same
+            signature stays for a human. Filed as
+            papercut-codex-model-cache-missing-parallel-tool-field-20260925;
+            this rule is the operational mitigation that papercut asked
+            for after four confirmed real work stoppages (2026-09-25 through
+            2026-09-27) sat parked with "no automatic rule" instead.
+
 Anything else is left parked and listed as `left`.
 
 Usage:
@@ -79,6 +96,7 @@ STATE_DIR = Path(os.environ.get(
     str(Path.home() / ".local/state/last-stack/loom-parked-triage")))
 
 ESCALATE_MARKERS = ("reviser produced no commit", "review escalated at cap")
+TRANSIENT_INFRA_MARKERS = ("failed to renew cache ttl", "failed to load models cache")
 NO_EVIDENCE_MARKER = "no evidence recorded"
 PR_RE = re.compile(r"/([^/]+/[^/]+)/pulls/(\d+)")
 # last-stack-forge-api's refusal line when a Situation blocks the merge.
@@ -190,6 +208,11 @@ def classify(exec_id, view, state, merge_retry_s, now):
             return "left", "already escalated; needs a human", None
         return "escalate", "fast reviser stalled", {
             "human_decision": "retry", "card_difficulty": "normal", "triage_escalated": True}
+    if any(m in text for m in TRANSIENT_INFRA_MARKERS):
+        if seen.get("transient_retry_at"):
+            return "left", "codex cache-TTL error again after a retry; needs a human", None
+        return "retry_transient", "codex model-cache TTL error is known Codex runtime noise", {
+            "human_decision": "retry"}
     error = view["error"].strip().lower()
     if (not ctx.get("pr_url") and str(ctx.get("park_reason") or "") == "node error"
             and (not error or NO_EVIDENCE_MARKER in error)):
@@ -310,7 +333,7 @@ def main():
         counts["escalated" if action == "escalate" else "resumed"] += 1
         if args.apply:
             signal(exec_id, payload, card)
-            key = "escalated_at" if action == "escalate" else "resume_at"
+            key = {"escalate": "escalated_at", "retry_transient": "transient_retry_at"}.get(action, "resume_at")
             state.setdefault(exec_id, {})[key] = now
     if args.apply:
         save_state(state)

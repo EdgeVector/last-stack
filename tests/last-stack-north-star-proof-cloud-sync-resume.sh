@@ -35,6 +35,16 @@ fail() {
   exit 1
 }
 
+# shasum is a macOS built-in; sha256sum lives at /sbin on macOS, which a
+# stripped-PATH CI shell does not always inherit (rc=127).
+sha256_of() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    sha256sum "$1" | awk '{print $1}'
+  fi
+}
+
 expect_verdict() {
   local file="$1" want="$2" got
   [ -f "$file" ] || fail "missing report $file"
@@ -124,7 +134,7 @@ PROBE_RESULT: cloud_status_exit=0
 PROBE_RESULT: snapshot_exit=0
 PROBE_RESULT: put_file_blob_exit=0
 EOF
-  log_sha256="$(shasum -a 256 "$log" | awk '{print $1}')"
+  log_sha256="$(sha256_of "$log")"
   python3 - "$path" "$log_sha256" <<'PY'
 import json
 import sys
