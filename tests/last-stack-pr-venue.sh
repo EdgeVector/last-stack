@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Every scheduled routine on this fleet exports LAST_STACK_LASTGIT_NATIVE_REPOS
+# (the era-3 migrated-repo list) into its dispatch shell, and that list
+# already names EdgeVector/last-stack, EdgeVector/loom, EdgeVector/fkanban,
+# EdgeVector/routines. Left ambient, it wins over this test's own fixture
+# marker-less repos, so the "defaults without marker" assertions below read
+# lastgit instead of forgejo -- passing only in a shell that happens not to
+# have the var set, and failing deterministically inside real CI/routine runs
+# where it always is. Unset it (and its forgejo counterpart) so this test
+# exercises the fallback logic in isolation, the same env every assertion
+# below assumes.
+unset LAST_STACK_LASTGIT_NATIVE_REPOS LAST_STACK_FORGEJO_REPOS
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 tmp="$(mktemp -d)"
 cleanup() {

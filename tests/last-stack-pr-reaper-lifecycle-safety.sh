@@ -40,6 +40,16 @@ case "$1" in
       cat "$db/$slug.json"; exit 0
     fi
     echo "{\"error\":\"card not found\"}" >&2; exit 1 ;;
+  list)
+    shopt -s nullglob
+    files=("$db"/*.json)
+    shopt -u nullglob
+    cards="[]"
+    if [ "${#files[@]}" -gt 0 ]; then
+      cards="$(jq -cs '[.[] | select(.column == "doing")]' "${files[@]}")"
+    fi
+    jq -cn --argjson cards "$cards" '{cards: $cards, total: ($cards | length), truncated: false}'
+    exit 0 ;;
   *)
     echo "unexpected kanban call: $*" >&2; exit 2 ;;
 esac
@@ -80,14 +90,17 @@ put "repos/$R/commits/base1/status" <<'J'
 {"statuses":[{"context":"Forge CI / ci-required (push)","status":"success","created_at":"2026-09-25T11:00:00Z"}]}
 J
 
+# Loom never pushes a `kanban/<slug>` branch: loom_pr_open (scripts/loom-pr-lib.sh)
+# always pushes the execution id itself, e.g. `lx-<timestamp>-<pid>-<n>#IMPLEMENT`.
+# Use that real shape here so this fixture exercises the branch this ownership
+# check actually has to match, not a shape Loom never produces.
 pulls_open() {
   local first=1
   printf '['
   for n in "$@"; do
     [ "$first" = 1 ] || printf ','
     first=0
-    # PR 6 and 7: owned by loom recovery; PR 8: owned by actual card; PR 9: no card owner
-    printf '{"number":%s,"state":"open","title":"pr%s","mergeable":true,"created_at":"2026-09-25T10:00:00Z","updated_at":"2026-09-25T10:00:00Z","head":{"ref":"kanban/card%s","sha":"head%s"},"base":{"ref":"main"}}' "$n" "$n" "$n" "$n"
+    printf '{"number":%s,"state":"open","title":"pr%s","mergeable":true,"created_at":"2026-09-25T10:00:00Z","updated_at":"2026-09-25T10:00:00Z","head":{"ref":"lx-fake-%s-exec#IMPLEMENT","sha":"head%s"},"base":{"ref":"main"}}' "$n" "$n" "$n" "$n"
   done
   printf ']\n'
 }
@@ -99,16 +112,17 @@ for n in 6 7; do
 {"statuses":[{"context":"Forge CI / ci-required (pull_request)","status":"success","created_at":"2026-09-25T10:10:00Z"}]}
 J
   put "repos/$R/pulls/$n" <<J
-{"number":$n,"state":"open","title":"pr$n","mergeable":true,"created_at":"2026-09-25T10:00:00Z","updated_at":"2026-09-25T10:00:00Z","head":{"ref":"kanban/card$n","sha":"head$n"},"base":{"ref":"main"}}
+{"number":$n,"state":"open","title":"pr$n","mergeable":true,"created_at":"2026-09-25T10:00:00Z","updated_at":"2026-09-25T10:00:00Z","head":{"ref":"lx-fake-$n-exec#IMPLEMENT","sha":"head$n"},"base":{"ref":"main"}}
 J
 done
 
-# ── Card 6: in doing, fresh update (owned by live Loom recovery) ──────────────
+# ── Card 6: in doing, fresh update, branch matches PR 6's real Loom head ref ──
 cat >"$tmp/board/card6.json" <<'J'
 {
   "slug": "card6",
   "column": "doing",
   "assignee": "test-worker",
+  "branch": "lx-fake-6-exec#IMPLEMENT",
   "updated_at": "2026-09-25T11:50:00Z",
   "body": "PR 6 test card"
 }

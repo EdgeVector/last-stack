@@ -709,25 +709,76 @@ LIVE = {"open", "partial", "fixed"}
 ATTRIBUTED = {"duplicate", "wontfix"}
 
 
-def live_card_owner(args: argparse.Namespace, pr: dict[str, Any], now: dt.datetime) -> str:
-    """Card slug when the PR's kanban/<slug> card is in doing, assigned, and fresh."""
-    ref = pr.get("head_ref") or ""
-    if not ref.startswith("kanban/"):
-        return ""
-    card_slug = ref[len("kanban/"):]
-    proc = run([args.kanban_bin, "show", card_slug, "--json"], timeout=45)
-    if proc.returncode != 0:
-        return ""
-    try:
-        card = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return ""
+_DOING_CARDS_CACHE: dict[str, list[dict[str, Any]]] = {}
+
+
+def _doing_cards(kanban_bin: str) -> list[dict[str, Any]]:
+    """Every doing-column card, fetched once per process and reused across PRs.
+
+    A reap-plan run checks ownership for every over-age PR; without this cache
+    each PR would issue its own `kanban list` read against the same column.
+    """
+    if kanban_bin not in _DOING_CARDS_CACHE:
+        cards: list[dict[str, Any]] = []
+        proc = run([kanban_bin, "list", "--column", "doing", "--all", "--json"], timeout=45)
+        if proc.returncode == 0:
+            try:
+                doc = json.loads(proc.stdout)
+                if isinstance(doc, dict) and isinstance(doc.get("cards"), list):
+                    cards = [c for c in doc["cards"] if isinstance(c, dict)]
+            except json.JSONDecodeError:
+                pass
+        _DOING_CARDS_CACHE[kanban_bin] = cards
+    return _DOING_CARDS_CACHE[kanban_bin]
+
+
+def _fresh_owner(card: Any, slug: str, owner_fresh_min: int, now: dt.datetime) -> str:
     if not isinstance(card, dict) or card.get("column") != "doing" or not card.get("assignee"):
         return ""
     updated = parse_ts(card.get("updated_at"))
-    if not updated or (now - updated).total_seconds() > args.owner_fresh_min * 60:
+    if not updated or (now - updated).total_seconds() > owner_fresh_min * 60:
         return ""
-    return card_slug
+    return slug
+
+
+def live_card_owner(args: argparse.Namespace, pr: dict[str, Any], now: dt.datetime) -> str:
+    """Card slug when the PR's head branch belongs to a doing/assigned/fresh card.
+
+    Two branch shapes both occur in production:
+    - `kanban/<slug>` branches from a portal worktree (`./bin/wt start
+      <slug>`), where the slug is the branch suffix itself -- resolved with a
+      single `kanban show <slug>` point read (cheap, and the shape most
+      fixtures and the sync-side dedupe already assume).
+    - Loom's own execution branches, e.g. `lx-<timestamp>-<pid>-<n>#IMPLEMENT`
+      (scripts/loom-pr-lib.sh loom_pr_open pushes the execution id verbatim,
+      for every venue). These carry no slug in the branch name at all, so a
+      `kanban/` prefix match alone silently owns nothing for a real
+      Loom-driven PR (papercut-pr-reaper-requeues-owned-loom-recovery-20260925).
+      Matched instead by scanning doing-column cards for one whose own
+      `branch` field equals the PR's head branch -- loom sets that field to
+      the same execution-id branch at PR-open time.
+    """
+    ref = pr.get("head_ref") or ""
+    if not ref:
+        return ""
+    if ref.startswith("kanban/"):
+        card_slug = ref[len("kanban/"):]
+        proc = run([args.kanban_bin, "show", card_slug, "--json"], timeout=45)
+        if proc.returncode == 0:
+            try:
+                card = json.loads(proc.stdout)
+            except json.JSONDecodeError:
+                card = None
+            owner = _fresh_owner(card, card_slug, args.owner_fresh_min, now)
+            if owner:
+                return owner
+    for card in _doing_cards(args.kanban_bin):
+        if card.get("branch") != ref:
+            continue
+        owner = _fresh_owner(card, str(card.get("slug") or ""), args.owner_fresh_min, now)
+        if owner:
+            return owner
+    return ""
 
 
 def evidence_line(pr: dict[str, Any], checked_at: str, passes: int = 0) -> str:
