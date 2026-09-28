@@ -30,14 +30,23 @@ pauses their live registry entries.
    cutover-hold policy. Same build as the primary → `noop`.
 3. **set** — `last-stack-canary-candidate-set --lastdbd <bin>` fixes one commit
    per app from `config/registry/apps.json`: the app's artifact channel head
-   (built and green-published), else Forge `main`. Output:
+   (built and green-published), else `main` of the app's gate of record. Since
+   LastGit era 3 the gate of record is the `lastgit` field
+   (`lastdb:///<repo>`). The Forgejo copy (`forge`) is frozen, and the set
+   uses it only when `git-remote-lastdb` is not on PATH (with a WARNING). Each
+   row records `source` (the clone source for `--pins`, and the `next` row
+   source), `source_venue`, `source_reachable`, and `public_source`. Output:
    `$ROUTINES_RUN_DIR/candidate-set.json`.
 4. **smoke** — `skills/llms-txt-install-smoke/run.sh --json` with
    `SMOKE_LASTDBD_BIN=<candidate lastdbd>` and `SMOKE_CANDIDATE_SET=<file>`.
    The sandbox boots the candidate daemon, puts the candidate `lastdb` first on
    PATH, and `last-stack-install-apps --pins <file>` checks out exactly the
-   pinned commits. Receipts must read `pinned`; anything else is RED. RED stops
-   here: no cutover, no rows, a build-subject line event in the ledger.
+   pinned commits. A `lastdb://` source reads the login user's node
+   (`LASTGIT_SOCKET`, `LASTGIT_SCHEMA_MAP`), because the sandbox HOME has no
+   node. The installer tries every app, also after one app fails, and writes a
+   `failed` receipt with the stage for each app that fails. Receipts must read
+   `pinned`; anything else is RED. RED stops here: no cutover, no rows, a
+   build-subject line event in the ledger.
 5. **cutover** — `last-stack-lastdb-canary-dogfood --cutover --json` (the
    safe-upgrade probe, DEV photograph, and primary cutover; unchanged).
 6. **rows** — `last-stack-registry-publish-next --candidate-set … --proof …`
@@ -80,7 +89,9 @@ token`, then `lastsecrets://github-token` (unattended, locked keychain).
 - Public: `last-stack-install-apps` asks `lastdb app resolve <app> --channel
   stable` for each app and checks out that commit. Receipts land in
   `~/lastdb-apps/.lastdb-app-receipts/<app>.json` with `mode` = `proved`,
-  `pinned`, or `unproved-main`. A `lastdb` without `app resolve` falls back to
+  `pinned`, `unproved-main`, or `failed` (with `stage` = `source`,
+  `dependencies`, or `link`). One failed app does not stop the others; the
+  installer exits 1 after all apps and names each failure. A `lastdb` without `app resolve` falls back to
   `main` and says so. No proved row for this node fails closed unless
   `--allow-unproved`.
 - Tom's Mac: host-track follows the registry `next` channel

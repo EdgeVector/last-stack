@@ -10,10 +10,23 @@ Per app the commit comes from, in order:
   1. --pin <app>=<sha>                    operator override
   2. the LastGit artifact CAS channel     channels/<artifact_app>/<channel>.json
      (the app's released head: built and green-published)
-  3. `git ls-remote <forge> refs/heads/main`
+  3. `git ls-remote <source> refs/heads/main`
+
+The source is the app's gate of record. Since LastGit era 3 (2026-09-26/27)
+that is `lastgit` (lastdb:///<repo>) in config/registry/apps.json; each
+repo's Forgejo copy (`forge`) is frozen read-only and never gets a new commit.
+A set that names the frozen copy pins commits it cannot serve: measured
+2026-09-27, routines' artifact head 3bf55c676a14 was on LastGit only, and
+every primary-rows smoke went RED on it. `--source-venue` picks the venue;
+`auto` takes `lastgit` when the app has one and git-remote-lastdb is on PATH,
+else `forge`. The set records the chosen `source` (what
+last-stack-install-apps --pins clones from and what `next` rows carry), the
+`source_venue`, and the untouched `public_source` (what `stable` rows carry).
 
 The app version is read from `package.json` at that commit through a small
-bounded bare cache (one shallow fetch per app), else `0.0.0`.
+bounded bare cache (one shallow fetch per app), else `0.0.0`. That fetch is
+also a reachability check: a commit its source cannot serve prints a WARNING
+and the row records `source_reachable: false`.
 
 No walk. Every path comes from a flag or a fixed default under
 ~/.local/state/last-stack.
@@ -24,6 +37,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -68,9 +82,14 @@ def forge_git_env() -> dict[str, str]:
                               capture_output=True, text=True, check=False)
         token = proc.stdout.strip() if proc.returncode == 0 else ""
     if token:
-        env["GIT_CONFIG_COUNT"] = "1"
-        env["GIT_CONFIG_KEY_0"] = "http.http://localhost:3300/.extraHeader"
-        env["GIT_CONFIG_VALUE_0"] = f"Authorization: token {token}"
+        # Append to the caller's GIT_CONFIG_* entries; never replace them.
+        try:
+            n = int(env.get("GIT_CONFIG_COUNT") or "0")
+        except ValueError:
+            n = 0
+        env["GIT_CONFIG_COUNT"] = str(n + 1)
+        env[f"GIT_CONFIG_KEY_{n}"] = "http.http://localhost:3300/.extraHeader"
+        env[f"GIT_CONFIG_VALUE_{n}"] = f"Authorization: token {token}"
     _FORGE_GIT_ENV = env
     return env
 
@@ -124,7 +143,8 @@ def artifact_channel_oid(artifact_root: Path, artifact_app: str | None, channel:
     return str(data.get("source_oid") or "")
 
 
-def forge_main_oid(url: str) -> str:
+def main_oid(url: str) -> str:
+    """`refs/heads/main` of `url` (the app's gate of record), or ""."""
     proc = run(["git", "ls-remote", url, "refs/heads/main"], timeout=60)
     if proc.returncode != 0:
         return ""
@@ -135,27 +155,61 @@ def forge_main_oid(url: str) -> str:
     return ""
 
 
-def app_version_at(cache_root: Path, app: str, url: str, sha: str) -> str:
-    """package.json version at `sha`, through a bounded per-app bare cache."""
+def lastgit_helper_available() -> bool:
+    return shutil.which("git-remote-lastdb", path=forge_git_env().get("PATH")) is not None
+
+
+def choose_source(app: str, cfg: dict, venue: str) -> tuple[str, str]:
+    """(source url, venue name) for one app. See the module docstring."""
+    lastgit = str(cfg.get("lastgit") or "")
+    forge = str(cfg.get("forge") or "")
+    if venue == "forge":
+        return forge, "forge"
+    if venue == "lastgit":
+        if not lastgit:
+            die(f"--source-venue lastgit: app {app!r} has no `lastgit` field", 2)
+        if not lastgit_helper_available():
+            die("--source-venue lastgit: git-remote-lastdb is not on PATH", 2)
+        return lastgit, "lastgit"
+    if lastgit and lastgit_helper_available():
+        return lastgit, "lastgit"
+    if lastgit:
+        # Say so: the frozen copy is the failure this venue choice exists to avoid.
+        print(
+            f"last-stack-canary-candidate-set: WARNING {app}: git-remote-lastdb is not on PATH; "
+            f"reading the frozen Forgejo copy {forge} instead of {lastgit}",
+            file=sys.stderr,
+        )
+    return forge, "forge"
+
+
+def app_version_at(cache_root: Path, app: str, url: str, sha: str) -> tuple[str, bool]:
+    """(package.json version at `sha`, whether `url` served the commit).
+
+    Through a bounded per-app bare cache. A commit already in the cache
+    counts as reachable without a network read."""
     cache = cache_root / f"{app}.git"
     if not cache.is_dir():
         cache.parent.mkdir(parents=True, exist_ok=True)
         init = run(["git", "init", "--quiet", "--bare", str(cache)], timeout=30)
         if init.returncode != 0:
-            return "0.0.0"
+            return "0.0.0", True
     show = run(["git", "-C", str(cache), "show", f"{sha}:package.json"], timeout=30)
     if show.returncode != 0:
+        have = run(["git", "-C", str(cache), "cat-file", "-e", f"{sha}^{{commit}}"], timeout=30)
+        if have.returncode == 0:
+            return "0.0.0", True  # commit cached; it just has no package.json
         fetch = run(["git", "-C", str(cache), "fetch", "--quiet", "--depth", "1", url, sha], timeout=180)
         if fetch.returncode != 0:
-            return "0.0.0"
+            return "0.0.0", False
         show = run(["git", "-C", str(cache), "show", f"{sha}:package.json"], timeout=30)
         if show.returncode != 0:
-            return "0.0.0"
+            return "0.0.0", True
     try:
         version = str(json.loads(show.stdout).get("version") or "").strip()
     except json.JSONDecodeError:
-        return "0.0.0"
-    return version or "0.0.0"
+        return "0.0.0", True
+    return version or "0.0.0", True
 
 
 def parse_pins(values: list[str]) -> dict[str, str]:
@@ -179,6 +233,13 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--pin", action="append", default=[], help="<app>=<sha> override (repeatable)")
     parser.add_argument("--artifact-root", type=Path, default=Path(os.environ.get("HOST_TRACK_ARTIFACT_ROOT", DEFAULT_ARTIFACT_ROOT)))
     parser.add_argument("--artifact-channel", default="stable", help="artifact CAS channel that names each app's released head")
+    parser.add_argument(
+        "--source-venue",
+        choices=("auto", "lastgit", "forge"),
+        default=os.environ.get("LAST_STACK_CANDIDATE_SOURCE_VENUE", "auto"),
+        help="where each app's source is read: auto (lastgit when the app has one and "
+        "git-remote-lastdb is on PATH, else forge), lastgit, or forge (the frozen copy)",
+    )
     parser.add_argument("--cache-root", type=Path, default=DEFAULT_CACHE_ROOT)
     parser.add_argument("--no-version-lookup", action="store_true", help="skip the package.json fetch; versions read 0.0.0")
     parser.add_argument("--out", type=Path, help="output file (default: <out-root>/<lastdb build>.json)")
@@ -208,25 +269,40 @@ def main(argv: list[str]) -> int:
     oid = lastdb_oid_from_manifest(args.lastdbd)
     apps_out: dict[str, dict] = {}
     missing: list[str] = []
+    unreachable: list[str] = []
     for app in selected:
         cfg = apps_cfg[app]
-        forge = str(cfg.get("forge") or "")
+        source, venue = choose_source(app, cfg, args.source_venue)
         if app in pins:
             sha, sha_source = pins[app], "pin"
         else:
             sha = artifact_channel_oid(args.artifact_root, cfg.get("artifact_app"), args.artifact_channel)
             sha_source = f"artifact-channel:{args.artifact_channel}"
-            if not sha and forge:
-                sha, sha_source = forge_main_oid(forge), "forge-main"
+            if not sha and source:
+                sha, sha_source = main_oid(source), f"{venue}-main"
         if not sha:
             missing.append(app)
             continue
-        version = "0.0.0" if args.no_version_lookup else app_version_at(args.cache_root, app, forge, sha)
+        reachable = True
+        if args.no_version_lookup:
+            version = "0.0.0"
+        else:
+            version, reachable = app_version_at(args.cache_root, app, source, sha)
+        if not reachable:
+            unreachable.append(app)
+            print(
+                f"last-stack-canary-candidate-set: WARNING {app} {sha[:12]} ({sha_source}) "
+                f"could not be fetched from {source}; the install smoke will fail this app",
+                file=sys.stderr,
+            )
         apps_out[app] = {
             "sha": sha,
             "sha_source": sha_source,
             "app_version": version,
-            "source": forge,
+            "source": source,
+            "source_venue": venue,
+            "source_reachable": reachable,
+            "forge_source": str(cfg.get("forge") or ""),
             "public_source": str(cfg.get("public") or ""),
             "install_name": str(cfg.get("install_name") or app),
             "description": str(cfg.get("description") or ""),
@@ -247,7 +323,9 @@ def main(argv: list[str]) -> int:
     else:
         print(f"candidate set: lastdb {build} + {len(apps_out)} apps -> {out}")
         for app, row in apps_out.items():
-            print(f"  {app}\t{row['app_version']}\t{row['sha'][:12]}\t{row['sha_source']}")
+            print(f"  {app}\t{row['app_version']}\t{row['sha'][:12]}\t{row['sha_source']}\t{row['source']}")
+        if unreachable:
+            print(f"  unreachable on their source: {', '.join(unreachable)}")
     return 0
 
 
