@@ -5,14 +5,68 @@ set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 AUDIT="$ROOT/harness/north-star/north-star-lastdb-schema-root-data-attribution/audit.py"
+PRODUCE="$ROOT/harness/north-star/north-star-lastdb-schema-root-data-attribution/produce.py"
 ROUTINE="$ROOT/bin/last-stack-lastdb-refcount-audit-routine"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-refcount-audit.XXXXXX")"
+# A real LastDB daemon binds data/folddb.sock, whose macOS path limit needs a
+# short root. This also lets the producer assert that the fixture is a socket.
+WORK="$(mktemp -d /private/tmp/last-stack-refcount-audit.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 python3 -m py_compile "$AUDIT"
+python3 -m py_compile "$PRODUCE"
 bash -n "$ROUTINE"
+
+# This is an integration boundary, not a fabricated audit input. The producer
+# uses a real CoW-shaped home, invokes the refcount candidate command, and asks
+# the liveness walker for each candidate before the audit reads its documents.
+mkdir -p "$WORK/cow/data" "$WORK/produced"
+printf 'created_at=fixture\n' >"$WORK/cow/.lastdb-dev-owner"
+python3 - "$WORK/cow/data/folddb.sock" <<'PY'
+import socket
+import sys
+
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.bind(sys.argv[1])
+PY
+cat >"$WORK/lastdb" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = "--data-dir" ]
+[ "$2" = "$LASTDB_AUDIT_TEST_COPY" ]
+shift 2
+case "$*" in
+  'db gc-atoms --json')
+    printf '%s\n' '{"candidates":[{"atom_id":"dead-atom","refcount":0,"grace_elapsed":true},{"atom_id":"live-atom","refcount":0,"grace_elapsed":true}]}'
+    ;;
+  'liveness explain atom dead-atom --json')
+    printf '%s\n' '{"complete":true,"reclaim_state":"candidate","edges":[]}'
+    ;;
+  'liveness explain atom live-atom --json')
+    printf '%s\n' '{"complete":true,"reclaim_state":"blocked","root_groups":["schema_catalogs"]}'
+    ;;
+  *)
+    echo "unexpected lastdb invocation: $*" >&2
+    exit 64
+    ;;
+esac
+SH
+chmod +x "$WORK/lastdb"
+LASTDB_AUDIT_TEST_COPY="$WORK/cow" python3 "$PRODUCE" \
+  --copy-home "$WORK/cow" --out-dir "$WORK/produced" --lastdb "$WORK/lastdb" >"$WORK/produced-paths.json"
+python3 "$AUDIT" --candidates "$WORK/produced/candidates.json" \
+  --reachability "$WORK/produced/reachability.json" --out "$WORK/produced-report.json"
+python3 - "$WORK/produced/candidates.json" "$WORK/produced/reachability.json" "$WORK/produced-report.json" <<'PY'
+import json
+import sys
+
+candidates, reachability, report = [json.load(open(path, encoding="utf-8")) for path in sys.argv[1:]]
+assert candidates["candidates"][0]["atom_id"] == "dead-atom", candidates
+assert reachability["roots"]["schema_catalogs"] == ["schema_catalogs:live-atom"], reachability
+assert report["result"] == "disagreement", report
+assert report["reachable_candidates"] == [{"atom_id": "live-atom", "root_groups": ["schema_catalogs"]}], report
+PY
 
 python3 - "$WORK/candidates.json" "$WORK/reachability.json" <<'PY'
 import json

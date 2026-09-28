@@ -3,7 +3,11 @@
 This directory contains the former schema-root copy-only proof harness. It is
 now a periodic audit. It is not registered with `last-stack-north-star-proof`.
 
-The atom-refcount grace-window delete job writes a candidate document:
+`produce.py` writes both documents from a running `lastdb-dev` CoW copy. It
+uses the refcount grace-window candidate list and the daemon liveness walker.
+It refuses a primary home, a home without a CoW owner stamp, and a stopped copy.
+
+The candidate document has this form:
 
 ```json
 {
@@ -13,8 +17,8 @@ The atom-refcount grace-window delete job writes a candidate document:
 }
 ```
 
-The isolated-copy walker writes a reachability document. It starts at schema
-catalog, retention, and system roots. Each object names every direct reference.
+The liveness walker writes a reachability document. It preserves schema catalog,
+retention, and system root groups for each live candidate.
 
 ```json
 {
@@ -25,12 +29,13 @@ catalog, retention, and system roots. Each object names every direct reference.
 }
 ```
 
-Run the audit with one candidate document and one reachability document from
-the same isolated copy:
+Produce and run the audit from the same isolated copy:
 
 ```bash
-python3 harness/north-star/north-star-lastdb-schema-root-data-attribution/audit.py \
-  --candidates candidates.json --reachability reachability.json --out audit.json
+python3 produce.py --copy-home /path/to/cow --out-dir /tmp/refcount-input
+python3 audit.py \
+  --candidates /tmp/refcount-input/candidates.json \
+  --reachability /tmp/refcount-input/reachability.json --out audit.json
 ```
 
 `result: agreement` means no candidate is reachable. `result: disagreement`

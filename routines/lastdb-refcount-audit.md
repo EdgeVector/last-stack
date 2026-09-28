@@ -9,21 +9,34 @@ It never blocks board progress by itself.
 
 ## Safety
 
-- Use one isolated CoW copy. Never open or change `~/.lastdb` or `~/.folddb`.
-- Use candidate and reachability files that name the same `copy_id`.
+- Use one new isolated CoW copy. Never open or change `~/.lastdb` or `~/.folddb`.
+- The producer writes candidate and reachability files with the same `copy_id`.
 - Do not delete atoms. The grace-window delete job owns deletion.
 
 ## Run
 
-The isolated-copy job supplies these paths:
+Create the isolated copy, then produce and set all three audit paths:
 
 ```bash
 last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+# Keep the LastDB socket below the macOS Unix-socket path limit.
+work="$(mktemp -d /private/tmp/lastdb-refcount-audit.XXXXXX)"
+copy_home="$work/cow"
+LASTDB_DEV_HOME="$copy_home" lastdb-dev up --fresh --bin "$(command -v lastdbd)"
+python3 "$last_stack/harness/north-star/north-star-lastdb-schema-root-data-attribution/produce.py" \
+  --copy-home "$copy_home" --out-dir "$work/input" >"$work/paths.json"
+LASTDB_REFCOUNT_AUDIT_CANDIDATES="$work/input/candidates.json"
+LASTDB_REFCOUNT_AUDIT_REACHABILITY="$work/input/reachability.json"
+LASTDB_REFCOUNT_AUDIT_REPORT="$work/report.json"
 python3 "$last_stack/harness/north-star/north-star-lastdb-schema-root-data-attribution/audit.py" \
   --candidates "$LASTDB_REFCOUNT_AUDIT_CANDIDATES" \
-  --reachability "$LASTDB_REFCOUNT_AUDIT_REACHABILITY" \
-  --out "$LASTDB_REFCOUNT_AUDIT_REPORT"
+  --reachability "$LASTDB_REFCOUNT_AUDIT_REACHABILITY" --out "$LASTDB_REFCOUNT_AUDIT_REPORT"
+LASTDB_DEV_HOME="$copy_home" lastdb-dev stop
+LASTDB_DEV_HOME="$copy_home" lastdb-dev reclaim --home "$copy_home"
 ```
+
+The producer calls `lastdb db gc-atoms --json` and `lastdb liveness explain`
+on the copy only. It refuses a home without a CoW owner stamp and socket.
 
 Read `result` from the report.
 
@@ -42,8 +55,6 @@ papercut board card.
 
 ## Result (last)
 
-Print one line:
-
-```text
-ROUTINE_RESULT outcome=<ok|noop|error> detail=refcount-audit=<agreement|disagreement|invalid>
-```
+Print one fresh machine-result trailer. Set `outcome` to `ok`, `noop`, or
+`error`. Set `detail` to the refcount-audit result: `agreement`,
+`disagreement`, or `invalid`.
