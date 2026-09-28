@@ -83,6 +83,26 @@ esac
 
 promoted=0
 for ((attempt=1; attempt<=max_attempts; attempt++)); do
+  # A delayed watcher job must not move stable behind the current main tip.
+  main_json=""
+  if ! main_json="$("$lastgit_bin" ref last-stack main --json)"; then
+    printf 'main tip read attempt %s/%s failed; retry follows\n' \
+      "$attempt" "$max_attempts" >&2
+  fi
+  main_oid="$(printf '%s\n' "$main_json" | jq -r '.oid // empty')"
+  if [[ ! "$main_oid" =~ ^[0-9a-f]{40}$ ]]; then
+    printf 'main tip read attempt %s/%s returned no oid; retry follows\n' \
+      "$attempt" "$max_attempts" >&2
+    [ "$attempt" -eq "$max_attempts" ] || [ "$retry_seconds" -eq 0 ] || sleep "$retry_seconds"
+    continue
+  fi
+  if [ "$main_oid" != "$oid" ]; then
+    printf 'skip stable promotion for superseded oid=%s current_main=%s\n' \
+      "$oid" "$main_oid"
+    echo "last-stack artifact release PASSED (superseded)"
+    exit 0
+  fi
+
   if "$lastgit_bin" artifact promote \
       --app "$app" \
       --channel stable \

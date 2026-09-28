@@ -211,6 +211,27 @@ printf '%s\n' "$resolved_json" | jq -e --arg oid "$merge_oid" '
 ' >/dev/null || fail "resolved stable manifest does not name the merge"
 stable_digest="$(printf '%s\n' "$resolved_json" | jq -r '.manifest_digest')"
 
+# Replay an older release after the merge reaches stable. It can publish an
+# immutable candidate, but it must not replace the newer stable channel head.
+superseded_source="$tmp/superseded-source"
+git -C "$source_repo" worktree add -q --detach "$superseded_source" "$initial_oid"
+(
+  cd "$superseded_source"
+  "${lastgit_env[@]}" \
+    LASTGIT_CI_CONTEXT=artifact-release \
+    LASTGIT_CI_REPO=last-stack \
+    LASTGIT_CI_OID="$initial_oid" \
+    .lastgit/artifact-release.sh
+) >"$tmp/superseded-release.log" 2>&1
+grep -q "skip stable promotion for superseded oid=$initial_oid current_main=$merge_oid" \
+  "$tmp/superseded-release.log" \
+  || fail "older release did not report its superseded main tip"
+resolved_after_replay="$("${lastgit_env[@]}" "$lastgit_bin" artifact resolve \
+  --app last-stack --channel stable --root "$artifact_root" --json)"
+printf '%s\n' "$resolved_after_replay" | jq -e --arg oid "$merge_oid" \
+  '.source_oid == $oid' >/dev/null \
+  || fail "older release replaced the newer stable channel head: $resolved_after_replay"
+
 ref_oid="$("${lastgit_env[@]}" "$lastgit_bin" ref last-stack main | cut -f1)"
 [ "$ref_oid" = "$merge_oid" ] || fail "LastGit main ref does not name the merge"
 ci_required_json="$("${lastgit_env[@]}" "$lastgit_bin" ci status "$merge_oid" \

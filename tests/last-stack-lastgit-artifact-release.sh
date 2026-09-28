@@ -52,6 +52,11 @@ if [ "${1:-}" = artifact ] && [ "${2:-}" = publish ]; then
     '{app:"last-stack",source_oid:$oid,manifest_digest:$digest}'
   exit 0
 fi
+if [ "${1:-}" = ref ] && [ "${2:-}" = last-stack ] && [ "${3:-}" = main ]; then
+  jq -n --arg oid "${LASTGIT_TEST_MAIN_OID:-$LASTGIT_CI_OID}" \
+    '{repo:"last-stack",name:"refs/heads/main",oid:$oid,source:"point"}'
+  exit 0
+fi
 if [ "${1:-}" = artifact ] && [ "${2:-}" = promote ]; then
   count=0
   [ ! -f "$LASTGIT_TEST_ATTEMPTS" ] || count="$(cat "$LASTGIT_TEST_ATTEMPTS")"
@@ -77,8 +82,8 @@ LAST_STACK_ARTIFACT_RELEASE_MAX_ATTEMPTS=3 \
   "$release_script" > "$tmp/release.out"
 
 [ "$(cat "$attempts")" = 2 ] || fail "release did not retry promotion"
-publish_line="$(sed -n '1p' "$calls")"
-promote_line="$(sed -n '2p' "$calls")"
+publish_line="$(grep '^artifact publish ' "$calls")"
+promote_line="$(grep '^artifact promote ' "$calls" | sed -n '1p')"
 printf '%s\n' "$publish_line" | grep -q -- '^artifact publish ' \
   || fail "release did not publish before promotion"
 printf '%s\n' "$publish_line" | grep -q -- '--app last-stack --repo last-stack' \
@@ -93,6 +98,8 @@ printf '%s\n' "$promote_line" | grep -q -- '--gate lastgit --context ci-required
   || fail "release did not use the LastGit required gate"
 grep -q 'last-stack artifact release PASSED' "$tmp/release.out" \
   || fail "release did not report success"
+[ "$(grep -c '^ref last-stack main --json$' "$calls")" = 2 ] \
+  || fail "release did not recheck the LastGit main tip before each promotion attempt"
 
 : > "$calls"
 if LASTGIT_BIN="$fake_lastgit" \
@@ -106,6 +113,33 @@ if LASTGIT_BIN="$fake_lastgit" \
 fi
 [ ! -s "$calls" ] || fail "wrong-context run changed artifact state"
 
+: > "$calls"
+: > "$attempts"
+newer_oid="$(printf 'e%.0s' {1..40})"
+LASTGIT_BIN="$fake_lastgit" \
+LASTGIT_CI_CONTEXT=artifact-release \
+LASTGIT_CI_REPO=last-stack \
+LASTGIT_CI_OID="$oid" \
+LASTGIT_TEST_MAIN_OID="$newer_oid" \
+LASTGIT_TEST_CALLS="$calls" \
+LASTGIT_TEST_ATTEMPTS="$attempts" \
+LAST_STACK_ARTIFACT_RELEASE_RETRY_SECONDS=0 \
+LAST_STACK_ARTIFACT_RELEASE_MAX_ATTEMPTS=3 \
+  "$release_script" > "$tmp/superseded.out"
+grep -q '^artifact publish ' "$calls" \
+  || fail "superseded release did not publish its candidate"
+grep -q '^ref last-stack main --json$' "$calls" \
+  || fail "superseded release did not resolve the LastGit main tip"
+if grep -q '^artifact promote ' "$calls"; then
+  fail "superseded release moved the stable channel backward"
+fi
+[ ! -s "$attempts" ] || fail "superseded release attempted stable promotion"
+grep -q "skip stable promotion for superseded oid=$oid current_main=$newer_oid" \
+  "$tmp/superseded.out" \
+  || fail "superseded release did not report why it skipped promotion"
+grep -q 'last-stack artifact release PASSED (superseded)' "$tmp/superseded.out" \
+  || fail "superseded release did not report success"
+
 jq -e '
   .apps[] | select(.app == "last-stack")
   | .gate == "lastgit"
@@ -114,4 +148,4 @@ jq -e '
 ' "$ROOT/config/host-track/apps.json" >/dev/null \
   || fail "host-track does not report the LastGit main source"
 
-printf 'ok: LastGit artifact release publishes and promotes stable\n'
+printf 'ok: LastGit artifact release publishes, promotes stable, and rejects rollback\n'
