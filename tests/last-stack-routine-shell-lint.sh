@@ -127,6 +127,9 @@ EOF
 expect 0 bash jq-tsv-ok <<'EOF'
 jq -r '.[] | [.slug, .status, (.severity // "-")] | @tsv' sit.json
 EOF
+expect 2 bash jq-dquote-plain-literal <<'EOF'
+jq -r "[.slug, .status, (.severity // \"-\")] | @tsv" sit.json
+EOF
 
 # --- awk / sed ---------------------------------------------------------------
 expect 2 bash awk-match-array <<'EOF'

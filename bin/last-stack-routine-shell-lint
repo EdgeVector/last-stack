@@ -20,7 +20,12 @@
 #   heredoc-backticks unquoted heredoc body with backticks runs them
 #   dquote-backticks  --body "...`x`..." runs x (same for --evidence etc.)
 #   jq-optional-call  jq 1.7.1 rejects f(...)?.x and (.a)?.b
-#   jq-escaped-quote  \" inside a jq \( ) interpolation is a jq syntax error
+#   jq-escaped-quote  \" anywhere in a jq program (interpolation or a plain
+#                     string literal like (.severity // \"-\")) means the
+#                     program was built double-quoted; a JS-tool-call layer
+#                     can drop the backslash in transport and deliver a
+#                     broken filter (measured 2026-09-26, the CLAUDE.md
+#                     `situations` TSV example losing its "-" fallback)
 #   awk-match-array   macOS awk has no match(s, /re/, arr)
 #   sed-inplace       macOS sed -i needs an extension argument
 #   date-nanos        macOS date has no %N (date +%s%3N prints ...3N)
@@ -133,8 +138,8 @@ rule_fix() {
       "Use: try (match(\"re\").string) catch \"\"   or   (capture(\"(?<p>re)\") // {}) | .p // \"\"" \
       "DONE-WHEN sweep: run last-stack-kanban-done-when-sweep instead of writing jq." ;;
     jq-escaped-quote) printf '%s\n' \
-      "Inside \\( ... ) jq is in expression mode, so \\\" is an invalid character." \
-      "Use a TSV row: jq -r '.[] | [.slug, .status, (.severity // \"-\")] | @tsv'" ;;
+      "A double-quoted jq program with an escaped string literal (\\\"...\\\", inside \\( ) or a plain (.field // \\\"-\\\")) can lose the backslash in transport (e.g. a JS tool call), delivering a broken filter." \
+      "Single-quote the whole jq program instead: jq -r '.[] | [.slug, .status, (.severity // \"-\")] | @tsv'" ;;
     awk-match-array) printf '%s\n' \
       "macOS awk has no third match() argument (that is GNU awk)." \
       "Use: sed -n 's/^DONE-WHEN:[[:space:]]*//p' file | head -n 1" ;;
@@ -188,7 +193,12 @@ re_spin_b='/dev/zero[^;|&]*(^|[^[:alnum:]_])read[[:space:]][^;|&]*-[[:alpha:]]*t
 re_dquote_backticks='--(body|evidence|symptom|title|summary|verified-by|fixed-by|reason|message|note)[= ]"[^"]*`'
 re_jq_word='(^|[^[:alnum:]_-])jq([[:space:]]|$)'
 re_jq_optional_call='\)\?\.[[:alpha:]_\["]'
-re_jq_escaped_quote='\\\([^)]*\\"'
+# Any \"...\" pair in a jq program means the program was built double-quoted
+# at the shell level (a plain single-quoted program never needs to escape a
+# quote). That double-quoting is what a JS-tool-call transport layer can
+# strip, whether the escaped literal sits inside \( ) interpolation or a
+# plain string like (.severity // \"-\").
+re_jq_escaped_quote='\\"[^"\\]*\\"'
 re_awk_word='(^|[^[:alnum:]_-])awk([[:space:]]|$)'
 re_awk_match='match\([^,()]*,[[:space:]]*/([^/]|\\/)*/[[:space:]]*,[[:space:]]*[[:alpha:]_]'
 q="'"
