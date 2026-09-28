@@ -89,10 +89,10 @@ pid_live() {
 
 file_mtime() {
   local path="$1"
-  if stat -f %m "$path" >/dev/null 2>&1; then
-    stat -f %m "$path"
-  else
+  if stat --version >/dev/null 2>&1; then
     stat -c %Y "$path"
+  else
+    stat -f %m "$path"
   fi
 }
 
