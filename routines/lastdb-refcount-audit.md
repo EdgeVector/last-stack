@@ -55,6 +55,6 @@ papercut board card.
 
 ## Result (last)
 
-Print one fresh machine-result trailer. Set `outcome` to `ok`, `noop`, or
-`error`. Set `detail` to the refcount-audit result: `agreement`,
-`disagreement`, or `invalid`.
+Print one fresh `ROUTINE_RESULT` trailer as the final output (contract §1).
+Set `outcome` to `ok`, `noop`, or `error`. Set `detail` to the
+refcount-audit result: `agreement`, `disagreement`, or `invalid`.
