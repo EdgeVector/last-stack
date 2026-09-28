@@ -37,8 +37,11 @@ plutil -extract Label raw -o - "$plist" \
   | grep -qx 'com.edgevector.lastgit-artifact-release-last-stack' \
   || fail "artifact release LaunchAgent label is wrong"
 plutil -extract ProgramArguments.2 raw -o - "$plist" \
-  | grep -q -- 'ci watch --repo last-stack --context artifact-release --ref refs/heads/main --keep-alive' \
+  | grep -q -- 'ci watch --repo last-stack --context artifact-release --ref refs/heads/main' \
   || fail "artifact release LaunchAgent does not watch LastGit main"
+plutil -extract ProgramArguments.2 raw -o - "$plist" \
+  | grep -Fq -- "--scratch-dir \"\$HOME/.lastgit/ci-watch-scratch/artifact-release-last-stack\"" \
+  || fail "artifact release LaunchAgent does not isolate its checkout scratch directory"
 
 cat > "$fake_lastgit" <<'SH'
 #!/usr/bin/env bash

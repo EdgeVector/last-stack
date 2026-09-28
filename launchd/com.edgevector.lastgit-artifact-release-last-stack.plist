@@ -9,7 +9,7 @@
   <array>
     <string>/bin/bash</string>
     <string>-lc</string>
-    <string>export PATH="$HOME/.local/bin:$PATH"; exec "$HOME/.local/bin/lastgit" ci watch --repo last-stack --context artifact-release --ref refs/heads/main --keep-alive --timeout-ms 3600000 &gt;&gt;"$HOME/.lastgit/artifact-release-last-stack.log" 2&gt;&amp;1</string>
+    <string>export PATH="$HOME/.local/bin:$PATH"; exec "$HOME/.local/bin/lastgit" ci watch --repo last-stack --context artifact-release --ref refs/heads/main --scratch-dir "$HOME/.lastgit/ci-watch-scratch/artifact-release-last-stack" --keep-alive --timeout-ms 3600000 &gt;&gt;"$HOME/.lastgit/artifact-release-last-stack.log" 2&gt;&amp;1</string>
   </array>
 
   <key>EnvironmentVariables</key>
