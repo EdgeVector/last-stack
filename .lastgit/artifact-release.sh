@@ -61,7 +61,8 @@ paths="$(jq -r '.artifacts[] | select(.app == "last-stack" and .context == "arti
 }
 
 # Last Stack needs no compile step. Validate the runtime tree before publish.
-for required in VERSION setup bin config docs harness hooks instructions lib routines skills templates launchd; do
+for required in VERSION setup bin config docs harness hooks instructions lib routines skills templates launchd \
+  .forgejo/workflows/ci.yml .lastgit/artifacts.json; do
   [ -e "$ROOT/$required" ] || {
     echo "artifact-release.sh payload is missing $required" >&2
     exit 1
