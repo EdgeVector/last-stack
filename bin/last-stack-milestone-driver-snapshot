@@ -897,7 +897,20 @@ def main():
                 if env in os.environ and str(control[key]) != os.environ[env]:
                     refuse(f"run-scope-changed field={key}")
         if args.mode == 'capture':
-            for name in ['gap-report.json', 'preflight.json', 'backlog.json', 'todo.json', 'doing.json', 'portfolio.json']:
+            # gap-report.json and preflight.json are a matched pair (verify/
+            # consume below CAS them on run_id + preflight_token) and are
+            # deliberately NOT cleared here. Both are only ever replaced
+            # together, atomically, once preflight, every board read, and
+            # reconciliation have all succeeded -- so a mid-capture failure
+            # (preflight, a board read, or reconcile_gap_report raising)
+            # leaves the previous run's good, still-matched, still-verifying
+            # pair in place instead of deleting one or both with nothing to
+            # replace them
+            # (papercut-milestone-driver-final-capture-silent-artifact-loss-20260926).
+            # A surviving prior-run pair can never be mistaken for the
+            # current run's: the metadata check below still requires
+            # run_id == args.run_id.
+            for name in ['backlog.json', 'todo.json', 'doing.json', 'portfolio.json']:
                 (snapshot / name).unlink(missing_ok=True)
             preflight = args.preflight_bin or str(Path(__file__).resolve().with_name('last-stack-generator-preflight'))
             outcome = subprocess.run([preflight, 'milestone-driver'], stdout=sys.stderr)
@@ -916,7 +929,6 @@ def main():
             token = uuid.uuid4().hex
             evidence = {'run_id': args.run_id, 'preflight_token': token,
                         'preflight_succeeded': True, 'preflight_succeeded_epoch': now, 'preflight_succeeded_at': preflight_at}
-            save(stamp, evidence)
             for step, argv in [('backlog', ['list', '--column', 'backlog']),
                                ('todo', ['list', '--column', 'todo']), ('doing', ['list', '--column', 'doing']),
                                ('portfolio', ['milestone', 'portfolio']), ('gap-report', ['milestone', 'gap-report'])]:
@@ -936,6 +948,9 @@ def main():
             value['_milestone_driver_run'] = {**evidence, 'created_epoch': int(time.time()),
                 'artifact': str(expected), 'target': control['target'], 'safety_cap': control['safety_cap'],
                 'created_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
+            # Commit the stamp/artifact pair together, only now that every
+            # read and reconciliation step has succeeded.
+            save(stamp, evidence)
             save(expected, value)
             print(json.dumps({'artifact': str(expected), 'run_id': args.run_id,
                 'target': control['target'], 'safety_cap': control['safety_cap'], 'reserved_actions': control['reserved_actions'],
