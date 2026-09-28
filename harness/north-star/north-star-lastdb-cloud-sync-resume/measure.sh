@@ -21,7 +21,7 @@ ROOT="$(cd "$(dirname "$0")/../../.." && pwd -P)"
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 CHECK_SCRIPT="$HERE/check_contract.py"
 
-for cmd in lastdb lastdbd sha256sum python3; do
+for cmd in lastdb lastdbd shasum python3; do
   command -v "$cmd" >/dev/null 2>&1 || {
     echo "measure.sh requires '$cmd' on PATH; cannot run a real probe." >&2
     exit 1
@@ -68,7 +68,7 @@ MEASUREMENT_START="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
 echo -n "csr-canary-$MEASURE_ID" >"$CANARY_FILE"
 CANARY_BYTES="$(wc -c <"$CANARY_FILE" | tr -d ' ')"
-CANARY_SHA256="$(sha256sum "$CANARY_FILE" | awk '{print $1}')"
+CANARY_SHA256="$(shasum -a 256 "$CANARY_FILE" | awk '{print $1}')"
 
 echo "Booting an ephemeral lastdbd (never the primary home)..."
 lastdbd --data-dir "$EPHEMERAL_HOME" >"$DAEMON_LOG" 2>&1 &
@@ -180,7 +180,7 @@ else
   DEGRADED="false"
 fi
 
-LOG_SHA256="$(sha256sum "$RUN_LOG" | awk '{print $1}')"
+LOG_SHA256="$(shasum -a 256 "$RUN_LOG" | awk '{print $1}')"
 
 # Build the evidence file from the variables derived above. There is no
 # catchup to report: cloud sync was never connected on this ephemeral home,
