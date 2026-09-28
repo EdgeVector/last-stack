@@ -470,6 +470,8 @@ ci_test tests/host-track-soak-wall-clock.sh
 ci_test tests/last-stack-fleet-channel-freshness-gate.sh
 ci_test tests/last-stack-artifact-host-track-proof.sh
 ci_test tests/last-stack-artifact-layout.sh
+ci_test tests/last-stack-lastgit-artifact-release.sh
+ci_test tests/last-stack-lastgit-artifact-release-integration.sh
 ci_test tests/last-stack-artifact-layout-mirror-clean.sh
 ci_test tests/last-stack-artifact-routine-freshness.sh
 ci_test tests/last-stack-artifact-one-rule.sh

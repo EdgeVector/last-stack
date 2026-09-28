@@ -2,6 +2,7 @@
   "artifacts": [
     {
       "app": "last-stack",
+      "context": "artifact-release",
       "paths": [
         "VERSION",
         "setup",
