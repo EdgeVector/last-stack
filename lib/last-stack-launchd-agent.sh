@@ -103,6 +103,12 @@ last_stack_agent_commit_plist() {
     echo "${name}: already current, skipped launchctl"
     return 0
   fi
+  # A real login home always has ~/Library/LaunchAgents (macOS creates it),
+  # but an isolated smoke HOME (skills/llms-txt-install-smoke/run.sh) does
+  # not. `mv` then fails "No such file or directory" and every one of this
+  # function's 9 callers reports install-apps FAIL, which blanks the daily
+  # canary's registry proof for every app (measured 2026-09-28).
+  mkdir -p "$(dirname "$dest")"
   mv -f "$rendered" "$dest"
 
   if ! last_stack_agent_should_touch_launchd "$dest"; then
