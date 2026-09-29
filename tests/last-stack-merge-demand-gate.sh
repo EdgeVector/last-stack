@@ -42,6 +42,21 @@ case "${STUB_FORGE_MODE:-quiet}" in
 esac
 EOF
 
+# fold is canonical on GitHub: its open PRs come from `gh api`, never the Forge API.
+cat >"$fake_bin/gh" <<'EOF'
+#!/bin/sh
+[ "$1" = api ] || exit 2
+case "$2" in
+  repos/EdgeVector/fold/pulls\?state=open*) ;;
+  *) echo "gh stub: unexpected path $2" >&2; exit 2 ;;
+esac
+case "${STUB_GH_MODE:-quiet}" in
+  quiet) printf '%s\n' '[]' ;;
+  old) printf '%s\n' '[{"draft":false,"created_at":"1970-01-01T00:00:00Z"}]' ;;
+  error) exit 1 ;;
+esac
+EOF
+
 cat >"$fake_bin/last-stack-pipeline-deploy-scan" <<'EOF'
 #!/bin/sh
 case "${STUB_DEPLOY_MODE:-quiet}" in
@@ -57,12 +72,14 @@ exit 0
 EOF
 
 cp "$ROOT/config/merge-demand-forge-repos" "$fake_stack/config/merge-demand-forge-repos"
+cp "$ROOT/config/merge-demand-github-repos" "$fake_stack/config/merge-demand-github-repos"
 chmod +x "$tmp/timeout" "$tmp/lastgit" "$fake_bin"/* "$GATE"
 
 export LAST_STACK_ROOT="$fake_stack"
 export LAST_STACK_PIPELINE_GATE_TIMEOUT_BIN="$tmp/timeout"
 export LAST_STACK_PIPELINE_GATE_LASTGIT_BIN="$tmp/lastgit"
 export LAST_STACK_PIPELINE_GATE_FORGE_API_BIN="$fake_bin/last-stack-forge-api"
+export LAST_STACK_PIPELINE_GATE_GH_BIN="$fake_bin/gh"
 export LAST_STACK_PIPELINE_GATE_DEPLOY_SCAN_BIN="$fake_bin/last-stack-pipeline-deploy-scan"
 LAST_STACK_PIPELINE_GATE_JQ_BIN="$(command -v jq)"
 export LAST_STACK_PIPELINE_GATE_JQ_BIN
@@ -75,6 +92,7 @@ unset LAST_STACK_MERGE_DEMAND_FORGE_REPOS || true
 reset_modes() {
   export STUB_LASTGIT_MODE=quiet
   export STUB_FORGE_MODE=quiet
+  export STUB_GH_MODE=quiet
   export STUB_DEPLOY_MODE=quiet
   export STUB_TIMEOUT_MODE=run
   unset LAST_STACK_LASTGIT_NATIVE_REPOS || true
@@ -128,20 +146,35 @@ run_case lastgit-unreadable-enabled 10 'reason=lastgit-unreadable-1'
 
 reset_modes
 export STUB_FORGE_MODE=old
-run_case forge-old 10 'reason=forge-open-2'
+run_case forge-old 10 'reason=forge-open-1'
+
+# fold is read from GitHub even when a Forge list still names it: one old
+# GitHub PR is demand, and the Forge API stub (quiet) is not what answered.
+reset_modes
+export STUB_GH_MODE=old
+run_case github-fold-old 10 'reason=forge-open-1'
+
+reset_modes
+export STUB_GH_MODE=error
+run_case github-read-error 10 'reason=forge-read-rc-'
 
 reset_modes
 export STUB_DEPLOY_MODE=blocked
 run_case deploy-blocked 10 'reason=deploy-blocked-1'
 
-# Seven-repo file: one old PR per repo
+# File default: six Forge repos plus fold on GitHub, one old PR each.
 reset_modes
 unset LAST_STACK_PIPELINE_GATE_FORGE_REPOS
-export STUB_FORGE_MODE=old
-run_case seven-repo-forge 10 'reason=forge-open-7'
+export STUB_FORGE_MODE=old STUB_GH_MODE=old
+run_case seven-repo-forge-and-github 10 'reason=forge-open-7'
 export LAST_STACK_PIPELINE_GATE_FORGE_REPOS="EdgeVector/fold,EdgeVector/lastgit"
 
 repos="$(grep -E '^EdgeVector/' "$ROOT/config/merge-demand-forge-repos" | wc -l | tr -d ' ')"
-[ "$repos" = "7" ] || { echo "merge-demand-forge-repos must list 7 repos, got $repos" >&2; exit 1; }
+[ "$repos" = "6" ] || { echo "merge-demand-forge-repos must list 6 repos (fold is on GitHub), got $repos" >&2; exit 1; }
+grep -qx 'EdgeVector/fold' "$ROOT/config/merge-demand-github-repos" \
+  || { echo "merge-demand-github-repos must list EdgeVector/fold" >&2; exit 1; }
+if grep -qx 'EdgeVector/fold' "$ROOT/config/merge-demand-forge-repos"; then
+  echo "fold must not be in merge-demand-forge-repos" >&2; exit 1
+fi
 
 echo "ok last-stack-merge-demand-gate"
