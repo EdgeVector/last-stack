@@ -49,7 +49,7 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$FIXTURE_WRITES"
 # The guard must preserve stdin for the existing decision/admission filer.
 cat >"${FIXTURE_WRITES}.stdin"
-[ -z "${MUTATION_SIGNAL_FILE:-}" ] || { touch "$MUTATION_SIGNAL_FILE"; sleep 2; }
+[ -z "${MUTATION_SIGNAL_FILE:-}" ] || { touch "$MUTATION_SIGNAL_FILE"; sleep "${MUTATION_HOLD_SECONDS:-2}"; }
 exit "${MUTATION_RC:-0}"
 EOF
 chmod +x "$TMP/bin/"*
@@ -204,15 +204,46 @@ jq -e '.reserved_actions==1 and .actions[-1].exit_code==9' "$run_dir/milestone-d
 capture >/dev/null
 reject 'uncertain command retry' file_card uncertain-slice
 
-# Nonblocking lock excludes concurrent guard/capture without stale-lock cleanup.
-new_run concurrent
+# Lock: an uncontended acquisition is unaffected by the wait bound (fast
+# path unchanged).
+new_run fast-path
+start_ts=$(date +%s)
+MILESTONE_DRIVER_LOCK_WAIT_SECONDS=0 file_card fast-path-slice
+end_ts=$(date +%s)
+[ "$((end_ts-start_ts))" -le 1 ] || fail 'uncontended lock should not wait'
+
+# Lock: a busy holder that releases inside the wait bound lets the waiter
+# through instead of racing it -- the historic bug was a slow-but-good
+# capture racing its own follow-up consume/guard call and losing
+# (papercut-milestone-driver-snapshot-consume-run-action-in-progress-20260928).
+new_run concurrent-short-hold
 export MUTATION_SIGNAL_FILE="$TMP/command-started"
-file_card concurrent-slice </dev/null >"$TMP/concurrent.out" 2>"$TMP/concurrent.err" & worker=$!
+rm -f "$MUTATION_SIGNAL_FILE"
+MUTATION_HOLD_SECONDS=1 file_card concurrent-slice </dev/null >"$TMP/concurrent.out" 2>"$TMP/concurrent.err" & worker=$!
 for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "$MUTATION_SIGNAL_FILE" ] && break;sleep .1;done
 [ -e "$MUTATION_SIGNAL_FILE" ] || fail 'concurrent fixture did not start'
-reject 'locked second guard' file_card locked-slice
-reject 'locked recapture' capture
+start_ts=$(date +%s)
+MILESTONE_DRIVER_LOCK_WAIT_SECONDS=5 capture >"$TMP/waited-capture.json"
+end_ts=$(date +%s)
+wait "$worker"
+[ "$((end_ts-start_ts))" -ge 1 ] || fail 'waiter returned before the holder released the lock'
+jq -e '.run_id=="concurrent-short-hold"' "$TMP/waited-capture.json" >/dev/null || fail 'recapture after waiting for the lock did not succeed'
+unset MUTATION_SIGNAL_FILE
+
+# Lock: a holder that outlives the wait bound still refuses -- same reason
+# and exit code as before, just no longer instant.
+new_run concurrent-long-hold
+export MUTATION_SIGNAL_FILE="$TMP/command-started"
+rm -f "$MUTATION_SIGNAL_FILE"
+MUTATION_HOLD_SECONDS=3 file_card concurrent-slice </dev/null >"$TMP/concurrent2.out" 2>"$TMP/concurrent2.err" & worker=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "$MUTATION_SIGNAL_FILE" ] && break;sleep .1;done
+[ -e "$MUTATION_SIGNAL_FILE" ] || fail 'concurrent fixture did not start'
+start_ts=$(date +%s)
+MILESTONE_DRIVER_LOCK_WAIT_SECONDS=1 reject 'locked beyond bound' file_card locked-slice
+end_ts=$(date +%s)
+[ "$((end_ts-start_ts))" -ge 1 ] || fail 'refusal was instant instead of waiting the bound'
 grep -q 'run-action-in-progress' "$TMP/reject.err" || fail 'lock contention not explicit'
+MILESTONE_DRIVER_LOCK_WAIT_SECONDS=1 reject 'locked recapture' capture
 wait "$worker"
 unset MUTATION_SIGNAL_FILE
 
