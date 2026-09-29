@@ -26,6 +26,39 @@ def refuse(reason, code=1):
     raise Refusal(reason, code)
 
 
+LOCK_POLL_SECONDS = 0.2
+
+
+def acquire_action_lock(lock, wait_seconds):
+    """Take the exclusive action lock, waiting for a busy holder to finish.
+
+    The fast path (uncontended) is a single non-blocking flock and returns
+    immediately, same as before. A held lock used to refuse instantly, which
+    raced a slow-but-legitimate `capture` (up to three board-read retries,
+    each sleeping attempt*10s under load -- see the retry loop below) against
+    its own follow-up `consume` call: the first invocation could go on to
+    succeed a moment later while the second was already refused
+    (papercut-milestone-driver-snapshot-consume-run-action-in-progress-20260928).
+    Poll instead, up to wait_seconds, and only refuse once the bound is
+    exceeded -- same reason and exit code as before, just no longer instant.
+    """
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return
+    except BlockingIOError:
+        pass
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            refuse('run-action-in-progress', 75)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            time.sleep(min(LOCK_POLL_SECONDS, remaining))
+
+
 def load(path):
     try:
         return json.loads(Path(path).read_text())
@@ -885,10 +918,8 @@ def main():
     ledger = snapshot / 'action-ledger.json'
     # A kernel lock has no stale-owner cleanup path and cannot reset the budget.
     with (snapshot / 'action.lock').open('a') as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            refuse('run-action-in-progress', 75)
+        lock_wait_seconds = float(os.environ.get('MILESTONE_DRIVER_LOCK_WAIT_SECONDS', '120'))
+        acquire_action_lock(lock, lock_wait_seconds)
         control = load(ledger) if ledger.exists() else None
         if control:
             if control.get('run_id') != args.run_id:

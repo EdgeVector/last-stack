@@ -86,6 +86,24 @@ EOF
 cat >"$fake/publish-next" <<EOF
 #!/usr/bin/env bash
 echo "publish-next \$*" >>"$calls"
+proof=""
+while [ \$# -gt 0 ]; do case "\$1" in --proof) proof="\$2"; shift 2;; *) shift;; esac; done
+verdict="\$(jq -r '.verdict // empty' "\$proof" 2>/dev/null)"
+if [ "\$verdict" != GREEN ]; then
+  # The apps-only worker now calls publish-next on a RED proof too (the real
+  # last-stack-registry-red-attribution decides whether any app can still be
+  # proved). This fixture's fake FAKE_SMOKE=RED proof has no per-app fails[],
+  # so it is unattributable/"shared" and the real script refuses it the same
+  # way -- every existing RED assertion below still holds. Set
+  # FAKE_PUBLISH_NEXT_PARTIAL=1 to simulate an isolated RED that DOES prove a
+  # subset, for the partial-rows test case.
+  if [ "\${FAKE_PUBLISH_NEXT_PARTIAL:-0}" = 1 ]; then
+    echo "REGISTRY_NEXT status=pr build=0.23.3-200-gbbbbbbbbb apps=1 proof_run=run pr=EdgeVector/homebrew-lastdb/8"
+    exit 0
+  fi
+  echo "last-stack-registry-publish-next: proof verdict is RED with a shared/cross-cutting fail; rows are written for no app" >&2
+  exit 1
+fi
 echo "REGISTRY_NEXT status=pr build=0.23.3-200-gbbbbbbbbb apps=2 proof_run=run pr=EdgeVector/homebrew-lastdb/7"
 EOF
 prim_bin="$work/primary-lastdbd"
@@ -208,11 +226,29 @@ grep -q 'ROUTINE_RESULT outcome=ok' <<<"$out" || fail "held cutover did not run 
 grep -q 'after=quiet_window_near_complete' <<<"$out" || fail "apps-only did not say why: $out"
 grep -q 'dogfood --cutover' "$calls" && fail "held cutover was performed by the apps-only pass"
 
-# A RED apps-only smoke writes no rows.
+# A RED apps-only smoke with a shared/cross-cutting fail (nothing to
+# attribute per app) writes no rows -- unchanged from before per-app rows
+# existed. real last-stack-registry-red-attribution reaches the same verdict
+# for this fixture's fake RED proof (no fails[] naming a per app check).
 out="$(run_gate env FAKE_PRIMARY=0.23.3-200-gbbbbbbbbb FAKE_PROVED='{}' FAKE_SMOKE=RED)"
 grep -q 'ROUTINE_RESULT outcome=error' <<<"$out" || fail "red apps-only smoke not error: $out"
 grep -q 'stage=apps-only' <<<"$out" || fail "red apps-only stage: $out"
-grep -q 'publish-next' "$calls" && fail "RED apps-only smoke still wrote rows"
+grep -q 'rows=pr:' <<<"$out" && fail "RED apps-only smoke still wrote rows: $out"
+grep -q "publish-next --candidate-set $work/run/apps-only-set.json --proof $work/run/apps-only-proof.json" "$calls" \
+  || fail "a RED apps-only smoke must still ask publish-next -- it decides per-app now: $(cat "$calls")"
+
+# A RED apps-only smoke whose fails all attribute to named apps (this is the
+# 2026-09-28 shape: one missing ~/Library/LaunchAgents dir broke install-apps
+# for 6 of 9 apps; brain/kanban/situations had zero fails of their own) still
+# publishes rows for the apps that passed their own checks. Before Goal 2,
+# EVERY RED apps-only smoke zeroed out every app's rows, including the ones
+# with nothing wrong -- this is exactly the behavior that changed.
+rm -rf "$work/apps-only-stamps"
+out="$(run_gate env FAKE_PRIMARY=0.23.3-200-gbbbbbbbbb FAKE_PROVED='{}' FAKE_SMOKE=RED FAKE_PUBLISH_NEXT_PARTIAL=1)"
+grep -q 'ROUTINE_RESULT outcome=ok' <<<"$out" || fail "isolated RED apps-only smoke should still be ok: $out"
+grep -q 'evidence=rows_published_partial' <<<"$out" || fail "isolated RED apps-only smoke should say partial: $out"
+grep -q 'rows=pr:EdgeVector/homebrew-lastdb/8' <<<"$out" || fail "isolated RED apps-only smoke wrote no rows: $out"
+rm -rf "$work/apps-only-stamps"
 
 # No primary binary to boot: stay a noop and say so, rather than proving a pair
 # against a build nothing ran.
@@ -358,7 +394,7 @@ rc=0
 out="$(PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_RESOLVE=norow FAKE_SMOKE=RED)" || rc=$?
 [ "$rc" = 1 ] || fail "RED primary-rows smoke exited $rc, want 1: $out"
 grep -q '^PRIMARY_ROWS result=red .*evidence=smoke_red' <<<"$out" || fail "RED primary-rows evidence: $out"
-grep -q 'publish-next' "$calls" && fail "RED primary-rows smoke still wrote rows"
+grep -q 'rows=pr:' <<<"$out" && fail "RED primary-rows smoke still wrote rows: $out"
 grep -q 'dogfood --cutover' "$calls" && fail "primary-rows cut over"
 
 # The running build and the binary on disk differ: prove nothing.
@@ -485,7 +521,7 @@ out="$(KEEP_APPS_ONLY_STAMPS=1 PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run
 [ "$rc" = 1 ] || fail "RED heads pass exited $rc, want 1: $out"
 grep -q '^PRIMARY_ROWS result=red .*evidence=smoke_red' <<<"$out" || fail "RED heads evidence: $out"
 grep -q 'moved=kanban' <<<"$out" || fail "RED did not name the moved app: $out"
-grep -q 'publish-next' "$calls" && fail "RED heads pass wrote rows"
+grep -q 'rows=pr:' <<<"$out" && fail "RED heads pass wrote rows: $out"
 grep -q 'dogfood --cutover' "$calls" && fail "RED heads pass cut over"
 grep -q "papercut=filed:$red_slug" <<<"$out" || fail "RED filed no papercut: $out"
 grep -q "^brain papercut file $red_slug .*--component canary-candidate-gate" "$calls" || fail "papercut filing args: $(cat "$calls")"
@@ -501,7 +537,7 @@ grep -q '^brain' "$calls" && fail "persistent RED touched the brain again"
 # A head moves again: smoke again, and a RED appends to the open papercut.
 rc=0
 out="$(KEEP_APPS_ONLY_STAMPS=1 PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_PROVED="$moved_kanban" FAKE_SMOKE=RED FAKE_SET_KANBAN_SHA=zzz FAKE_BRAIN_EXISTS=open LAST_STACK_CANARY_HEADS_SMOKE_INTERVAL_SECS=0)" || rc=$?
-[ "$(only_steps)" = "candidate-set smoke " ] || fail "a moved head after RED did not re-smoke: $(only_steps)"
+[ "$(only_steps)" = "candidate-set smoke publish-next " ] || fail "a moved head after RED did not re-smoke: $(only_steps)"
 grep -q "papercut=appended:$red_slug" <<<"$out" || fail "second RED did not append to the open papercut: $out"
 grep -q "^brain append $red_slug --type papercut" "$calls" || fail "append args: $(cat "$calls")"
 

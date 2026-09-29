@@ -10,22 +10,22 @@
   "repos": [
     {
       "repo": "fold_db_website",
-      "enabled": true,
+      "enabled": false,
       "context": "deploy-prod",
       "deploy_script": ".lastgit/deploy-prod.sh",
       "verify_command": "curl -fsS --max-time 20 https://thelastdb.com/llms.txt | grep -q 'LastDB' && curl -fsSI --max-time 20 https://thelastdb.com/ | grep -qi '^HTTP/[0-9.]* 200'",
-      "notes": "thelastdb.com via vercel promote (token lastsecrets://lastgit-vercel-token). Replaced launchd com.edgevector.lastgit-deploy-fold-db-website on 2026-09-21."
+      "notes": "thelastdb.com via vercel promote (token lastsecrets://lastgit-vercel-token). This repo's gate of record moved back to LastGit on 2026-09-27 (era-3 cutover, Tom's commit a7dd69b11f8); deploy-watch is Forgejo-only by construction and cannot serve it. The LastGit-native launchd watcher com.edgevector.lastgit-deploy-fold-db-website is the deployer of record again. Disabled here 2026-09-28 to match; see papercut-fold-db-website-two-prod-deployers-launchd-and-deploy-watch-20260923."
     },
     {
       "repo": "exemem-infra",
-      "enabled": true,
+      "enabled": false,
       "context": "deploy-pipeline",
       "deploy_script": ".lastgit/deploy-pipeline.sh",
       "env": { "AWS_PROFILE": "default" },
       "secret_env": {
         "OBS_SENTRY_DSN": "lastsecrets://obs-sentry-dsn-exemem-backend"
       },
-      "notes": "Exemem cloud pipeline. Production deploys use the LastSecrets-backed OBS_SENTRY_DSN locator at the deploy child boundary."
+      "notes": "Exemem cloud pipeline. Production deploys use the LastSecrets-backed OBS_SENTRY_DSN locator at the deploy child boundary. This repo's gate of record moved back to LastGit on 2026-09-27 (era-3 cutover); deploy-watch is Forgejo-only by construction and cannot serve it. The LastGit-native launchd watcher com.edgevector.lastgit-deploy-exemem-infra is the deployer of record again. Disabled here 2026-09-28 to match; see papercut-lastgit-era3-tier2-dark-deploy-pipeline-schema-exemem-infra-20260928."
     },
     {
       "repo": "schema-infra",
@@ -33,7 +33,7 @@
       "context": "deploy-pipeline",
       "deploy_script": ".lastgit/deploy-pipeline.sh",
       "env": { "AWS_PROFILE": "default", "SCHEMA_BUILD_REMOTE_HOST": "pc" },
-      "notes": "Schema service pipeline, builds on the PC. launchd com.edgevector.lastgit-deploy-schema-infra was found disabled on 2026-09-21."
+      "notes": "Schema service pipeline, builds on the PC. This repo's gate of record moved back to LastGit on 2026-09-27 (era-3 cutover); deploy-watch is Forgejo-only by construction and cannot serve it. The LastGit-native launchd watcher com.edgevector.lastgit-deploy-schema-infra was restored and proven live 2026-09-28; it is the deployer of record."
     },
     {
       "repo": "ops-terminal",
@@ -41,7 +41,7 @@
       "context": "deploy-prod",
       "deploy_script": ".lastgit/deploy-prod.sh",
       "env": { "OPS_TERMINAL_RUN": "$HOME/.local/share/edgevector/ops-terminal" },
-      "notes": "Local ops terminal. launchd com.edgevector.lastgit-deploy-ops-terminal was found disabled on 2026-09-21."
+      "notes": "Local ops terminal. This repo's gate of record moved back to LastGit on 2026-09-27 (era-3 cutover); deploy-watch is Forgejo-only by construction and cannot serve it. The LastGit-native launchd watcher com.edgevector.lastgit-deploy-ops-terminal is live and is the deployer of record."
     }
   ]
 }

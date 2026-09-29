@@ -294,20 +294,44 @@ apps_only_run() {
     src=$?
     set -e
     smoke_status="$(jq -r '.verdict // empty' "$proof_file" 2>/dev/null || true)"
-    if [ "$src" -ne 0 ] || [ "$smoke_status" != GREEN ]; then
+    # The real smoke (skills/llms-txt-install-smoke/run.sh) exits 1 on EVERY
+    # RED verdict by design, so a nonzero $src alone does not mean "crashed" --
+    # it is the normal shape of a RED. What DOES mean "nothing to attribute"
+    # is an empty/unparsed verdict: no proof JSON at all, or a shape jq could
+    # not read (a genuine crash, a timeout, a truncated log).
+    if [ -z "$smoke_status" ]; then
       steps="$(jq -r '.steps // "no-verdict"' "$proof_file" 2>/dev/null || echo no-verdict)"
-      # A RED apps-only smoke is a verdict about the app set, not about the
-      # primary, which is untouched here. No rows, and no ledger line event
-      # for the same reason the candidate smoke writes none.
       write_apps_only_stamp "$stamp" "$fp" red
       apps_only_status=red
       apps_only_evidence=smoke_red
-      apps_only_detail="stage=apps-only primary=$primary apps=$count moved=$moved evidence=smoke_red steps=$steps log=$run_dir/apps-only-smoke.err after=$why"
+      apps_only_detail="stage=apps-only primary=$primary apps=$count moved=$moved evidence=smoke_red rc=$src steps=$steps log=$run_dir/apps-only-smoke.err after=$why"
       return 20
+    fi
+    if [ "$smoke_status" != GREEN ]; then
+      # A RED verdict from a smoke that ran to completion is a verdict about
+      # the app set, not about the primary, which is untouched here. It used
+      # to stop the whole pass -- one app's own check failing zeroed out
+      # every app in the set, including ones with nothing wrong (2026-09-28:
+      # one missing ~/Library/LaunchAgents dir broke install-apps for 6 of 9
+      # apps and zeroed rows for brain/kanban/situations too, which had no
+      # fail of their own). publish_next below now decides, from the proof's
+      # fails[] via last-stack-registry-red-attribution: it writes rows only
+      # for the apps with zero fails of their own, and it still dies (rc!=0)
+      # on a shared/cross-cutting fail -- the isolated node itself never came
+      # up, so the proof is worthless for every app, same as before.
+      steps="$(jq -r '.steps // "no-verdict"' "$proof_file" 2>/dev/null || echo no-verdict)"
     fi
   fi
 
-  write_apps_only_stamp "$stamp" "$fp" green
+  # The stamp records the smoke's own verdict (green/red), not the row
+  # outcome, so a moved-head recheck is not fooled by a partial-rows success
+  # into skipping a genuinely still-broken app. Same lowercase contract as
+  # before per-app attribution existed (tests/last-stack-canary-candidate-gate.sh).
+  if [ "${smoke_status:-GREEN}" = GREEN ]; then
+    write_apps_only_stamp "$stamp" "$fp" green
+  else
+    write_apps_only_stamp "$stamp" "$fp" red
+  fi
 
   local rows_status=skipped rows_out rows_pr rrc=0
   if [ "$skip_rows" != 1 ] && [ "$skip_smoke" != 1 ]; then
@@ -323,8 +347,15 @@ apps_only_run() {
     set -e
     if [ "$rrc" -ne 0 ]; then
       apps_only_status=red
-      apps_only_evidence=rows_failed
-      apps_only_detail="stage=apps-only primary=$primary evidence=rows_failed rc=$rrc log=$run_dir/apps-only-rows.err after=$why"
+      # smoke_red when publish_next refused a RED proof (shared/cross-cutting
+      # fail, or every known app failed its own check); rows_failed for any
+      # other tool failure (a GREEN proof that still could not write/push).
+      if [ "$smoke_status" != GREEN ]; then
+        apps_only_evidence=smoke_red
+      else
+        apps_only_evidence=rows_failed
+      fi
+      apps_only_detail="stage=apps-only primary=$primary apps=$count moved=$moved evidence=$apps_only_evidence rc=$rrc smoke=${smoke_status:-skipped} steps=${steps:-} log=$run_dir/apps-only-rows.err after=$why"
       return 20
     fi
     rows_status="$(printf '%s\n' "$rows_out" | sed -n 's/^REGISTRY_NEXT status=\([^ ]*\).*/\1/p' | tail -n1)"
@@ -334,10 +365,11 @@ apps_only_run() {
 
   apps_only_status=ok
   apps_only_evidence=rows_published
+  [ "${smoke_status:-GREEN}" = GREEN ] || apps_only_evidence=rows_published_partial
   [ "$rows_status" != skipped ] || apps_only_evidence=rows_skipped
   apps_only_rows="$rows_status"
   apps_only_moved="$moved"
-  apps_only_detail="stage=apps-only primary=$primary apps=$count moved=$moved smoke=$smoke_status cutover=skipped rows=$rows_status after=$why"
+  apps_only_detail="stage=apps-only primary=$primary apps=$count moved=$moved smoke=$smoke_status cutover=skipped rows=$rows_status evidence=$apps_only_evidence after=$why"
   return 0
 }
 

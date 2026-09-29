@@ -46,11 +46,21 @@ Forgejo shapes that differ from GitHub:
   required check is green, it never merges. Use the bounded fallback:
     last-stack-pipeline-forge-pr-ledger merge-green --repo EdgeVector/<r> --pr <n> --apply
   --jq prints strings raw (like gh api --jq); do not strip quotes.
-  Forgejo 15.0.3 has NO API route to rerun or cancel an actions run (its
-  swagger lists only runs, runs/{id}, tasks, runners, workflows/.../dispatches);
+  Forgejo 15.0.3 has NO API route to rerun or cancel an actions run.
   POST .../actions/runs/<n>/rerun is a 404. The web route needs a password,
-  which agents must not use. To re-run a required check, push a new commit to
-  the PR branch (an empty commit is fine for a proven flake).
+  which agents must not use. The swagger also lists
+  workflows/{id}/dispatches (workflow_dispatch); tested 2026-09-28 against
+  EdgeVector/fold ci.yml (which declares `on: workflow_dispatch`) and it
+  returns HTTP 200 with an empty body but creates NO new run — confirmed by
+  commit-status and actions/tasks reads showing no new task for the ref
+  before and after the call. Treat it as a silent no-op, not a rerun.
+  The only mechanism that actually retriggers CI is pushing a new commit,
+  and that is ONLY safe on a branch YOU own (your own PR branch). Never push
+  an empty commit to `main` or to another agent's/PR's branch — pipeline-health's
+  hard guardrail forbids exactly that for shared/unowned branches, so there is
+  currently no compliant automated retry for an infra flake on main or on an
+  unowned PR. Diagnose and leave it (papercut only); a human or the branch
+  owner must push the retry commit.
 
 Path forms:
   repos/OWNER/REPO/...      -> $FORGE_ROOT/api/v1/repos/OWNER/REPO/...

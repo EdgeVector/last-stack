@@ -103,6 +103,29 @@ must still be handled by the PR reconciler. This evaluator is read-only and
 fail-closed; errors never auto-close a card.
 
 ## What to do each run
+
+0. **Heal BoardCards list-index drift first (one bounded command).** A card's
+   `show` truth can update (for example a pickup worker moves it to `todo`)
+   while its BoardCards list-index row stays missing, so `list --column
+   <col>` serves zero rows for a column that truth says is non-empty. This
+   makes the card invisible to every routine that reads via `list`
+   (pickup, groom-board itself), which silently looks like board
+   starvation. Detected live 2026-09-28 on the `default` board: a `todo`
+   card real per `show` was invisible to `list --column todo` until healed
+   with the command below. Run it before the snapshot step so this run's
+   own reads are not blind to a just-drifted card:
+
+   ```bash
+   kanban groom board-cards-heal-scheduled --board default --json
+   ```
+
+   It dry-runs first and only applies when `drifted` is non-zero and at or
+   below its own `max_drift` ceiling (250) — do not raise that ceiling from
+   this routine. If `drifted` is at or above the ceiling, or `blocked` is
+   true, do not force `--apply`; report it under ⚠️ Needs a human instead
+   (that shape means something bigger than routine drift). Cite the
+   `drifted`/`healed` counts in the digest.
+
 1. **Snapshot the board narrowly.** Read `backlog`, `todo`, and `doing` with
    sequential `<board CLI> list --column <column> --json` calls. Read `done`
    only if you need it for duplicate or dependency reconciliation; never read a

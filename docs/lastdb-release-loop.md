@@ -30,21 +30,37 @@ pauses their live registry entries.
    cutover-hold policy. Same build as the primary → `noop`.
 3. **set** — `last-stack-canary-candidate-set --lastdbd <bin>` fixes one commit
    per app from `config/registry/apps.json`: the app's artifact channel head
-   (built and green-published), else Forge `main`. Output:
+   (built and green-published), else `main` of the app's gate of record. Since
+   LastGit era 3 the gate of record is the `lastgit` field
+   (`lastdb:///<repo>`). The Forgejo copy (`forge`) is frozen. The set probes
+   each pin on LastGit first and then on Forgejo, and takes the first source
+   that serves it. A commit released before the cutover to a LastGit repo that
+   was seeded from a squash is on Forgejo only (NOTE, `source_fallback_from`).
+   A pin that no source serves gets a WARNING and `source_reachable: false`.
+   Each row records `source` (the clone source for `--pins`, and the `next`
+   row source), `source_venue`, and `public_source`. Output:
    `$ROUTINES_RUN_DIR/candidate-set.json`.
 4. **smoke** — `skills/llms-txt-install-smoke/run.sh --json` with
    `SMOKE_LASTDBD_BIN=<candidate lastdbd>` and `SMOKE_CANDIDATE_SET=<file>`.
    The sandbox boots the candidate daemon, puts the candidate `lastdb` first on
    PATH, and `last-stack-install-apps --pins <file>` checks out exactly the
-   pinned commits. Receipts must read `pinned`; anything else is RED. RED stops
-   here: no cutover, no rows, a build-subject line event in the ledger.
+   pinned commits. A `lastdb://` source reads the login user's node
+   (`LASTGIT_SOCKET`, `LASTGIT_SCHEMA_MAP`), because the sandbox HOME has no
+   node. The installer tries every app, also after one app fails, and writes a
+   `failed` receipt with the stage for each app that fails. Receipts must read
+   `pinned`; anything else is RED. RED stops here: no cutover, no rows, a
+   build-subject line event in the ledger.
 5. **cutover** — `last-stack-lastdb-canary-dogfood --cutover --json` (the
    safe-upgrade probe, DEV photograph, and primary cutover; unchanged).
 6. **rows** — `last-stack-registry-publish-next --candidate-set … --proof …`
    adds one compat row per app to `registry/next.json` on the tap repo, writes
    `registry/proofs/<proof_run>.json`, signs with
    `~/.lastdb/registry-index-signing.key` through `lastdb app index sign`, and
-   opens an auto-merging Forgejo PR on `EdgeVector/homebrew-lastdb`.
+   opens an auto-merging LastGit CR on `lastdb:///homebrew-lastdb`
+   (`--require-status ci-required`). Since LastGit era 3 (2026-09-27) the tap's
+   GitHub mirror, which `lastdb app resolve` reads, follows LastGit. A row
+   merged on the frozen Forgejo copy never reaches a reader.
+   `LAST_STACK_REGISTRY_TAP_VENUE=forgejo` keeps the old Forgejo PR path.
 
 ## Promote material and the automatic publish
 
@@ -80,7 +96,9 @@ token`, then `lastsecrets://github-token` (unattended, locked keychain).
 - Public: `last-stack-install-apps` asks `lastdb app resolve <app> --channel
   stable` for each app and checks out that commit. Receipts land in
   `~/lastdb-apps/.lastdb-app-receipts/<app>.json` with `mode` = `proved`,
-  `pinned`, or `unproved-main`. A `lastdb` without `app resolve` falls back to
+  `pinned`, `unproved-main`, or `failed` (with `stage` = `source`,
+  `dependencies`, or `link`). One failed app does not stop the others; the
+  installer exits 1 after all apps and names each failure. A `lastdb` without `app resolve` falls back to
   `main` and says so. No proved row for this node fails closed unless
   `--allow-unproved`.
 - Tom's Mac: host-track follows the registry `next` channel

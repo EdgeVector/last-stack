@@ -428,7 +428,12 @@ mutation. The list can be stale: a PR that the point read shows closed, or a
 3. **Red required CI** → read the log first
    (`"$last_stack/bin/last-stack-forge-ci-log" <owner/repo> --sha <sha>`), then
    split: **infra flake** (timeout, lost runner, cancelled with tests passing) →
-   one diagnosed same-head retry through the guard for an unowned PR;
+   there is no compliant automated retry for this case on an unowned PR or on
+   `main`. Forgejo 15.0.3 has no rerun API, workflow_dispatch is a tested
+   no-op (see `last-stack-forge-api --help`), and pushing an empty commit to a
+   branch you do not own is exactly what the hard guardrail above forbids.
+   Write the diagnosis into the ledger's papercut row and leave it — a
+   real retry needs the branch owner (or a human) to push a commit;
    **mechanical** (fmt, lint, typecheck, snapshot) → fix in a fresh worktree off
    the head branch, push with lease; **real product failure** → leave it to the
    owner. The ledger row already records it; do not file a second one.

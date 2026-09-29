@@ -67,7 +67,7 @@ cat > "$HOST_TRACK_REGISTRY" <<'JSON'
       ],
       "safe_upgrade": {
         "probes": [
-          {"argv": ["bin/demo"], "timeout_s": 10, "output_matches": "ok"}
+          {"argv": ["bin/demo"], "timeout_s": 20, "output_matches": "ok"}
         ],
         "latency": true
       },
@@ -163,15 +163,19 @@ rm -f "$HOME/shared-probe-down"
 # soak state so these refreshes take the direct activate path and the
 # latency verdict alone decides the outcome. One probe call costs ~0.7s of
 # harness overhead in this fixture, so the stall sleeps well past 3x that.
-# Under CI load the baseline itself reached 1.2s (run 575, 2026-09-25), and a
-# 2.5s stall then read 3485ms against a 3606ms bar: no re-sample, FAIL. 5s
-# keeps the stall over 3x a baseline up to ~1.9s.
+# Under CI load the baseline itself reached 1.2s (run 575, 2026-09-25) and
+# 2.17s (run for cr-mulgwr3y-7f70, 2026-09-28) — a 5s stall only clears 3x a
+# baseline up to ~1.67s, and both incidents landed above that
+# (papercut-host-track-safe-upgrade-probe-stall-resample-flakes-under-load-20260923).
+# 12s clears 3x a baseline up to 4s, more than double the worst baseline
+# measured so far, on both the recoverable stall below and the persistently
+# slow candidate further down (same fixed-sleep-vs-inflated-baseline shape).
 rm -f "$HOST_TRACK_STAMP_DIR/demo.soak.json" "$HOME/apps/demo/canary"
 
 # One-shot stall: the candidate's second call (its first latency sample;
 # call 1 is the correctness probe) sleeps, so pair one is far over the
 # ratio. Pair two is even. Expect a re-sample, no RED, and activation.
-publish_fixture "$digest_stall" "$oid_stall" $'#!/usr/bin/env bash\nmarker="$HOME/stall-probe-count"\ncount="$(cat "$marker" 2>/dev/null || printf 0)"\ncount=$((count + 1))\nprintf "%s\\n" "$count" >"$marker"\nif [ "$count" -eq 2 ]; then sleep 5; fi\necho ok-v4'
+publish_fixture "$digest_stall" "$oid_stall" $'#!/usr/bin/env bash\nmarker="$HOME/stall-probe-count"\ncount="$(cat "$marker" 2>/dev/null || printf 0)"\ncount=$((count + 1))\nprintf "%s\\n" "$count" >"$marker"\nif [ "$count" -eq 2 ]; then sleep 12; fi\necho ok-v4'
 HOST_TRACK_ACTIVATE=1 HOST_TRACK_PROBE_LAT_FLOOR_MS=100 "$ROOT/bin/host-track" refresh demo \
   >/dev/null 2>"$tmp/stall.err" \
   || fail "a one-shot latency stall should recover on re-sample: $(cat "$tmp/stall.err")"
@@ -187,7 +191,7 @@ grep -q 'latency recovered on re-sample; first pair' "$tmp/stall.err" \
 
 # Persistently slow candidate: every call sleeps, so both pairs are over the
 # ratio. Expect RED on the second pair and no flip.
-publish_fixture "$digest_slow" "$oid_slow" $'#!/usr/bin/env bash\nsleep 5\necho ok-v5'
+publish_fixture "$digest_slow" "$oid_slow" $'#!/usr/bin/env bash\nsleep 12\necho ok-v5'
 if HOST_TRACK_ACTIVATE=1 HOST_TRACK_PROBE_LAT_FLOOR_MS=100 "$ROOT/bin/host-track" refresh demo \
   >/dev/null 2>"$tmp/slow.err"; then
   fail "a persistently slow candidate should fail closed: $(cat "$tmp/slow.err")"
