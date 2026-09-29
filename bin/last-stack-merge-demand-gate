@@ -31,13 +31,19 @@ last-stack-merge-demand-gate
 
 Zero-LLM gate for merge class. Exit 0 = skip; 10 = proceed.
 
-Default Forge list is config/merge-demand-forge-repos (fold, lastgit,
-exemem-infra, last-stack, fkanban, routines, loom). Ghost LastGit does not
+Default Forge list is config/merge-demand-forge-repos (lastgit, exemem-infra,
+last-stack, fkanban, routines, loom). fold is canonical on GitHub since
+2026-09-29 and is read from config/merge-demand-github-repos. Ghost LastGit does not
 count. Aged Forge PRs and blocked deploys proceed.
 
 Environment:
   LAST_STACK_MERGE_DEMAND_FORGE_REPOS     comma list (overrides file)
   LAST_STACK_PIPELINE_GATE_FORGE_REPOS    alias used by pipeline-health-gate
+  LAST_STACK_MERGE_DEMAND_GITHUB_REPOS    comma list of repos read from GitHub
+                                          (default config/merge-demand-github-repos:
+                                          fold). A repo on this list is always read
+                                          through gh, even if a Forge list names it.
+  LAST_STACK_PIPELINE_GATE_GH_BIN         gh binary (default: gh on PATH)
   LAST_STACK_LASTGIT_NATIVE_REPOS         opt-in LastGit venues; empty = disabled
   LAST_STACK_PIPELINE_GATE_MIN_AGE_MIN    stuck / aged-open minutes (default 10)
   LAST_STACK_PIPELINE_GATE_TIMEOUT_SEC    per-read cap (default 20)
@@ -61,7 +67,7 @@ positive_int() {
 }
 
 default_repos() {
-  printf '%s' "EdgeVector/fold,EdgeVector/lastgit,EdgeVector/exemem-infra,EdgeVector/last-stack,EdgeVector/fkanban,EdgeVector/routines,EdgeVector/loom"
+  printf '%s' "EdgeVector/lastgit,EdgeVector/exemem-infra,EdgeVector/last-stack,EdgeVector/fkanban,EdgeVector/routines,EdgeVector/loom"
 }
 
 load_forge_repos() {
@@ -97,6 +103,25 @@ load_forge_repos() {
   printf '\n'
 }
 
+# Repos whose open PRs live on GitHub (fold: decision-2026-09-29-fold-venue-back-to-github).
+load_github_repos() {
+  if [ -n "${LAST_STACK_MERGE_DEMAND_GITHUB_REPOS+x}" ]; then
+    printf '%s\n' "$LAST_STACK_MERGE_DEMAND_GITHUB_REPOS"
+    return
+  fi
+  local cfg="${LAST_STACK_MERGE_DEMAND_GITHUB_REPOS_FILE:-${last_stack}/config/merge-demand-github-repos}"
+  local line repo list=""
+  if [ -f "$cfg" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      repo="$(printf '%s' "$line" | sed 's/#.*//;s/[[:space:]]//g')"
+      [ -n "$repo" ] || continue
+      list="${list:+${list},}${repo}"
+    done <"$cfg"
+  fi
+  [ -n "$list" ] || list="EdgeVector/fold"
+  printf '%s\n' "$list"
+}
+
 min_age_min="${LAST_STACK_PIPELINE_GATE_MIN_AGE_MIN:-10}"
 timeout_sec="${LAST_STACK_PIPELINE_GATE_TIMEOUT_SEC:-20}"
 deploy_tail_bytes="${LAST_STACK_PIPELINE_GATE_DEPLOY_TAIL_BYTES:-16777216}"
@@ -115,6 +140,32 @@ for repo in "${forge_repo_list[@]}"; do
     */*) ;;
     *) echo "invalid Forgejo repo: $repo" >&2; exit 2 ;;
   esac
+done
+
+github_repos="$(load_github_repos)"
+IFS=',' read -r -a github_repo_list <<<"$github_repos"
+for repo in ${github_repo_list[@]+"${github_repo_list[@]}"}; do
+  case "$repo" in
+    */*) ;;
+    *) echo "invalid GitHub repo: $repo" >&2; exit 2 ;;
+  esac
+done
+
+is_github_repo() {
+  local want="$1" r
+  for r in ${github_repo_list[@]+"${github_repo_list[@]}"}; do
+    [ "$r" = "$want" ] && return 0
+  done
+  return 1
+}
+
+# One read list: every Forge repo not on the GitHub list, then every GitHub repo.
+read_repo_list=()
+for repo in "${forge_repo_list[@]}"; do
+  is_github_repo "$repo" || read_repo_list+=("$repo")
+done
+for repo in ${github_repo_list[@]+"${github_repo_list[@]}"}; do
+  read_repo_list+=("$repo")
 done
 
 now_epoch="${LAST_STACK_PIPELINE_GATE_NOW_EPOCH:-$(date -u +%s)}"
@@ -152,12 +203,16 @@ fi
 lastgit_bin="${LAST_STACK_PIPELINE_GATE_LASTGIT_BIN:-$(command -v lastgit 2>/dev/null || true)}"
 forge_api="${LAST_STACK_PIPELINE_GATE_FORGE_API_BIN:-${last_stack}/bin/last-stack-forge-api}"
 deploy_scan="${LAST_STACK_PIPELINE_GATE_DEPLOY_SCAN_BIN:-${last_stack}/bin/last-stack-pipeline-deploy-scan}"
+gh_bin="${LAST_STACK_PIPELINE_GATE_GH_BIN:-$(command -v gh 2>/dev/null || true)}"
 jq_bin="${LAST_STACK_PIPELINE_GATE_JQ_BIN:-$(command -v jq 2>/dev/null || true)}"
 
 if [ "$lastgit_enabled" -eq 1 ]; then
   [ -n "$lastgit_bin" ] && [ -x "$lastgit_bin" ] || proceed "lastgit-missing"
 fi
 [ -x "$forge_api" ] || proceed "forge-api-missing"
+if [ "${#github_repo_list[@]}" -gt 0 ]; then
+  [ -n "$gh_bin" ] && [ -x "$gh_bin" ] || proceed "gh-missing"
+fi
 [ -x "$deploy_scan" ] || proceed "deploy-scan-missing"
 [ -n "$jq_bin" ] && [ -x "$jq_bin" ] || proceed "jq-missing"
 
@@ -186,11 +241,16 @@ deploy_pid=$!
 forge_pids=""
 forge_files=""
 forge_index=0
-for repo in "${forge_repo_list[@]}"; do
+for repo in ${read_repo_list[@]+"${read_repo_list[@]}"}; do
   forge_index=$((forge_index + 1))
   forge_file="$tmp/forge-${forge_index}.json"
-  run_capped "$forge_file" "$tmp/forge-${forge_index}.err" \
-    "$forge_api" "repos/${repo}/pulls?state=open&limit=50" &
+  if is_github_repo "$repo"; then
+    run_capped "$forge_file" "$tmp/forge-${forge_index}.err" \
+      "$gh_bin" api "repos/${repo}/pulls?state=open&per_page=50" &
+  else
+    run_capped "$forge_file" "$tmp/forge-${forge_index}.err" \
+      "$forge_api" "repos/${repo}/pulls?state=open&limit=50" &
+  fi
   forge_pids="${forge_pids} $!"
   forge_files="${forge_files} ${forge_file}"
 done

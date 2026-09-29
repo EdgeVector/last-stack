@@ -62,6 +62,17 @@ This helper replaces both:
          `situations-unreadable` (policy unreadable, so it fails closed), exit 3
          for both, with the blocking slug rendered in JSON and text.
 
+GitHub venue (2026-09-29): EdgeVector/fold is canonical on GitHub
+(decision-2026-09-29-fold-venue-back-to-github), so its Forgejo copy is
+archived and shows no PRs. Repos listed in config/merge-demand-github-repos
+(or $LAST_STACK_MERGE_DEMAND_GITHUB_REPOS) are read through `gh api` and
+normalized to the Forgejo shapes this file already understands: open PRs from
+`pulls`, mergeability and the auto-merge arm from `pulls/<n>`, required
+contexts from branch protection (default `ci-required`), and check runs as the
+per-context statuses. A cancelled check run is reported with the description
+"Has been cancelled" so CANCELLED still applies. `merge-green --apply` does
+not write to GitHub: arm auto-merge with `gh pr merge --auto`.
+
 LastGit is not read. It is disabled for every EdgeVector repo
 (decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default).
 """
@@ -265,7 +276,121 @@ class ForgeError(RuntimeError):
     pass
 
 
+DEFAULT_GITHUB_REPOS_FILE = HERE.parent / "config" / "merge-demand-github-repos"
+GITHUB_DEFAULT_REQUIRED = ["ci-required"]
+
+
+def github_repos() -> set[str]:
+    env = os.environ.get("LAST_STACK_MERGE_DEMAND_GITHUB_REPOS")
+    if env is not None:
+        return {r.strip() for r in re.split(r"[,\s]+", env) if r.strip()}
+    path = Path(os.environ.get("LAST_STACK_MERGE_DEMAND_GITHUB_REPOS_FILE", str(DEFAULT_GITHUB_REPOS_FILE)))
+    found: set[str] = set()
+    if path.is_file():
+        for ln in path.read_text().splitlines():
+            ln = ln.split("#", 1)[0].strip()
+            if ln:
+                found.add(ln)
+    return found or {"EdgeVector/fold"}
+
+
+def is_github_repo(repo: str) -> bool:
+    return repo in github_repos()
+
+
+def gh_bin() -> str:
+    return os.environ.get("LAST_STACK_LEDGER_GH") or "gh"
+
+
+def gh_get(path: str) -> Any:
+    proc = run([gh_bin(), "api", path], timeout=45)
+    if proc.returncode != 0:
+        raise ForgeError(f"{path}: gh rc={proc.returncode} {(proc.stderr or proc.stdout).strip()[:300]}")
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise ForgeError(f"{path}: invalid json ({exc})") from exc
+
+
+_CHECK_STATE = {
+    "success": "success", "neutral": "success", "skipped": "success",
+    "failure": "failure", "timed_out": "failure", "action_required": "failure",
+    "startup_failure": "failure", "stale": "failure", "cancelled": "failure",
+}
+
+
+def github_status_doc(repo: str, sha: str) -> dict[str, Any]:
+    """Check runs for a commit, shaped like a Forgejo combined-status document."""
+    doc = gh_get(f"repos/{repo}/commits/{sha}/check-runs?per_page=100")
+    rows = []
+    for run_row in (doc.get("check_runs") or []) if isinstance(doc, dict) else []:
+        if not isinstance(run_row, dict):
+            continue
+        conclusion = str(run_row.get("conclusion") or "").lower()
+        if run_row.get("status") != "completed":
+            state, desc = "pending", ""
+        else:
+            state = _CHECK_STATE.get(conclusion, "failure")
+            desc = "Has been cancelled" if conclusion == "cancelled" else conclusion
+        rows.append({
+            "context": run_row.get("name") or "",
+            "status": state,
+            "description": desc,
+            "updated_at": run_row.get("completed_at") or run_row.get("started_at") or "",
+        })
+    return {"statuses": rows}
+
+
+def github_get(path: str) -> Any:
+    """Serve the Forgejo-shaped reads this file makes from GitHub."""
+    m = re.match(r"^repos/([^/]+/[^/?]+)/(.*)$", path)
+    if not m:
+        raise ForgeError(f"{path}: not a repos path")
+    repo, rest = m.group(1), m.group(2)
+    if rest.startswith("pulls?"):
+        pulls = gh_get(f"repos/{repo}/pulls?state=open&per_page=50")
+        if not isinstance(pulls, list):
+            return pulls
+        out = []
+        for pr in pulls:
+            if not isinstance(pr, dict):
+                continue
+            row = dict(pr)
+            # The list omits mergeable and the auto-merge arm; the point read has them.
+            try:
+                point = gh_get(f"repos/{repo}/pulls/{pr.get('number')}")
+                row["mergeable"] = point.get("mergeable")
+                row["auto_merge"] = point.get("auto_merge")
+            except ForgeError:
+                row["mergeable"] = None
+            out.append(row)
+        return out
+    if rest == "branch_protections":
+        rules = []
+        try:
+            prot = gh_get(f"repos/{repo}/branches/main/protection/required_status_checks")
+            ctxs = list(prot.get("contexts") or []) + [c.get("context") for c in (prot.get("checks") or []) if isinstance(c, dict)]
+            rules.append({"rule_name": "main", "enable_status_check": True,
+                          "status_check_contexts": sorted({c for c in ctxs if c})})
+        except ForgeError:
+            pass
+        return rules
+    bm = re.match(r"^branches/(.+)$", rest)
+    if bm:
+        branch = gh_get(f"repos/{repo}/branches/{bm.group(1)}")
+        commit = dict((branch or {}).get("commit") or {})
+        commit["id"] = commit.get("sha") or ""
+        return {**branch, "commit": commit}
+    sm = re.match(r"^commits/([0-9a-fA-F]+)/status$", rest)
+    if sm:
+        return github_status_doc(repo, sm.group(1))
+    return gh_get(path)
+
+
 def forge_get(path: str) -> Any:
+    gm = re.match(r"^repos/([^/]+/[^/?]+)/", path)
+    if gm and is_github_repo(gm.group(1)):
+        return github_get(path)
     proc = run([forge_api_bin(), path], timeout=45)
     if proc.returncode != 0:
         raise ForgeError(f"{path}: rc={proc.returncode} {(proc.stderr or proc.stdout).strip()[:300]}")
@@ -279,14 +404,20 @@ def load_repos(args: argparse.Namespace) -> list[str]:
     if args.repo:
         return [r if "/" in r else f"EdgeVector/{r}" for r in args.repo]
     env = os.environ.get("LAST_STACK_MERGE_DEMAND_FORGE_REPOS", "").split()
+    repos: list[str] = []
     if env:
-        return [r if "/" in r else f"EdgeVector/{r}" for r in env]
-    path = Path(args.repos_file)
-    if path.is_file():
-        repos = [ln.strip() for ln in path.read_text().splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
-        if repos:
-            return repos
-    return list(FALLBACK_REPOS)
+        repos = [r if "/" in r else f"EdgeVector/{r}" for r in env]
+    else:
+        path = Path(args.repos_file)
+        if path.is_file():
+            repos = [ln.strip() for ln in path.read_text().splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    if not repos:
+        repos = list(FALLBACK_REPOS)
+    # GitHub-venue repos (fold) are always scanned, even when a Forge list omits them.
+    for gh_repo in sorted(github_repos()):
+        if gh_repo not in repos:
+            repos.append(gh_repo)
+    return repos
 
 
 def stem(context: str) -> str:
@@ -294,10 +425,11 @@ def stem(context: str) -> str:
 
 
 def required_contexts(repo: str, branch: str) -> list[str]:
+    default = list(GITHUB_DEFAULT_REQUIRED if is_github_repo(repo) else DEFAULT_REQUIRED)
     try:
         rules = forge_get(f"repos/{repo}/branch_protections")
     except ForgeError:
-        return list(DEFAULT_REQUIRED)
+        return default
     if isinstance(rules, list):
         for rule in rules:
             if not isinstance(rule, dict):
@@ -307,7 +439,7 @@ def required_contexts(repo: str, branch: str) -> list[str]:
                 ctxs = sorted({stem(c) for c in (rule.get("status_check_contexts") or []) if c})
                 if ctxs:
                     return ctxs
-    return list(DEFAULT_REQUIRED)
+    return default
 
 
 def context_states(status_doc: Any) -> dict[str, str]:
@@ -1193,6 +1325,11 @@ def schedule_state(repo: str, number: int) -> tuple[bool, dt.datetime | None]:
     side effect. The timeline records pull_scheduled_merge and
     pull_cancel_scheduled_merge events; the later one wins.
     """
+    if is_github_repo(repo):
+        point = forge_get(f"repos/{repo}/pulls/{number}")
+        if not isinstance(point, dict):
+            raise ForgeError(f"repos/{repo}/pulls/{number}: response is not an object")
+        return point.get("auto_merge") is not None, None
     armed, armed_at = False, None
     for page in range(1, 11):  # bounded: 10 pages x 50 events
         events = forge_get(f"repos/{repo}/issues/{number}/timeline?limit=50&page={page}")
@@ -1278,6 +1415,10 @@ def merge_green_once(args: argparse.Namespace) -> dict[str, Any]:
             return {**out, "verdict": "armed-green-wait"}
     if not args.apply:
         return {**out, "verdict": "would-merge"}
+    if is_github_repo(repo):
+        # GitHub auto-merge fires on its own; nothing here writes to GitHub.
+        return {**out, "verdict": "github-venue-no-write",
+                "error": f"use: gh pr merge {number} -R {repo} --auto --squash"}
     # Forgejo 15.0.3 only evaluates a scheduled auto-merge on a NEW commit-status
     # event. A schedule armed after the last required status went green never
     # fires (papercut-forgejo-auto-merge-armed-after-green-never-fires-20260923;

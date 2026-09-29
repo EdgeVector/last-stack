@@ -47,6 +47,14 @@ case "${STUB_FORGE_MODE:-quiet}" in
 esac
 EOF
 
+# fold is read from GitHub through `gh api`; answer it from the same STUB_FORGE_MODE
+# fixtures so no live gh call happens in this test.
+cat >"$fake_bin/gh" <<'EOF'
+#!/bin/sh
+[ "$1" = api ] || exit 2
+exec "$(dirname "$0")/last-stack-forge-api" "$2"
+EOF
+
 cat >"$fake_bin/last-stack-pipeline-deploy-scan" <<'EOF'
 #!/bin/sh
 case "${STUB_DEPLOY_MODE:-quiet}" in
@@ -72,6 +80,7 @@ export LAST_STACK_PIPELINE_GATE_STATE_DIR="$state_dir"
 export LAST_STACK_PIPELINE_GATE_TIMEOUT_BIN="$tmp/timeout"
 export LAST_STACK_PIPELINE_GATE_LASTGIT_BIN="$tmp/lastgit"
 export LAST_STACK_PIPELINE_GATE_FORGE_API_BIN="$fake_bin/last-stack-forge-api"
+export LAST_STACK_PIPELINE_GATE_GH_BIN="$fake_bin/gh"
 export LAST_STACK_PIPELINE_GATE_DEPLOY_SCAN_BIN="$fake_bin/last-stack-pipeline-deploy-scan"
 LAST_STACK_PIPELINE_GATE_JQ_BIN="$(command -v jq)"
 export LAST_STACK_PIPELINE_GATE_JQ_BIN

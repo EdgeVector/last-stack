@@ -84,6 +84,9 @@ chmod +x "$tmp/situations-bin"
 
 export FAKE_FORGE_DIR="$fx" FAKE_BRAIN_DIR="$tmp/brain"
 export LAST_STACK_FORGE_API="$tmp/forge-api"
+# The Forgejo fixtures below use fold as a stand-in Forge repo; the GitHub-venue
+# section at the end turns the GitHub list back on.
+export LAST_STACK_MERGE_DEMAND_GITHUB_REPOS=""
 export LAST_STACK_SITUATIONS_BIN="$tmp/situations-bin"
 export LAST_STACK_PR_LEDGER_NOW="2026-09-22T12:00:00Z"
 put() { key="$(printf '%s' "$1" | tr '/?&=' '____')"; cat >"$fx/$key.json"; }
@@ -670,5 +673,51 @@ set +e; wait "$tpid"; rc=$?; set -e
 jq -e '.error_type == "Terminated"' "$tmp/term.json" >/dev/null || { echo "FAIL SIGTERM printed no JSON envelope"; exit 1; }
 [ -s "$tmp/term.err" ] || { echo "FAIL SIGTERM printed nothing on stderr"; exit 1; }
 echo "ok   a hung or killed scan still emits a JSON envelope"
+
+# 12. GitHub venue: fold is canonical on GitHub since 2026-09-29. A fixture `gh`
+# serves one open PR whose ci-required check run is still queued; the scan must
+# count it (open == 1) and never call the Forgejo API for fold.
+cat >"$tmp/gh-bin" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = api ] || { echo "fake gh: unsupported $*" >&2; exit 2; }
+echo "$2" >>"$FAKE_GH_LOG"
+case "$2" in
+  "repos/EdgeVector/fold/pulls?state=open&per_page=50")
+    printf '%s\n' '[{"number":77,"state":"open","draft":false,"title":"gh pr","created_at":"2026-09-22T10:00:00Z","updated_at":"2026-09-22T10:30:00Z","head":{"sha":"aaa111","ref":"feat"},"base":{"ref":"main"}}]' ;;
+  "repos/EdgeVector/fold/pulls/77")
+    printf '%s\n' '{"number":77,"mergeable":true,"auto_merge":{"merge_method":"squash"}}' ;;
+  "repos/EdgeVector/fold/branches/main/protection/required_status_checks")
+    printf '%s\n' '{"contexts":["ci-required"],"checks":[]}' ;;
+  "repos/EdgeVector/fold/branches/main")
+    printf '%s\n' '{"commit":{"sha":"bbb222"}}' ;;
+  "repos/EdgeVector/fold/commits/bbb222/check-runs?per_page=100")
+    printf '%s\n' '{"check_runs":[{"name":"ci-required","status":"completed","conclusion":"success","completed_at":"2026-09-22T09:00:00Z"}]}' ;;
+  "repos/EdgeVector/fold/commits/aaa111/check-runs?per_page=100")
+    printf '%s\n' '{"check_runs":[{"name":"ci-required","status":"queued","conclusion":null}]}' ;;
+  *) echo "fake gh: no fixture for $2" >&2; exit 1 ;;
+esac
+SH
+chmod +x "$tmp/gh-bin"
+cat >"$tmp/forge-fail" <<'SH'
+#!/usr/bin/env bash
+echo "forge api must not be called for a GitHub-venue repo: $*" >&2
+exit 9
+SH
+chmod +x "$tmp/forge-fail"
+export FAKE_GH_LOG="$tmp/gh.log"; : >"$FAKE_GH_LOG"
+LAST_STACK_MERGE_DEMAND_GITHUB_REPOS="EdgeVector/fold" LAST_STACK_LEDGER_GH="$tmp/gh-bin" \
+  LAST_STACK_FORGE_API="$tmp/forge-fail" "$LEDGER" scan --repo EdgeVector/fold --json >"$tmp/gh-scan.json"
+jq -e '.open == 1 and (.unreadable | length) == 0
+       and .prs[0].number == 77 and .prs[0].shape == "pending"
+       and .prs[0].required["ci-required"] == "pending"
+       and .repos[0].base.main.verdict == "green"' "$tmp/gh-scan.json" >/dev/null \
+  || { echo "FAIL GitHub-venue scan"; cat "$tmp/gh-scan.json"; exit 1; }
+# Default repo list must include fold via the GitHub list even with a Forge list that omits it.
+LAST_STACK_MERGE_DEMAND_FORGE_REPOS="EdgeVector/nothing" LAST_STACK_MERGE_DEMAND_GITHUB_REPOS="EdgeVector/fold" \
+  LAST_STACK_LEDGER_GH="$tmp/gh-bin" LAST_STACK_FORGE_API="$tmp/forge-api" \
+  "$LEDGER" scan --json >"$tmp/gh-scan2.json" || true
+jq -e '[.prs[] | select(.repo == "EdgeVector/fold")] | length == 1' "$tmp/gh-scan2.json" >/dev/null \
+  || { echo "FAIL fold not scanned from the GitHub list"; cat "$tmp/gh-scan2.json"; exit 1; }
+echo "ok   fold demand is non-zero when a GitHub PR is open (no Forgejo call)"
 
 echo "PASS last-stack-pipeline-forge-pr-ledger"
