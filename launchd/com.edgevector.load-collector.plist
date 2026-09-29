@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.edgevector.load-collector</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/REPLACE/.last-stack/bin/last-stack-launchd-loop</string>
+    <string>/Users/REPLACE/.last-stack/bin/last-stack-load-collector</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/REPLACE</string>
+    <key>PATH</key>
+    <string>/Users/REPLACE/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+    <!-- launchd-loop: see bin/last-stack-launchd-loop -->
+    <key>LAUNCHD_LOOP_LABEL</key>
+    <string>com.edgevector.load-collector</string>
+    <key>LAUNCHD_LOOP_INTERVAL_SEC</key>
+    <string>30</string>
+  </dict>
+
+  <!-- KeepAlive loop, not StartInterval: see com.edgevector.host-memory-sentinel.
+       No Nice and no Background QoS: the old telemetry logger ran at Nice 10 /
+       Background and starved exactly when the node was saturated. This agent
+       is the one that must run at load, so it runs at default priority. -->
+  <key>KeepAlive</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>ProcessType</key>
+  <string>Interactive</string>
+
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE/.lastdb/monitoring/load-collector.launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE/.lastdb/monitoring/load-collector.launchd.log</string>
+</dict>
+</plist>

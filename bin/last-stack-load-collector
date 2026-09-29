@@ -1,0 +1,442 @@
+#!/usr/bin/env python3
+"""last-stack-load-collector — LastDB load sampler that works when LastDB is loaded.
+
+Why (Tom, 2026-09-29): "know exactly how much load is on lastdb and from what",
+and it must keep running at load. The old monitors read `lastdb status` with no
+deadline, at Nice 10, and raised alerts through LastDB (Situations). Under
+saturation they hung or went blind. North Star: north-star-lastdb-load-monitoring.
+
+One pass per call (wrap it in last-stack-launchd-loop). Each pass writes ONE
+JSON line to $LOAD_MON_DIR/load-YYYYMMDD.jsonl:
+
+  host   load avg, swap, top processes by CPU (any process, e.g. fseventsd),
+         primary lastdbd pid/cpu/rss     -- from ps/sysctl only, never the node
+  node   one direct UDS GET /api/status and one `lastdb ops --by-app`, each
+         under a hard deadline. A timeout is a VALUE, not an error:
+         state = ok | busy | shedding | down | error
+
+Alerts (node not ok for N passes, lastdbd CPU high for N passes) go to
+alerts.jsonl and a macOS notification. A Situations notice is best-effort,
+detached, and never awaited. No alert path blocks on LastDB.
+
+Usage:
+  last-stack-load-collector [sample]        one pass (default)
+  last-stack-load-collector report [--minutes N] [--json]
+
+Env (defaults):
+  LOAD_MON_DIR            ~/.local/state/last-stack/load-monitor
+  LOAD_MON_SOCKET         ~/.lastdb/data/folddb.sock
+  LOAD_MON_DEADLINE_SEC   2.0    hard deadline for each node call
+  LOAD_MON_RETAIN_DAYS    14
+  LOAD_MON_MAX_MB         300
+  LOAD_MON_ALERT_NODE_CONSEC   3
+  LOAD_MON_ALERT_CPU_PCT       100   lastdbd %CPU (100 = one core)
+  LOAD_MON_ALERT_CPU_CONSEC    5
+  LOAD_MON_ALERT_COOLDOWN_SEC  1800
+  LOAD_MON_NOTIFY         1      0 = no osascript notification, no Situations
+  LOAD_MON_LASTDB         lastdb  CLI used for `ops --by-app`
+"""
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import signal
+import socket
+import statistics
+import subprocess
+import sys
+import threading
+import time
+
+HOME = os.path.expanduser("~")
+DIR = os.environ.get("LOAD_MON_DIR", os.path.join(HOME, ".local/state/last-stack/load-monitor"))
+SOCK = os.environ.get("LOAD_MON_SOCKET", os.path.join(HOME, ".lastdb/data/folddb.sock"))
+LASTDB = os.environ.get("LOAD_MON_LASTDB", "lastdb")
+
+
+def envf(name, default):
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return float(default)
+
+
+DEADLINE = envf("LOAD_MON_DEADLINE_SEC", 2.0)
+RETAIN_DAYS = envf("LOAD_MON_RETAIN_DAYS", 14)
+MAX_MB = envf("LOAD_MON_MAX_MB", 300)
+NODE_CONSEC = int(envf("LOAD_MON_ALERT_NODE_CONSEC", 3))
+CPU_PCT = envf("LOAD_MON_ALERT_CPU_PCT", 100)
+CPU_CONSEC = int(envf("LOAD_MON_ALERT_CPU_CONSEC", 5))
+COOLDOWN = envf("LOAD_MON_ALERT_COOLDOWN_SEC", 1800)
+NOTIFY = os.environ.get("LOAD_MON_NOTIFY", "1") != "0"
+
+OPS_RE = re.compile(
+    r"app=(\S+) verb=(\S+) count=(\d+) avg=(\d+)ms .*?max=(\d+)ms err=(\d+)"
+)
+
+
+def run(argv, timeout):
+    """Run argv, return (rc, stdout). Kill the whole group at the deadline.
+
+    A sandbox can deny setsid or exec; that must degrade to "no data", never
+    to a missing sample. rc None = deadline, 127 = could not run.
+    """
+    p = None
+    for new_session in (True, False):
+        try:
+            p = subprocess.Popen(
+                argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL, text=True, start_new_session=new_session,
+            )
+            break
+        except (OSError, subprocess.SubprocessError):
+            p = None
+    if p is None:
+        return 127, ""
+    try:
+        out, _ = p.communicate(timeout=timeout)
+        return p.returncode, out
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:
+            p.kill()
+        p.communicate()
+        return None, ""
+
+
+def host_sample():
+    h = {"ncpu": os.cpu_count()}
+    try:
+        h["load"] = [round(x, 2) for x in os.getloadavg()]
+    except OSError:
+        h["load"] = None
+    rc, out = run(["sysctl", "-n", "vm.swapusage"], 3)
+    m = re.search(r"used = ([0-9.]+)M", out or "")
+    h["swap_used_mb"] = int(float(m.group(1))) if m else None
+    rc, out = run(["ps", "-Ao", "pid=,%cpu=,rss=,comm="], 3)
+    rows = []
+    for line in (out or "").splitlines():
+        parts = line.split(None, 3)
+        if len(parts) < 4:
+            continue
+        try:
+            rows.append((int(parts[0]), float(parts[1]), int(parts[2]) // 1024, parts[3]))
+        except ValueError:
+            continue
+    rows.sort(key=lambda r: r[1], reverse=True)
+    h["top"] = [[p, c, r, os.path.basename(n)] for p, c, r, n in rows[:12]]
+    h["lastdbd"] = None
+    for p, c, r, n in rows:
+        if os.path.basename(n) == "lastdbd":
+            h["lastdbd"] = {"pid": p, "cpu": c, "rss_mb": r}
+            break
+    return h
+
+
+def tap_status():
+    """Direct UDS GET /api/status under one monotonic deadline."""
+    t0 = time.monotonic()
+    res = {"state": "down", "reason": "no_socket", "ms": 0, "http": None}
+    if not os.path.exists(SOCK):
+        return res
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.settimeout(DEADLINE)
+        s.connect(SOCK)
+        s.sendall(
+            b"GET /api/status HTTP/1.1\r\nHost: localhost\r\n"
+            b"X-LastDB-Client: load-collector\r\nConnection: close\r\n\r\n"
+        )
+        buf = b""
+        while len(buf) < 65536:
+            left = DEADLINE - (time.monotonic() - t0)
+            if left <= 0:
+                raise socket.timeout()
+            s.settimeout(left)
+            chunk = s.recv(8192)
+            if not chunk:
+                break
+            buf += chunk
+            if b"\r\n\r\n" in buf and buf.startswith(b"HTTP/1.1 5"):
+                break
+        m = re.match(rb"HTTP/1\.[01] (\d+)", buf)
+        code = int(m.group(1)) if m else None
+        res["http"] = code
+        if code == 200:
+            res.update(state="ok", reason="")
+        elif code == 503:
+            body = buf.split(b"\r\n\r\n", 1)[-1][:200].decode("utf-8", "replace")
+            em = re.search(r'"error"\s*:\s*"([^"]+)"', body)
+            res.update(state="shedding", reason=em.group(1) if em else "503")
+        else:
+            res.update(state="error", reason="http_%s" % code)
+    except socket.timeout:
+        res.update(state="busy", reason="deadline")
+    except (ConnectionRefusedError, FileNotFoundError):
+        res.update(state="down", reason="refused")
+    except OSError as e:
+        res.update(state="error", reason=type(e).__name__)
+    finally:
+        s.close()
+        res["ms"] = int((time.monotonic() - t0) * 1000)
+    return res
+
+
+def tap_ops():
+    t0 = time.monotonic()
+    rc, out = run([LASTDB, "ops", "--by-app"], DEADLINE)
+    ms = int((time.monotonic() - t0) * 1000)
+    if rc is None:
+        return {"state": "busy", "ms": ms, "rows": []}
+    if rc != 0:
+        return {"state": "error", "ms": ms, "rows": []}
+    rows = []
+    for m in OPS_RE.finditer(out):
+        a, v, c, avg, mx, err = m.groups()
+        rows.append([a, v, int(c), int(avg), int(mx), int(err)])
+    rows.sort(key=lambda r: r[2], reverse=True)
+    return {"state": "ok", "ms": ms, "rows": rows[:12]}
+
+
+def node_sample():
+    box = {}
+    ths = [
+        threading.Thread(target=lambda: box.__setitem__("status", tap_status())),
+        threading.Thread(target=lambda: box.__setitem__("ops", tap_ops())),
+    ]
+    for t in ths:
+        t.daemon = True
+        t.start()
+    for t in ths:
+        t.join(DEADLINE + 2)
+    st = box.get("status") or {"state": "busy", "reason": "tap_hung", "ms": int(DEADLINE * 1000), "http": None}
+    return {"status": st, "ops": box.get("ops") or {"state": "busy", "ms": int(DEADLINE * 1000), "rows": []}}
+
+
+def load_state():
+    try:
+        with open(os.path.join(DIR, ".state.json")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(st):
+    tmp = os.path.join(DIR, ".state.json.tmp")
+    with open(tmp, "w") as f:
+        json.dump(st, f)
+    os.replace(tmp, os.path.join(DIR, ".state.json"))
+
+
+def detach(argv):
+    """Start argv and never wait for it. Failure to start is not an error."""
+    try:
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def fire(name, msg, now):
+    rec = {"ts": iso(now), "alert": name, "message": msg}
+    with open(os.path.join(DIR, "alerts.jsonl"), "a") as f:
+        f.write(json.dumps(rec) + "\n")
+    if not NOTIFY:
+        return
+    script = 'display notification %s with title "LastDB load" sound name "Basso"' % json.dumps(msg)
+    detach(["osascript", "-e", script])
+    sit = os.path.join(HOME, ".local/bin/situations")
+    if os.access(sit, os.X_OK):  # best effort: goes through LastDB, never awaited
+        detach(
+            ["/usr/bin/perl", "-e", "alarm 5; exec @ARGV", sit, "notice", "--title", msg[:120],
+             "--kind", "other", "--system", "lastdbd", "--actor", "last-stack-load-collector",
+             "--summary", msg])
+
+
+def evaluate_alerts(rec, now):
+    st = load_state()
+    st["node_bad"] = st.get("node_bad", 0) + 1 if rec["node"]["status"]["state"] != "ok" else 0
+    lastdbd = rec["host"].get("lastdbd")
+    hot = bool(lastdbd) and lastdbd["cpu"] >= CPU_PCT
+    st["cpu_hot"] = st.get("cpu_hot", 0) + 1 if hot else 0
+    last = st.setdefault("last_alert", {})
+    checks = [
+        ("node_unresponsive", st["node_bad"] >= NODE_CONSEC,
+         "LastDB node %s (%s) for %d passes"
+         % (rec["node"]["status"]["state"], rec["node"]["status"].get("reason", ""), st["node_bad"])),
+        ("lastdbd_cpu_high", st["cpu_hot"] >= CPU_CONSEC,
+         "lastdbd CPU >= %d%% for %d passes" % (CPU_PCT, st["cpu_hot"])),
+    ]
+    for name, cond, msg in checks:
+        if cond and now - last.get(name, 0) >= COOLDOWN:
+            last[name] = now
+            fire(name, msg, now)
+    save_state(st)
+
+
+def iso(t):
+    return dt.datetime.fromtimestamp(t, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def rotate(now):
+    cutoff = now - RETAIN_DAYS * 86400
+    files = sorted(f for f in os.listdir(DIR) if re.fullmatch(r"load-\d{8}\.jsonl", f))
+    for f in list(files):
+        p = os.path.join(DIR, f)
+        if os.path.getmtime(p) < cutoff:
+            os.unlink(p)
+            files.remove(f)
+    total = sum(os.path.getsize(os.path.join(DIR, f)) for f in files)
+    while files and total > MAX_MB * 1048576:
+        f = files.pop(0)
+        total -= os.path.getsize(os.path.join(DIR, f))
+        os.unlink(os.path.join(DIR, f))
+
+
+def guarded(fn, fallback):
+    """One failing section must not cost the whole sample; log it and go on."""
+    try:
+        return fn()
+    except Exception as e:
+        fallback = dict(fallback)
+        fallback["error"] = "%s: %s" % (type(e).__name__, e)
+        try:
+            with open(os.path.join(DIR, "collector-errors.log"), "a") as f:
+                f.write("%s %s %s\n" % (iso(time.time()), fn.__name__, fallback["error"]))
+        except OSError:
+            pass
+        return fallback
+
+
+def guarded(fn, fallback):
+    """A failing section becomes an "error" field; the sample is still written."""
+    try:
+        return fn()
+    except Exception as e:
+        log_error(e)
+        out = dict(fallback)
+        out["error"] = "%s: %s" % (type(e).__name__, e)
+        return out
+
+
+def log_error(e):
+    sys.stderr.write("last-stack-load-collector: %s: %s\n" % (type(e).__name__, e))
+    try:
+        os.makedirs(DIR, exist_ok=True)
+        with open(os.path.join(DIR, "collector-errors.log"), "a") as f:
+            f.write("%s %s: %s\n" % (iso(time.time()), type(e).__name__, e))
+    except OSError:
+        pass
+
+
+def sample():
+    os.makedirs(DIR, exist_ok=True)
+    t0 = time.monotonic()
+    now = time.time()
+    rec = {"ts": iso(now), "host": guarded(host_sample, {"top": [], "lastdbd": None}),
+           "node": guarded(node_sample, {"status": {"state": "error", "reason": "collector", "ms": 0, "http": None},
+                                         "ops": {"state": "error", "ms": 0, "rows": []}})}
+    rec["collector_ms"] = int((time.monotonic() - t0) * 1000)
+    day = dt.datetime.fromtimestamp(now, dt.timezone.utc).strftime("%Y%m%d")
+    with open(os.path.join(DIR, "load-%s.jsonl" % day), "a") as f:
+        f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+    evaluate_alerts(rec, now)
+    rotate(now)
+
+
+def read_window(minutes):
+    cutoff = time.time() - minutes * 60
+    recs = []
+    for f in sorted(x for x in os.listdir(DIR) if re.fullmatch(r"load-\d{8}\.jsonl", x)) if os.path.isdir(DIR) else []:
+        try:
+            with open(os.path.join(DIR, f)) as fh:
+                for line in fh:
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    t = dt.datetime.strptime(r["ts"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc).timestamp()
+                    if t >= cutoff:
+                        recs.append(r)
+        except OSError:
+            continue
+    return recs
+
+
+def report(minutes, as_json):
+    recs = read_window(minutes)
+    out = {"minutes": minutes, "samples": len(recs)}
+    states = {}
+    ms = []
+    cpu_by_proc = {}
+    for r in recs:
+        s = r["node"]["status"]
+        states[s["state"]] = states.get(s["state"], 0) + 1
+        ms.append(s["ms"])
+        for _, c, _, n in r["host"].get("top", []):
+            cpu_by_proc.setdefault(n, []).append(c)
+    out["node_states"] = states
+    if ms:
+        srt = sorted(ms)
+        out["status_ms"] = {"p50": srt[len(srt) // 2], "p95": srt[min(len(srt) - 1, int(len(srt) * 0.95))], "max": srt[-1]}
+    n = max(len(recs), 1)
+    out["cpu_by_process"] = sorted(
+        ([name, round(sum(v) / n, 1), max(v)] for name, v in cpu_by_proc.items()),
+        key=lambda x: x[1], reverse=True)[:8]
+    d = [r["host"]["lastdbd"]["cpu"] for r in recs if r["host"].get("lastdbd")]
+    out["lastdbd_cpu"] = {"avg": round(statistics.mean(d), 1), "max": max(d)} if d else None
+    swaps = [r["host"]["swap_used_mb"] for r in recs if r["host"].get("swap_used_mb") is not None]
+    out["swap_used_mb_max"] = max(swaps) if swaps else None
+    loads = [r["host"]["load"][0] for r in recs if r["host"].get("load")]
+    out["load1_max"] = max(loads) if loads else None
+    first = {}
+    last = {}
+    for r in recs:
+        for row in r["node"]["ops"].get("rows", []):
+            key = (row[0], row[1])
+            first.setdefault(key, row)
+            last[key] = row
+    deltas = []
+    for key, row in last.items():
+        c0 = first[key][2] if row[2] >= first[key][2] else 0  # counter reset on restart
+        deltas.append([key[0], key[1], row[2] - c0, row[3], row[4], row[5]])
+    deltas.sort(key=lambda x: x[2], reverse=True)
+    out["ops_by_count_delta"] = deltas[:8]
+    if as_json:
+        print(json.dumps(out, indent=1))
+        return
+    print("window %dm  samples=%d  node=%s" % (minutes, out["samples"], states or "none"))
+    if "status_ms" in out:
+        print("status_ms p50=%(p50)s p95=%(p95)s max=%(max)s" % out["status_ms"])
+    print("load1_max=%s swap_used_mb_max=%s lastdbd_cpu=%s" % (out["load1_max"], out["swap_used_mb_max"], out["lastdbd_cpu"]))
+    print("host CPU by process (avg%, max%):")
+    for name, avg, mx in out["cpu_by_process"]:
+        print("  %-28s %6.1f %6.1f" % (name, avg, mx))
+    print("LastDB requests in window (app verb +count avg_ms max_ms err):")
+    for a, v, c, avg, mx, err in out["ops_by_count_delta"]:
+        print("  %-28s %-14s +%-7d %5d %6d %d" % (a, v, c, avg, mx, err))
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="last-stack-load-collector")
+    sub = ap.add_subparsers(dest="cmd")
+    sub.add_parser("sample")
+    rp = sub.add_parser("report")
+    rp.add_argument("--minutes", type=int, default=60)
+    rp.add_argument("--json", action="store_true")
+    a = ap.parse_args()
+    if a.cmd == "report":
+        report(a.minutes, a.json)
+        return 0
+    try:
+        sample()
+    except Exception as e:  # a collector failure must never end the loop
+        log_error(e)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

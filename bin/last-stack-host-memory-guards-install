@@ -33,6 +33,7 @@ agents() {
   printf '%s %s\n' last-stack-gui-app-memory-guard com.edgevector.gui-app-memory-guard
   printf '%s %s\n' last-stack-testbin-memory-guard com.edgevector.testbin-memory-guard
   printf '%s %s\n' last-stack-host-memory-sentinel com.edgevector.host-memory-sentinel
+  printf '%s %s\n' last-stack-load-collector com.edgevector.load-collector
 }
 
 # Retire leftover per-user copies that ran scripts from ~/.lastdb/monitoring.
