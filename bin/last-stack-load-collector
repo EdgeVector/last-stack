@@ -78,23 +78,33 @@ OPS_RE = re.compile(
 
 
 def run(argv, timeout):
-    """Run argv, return (rc, stdout). Kill the whole group at the deadline."""
-    p = subprocess.Popen(
-        argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL, text=True, start_new_session=True,
-    )
+    """Run argv, return (rc, stdout). Kill the whole group at the deadline.
+
+    A sandbox can deny setsid or exec; that must degrade to "no data", never
+    to a missing sample. rc None = deadline, 127 = could not run.
+    """
+    p = None
+    for new_session in (True, False):
+        try:
+            p = subprocess.Popen(
+                argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL, text=True, start_new_session=new_session,
+            )
+            break
+        except (OSError, subprocess.SubprocessError):
+            p = None
+    if p is None:
+        return 127, ""
     try:
         out, _ = p.communicate(timeout=timeout)
         return p.returncode, out
     except subprocess.TimeoutExpired:
         try:
             os.killpg(p.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        except OSError:
+            p.kill()
         p.communicate()
         return None, ""
-    except FileNotFoundError:
-        return 127, ""
 
 
 def host_sample():
@@ -221,6 +231,15 @@ def save_state(st):
     os.replace(tmp, os.path.join(DIR, ".state.json"))
 
 
+def detach(argv):
+    """Start argv and never wait for it. Failure to start is not an error."""
+    try:
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def fire(name, msg, now):
     rec = {"ts": iso(now), "alert": name, "message": msg}
     with open(os.path.join(DIR, "alerts.jsonl"), "a") as f:
@@ -228,16 +247,13 @@ def fire(name, msg, now):
     if not NOTIFY:
         return
     script = 'display notification %s with title "LastDB load" sound name "Basso"' % json.dumps(msg)
-    subprocess.Popen(["osascript", "-e", script], stdin=subprocess.DEVNULL,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    detach(["osascript", "-e", script])
     sit = os.path.join(HOME, ".local/bin/situations")
     if os.access(sit, os.X_OK):  # best effort: goes through LastDB, never awaited
-        subprocess.Popen(
+        detach(
             ["/usr/bin/perl", "-e", "alarm 5; exec @ARGV", sit, "notice", "--title", msg[:120],
              "--kind", "other", "--system", "lastdbd", "--actor", "last-stack-load-collector",
-             "--summary", msg],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)
+             "--summary", msg])
 
 
 def evaluate_alerts(rec, now):
@@ -280,11 +296,49 @@ def rotate(now):
         os.unlink(os.path.join(DIR, f))
 
 
+def guarded(fn, fallback):
+    """One failing section must not cost the whole sample; log it and go on."""
+    try:
+        return fn()
+    except Exception as e:
+        fallback = dict(fallback)
+        fallback["error"] = "%s: %s" % (type(e).__name__, e)
+        try:
+            with open(os.path.join(DIR, "collector-errors.log"), "a") as f:
+                f.write("%s %s %s\n" % (iso(time.time()), fn.__name__, fallback["error"]))
+        except OSError:
+            pass
+        return fallback
+
+
+def guarded(fn, fallback):
+    """A failing section becomes an "error" field; the sample is still written."""
+    try:
+        return fn()
+    except Exception as e:
+        log_error(e)
+        out = dict(fallback)
+        out["error"] = "%s: %s" % (type(e).__name__, e)
+        return out
+
+
+def log_error(e):
+    sys.stderr.write("last-stack-load-collector: %s: %s\n" % (type(e).__name__, e))
+    try:
+        os.makedirs(DIR, exist_ok=True)
+        with open(os.path.join(DIR, "collector-errors.log"), "a") as f:
+            f.write("%s %s: %s\n" % (iso(time.time()), type(e).__name__, e))
+    except OSError:
+        pass
+
+
 def sample():
     os.makedirs(DIR, exist_ok=True)
     t0 = time.monotonic()
     now = time.time()
-    rec = {"ts": iso(now), "host": host_sample(), "node": node_sample()}
+    rec = {"ts": iso(now), "host": guarded(host_sample, {"top": [], "lastdbd": None}),
+           "node": guarded(node_sample, {"status": {"state": "error", "reason": "collector", "ms": 0, "http": None},
+                                         "ops": {"state": "error", "ms": 0, "rows": []}})}
     rec["collector_ms"] = int((time.monotonic() - t0) * 1000)
     day = dt.datetime.fromtimestamp(now, dt.timezone.utc).strftime("%Y%m%d")
     with open(os.path.join(DIR, "load-%s.jsonl" % day), "a") as f:
@@ -380,12 +434,7 @@ def main():
     try:
         sample()
     except Exception as e:  # a collector failure must never end the loop
-        try:
-            os.makedirs(DIR, exist_ok=True)
-            with open(os.path.join(DIR, "collector-errors.log"), "a") as f:
-                f.write("%s %s: %s\n" % (iso(time.time()), type(e).__name__, e))
-        except OSError:
-            pass
+        log_error(e)
     return 0
 
 
