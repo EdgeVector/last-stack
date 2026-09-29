@@ -91,3 +91,14 @@ if "$BIN" --workers 6 --registry-dir "$tmp/registry" --prompt-path "$tmp/missing
 fi
 
 echo "ok"
+
+# Pool A reopens done cards, so the routine prompt must read the done column
+# (papercut-kanban-validate-pool-a-never-reads-done-column-20260929).
+prompt_src="$ROOT/routines/kanban-validate.md"
+grep -q 'CLOSED-ON-MERGE' "$prompt_src"
+grep -Eq 'board-\$col\.json|board-done\.json' "$prompt_src"
+grep -Eq 'kanban list --column done --limit [0-9]+ --json' "$prompt_src" || {
+  echo 'kanban-validate prompt never reads the done column; Pool A done-reopen rule is dead' >&2
+  exit 1
+}
+grep -q 'board-done.json' "$prompt_src"

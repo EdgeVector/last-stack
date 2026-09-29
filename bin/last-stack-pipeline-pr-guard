@@ -21,6 +21,23 @@ class Denied(Exception):
     pass
 
 
+# A deny is correct, but a bare reason leaves the caller with no next step and
+# it retries forever (papercut-pipeline-pr-guard-unbound-green-pr, lastgit#622).
+# `recovery` is advice only: it never changes the verdict or the exit code.
+RECOVERY = {
+    "unbound-card": (
+        "No Kind:pr card in `doing`, with an empty assignee, is bound to this PR "
+        "(repo, kanban/<slug> branch, pr_url). This guard protects an active owner and "
+        "will always deny an unbound PR: do not retry it. If the PR is an intentionally "
+        "unbound green fix (for example a papercut-resolver branch), its producer merges it: "
+        "last-stack-pipeline-forge-pr-ledger merge-green --repo <owner/repo> --pr <n> --arm --apply "
+        "(it runs its own Situations merge-pr preflight). Otherwise bind the card to the PR, or leave "
+        "the PR and record the deny in the papercut."
+    ),
+    "owned-pr": "An owner holds the card. Leave the PR to its owner; do not clear the assignee.",
+}
+
+
 class Guard:
     def __init__(self, args):
         self.args = args
@@ -178,7 +195,10 @@ def main():
     try:
         Guard(args).check()
     except Denied as error:
-        print(json.dumps({"version": 1, "verdict": "deny", "reason": str(error)}))
+        answer = {"version": 1, "verdict": "deny", "reason": str(error)}
+        if str(error) in RECOVERY:
+            answer["recovery"] = RECOVERY[str(error)]
+        print(json.dumps(answer))
         return 3
     print(json.dumps({"version": 1, "verdict": "allow", "head": args.expected_head}), flush=True)
     if command:

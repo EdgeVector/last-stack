@@ -116,6 +116,12 @@ for col in backlog todo doing; do
   "$last_stack/bin/last-stack-json-capture" "$scratch/board-$col.json" -- \
     kanban list --column "$col" --limit 60 --json || board_read_failed=1
 done
+# Pool A reopens `done` cards whose END STATE is unmet, so the routine MUST
+# read the done column too. Without this read the rule can never find a
+# candidate (papercut-kanban-validate-pool-a-never-reads-done-column-20260929).
+# Small cap: done holds only recent closes (older ones are swept daily).
+"$last_stack/bin/last-stack-json-capture" "$scratch/board-done.json" -- \
+  kanban list --column done --limit 25 --json || board_read_failed=1
 ```
 
 If ANY of these reads fails (`service_timeout`, "node did not respond",
@@ -136,8 +142,15 @@ papercut-kanban-search-json-shape-parser-surprise-20260923):
 
 ```bash
 jq -r '.cards[] | [.slug, .column, (.kind // ""), (.block_status // ""), (.blocked // false)] | @tsv' \
-  "$scratch/board-backlog.json" "$scratch/board-todo.json" "$scratch/board-doing.json"
+  "$scratch/board-backlog.json" "$scratch/board-todo.json" "$scratch/board-doing.json" \
+  "$scratch/board-done.json"
 ```
+
+List bodies are ~200-character previews, so a preview may not show the
+`CLOSED-ON-MERGE` line. For each `done` card that is Kind: pr, newest first,
+run `kanban show <slug> --json` (at most 5 per wake) and keep only cards whose
+full body has a `CLOSED-ON-MERGE` line and no later `PROOF:` or
+`PROOF[...]:` marker. Those are the Pool A `done` candidates.
 
 `truncated: true` means the cap hid cards. That is fine for one bounded
 unit per wake; never treat a capped read as a census.
@@ -181,8 +194,8 @@ Then re-eval the DONE-WHEN. Do not invent new harness slugs not listed by
 
 ## Candidate scan (after Step 0)
 
-1. Reuse the three column-scoped capped reads from Step 0
-   (`$scratch/board-{backlog,todo,doing}.json`); never an unscoped
+1. Reuse the four column-scoped capped reads from Step 0
+   (`$scratch/board-{backlog,todo,doing,done}.json`); never an unscoped
    `list --json`. Use `show <slug> --json` for one full body.
    If the board read fails because the LastDB node is busy (`service_timeout`,
    "node did not respond", "too many concurrent reads", socket errors), do not
