@@ -293,7 +293,7 @@ Goal
 3. Print one HEAL_RESULT line when done.
 
 Venue
-- EdgeVector/fold is Forgejo (`last-stack-forge-git`, `last-stack-forge-api`).
+- EdgeVector/fold is GitHub since 2026-09-29 (`gh pr create -R EdgeVector/fold`, then `gh pr merge --auto --squash`). The Forgejo copy is archived.
 - last-stack / loom / state-machine are LastGit (`lastgit cr`).
 - Prefer fold when the RED is a binary/latency/RSS/correctness bar.
 - Prefer last-stack when the RED is the probe harness itself.
