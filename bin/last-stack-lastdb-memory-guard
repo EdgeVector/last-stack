@@ -88,6 +88,14 @@
 #                            maintenance window and suppresses revival
 #   LASTDBD_GUARD_PLIST_DIR  default $HOME/Library/LaunchAgents
 #   LASTDBD_GUARD_DRY_RUN    default 0 — log restart intent, skip shed/kill/kickstart
+#   LASTDBD_GUARD_SHED_TIMEOUT_SEC default 20 — curl --max-time for the POST
+#                            /api/admin/shed call itself. Measured 2026-09-28:
+#                            the old hardcoded 5s lost every shed attempt on
+#                            the 4 restarts in the preceding ~30h (shed_failed
+#                            http_code=000) because the daemon is already
+#                            CPU-saturated at OVER_LIMIT time and a fresh
+#                            admin request cannot get scheduled that fast.
+#                            papercut-lastdb-memory-guard-shed-times-out-under-load-20260928
 #   LASTDBD_GUARD_SHED_WAIT_SEC default 60 — seconds to wait after POST
 #                            /api/admin/shed for footprint to fall below the
 #                            limit before capturing vmmap and sending SIGTERM
@@ -125,6 +133,7 @@ RSS_LIMIT_MB="${LASTDBD_RSS_LIMIT_MB:-16384}"
 COOLDOWN_SEC="${LASTDBD_GUARD_COOLDOWN_SEC:-120}"
 RESTART_WAIT_SEC="${LASTDBD_GUARD_RESTART_WAIT_SEC:-30}"
 IDENTITY_TIMEOUT_SEC="${LASTDBD_GUARD_IDENTITY_TIMEOUT_SEC:-1}"
+SHED_TIMEOUT_SEC="${LASTDBD_GUARD_SHED_TIMEOUT_SEC:-20}"
 SHED_WAIT_SEC="${LASTDBD_GUARD_SHED_WAIT_SEC:-60}"
 TERM_WAIT_SEC="${LASTDBD_GUARD_TERM_WAIT_SEC:-60}"
 # launchd throttles a KeepAlive respawn to ~10 s after a short-lived exit, so
@@ -153,6 +162,13 @@ esac
 case "$IDENTITY_TIMEOUT_SEC" in
   ''|*[!0-9]*|0)
     echo "invalid LASTDBD_GUARD_IDENTITY_TIMEOUT_SEC=$IDENTITY_TIMEOUT_SEC (want positive whole seconds)" >&2
+    exit 2
+    ;;
+esac
+
+case "$SHED_TIMEOUT_SEC" in
+  ''|*[!0-9]*|0)
+    echo "invalid LASTDBD_GUARD_SHED_TIMEOUT_SEC=$SHED_TIMEOUT_SEC (want positive whole seconds)" >&2
     exit 2
     ;;
 esac
@@ -608,7 +624,7 @@ PY
 # SIGTERM window either way.
 post_shed() {
   local blob
-  blob=$(curl -s --max-time 5 --unix-socket "$SOCKET" \
+  blob=$(curl -s --max-time "$SHED_TIMEOUT_SEC" --unix-socket "$SOCKET" \
     -H 'X-LastDB-Client: lastdb-memory-guard' \
     -X POST -w '\n%{http_code}' \
     "http://localhost/api/admin/shed" 2>/dev/null || true)
