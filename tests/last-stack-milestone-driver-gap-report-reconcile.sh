@@ -216,4 +216,69 @@ jq -e '.counts.needs_spec == 1' "$artifact4" >/dev/null \
 jq -e '.work_queue[] | select(.slug == "ms-real-design") | has("needs_spec") | not' "$artifact4" >/dev/null \
   || fail 'a sibling milestone whose cited design slug resolves in brain must not be flagged'
 
+# ---------------------------------------------------------------------------
+# Scenario 5: decompose milestone with ZERO children whose North Star record
+# already carries done-transition completion checkpoints (filed under the
+# North Star slug, never the milestone). It must be flagged
+# needs_satisfaction_check + ns_shipped_checkpoints so the driver runs the
+# shipped-slice satisfaction gate instead of filing duplicate Kind:pr cards.
+# Negative fixtures: a North Star with no checkpoints, and one whose only
+# checkpoint has a non-done Reason, must NOT be flagged; the entry is never
+# dropped.
+# papercut-milestone-driver-idle-empty-stale-vs-northstar-checkpoints-20250925
+# ---------------------------------------------------------------------------
+S5="$TMP/s5"
+mkdir -p "$S5/run"
+cat >"$S5/kanban" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  'list --column backlog --json'|'list --column todo --json'|'list --column doing --json')
+    echo '{"cards":[],"total":0,"truncated":false}';;
+  'milestone portfolio --json') echo '{"entries":[],"total":0,"truncated":false}';;
+  'milestone gap-report --json')
+    echo '{"counts":{"idle_empty":3,"in_flight":0},"work_queue":[{"slug":"ms-shipped","action":"decompose"},{"slug":"ms-nocp","action":"decompose"},{"slug":"ms-othercp","action":"decompose"}]}';;
+  'milestone detail ms-shipped --json')
+    echo '{"milestone":{"slug":"ms-shipped","north_star":"ns-shipped","body":"## Acceptance\nresident slot revisions.","proof_card":null}}';;
+  'milestone detail ms-nocp --json')
+    echo '{"milestone":{"slug":"ms-nocp","north_star":"ns-nocp","body":"## Acceptance\nsomething.","proof_card":null}}';;
+  'milestone detail ms-othercp --json')
+    echo '{"milestone":{"slug":"ms-othercp","north_star":"ns-othercp","body":"## Acceptance\nsomething.","proof_card":null}}';;
+  *) echo "unexpected fixture command: $*" >&2; exit 9;;
+esac
+EOF
+chmod +x "$S5/kanban"
+cat >"$S5/brain" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  'get ns-shipped')
+    printf '%s\n' '[project] ns-shipped' '---' '# NS' \
+      '## F-Kanban completion checkpoint - card a' 'Reason: done-transition' 'Owner: ns-shipped' \
+      '## Notes' 'prose' \
+      '## F-Kanban completion checkpoint - card b' 'Reason: done-transition'; exit 0;;
+  'get ns-nocp') printf '%s\n' '[project] ns-nocp' '# NS' '## Notes' 'none'; exit 0;;
+  'get ns-othercp')
+    printf '%s\n' '[project] ns-othercp' '## F-Kanban completion checkpoint - card a' 'Reason: reopened'; exit 0;;
+  *) echo "unexpected fixture command: $*" >&2; exit 9;;
+esac
+EOF
+chmod +x "$S5/brain"
+
+capture_json5="$("$HELPER" capture --run-dir "$S5/run" --run-id s5 \
+  --preflight-bin "$TMP/bin/preflight" --kanban-bin "$S5/kanban" --admission-bin "$S1/admission" \
+  --brain-bin "$S5/brain")"
+artifact5="$(printf '%s\n' "$capture_json5" | jq -r '.artifact')"
+
+jq -e '.work_queue | length == 3' "$artifact5" >/dev/null \
+  || fail 'a checkpoint annotation must never drop a decompose entry'
+jq -e '.work_queue[] | select(.slug == "ms-shipped") | .needs_satisfaction_check == true and .ns_shipped_checkpoints == 2 and .action == "decompose"' "$artifact5" >/dev/null \
+  || fail 'a decompose milestone whose North Star has 2 done-transition checkpoints must be flagged with the count and keep action=decompose'
+jq -e '.work_queue[] | select(.slug == "ms-nocp") | has("needs_satisfaction_check") | not' "$artifact5" >/dev/null \
+  || fail 'a North Star with no checkpoints must not be flagged'
+jq -e '.work_queue[] | select(.slug == "ms-othercp") | has("needs_satisfaction_check") | not' "$artifact5" >/dev/null \
+  || fail 'a checkpoint whose Reason is not done-transition must not be flagged'
+jq -e '.counts.ns_shipped_checkpoints == 1' "$artifact5" >/dev/null \
+  || fail 'ns_shipped_checkpoints count must be bumped exactly once'
+
 printf '%s\n' 'ok: gap-report reconciliation drops North-Star-stale idle_empty entries, keeps directly-attached children, prioritizes admitted decompose work, never drops an unrecognized queue entry, and flags a milestone citing an unresolvable design-* slug instead of silently re-skipping it'

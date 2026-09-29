@@ -327,7 +327,42 @@ def _brain_slug_exists(brain_bin, slug, cache):
     return exists
 
 
-def _annotate_stuck_states(board, report, detail_cache, card_cache, brain_bin=None, design_cache=None):
+_CHECKPOINT_HEAD_RE = re.compile(r'^##[ \t]+F-Kanban completion checkpoint\b.*$', re.M)
+_CHECKPOINT_DONE_RE = re.compile(r'^[ \t]*Reason:[ \t]*done-transition\b', re.M | re.I)
+_NEXT_H2_RE = re.compile(r'^##[ \t]+\S', re.M)
+
+
+def _ns_completion_checkpoints(brain_bin, north_star, cache):
+    """How many `## F-Kanban completion checkpoint` blocks with
+    `Reason: done-transition` a North Star record carries. The kanban
+    completion hook stamps those under the North Star's own slug, so a
+    milestone whose done cards never carried `Milestone:` reads as
+    childless (idle_empty) although the slices merged. None on any doubt
+    (no record, brain error, timeout): never fatal, never a confirmed zero.
+    A windowed `brain get` can hide later blocks, so this is a lower bound.
+    (papercut-milestone-driver-idle-empty-stale-vs-northstar-checkpoints-20250925)"""
+    if north_star in cache:
+        return cache[north_star]
+    count = None
+    try:
+        result = subprocess.run([brain_bin, 'get', north_star], capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            text = result.stdout
+            count = 0
+            for head in _CHECKPOINT_HEAD_RE.finditer(text):
+                rest = text[head.end():]
+                nxt = _NEXT_H2_RE.search(rest)
+                block = rest[:nxt.start()] if nxt else rest
+                if _CHECKPOINT_DONE_RE.search(block):
+                    count += 1
+    except (subprocess.TimeoutExpired, OSError):
+        count = None
+    cache[north_star] = count
+    return count
+
+
+def _annotate_stuck_states(board, report, detail_cache, card_cache, brain_bin=None, design_cache=None,
+                           checkpoint_cache=None):
     """Annotate (never rename) three more dead-end states so the driver can
     act on them instead of re-reporting the same stuck count every pass.
     `action` stays exactly what the classifier emitted -- `authorize()`
@@ -359,6 +394,14 @@ def _annotate_stuck_states(board, report, detail_cache, card_cache, brain_bin=No
     - decompose + `next_slice` (fkanban needs_next_slice) with no proof card:
       flag `missing_proof_card` so the driver can choose between the next
       Kind:pr slice and the proof card.
+    - decompose whose North Star record already carries done-transition
+      completion checkpoints: flag `ns_shipped_checkpoints` (count) +
+      `needs_satisfaction_check`, because the checkpoints sit under the North
+      Star slug, not the milestone, so gap-report cannot see the shipped
+      slices. Additive: it never drops the entry (a checkpoint count does not
+      prove every Acceptance clause); the driver must run the shipped-slice
+      satisfaction gate before filing any Kind:pr for it.
+      (papercut-milestone-driver-idle-empty-stale-vs-northstar-checkpoints-20250925)
     """
     work_queue = report.get('work_queue')
     if not isinstance(work_queue, list):
@@ -370,6 +413,8 @@ def _annotate_stuck_states(board, report, detail_cache, card_cache, brain_bin=No
         counts = None
     if design_cache is None:
         design_cache = {}
+    if checkpoint_cache is None:
+        checkpoint_cache = {}
 
     def bump(name):
         if counts is not None:
@@ -427,6 +472,16 @@ def _annotate_stuck_states(board, report, detail_cache, card_cache, brain_bin=No
                         annotated.append({**entry, **extra, 'needs_spec': True, 'missing_design_slug': missing[0]})
                         bump('needs_spec')
                         flagged = True
+            if brain_bin and detail:
+                north_star = milestone.get('north_star')
+                if isinstance(north_star, str) and north_star:
+                    shipped = _ns_completion_checkpoints(brain_bin, north_star, checkpoint_cache)
+                    if shipped:
+                        extra['ns_shipped_checkpoints'] = shipped
+                        extra['needs_satisfaction_check'] = True
+                        bump('ns_shipped_checkpoints')
+                        if flagged:
+                            annotated[-1] = {**annotated[-1], **extra}
             if not flagged:
                 annotated.append({**entry, **extra} if extra else entry)
         elif action == 'complete_proof':
