@@ -56,6 +56,7 @@ cp "$ROOT/bin/last-stack-host-memory-guards-install" "$version/bin/"
 cp "$ROOT/launchd/com.edgevector.gui-app-memory-guard.plist" "$version/launchd/"
 cp "$ROOT/launchd/com.edgevector.testbin-memory-guard.plist" "$version/launchd/"
 cp "$ROOT/launchd/com.edgevector.host-memory-sentinel.plist" "$version/launchd/"
+cp "$ROOT/launchd/com.edgevector.load-collector.plist" "$version/launchd/"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-factory-health"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-board-closeout-sweep"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-self-upgrade"
@@ -63,6 +64,7 @@ printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-vm-disk-trim"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-gui-app-memory-guard"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-testbin-memory-guard"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-host-memory-sentinel"
+printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-load-collector"
 chmod +x \
   "$version/bin/last-stack-factory-health-install" \
   "$version/bin/last-stack-board-closeout-install" \
@@ -78,7 +80,8 @@ chmod +x \
   "$version/bin/last-stack-host-memory-guards-install" \
   "$version/bin/last-stack-gui-app-memory-guard" \
   "$version/bin/last-stack-testbin-memory-guard" \
-  "$version/bin/last-stack-host-memory-sentinel"
+  "$version/bin/last-stack-host-memory-sentinel" \
+  "$version/bin/last-stack-load-collector"
 
 # Host Track exposes these commands through ~/.local/bin links. Every command
 # must resolve that link before it loads the sibling library from the artifact.
