@@ -143,6 +143,20 @@ class GuardTest(unittest.TestCase):
         self.data["card"]["pr_url"] = "http://forge.test/EdgeVector/fold/pulls/8"
         self.run_guard("unbound-card")
 
+    def test_unbound_card_deny_names_a_recovery_path(self):
+        # papercut-pipeline-pr-guard-unbound-green-pr: the deny is right, but the
+        # caller needs a next step. Advice only: verdict and exit code stay deny/3.
+        self.data["card"] = None
+        (self.home / "fixture.json").write_text(json.dumps(self.data))
+        env = dict(os.environ, GUARD_FIXTURE=str(self.home), PATH=f"{self.bin}:{os.environ['PATH']}")
+        result = subprocess.run([str(self.bin / "last-stack-pipeline-pr-guard"), "--repo", "EdgeVector/fold",
+                                 "--pr", "7", "--expected-head", SHA, "--", str(self.bin / "mutate")],
+                                capture_output=True, text=True, env=env, timeout=90)
+        answer = json.loads(result.stdout)
+        self.assertEqual((result.returncode, answer["verdict"], answer["reason"]), (3, "deny", "unbound-card"))
+        self.assertIn("merge-green", answer["recovery"])
+        self.assertFalse((self.home / "mutated").exists())
+
     def test_missing_card_is_unbound_card_not_unreadable_evidence(self):
         # kanban show exits 1 with empty stdout for a slug with no card. That
         # is a distinguishable miss, not an unreadable read/exec failure.

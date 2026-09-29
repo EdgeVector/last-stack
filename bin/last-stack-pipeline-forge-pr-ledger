@@ -75,6 +75,7 @@ import os
 import re
 import concurrent.futures
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -638,6 +639,9 @@ def scan_repo(repo: str, args: argparse.Namespace, now: dt.datetime) -> tuple[di
     return repo_row, prs, []
 
 
+_scan_abandoned = [False]
+
+
 def scan(args: argparse.Namespace) -> dict[str, Any]:
     now = now_utc()
     report: dict[str, Any] = {"checked_at": iso(now), "repos": [], "prs": [], "unreadable": []}
@@ -649,8 +653,30 @@ def scan(args: argparse.Namespace) -> dict[str, Any]:
     # parallel; the report keeps the repo-list order.
     repos = load_repos(args)
     workers = max(1, min(len(repos), int(os.environ.get("LAST_STACK_FORGE_LEDGER_WORKERS", "8"))))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        results = list(pool.map(lambda r: scan_repo(r, args, now), repos))
+    # Bound the whole read from the INSIDE. scan_repo makes many forge-api
+    # calls (each capped at 45s, not the sum); a slow forge could push the
+    # scan past the caller's external timeout, which killed the process with
+    # zero bytes on stdout and stderr
+    # (papercut-forge-pr-ledger-silent-empty-output). A repo that did not
+    # finish inside the budget is reported `unreadable`, so a partial, valid
+    # report always exists.
+    scan_budget = getattr(args, "scan_budget_sec", 0) or 0
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+    futures = [pool.submit(scan_repo, r, args, now) for r in repos]
+    done, pending = concurrent.futures.wait(futures, timeout=scan_budget if scan_budget > 0 else None)
+    results = []
+    for repo, fut in zip(repos, futures):
+        if fut in done:
+            results.append(fut.result())
+        else:
+            results.append((None, [], [{"repo": repo, "error": f"scan budget of {scan_budget}s exceeded"}]))
+    if pending:
+        report["scan_budget_exceeded"] = True
+        _scan_abandoned[0] = True
+        # Threads cannot be killed; main() leaves with os._exit after it prints.
+        pool.shutdown(wait=False, cancel_futures=True)
+    else:
+        pool.shutdown(wait=True)
     for repo_row, prs, unreadable in results:
         report["unreadable"].extend(unreadable)
         report["prs"].extend(prs)
@@ -1353,6 +1379,12 @@ def main() -> int:
         sp.add_argument("--root-causes-file", default=os.environ.get("LAST_STACK_PIPELINE_ROOT_CAUSES", str(DEFAULT_ROOT_CAUSES_FILE)),
                         help="TSV: repo, required context, root-cause papercut slug")
         sp.add_argument("--json", action="store_true", dest="json_out")
+        sp.add_argument(
+            "--scan-budget-sec", type=int,
+            default=int(os.environ.get("LAST_STACK_FORGE_LEDGER_SCAN_BUDGET_SEC", "75")),
+            help="stop reading repos after this many seconds and report the unfinished ones as unreadable "
+                 "instead of dying silently under an external timeout (0 = unbounded)",
+        )
         if name in ("reap-plan", "sync"):
             # Both loop once per stuck PR / tracked row making 2-4 SEQUENTIAL
             # subprocess calls (brain, kanban, forge-api), each individually
@@ -1400,6 +1432,21 @@ def main() -> int:
     mg.add_argument("--style", default="merge", choices=["merge", "rebase", "rebase-merge", "squash"])
     mg.add_argument("--json", action="store_true", dest="json_out")
     args = parser.parse_args()
+
+    def emit_and_die(signum: int, _frame: Any) -> None:
+        # An external timeout usually sends SIGTERM. Say so on both streams
+        # before dying: an empty output file reads as "the scan found nothing"
+        # (papercut-forge-pr-ledger-silent-empty-output).
+        name = signal.Signals(signum).name
+        env = {"error": f"terminated by {name} before the scan finished", "error_type": "Terminated",
+               "cmd": args.cmd, "prs": [], "unreadable": [], "plan_valid": False}
+        os.write(1, (json.dumps(env, sort_keys=True) + "\n").encode() if args.json_out
+                 else f"error: terminated by {name}\n".encode())
+        os.write(2, f"last-stack-pipeline-forge-pr-ledger: terminated by {name}\n".encode())
+        os._exit(128 + signum)
+
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, emit_and_die)
     try:
         report = {"scan": scan, "sync": sync, "reap-plan": reap_plan, "merge-green": merge_green}[args.cmd](args)
     except Exception as exc:  # noqa: BLE001 - any escape must still be parseable JSON, never a bare traceback
@@ -1428,9 +1475,13 @@ def main() -> int:
         if verdict in {"unreadable", "situations-blocked", "situations-unreadable"}:
             return 3
         return 1
-    if report["unreadable"] and not report["prs"]:
-        return 3
-    return 0
+    code = 3 if report.get("unreadable") and not report.get("prs") else 0
+    if _scan_abandoned[0]:
+        # Worker threads may still be inside forge-api calls; do not wait for them.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(code)
+    return code
 
 
 if __name__ == "__main__":

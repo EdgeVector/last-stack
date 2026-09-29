@@ -645,4 +645,30 @@ grep -Fq 'last-stack-pipeline-forge-pr-ledger" sync --apply' "$ROOT/routines/pip
   || { echo "FAIL pipeline-health.md must run the ledger"; exit 1; }
 echo "ok   pipeline-health.md runs the ledger"
 
+# 11. scan never ends silent (papercut-forge-pr-ledger-silent-empty-output):
+# a hung forge read hits --scan-budget-sec and still prints a valid envelope,
+# and SIGTERM prints a JSON error envelope plus a stderr line.
+cat >"$tmp/forge-hang" <<'SH'
+#!/usr/bin/env bash
+exec sleep 20
+SH
+chmod +x "$tmp/forge-hang"
+set +e
+LAST_STACK_FORGE_API="$tmp/forge-hang" "$LEDGER" scan --json --repo EdgeVector/hang --scan-budget-sec 1 >"$tmp/hang.json" 2>"$tmp/hang.err"
+rc=$?
+set -e
+[ -s "$tmp/hang.json" ] || { echo "FAIL hung scan produced zero bytes"; exit 1; }
+[ "$rc" = 3 ] || { echo "FAIL hung scan must exit 3, got $rc"; exit 1; }
+jq -e '.scan_budget_exceeded == true and (.unreadable | length) == 1' "$tmp/hang.json" >/dev/null \
+  || { echo "FAIL budget-exceeded scan must list the repo as unreadable"; cat "$tmp/hang.json"; exit 1; }
+LAST_STACK_FORGE_API="$tmp/forge-hang" "$LEDGER" scan --json --repo EdgeVector/hang --scan-budget-sec 0 >"$tmp/term.json" 2>"$tmp/term.err" &
+tpid=$!
+sleep 1.5
+kill -TERM "$tpid"
+set +e; wait "$tpid"; rc=$?; set -e
+[ "$rc" = 143 ] || { echo "FAIL SIGTERM exit must be 143, got $rc"; exit 1; }
+jq -e '.error_type == "Terminated"' "$tmp/term.json" >/dev/null || { echo "FAIL SIGTERM printed no JSON envelope"; exit 1; }
+[ -s "$tmp/term.err" ] || { echo "FAIL SIGTERM printed nothing on stderr"; exit 1; }
+echo "ok   a hung or killed scan still emits a JSON envelope"
+
 echo "PASS last-stack-pipeline-forge-pr-ledger"

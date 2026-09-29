@@ -378,6 +378,11 @@ retain its own checks between writes. Do not reuse a prior allow result.
 A missing command is a read-only probe, not permission for a later write.
 On refusal, record the reason in the existing papercut and leave the PR to its
 owner or its current CI run. Do not clear an assignee to make the guard pass.
+`reason=unbound-card` is permanent for a PR with no bound `doing` card (for example a
+papercut-resolver `kanban/<slug>` fix): do not re-run the guard on it every wake. The deny
+JSON carries a `recovery` field. For an intentionally unbound green PR use
+`last-stack-pipeline-forge-pr-ledger merge-green --repo <owner/repo> --pr <n> --arm --apply`
+(own Situations preflight); otherwise record the deny once and move on.
 Read-only diagnosis and auto-merge re-arm retain their existing rules.
 
 **Loom-owned PRs are hands-off.** Skip every action below, including the
