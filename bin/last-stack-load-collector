@@ -136,6 +136,33 @@ def host_sample():
     return h
 
 
+def status_vitals(buf):
+    """Compact node internals from the /api/status body. Never raises."""
+    try:
+        body = buf.split(b"\r\n\r\n", 1)[-1]
+        st = json.loads(body.decode("utf-8", "replace"))
+        st = st.get("status", st)
+        mb = st.get("memory_budget") or {}
+        qos = st.get("qos") or {}
+        uds = st.get("uds") or {}
+        sy = st.get("sync") or {}
+        return {
+            "fp_mb": int((st.get("phys_footprint_bytes") or 0) / 1048576),
+            "cpu": st.get("cpu_percent"),
+            "evict": mb.get("eviction_events"),
+            "gov": mb.get("governor_state"),
+            "slow_ms": mb.get("slowest_request_ms"),
+            "qos_in": qos.get("total_in_use"),
+            "sheds": (qos.get("bulk_sheds") or 0) + (qos.get("interactive_sheds") or 0),
+            "uds_in": uds.get("in_flight"),
+            "uds_rej": uds.get("queue_full_rejects"),
+            "sync": sy.get("state"),
+            "sync_why": sy.get("degraded_reasons"),
+        }
+    except Exception as e:  # a parse failure must not cost the sample
+        return {"error": type(e).__name__}
+
+
 def tap_status():
     """Direct UDS GET /api/status under one monotonic deadline."""
     t0 = time.monotonic()
@@ -167,6 +194,7 @@ def tap_status():
         res["http"] = code
         if code == 200:
             res.update(state="ok", reason="")
+            res["vitals"] = status_vitals(buf)
         elif code == 503:
             body = buf.split(b"\r\n\r\n", 1)[-1][:200].decode("utf-8", "replace")
             em = re.search(r'"error"\s*:\s*"([^"]+)"', body)
