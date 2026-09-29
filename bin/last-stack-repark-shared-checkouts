@@ -160,7 +160,11 @@ for d in */; do
     f=${line:3}
     case "$f" in .worktrees/*|.gstack/*|*.tmp|node_modules/*|target/*|*/target/*) continue;; esac
     [ -e "$d/$f" ] || continue
-    m=$(stat -f %m "$d/$f" 2>/dev/null) || continue
+    if stat --version >/dev/null 2>&1; then
+      m=$(stat -c %Y "$d/$f" 2>/dev/null) || continue
+    else
+      m=$(stat -f %m "$d/$f" 2>/dev/null) || continue
+    fi
     [ $((NOW - m)) -lt $RECENT_S ] && { recent="$f"; break; }
   done <<EOF
 $($GIT -C "$d" status --porcelain 2>/dev/null)

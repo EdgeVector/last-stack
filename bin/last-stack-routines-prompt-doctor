@@ -171,8 +171,13 @@ PY
     return $?
   fi
   local ia ib
-  ia="$(stat -f '%i' "$a" 2>/dev/null || stat -c '%i' "$a" 2>/dev/null || echo x)"
-  ib="$(stat -f '%i' "$b" 2>/dev/null || stat -c '%i' "$b" 2>/dev/null || echo y)"
+  if stat --version >/dev/null 2>&1; then
+    ia="$(stat -c '%i' "$a" 2>/dev/null || echo x)"
+    ib="$(stat -c '%i' "$b" 2>/dev/null || echo y)"
+  else
+    ia="$(stat -f '%i' "$a" 2>/dev/null || echo x)"
+    ib="$(stat -f '%i' "$b" 2>/dev/null || echo y)"
+  fi
   [ "$ia" = "$ib" ] && [ "$ia" != "x" ]
 }
 
