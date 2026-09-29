@@ -128,7 +128,11 @@ best_restorable_previous() {
     cand="versions/$(basename "$name")"
     [ "$cand" = "$current_rel" ] && continue
     is_restorable_local_safe_target "$install_root" "$cand" || continue
-    mtime="$(stat -f %m "$name" 2>/dev/null || stat -c %Y "$name" 2>/dev/null || echo 0)"
+    if stat --version >/dev/null 2>&1; then
+      mtime="$(stat -c %Y "$name" 2>/dev/null || echo 0)"
+    else
+      mtime="$(stat -f %m "$name" 2>/dev/null || echo 0)"
+    fi
     if [ -z "$best" ] || [ "$mtime" -ge "$best_mtime" ]; then
       best="$cand"
       best_mtime="$mtime"

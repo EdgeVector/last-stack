@@ -91,8 +91,13 @@ fi
 # 5) heartbeat freshness
 hb="${LAST_STACK_HEARTBEATS_PATH:-$HOME/.last-stack/logs/routine-heartbeats.log}"
 if [ -f "$hb" ]; then
-  # macOS stat
-  mtime=$(stat -f %m "$hb" 2>/dev/null || stat -c %Y "$hb" 2>/dev/null || echo 0)
+  # GNU stat accepts -f (filesystem status) and exits 0 with text, so pick the
+  # form by flavor instead of trying -f first.
+  if stat --version >/dev/null 2>&1; then
+    mtime=$(stat -c %Y "$hb" 2>/dev/null || echo 0)
+  else
+    mtime=$(stat -f %m "$hb" 2>/dev/null || echo 0)
+  fi
   now=$(date +%s)
   age=$(( now - mtime ))
   if [ "$age" -gt 1800 ]; then

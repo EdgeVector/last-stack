@@ -34,7 +34,11 @@ fi
 if [ ! -f "$hb" ]; then
   problems+=("missing heartbeats log: $hb")
 else
-  mtime=$(stat -f %m "$hb" 2>/dev/null || stat -c %Y "$hb" 2>/dev/null || echo 0)
+  if stat --version >/dev/null 2>&1; then
+    mtime=$(stat -c %Y "$hb" 2>/dev/null || echo 0)
+  else
+    mtime=$(stat -f %m "$hb" 2>/dev/null || echo 0)
+  fi
   now=$(date +%s)
   age=$(( now - mtime ))
   if [ "$age" -gt "$STALE_MAX_S" ]; then
