@@ -253,21 +253,20 @@ def fold_mirror() -> Path | None:
 
 
 def maybe_fetch_fold_main(mirror: Path) -> None:
-    """Best-effort refresh of fold main from local Forgejo (origin). Never fatal."""
+    """Best-effort refresh of fold main from GitHub (origin). Never fatal.
+
+    EdgeVector/fold is canonical on GitHub since 2026-09-29. Plain git reads it
+    through the gh credential helper; the Forgejo token wrapper must not be
+    used (it would send the Forgejo token to GitHub). Fetch into
+    refs/remotes/origin/main: a worktree can pin refs/heads/main and freeze it.
+    """
     if os.environ.get("LAST_STACK_CANARY_FETCH_MAIN", "1") != "1":
         return
-    forge_git = os.environ.get("LAST_STACK_FORGE_GIT", "last-stack-forge-git")
-    # Prefer forge-git so localhost:3300 auth works unattended.
-    cmd = [forge_git, "-C", str(mirror), "fetch", "origin", "refs/heads/main:refs/heads/main"]
-    proc = run(cmd, check=False)
-    if proc.returncode == 0:
-        return
-    # Plain git fallback (mirror may already be up to date / have creds).
-    run(["git", "-C", str(mirror), "fetch", "origin", "refs/heads/main:refs/heads/main"], check=False)
+    run(["git", "-C", str(mirror), "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"], check=False)
 
 
 def fold_main_oid() -> str:
-    """Full OID of fold main tip from the local Forge mirror (or override)."""
+    """Full OID of fold main tip from the local fold mirror (or override)."""
     override = os.environ.get("LAST_STACK_CANARY_MAIN_OID", "").strip()
     if override:
         return override
@@ -275,7 +274,7 @@ def fold_main_oid() -> str:
     if mirror is None:
         return ""
     maybe_fetch_fold_main(mirror)
-    for ref in ("refs/heads/main", "refs/remotes/origin/main"):
+    for ref in ("refs/remotes/origin/main", "refs/heads/main"):
         proc = run(["git", "-C", str(mirror), "rev-parse", ref], check=False)
         if proc.returncode == 0:
             oid = (proc.stdout or "").strip()

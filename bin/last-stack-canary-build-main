@@ -40,7 +40,6 @@ Env:
   LAST_STACK_CANARY_BUILDS_DIR      stage root (default ~/.local/state/last-stack/canary-builds)
   LAST_STACK_CANARY_BUILD_WORKDIR   checkout for cargo (default …/canary-build/fold-worktree)
   LAST_STACK_CANARY_FETCH_MAIN      1 (default) fetch origin main before resolve
-  LAST_STACK_FORGE_GIT              forge-git wrapper (default last-stack-forge-git)
   LAST_STACK_CANARY_CARGO_CMD       full cargo command override
   LAST_STACK_CANARY_BUILD_BIN_DIR   with --skip-build: dir with all three binaries
   LAST_STACK_CANARY_BUILD_KEEP      max staged OIDs to keep (default 5)
@@ -115,7 +114,6 @@ FOLD_MIRROR="${LAST_STACK_CANARY_FOLD_MIRROR:-$HOME_DIR/.cache/edgevector-git/fo
 BUILDS_DIR="${LAST_STACK_CANARY_BUILDS_DIR:-$HOME_DIR/.local/state/last-stack/canary-builds}"
 WORKDIR="${LAST_STACK_CANARY_BUILD_WORKDIR:-$HOME_DIR/.local/state/last-stack/canary-build/fold-worktree}"
 FETCH_MAIN="${LAST_STACK_CANARY_FETCH_MAIN:-1}"
-FORGE_GIT="${LAST_STACK_FORGE_GIT:-last-stack-forge-git}"
 KEEP="${LAST_STACK_CANARY_BUILD_KEEP:-5}"
 TARGET="${LAST_STACK_CANARY_TARGET:-aarch64-apple-darwin}"
 CARGO_CMD="${LAST_STACK_CANARY_CARGO_CMD:-cargo build --release -p lastdb_node --bin lastdb --bin lastdbd --bin lastdb_restore_probe}"
@@ -128,18 +126,19 @@ case ":$PATH:" in
   *) export PATH="$HOME_DIR/.cargo/bin:$PATH" ;;
 esac
 
-[ -d "$FOLD_MIRROR" ] || die "fold mirror not found: $FOLD_MIRROR (clone/fetch EdgeVector/fold from local Forge first)"
+[ -d "$FOLD_MIRROR" ] || die "fold mirror not found: $FOLD_MIRROR (clone/fetch EdgeVector/fold from GitHub first: cd ~/code/edgevector/fold && ./bin/wt fetch)"
 
+# EdgeVector/fold is canonical on GitHub since 2026-09-29 (brain
+# decision-2026-09-29-fold-venue-back-to-github); the mirror's origin is
+# GitHub. Plain git reads it through the gh credential helper. Do NOT use the
+# Forgejo token wrapper here: it would send the Forgejo token to GitHub.
+# Fetch into refs/remotes/origin/main: a registered worktree can pin
+# refs/heads/main and freeze it (the fetch then fails).
 maybe_fetch_main() {
   if [ "$FETCH_MAIN" != "1" ]; then
     return 0
   fi
-  if command -v "$FORGE_GIT" >/dev/null 2>&1; then
-    if "$FORGE_GIT" -C "$FOLD_MIRROR" fetch origin refs/heads/main:refs/heads/main 2>/dev/null; then
-      return 0
-    fi
-  fi
-  git -C "$FOLD_MIRROR" fetch origin refs/heads/main:refs/heads/main 2>/dev/null || true
+  git -C "$FOLD_MIRROR" fetch origin '+refs/heads/main:refs/remotes/origin/main' 2>/dev/null || true
 }
 
 resolve_main_oid() {
@@ -149,7 +148,7 @@ resolve_main_oid() {
   fi
   maybe_fetch_main
   local ref
-  for ref in refs/heads/main refs/remotes/origin/main; do
+  for ref in refs/remotes/origin/main refs/heads/main; do
     if git -C "$FOLD_MIRROR" rev-parse --verify -q "$ref^{commit}" >/dev/null 2>&1; then
       git -C "$FOLD_MIRROR" rev-parse "$ref"
       return 0
