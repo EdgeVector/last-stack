@@ -27,6 +27,7 @@ printf '#!/bin/sh\nprintf "  1. app=kanban verb=query count=90 avg=44ms p95=- ma
 chmod +x "$T/lastdb-hang" "$T/lastdb-ok"
 
 export LOAD_MON_ALERT_SWAP_MB=999999999 LOAD_MON_ALERT_LOAD1=999999 LOAD_MON_ALERT_HOG_PCT=999999
+export LOAD_MON_WRITES=0  # a fixture must not scan the real home; 6b turns it on for a temp root
 export LOAD_MON_NOTIFY=0 LOAD_MON_DEADLINE_SEC=1 LOAD_MON_DIR="$T/mon" LOAD_MON_SOCKET="$S/n.sock"
 [ "$LOAD_MON_NOTIFY" = "0" ] && [ "$LOAD_MON_DEADLINE_SEC" = "1" ] || { echo "test env must keep NOTIFY=0 (a fixture must never post to live Situations)" >&2; exit 1; }
 
@@ -125,6 +126,26 @@ jq -se 'any(.[]; .channel=="phone" and .rc==7)' "$T/mon/delivery.jsonl" >/dev/nu
 OUT="$("$BIN" report --minutes 5 --json)"
 [ "$(printf '%s' "$OUT" | jq -r '.node_states.busy')" = "3" ] || fail "report should count 3 busy passes"
 printf '%s' "$OUT" | jq -e '.cpu_by_process | length > 0' >/dev/null || fail "report needs CPU by process"
+
+# 6b. write-rate scan: first pass primes the marker, later passes count files written since
+mkdir -p "$T/wr/hot/a" "$T/wr/cold"
+export LOAD_MON_WRITE_ROOTS="$T/wr"
+"$BIN" writes
+sleep 1.1
+for i in 1 2 3; do echo x >"$T/wr/hot/a/f$i"; done
+echo y >"$T/wr/cold/g"
+"$BIN" writes
+wf() { tail -n 1 "$T/mon"/writes-*.jsonl | jq -r "$1"; }
+[ "$(wf '.roots["'"$T"'/wr"].n')" = "4" ] || fail "write scan should count 4 new files"
+[ "$(wf '.roots["'"$T"'/wr"].top[0][0]')" = "hot/a" ] || fail "busiest subdir should be hot/a"
+"$BIN" report --minutes 5 | grep -q "file writes/s by root" || fail "report should show writes/s"
+LOAD_MON_WRITE_ROOTS="/nonexistent-root-x" "$BIN" writes
+[ "$(wf '.roots["/nonexistent-root-x"].state')" = "skipped" ] || fail "missing root should be skipped, not fail"
+# sample never waits for the scan: a hanging find must not stretch the pass
+rm -f "$T/mon/.write-marker"; LOAD_MON_WRITES=1 LOAD_MON_WRITE_EVERY_SEC=0 "$BIN" sample
+[ "$(last_field .collector_ms)" -lt 3000 ] || fail "sample must not wait on the write scan"
+[ -e "$T/mon/.write-scan.lock" ] || [ -e "$T/mon/.write-marker" ] || fail "sample should start a detached scan"
+unset LOAD_MON_WRITE_ROOTS
 
 # 7. rotation deletes files past the retention window
 touch -t 202001010000 "$T/mon/load-20200101.jsonl"

@@ -442,7 +442,7 @@ def iso(t):
 
 def rotate(now):
     cutoff = now - RETAIN_DAYS * 86400
-    files = sorted(f for f in os.listdir(DIR) if re.fullmatch(r"load-\d{8}\.jsonl", f))
+    files = sorted(f for f in os.listdir(DIR) if re.fullmatch(r"(load|writes)-\d{8}\.jsonl", f))
     for f in list(files):
         p = os.path.join(DIR, f)
         if os.path.getmtime(p) < cutoff:
@@ -491,6 +491,85 @@ def log_error(e):
         pass
 
 
+WRITE_ROOTS = [r for r in os.environ.get("LOAD_MON_WRITE_ROOTS", ":".join(
+    os.path.join(HOME, x) for x in (".lastdb", ".fkanban/worktrees", ".local/state/last-stack",
+                                    ".routines", ".cache/edgevector-git"))).split(":") if r]
+WRITE_BUDGET = envf("LOAD_MON_WRITE_BUDGET_SEC", 60)  # whole detached scan, all roots
+WRITE_DEPTH = int(envf("LOAD_MON_WRITE_DEPTH", 7))
+WRITE_TOP = 3
+
+
+def write_sample(now):
+    """Files written per second under each hot root since the previous pass.
+
+    The answer to "who is feeding fseventsd" without root: every file write is
+    a filesystem event, so a root with a high rate is a candidate source.
+    `find -newer <marker>` gives an exact interval (no double count between
+    passes); the marker is replaced after the scan. Depth and time are bounded.
+    """
+    marker = os.path.join(DIR, ".write-marker")
+    nxt = marker + ".next"
+    with open(nxt, "w"):
+        pass
+    prev = os.path.getmtime(marker) if os.path.exists(marker) else None
+    out = {"interval_s": None if prev is None else round(now - prev, 1), "roots": {}}
+    deadline = time.monotonic() + WRITE_BUDGET
+    if prev is not None:
+        for root in WRITE_ROOTS:
+            left = deadline - time.monotonic()
+            if left <= 0 or not os.path.isdir(root):
+                out["roots"][root] = {"state": "skipped"}
+                continue
+            rc, txt = run(["find", root, "-maxdepth", str(WRITE_DEPTH), "-type", "f",
+                           "-newer", marker], min(left, 25))
+            if rc != 0 and not txt:
+                out["roots"][root] = {"state": "timeout" if rc is None else "error"}
+                continue
+            subs = {}
+            n = 0
+            for line in txt.splitlines():
+                n += 1
+                parts = line[len(root):].strip("/").split("/")
+                k = "/".join(parts[:3]) if len(parts) > 3 else "/".join(parts[:-1]) or "."
+                subs[k] = subs.get(k, 0) + 1
+            out["roots"][root] = {"n": n, "top": sorted(subs.items(), key=lambda x: -x[1])[:WRITE_TOP],
+                                  **({"partial": True} if rc is None else {})}
+    os.replace(nxt, marker)
+    return out
+
+
+WRITE_EVERY = envf("LOAD_MON_WRITE_EVERY_SEC", 300)
+
+
+def writes_pass():
+    """One scan, appended to writes-YYYYMMDD.jsonl. Run detached by sample()."""
+    os.makedirs(DIR, exist_ok=True)
+    now = time.time()
+    out = guarded(lambda: write_sample(now), {"roots": {}})
+    out["ts"] = iso(now)
+    day = dt.datetime.fromtimestamp(now, dt.timezone.utc).strftime("%Y%m%d")
+    with open(os.path.join(DIR, "writes-%s.jsonl" % day), "a") as f:
+        f.write(json.dumps(out, separators=(",", ":")) + "\n")
+
+
+def maybe_start_writes(now):
+    """Start a detached scan when the last one is old enough and none is running.
+
+    The scan walks the hot roots. Under swap pressure it can take many seconds,
+    so it must never sit on the sampling path (a monitor must cost less than
+    what it watches). The lock is a file whose mtime expires after 3 budgets.
+    """
+    lock = os.path.join(DIR, ".write-scan.lock")
+    marker = os.path.join(DIR, ".write-marker")
+    if os.path.exists(lock) and now - os.path.getmtime(lock) < WRITE_BUDGET * 3:
+        return
+    if os.path.exists(marker) and now - os.path.getmtime(marker) < WRITE_EVERY:
+        return
+    with open(lock, "w"):
+        pass
+    detach(["/bin/sh", "-c", 'python3 "$0" writes; rm -f "$1"', os.path.abspath(__file__), lock])
+
+
 def sample():
     os.makedirs(DIR, exist_ok=True)
     t0 = time.monotonic()
@@ -503,6 +582,8 @@ def sample():
     with open(os.path.join(DIR, "load-%s.jsonl" % day), "a") as f:
         f.write(json.dumps(rec, separators=(",", ":")) + "\n")
     evaluate_alerts(rec, now)
+    if os.environ.get("LOAD_MON_WRITES", "1") != "0":
+        guarded(lambda: maybe_start_writes(now), {})
     rotate(now)
 
 
@@ -544,6 +625,50 @@ def read_delivery(minutes):
     except OSError:
         pass
     return res
+
+
+def read_writes(minutes):
+    cutoff = time.time() - minutes * 60
+    recs = []
+    for f in sorted(x for x in os.listdir(DIR) if re.fullmatch(r"writes-\d{8}\.jsonl", x)) if os.path.isdir(DIR) else []:
+        try:
+            with open(os.path.join(DIR, f)) as fh:
+                for line in fh:
+                    try:
+                        r = json.loads(line)
+                        t = dt.datetime.strptime(r["ts"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc).timestamp()
+                    except (ValueError, KeyError):
+                        continue
+                    if t >= cutoff:
+                        recs.append(r)
+        except OSError:
+            continue
+    return recs
+
+
+def write_report(recs):
+    """Files/s per root over the window, with the busiest subdirectories."""
+    secs = 0.0
+    tot = {}
+    for r in recs:
+        w = r
+        roots = w.get("roots") or {}
+        if not w.get("interval_s") or not any("n" in v for v in roots.values()):
+            continue
+        secs += w["interval_s"]
+        for root, v in roots.items():
+            if "n" not in v:
+                continue
+            t = tot.setdefault(root, {"n": 0, "subs": {}})
+            t["n"] += v["n"]
+            for k, c in v.get("top", []):
+                t["subs"][k] = t["subs"].get(k, 0) + c
+    if not secs:
+        return None
+    rows = [[root, round(t["n"] / secs, 2), sorted(t["subs"].items(), key=lambda x: -x[1])[:WRITE_TOP]]
+            for root, t in tot.items()]
+    rows.sort(key=lambda x: -x[1])
+    return {"seconds": int(secs), "roots": rows}
 
 
 def report(minutes, as_json):
@@ -605,6 +730,7 @@ def report(minutes, as_json):
             "rp_age_s_max": max([x["rp_age_s"] for x in vs if x.get("rp_age_s") is not None] or [None], key=lambda v: -1 if v is None else v),
         }
     out["delivery"] = read_delivery(minutes)
+    out["writes"] = write_report(read_writes(minutes))
     if as_json:
         print(json.dumps(out, indent=1))
         return
@@ -615,6 +741,10 @@ def report(minutes, as_json):
     if "vitals" in out:
         print("node vitals: %s" % json.dumps(out["vitals"], sort_keys=True))
     print("alert delivery: %s" % (json.dumps(out["delivery"], sort_keys=True) if out["delivery"] else "none in window"))
+    if out.get("writes"):
+        print("file writes/s by root (fs-event sources, %ds):" % out["writes"]["seconds"])
+        for root, rate, top in out["writes"]["roots"]:
+            print("  %-44s %8.2f  %s" % (root.replace(HOME, "~"), rate, " ".join("%s=%d" % (k, c) for k, c in top)))
     print("host CPU by process (avg%, max%):")
     for name, avg, mx in out["cpu_by_process"]:
         print("  %-28s %6.1f %6.1f" % (name, avg, mx))
@@ -627,12 +757,19 @@ def main():
     ap = argparse.ArgumentParser(prog="last-stack-load-collector")
     sub = ap.add_subparsers(dest="cmd")
     sub.add_parser("sample")
+    sub.add_parser("writes")  # one file-write-rate scan; sample starts this detached
     rp = sub.add_parser("report")
     rp.add_argument("--minutes", type=int, default=60)
     rp.add_argument("--json", action="store_true")
     a = ap.parse_args()
     if a.cmd == "report":
         report(a.minutes, a.json)
+        return 0
+    if a.cmd == "writes":
+        try:
+            writes_pass()
+        except Exception as e:
+            log_error(e)
         return 0
     try:
         sample()
