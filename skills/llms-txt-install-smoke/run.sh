@@ -325,6 +325,14 @@ if [ -n "$LASTDBD_BIN" ]; then
   LASTDBD_BUILD="${LASTDBD_VERSION#lastdbd }"
   live "lastdbd: $LASTDBD_BIN (${LASTDBD_VERSION:-version unknown})"
 fi
+# The verdict JSON carries the build and its source oid on RED as well as GREEN
+# (phase 1 of registry-proof-in-github-ci printed them on GREEN only, so a RED
+# record could not say which build it judged). The oid comes from the candidate
+# set's lastdb.oid; empty when the set has none.
+LASTDB_OID=""
+if [ -n "$SMOKE_CANDIDATE_SET" ] && [ -f "$SMOKE_CANDIDATE_SET" ]; then
+  LASTDB_OID="$(jq -r '.lastdb.oid // ""' "$SMOKE_CANDIDATE_SET" 2>/dev/null || true)"
+fi
 # A candidate set (last-stack-canary-candidate-set) pins every app commit so
 # the pair that is proved is the pair the registry row records.
 if [ -n "$SMOKE_CANDIDATE_SET" ]; then
@@ -652,13 +660,13 @@ echo "=========================================="
 if [ "${#FAILS[@]}" -eq 0 ]; then
   echo "VERDICT: GREEN" >&2
   emit_status "VERDICT: GREEN"
-  emit_json '{"verdict":"GREEN","sandbox":"%s","pass":%d,"lastdb_build":"%s","candidate_set":"%s","proved_at":"%s"}\n' \
-    "$FRESH_ROOT" "${#PASS[@]}" "$LASTDBD_BUILD" "$SMOKE_CANDIDATE_SET" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  emit_json '{"verdict":"GREEN","sandbox":"%s","pass":%d,"lastdb_build":"%s","lastdb_oid":"%s","candidate_set":"%s","proved_at":"%s"}\n' \
+    "$FRESH_ROOT" "${#PASS[@]}" "$LASTDBD_BUILD" "$LASTDB_OID" "$SMOKE_CANDIDATE_SET" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   exit 0
 else
   FAIL_STEPS="$(fail_steps_summary "${FAILS[@]}")"
   echo "VERDICT: RED ${FAIL_STEPS}" >&2
   emit_status "VERDICT: RED ${FAIL_STEPS}"
-  emit_json '{"verdict":"RED","sandbox":"%s","steps":"%s","fails":%s}\n' "$FRESH_ROOT" "$FAIL_STEPS" "$(printf '%s\n' "${FAILS[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')"
+  emit_json '{"verdict":"RED","sandbox":"%s","steps":"%s","lastdb_build":"%s","lastdb_oid":"%s","candidate_set":"%s","proved_at":"%s","fails":%s}\n' "$FRESH_ROOT" "$FAIL_STEPS" "$LASTDBD_BUILD" "$LASTDB_OID" "$SMOKE_CANDIDATE_SET" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(printf '%s\n' "${FAILS[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')"
   exit 1
 fi

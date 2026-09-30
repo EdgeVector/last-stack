@@ -128,7 +128,14 @@ run_bounded() {
 
   "$@" &
   local cmd_pid=$!
+  # The watchdog must not hold the caller's stdout/stderr. `x=$(run_bounded ...)`
+  # reads until EVERY writer of the pipe closes, and killing this subshell leaves
+  # its `sleep` child alive with the inherited pipe: the substitution then waits
+  # the whole bound after a command that finished at once. Measured 2026-09-30 on
+  # the GitHub macOS runner (no gtimeout): `brain get` took 200 s and `brain ask`
+  # plus `brain search` 401 s, all three equal to the scaled bound, not the work.
   (
+    exec >/dev/null 2>&1
     sleep "$secs"
     kill -0 "$cmd_pid" 2>/dev/null || exit 0
     : >"$sentinel"
@@ -139,6 +146,7 @@ run_bounded() {
   local watchdog_pid=$!
 
   wait "$cmd_pid" || rc=$?
+  pkill -TERM -P "$watchdog_pid" 2>/dev/null || true
   kill -TERM "$watchdog_pid" 2>/dev/null || true
   wait "$watchdog_pid" 2>/dev/null || true
 

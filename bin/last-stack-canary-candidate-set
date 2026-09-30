@@ -126,8 +126,32 @@ def lastdbd_build(bin_path: Path) -> str:
     return ""
 
 
-def lastdb_oid_from_manifest(bin_path: Path) -> str:
-    for candidate in (bin_path.parent / "manifest.json", bin_path.parent.parent / "manifest.json"):
+def build_abbrev(build: str) -> str:
+    """The `g<hex>` tail of a `git describe --long` build string, hex only.
+
+    `0.23.3-2378-gbe41e547e` -> `be41e547e`. Empty for a build with no tail."""
+    tail = build.rsplit("-g", 1)
+    if len(tail) == 2 and tail[1] and all(c in "0123456789abcdef" for c in tail[1]):
+        return tail[1]
+    return ""
+
+
+def check_oid_matches_build(oid: str, build: str) -> None:
+    """A recorded oid must be a full 40-hex id that the build string names.
+
+    `git describe --abbrev=9` puts the first nine hex digits of the source oid
+    in the build, so an oid that does not start with them names another commit.
+    Exits 2 on a mismatch so a row never pairs a build with the wrong source."""
+    if len(oid) != 40 or any(c not in "0123456789abcdef" for c in oid):
+        die(f"lastdb oid {oid!r} is not a 40-hex git oid", 2)
+    abbrev = build_abbrev(build)
+    if abbrev and not oid.startswith(abbrev):
+        die(f"lastdb oid {oid} does not match build {build} (build names {abbrev})", 2)
+
+
+def lastdb_oid_from_manifest(bin_path: Path, manifest: Path | None = None) -> str:
+    candidates = [manifest] if manifest else [bin_path.parent / "manifest.json", bin_path.parent.parent / "manifest.json"]
+    for candidate in candidates:
         if candidate.is_file():
             try:
                 data = json.loads(candidate.read_text(encoding="utf-8"))
@@ -249,6 +273,12 @@ def main(argv: list[str]) -> int:
         help="where each app's source is read: auto (github when the app has one, then "
         "forge), github, or forge (the frozen copy)",
     )
+    parser.add_argument("--lastdb-oid", default="",
+                        help="full 40-hex source oid of the lastdb build (a built binary: the fold "
+                        "commit that was checked out). Checked against the build string.")
+    parser.add_argument("--lastdb-manifest", type=Path, default=None,
+                        help="release manifest.json whose source_git_oid names the build "
+                        "(a release tarball; default: manifest.json next to the binary)")
     parser.add_argument("--cache-root", type=Path, default=DEFAULT_CACHE_ROOT)
     parser.add_argument("--no-version-lookup", action="store_true", help="skip the package.json fetch; versions read 0.0.0")
     parser.add_argument("--no-source-probe", action="store_true",
@@ -277,7 +307,14 @@ def main(argv: list[str]) -> int:
             die(f"--only names unknown app {wanted!r}", 2)
 
     build = lastdbd_build(args.lastdbd)
-    oid = lastdb_oid_from_manifest(args.lastdbd)
+    oid, oid_source = "", ""
+    if args.lastdb_oid:
+        oid, oid_source = args.lastdb_oid.strip().lower(), "flag"
+    else:
+        oid = lastdb_oid_from_manifest(args.lastdbd, args.lastdb_manifest)
+        oid_source = "manifest" if oid else ""
+    if oid:
+        check_oid_matches_build(oid, build)
     apps_out: dict[str, dict] = {}
     missing: list[str] = []
     unreachable: list[str] = []
@@ -348,7 +385,7 @@ def main(argv: list[str]) -> int:
 
     candidate_set = {
         "created_at": utc_now(),
-        "lastdb": {"build": build, "oid": oid, "bin": str(args.lastdbd)},
+        "lastdb": {"build": build, "oid": oid, "oid_source": oid_source, "bin": str(args.lastdbd)},
         "apps": apps_out,
     }
     out = args.out or (args.out_root / f"{build}.json")
