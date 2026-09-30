@@ -45,6 +45,9 @@ Env (defaults):
   LOAD_MON_NOTIFY         1      0 = no osascript notification, no Situations
   LOAD_MON_PHONE          =NOTIFY  1 = push to Tom's phone with `ra notify` (Telegram, no LastDB)
   LOAD_MON_RA             ~/.local/bin/ra
+  LOAD_MON_SENTRY         =NOTIFY  1 = send each alert to Sentry (lastdb-mini DSN cached in $DIR/.sentry-dsn)
+  LOAD_MON_SENTRY_DSN     -      DSN override (skips the cache file and lastsecrets)
+  LOAD_MON_CURL           /usr/bin/curl
   LOAD_MON_LASTDB         lastdb  CLI used for `ops --by-app`
 """
 
@@ -60,6 +63,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 
 HOME = os.path.expanduser("~")
 DIR = os.environ.get("LOAD_MON_DIR", os.path.join(HOME, ".local/state/last-stack/load-monitor"))
@@ -93,6 +97,10 @@ COOLDOWN = envf("LOAD_MON_ALERT_COOLDOWN_SEC", 1800)
 NOTIFY = os.environ.get("LOAD_MON_NOTIFY", "1") != "0"
 PHONE = os.environ.get("LOAD_MON_PHONE", "1" if NOTIFY else "0") != "0"
 RA = os.environ.get("LOAD_MON_RA", os.path.join(HOME, ".local/bin/ra"))
+SENTRY = os.environ.get("LOAD_MON_SENTRY", "1" if NOTIFY else "0") != "0"
+CURL = os.environ.get("LOAD_MON_CURL", "/usr/bin/curl")
+DSN_SLUG = "obs-sentry-dsn-lastdb-mini"
+DSN_TTL = 86400
 
 OPS_RE = re.compile(
     r"app=(\S+) verb=(\S+) count=(\d+) avg=(\d+)ms .*?max=(\d+)ms err=(\d+)"
@@ -291,6 +299,59 @@ def detach(argv):
         pass
 
 
+def sentry_dsn(now):
+    """Return the cached DSN. A stale or missing cache starts a detached refresh.
+
+    The main path reads a file only. `lastsecrets` reads LastDB, so it runs
+    detached with a deadline and can never delay a sample or an alert.
+    """
+    dsn = os.environ.get("LOAD_MON_SENTRY_DSN")
+    if dsn:
+        return dsn
+    path = os.path.join(DIR, ".sentry-dsn")
+    try:
+        with open(path) as f:
+            dsn = f.read().strip()
+        age = now - os.path.getmtime(path)
+    except OSError:
+        dsn, age = "", DSN_TTL + 1
+    if age > DSN_TTL:
+        ls = os.path.join(HOME, ".local/bin/lastsecrets")
+        if os.access(ls, os.X_OK):
+            tmp = path + ".tmp"
+            detach(["/bin/sh", "-c",
+                    'umask 077; env -u OBS_SENTRY_DSN /usr/bin/perl -e "alarm 20; exec @ARGV" "$0" get "$1" >"$2" '
+                    '&& grep -q "^https://" "$2" && mv "$2" "$3"; rm -f "$2"',
+                    ls, DSN_SLUG, tmp, path])
+    return dsn if dsn.startswith("http") else ""
+
+
+def sentry_event(name, msg, now):
+    """POST one envelope with curl, detached, 10 s cap. Reads no LastDB state."""
+    dsn = sentry_dsn(now)
+    m = re.fullmatch(r"(https?)://([^@/]+)@([^/]+)/(\d+)", dsn)
+    if not m:
+        return
+    scheme, key, host, project = m.groups()
+    eid = uuid.uuid4().hex
+    ev = {"event_id": eid, "timestamp": now, "level": "warning", "platform": "python",
+          "logger": "last-stack-load-collector", "message": msg,
+          "fingerprint": ["lastdb-load", name], "tags": {"alert": name, "component": "load-collector"},
+          "server_name": socket.gethostname()}
+    body = "\n".join([json.dumps({"event_id": eid, "dsn": dsn}), json.dumps({"type": "event"}),
+                      json.dumps(ev)]) + "\n"
+    f = os.path.join(DIR, ".sentry-envelope-%s.json" % eid)
+    try:
+        with open(f, "w") as fh:
+            fh.write(body)
+    except OSError:
+        return
+    detach(["/bin/sh", "-c", '"$@"; rm -f "$0"', f, CURL, "-sS", "--max-time", "10", "-X", "POST", "--data-binary", "@" + f,
+            "-H", "Content-Type: application/x-sentry-envelope",
+            "-H", "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=%s, sentry_client=load-collector/1" % key,
+            "%s://%s/api/%s/envelope/" % (scheme, host, project)])
+
+
 def fire(name, msg, now):
     rec = {"ts": iso(now), "alert": name, "message": msg}
     with open(os.path.join(DIR, "alerts.jsonl"), "a") as f:
@@ -298,6 +359,11 @@ def fire(name, msg, now):
     if PHONE and os.access(RA, os.X_OK):  # Telegram push; reads no LastDB state
         detach(["/usr/bin/perl", "-e", "alarm 15; exec @ARGV", RA, "notify",
                 "LastDB load: " + msg, "--priority", "high"])
+    if SENTRY:
+        try:
+            sentry_event(name, msg, now)
+        except Exception:  # an alert path must never cost the sample
+            pass
     if not NOTIFY:
         return
     script = 'display notification %s with title "LastDB load" sound name "Basso"' % json.dumps(msg)
