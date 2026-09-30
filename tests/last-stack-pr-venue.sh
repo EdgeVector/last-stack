@@ -89,7 +89,8 @@ test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo")" = "lastg
 test "$("$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo")" = "lastgit/main"
 
 rm "$repo/.last-stack/pr-venue"
-test "$(LAST_STACK_LASTGIT_ENABLED=1 LAST_STACK_LASTGIT_NATIVE_REPOS="EdgeVector/last-stack EdgeVector/other" "$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo")" = "lastgit"
+# LastGit is retired: even LAST_STACK_LASTGIT_ENABLED=1 with a native list cannot bring it back.
+test "$(LAST_STACK_LASTGIT_ENABLED=1 LAST_STACK_LASTGIT_NATIVE_REPOS="EdgeVector/last-stack EdgeVector/other" "$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo")" = "github"
 
 printf '%s\n' "not-a-venue" > "$repo/.last-stack/pr-venue"
 if "$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo" >/dev/null 2>"$tmp/bad.err"; then

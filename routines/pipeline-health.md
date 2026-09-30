@@ -11,8 +11,7 @@ so nothing silently rots:
 1. **Open PRs** — every repo in `config/merge-demand-github-repos` (all moved
    repos, read through `gh`) and `config/merge-demand-forge-repos` (only
    `lastgit`, on Forgejo), read by `last-stack-pipeline-forge-pr-ledger`.
-2. **LastGit CRs** — retired. Read nothing unless
-   `LAST_STACK_LASTGIT_NATIVE_REPOS` names a repo (see the LastGit section).
+2. **LastGit CRs** — retired. Read nothing (see the LastGit section).
 3. **Post-merge deploy-pipeline** — every
    `~/.lastgit/deploy-*/deploy.log` (exemem-infra, schema-infra, …). A red or
    stuck deploy after main lands is a **pipeline block**, not a background
@@ -70,10 +69,8 @@ Scheduled runs use `last-stack-pipeline-health-gate` before the full agent.
 That gate calls `last-stack-merge-demand-gate`. Quiet open-PR and deploy
 inventories skip. There is no hourly deep-pulse proceed.
 
-LastGit is opt-in (`LAST_STACK_LASTGIT_NATIVE_REPOS`). An empty list is
-LastGit-disabled. Then lastgit-missing, unreadable, json-invalid, and
-index-drift are quiet. A stuck row with `cr_not_found` is a ghost and is
-not demand. Do not treat `lastgit cr list --all-open` as demand.
+LastGit is retired. It is never demand: run no `lastgit` command, and a stuck
+row with `cr_not_found` is a ghost.
 
 Aged open PRs on the merge-demand lists and blocked deploys still proceed. The
 default lists are `config/merge-demand-github-repos` (every moved repo) and
@@ -257,11 +254,10 @@ primary node, so every LastGit inventory read (`lastgit stuck`, `lastgit cr
 list --all-open`, `lastgit landed`, `lastgit list`) fails with a missing-schema
 error. That failure is not a pipeline block and not a papercut.
 
-- When `LAST_STACK_LASTGIT_NATIVE_REPOS` is empty (the default), run NO
-  `lastgit` command. Heartbeat `open_cr=disabled not_landed=disabled`.
+- Run NO `lastgit` command. Heartbeat `open_cr=disabled not_landed=disabled`.
 - Do not file or append `papercut-pipeline-stuck-merges-<repo>` rows for
-  Forgejo PRs. `last-stack-pipeline-stuck-papercut-file` is the LastGit-only
-  filer; it names "LastGit CRs" in its title and must not carry Forgejo data.
+  a PR. `last-stack-pipeline-stuck-papercut-file` is a retired no-op (exit 0,
+  writes nothing); the PR ledger below files one row per PR.
 - LastGit is retired (2026-09-30). Do not run LastGit CI-coverage or
   stuck-merge heal helpers; they were removed. Escalate a stuck merge with
   `last-stack-pipeline-stuck-papercut-file`.

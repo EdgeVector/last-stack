@@ -942,7 +942,7 @@ fi
 # (pickup write-guard poison — papercut-stuck-merge-cards-block-pickup).
 merge_babysit="$ROOT/routines/merge-babysit.md"
 grep -q 'papercut-pipeline-stuck-cr-' "$merge_babysit"
-grep -q 'last-stack-pipeline-stuck-papercut-file' "$merge_babysit"
+grep -q 'last-stack-pipeline-forge-pr-ledger sync --apply' "$merge_babysit"
 grep -q 'last-stack-park-stuck-merge-poison-cards' "$merge_babysit"
 grep -q 'preference-always-file-papercuts-in-brain' "$merge_babysit"
 grep -q 'Escalate the rest as Brain papercuts' "$merge_babysit"
