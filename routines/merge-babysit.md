@@ -60,7 +60,7 @@ Before declaring this wake an error, classify unavailable shared transport:
 If the first posture or board read hits one of those signals before any PR set
 is determined, this is transient shared backpressure, not a merge-babysit
 failure. Do not run doctor/init, do not restart LastDB, do not mutate PRs or
-cards, and exit after reporting a `noop` with a busy-node reason:
+cards, and exit after reporting a `noop` with a busy-node/backend-unreachable reason:
 
 ```
 merge-babysit <ISO> noop stuck=unknown fixed=0 filed=0 reasons=busy-node flagged=backend-unreachable
