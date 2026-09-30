@@ -575,8 +575,8 @@
       "install_mode": "artifact",
       "kind": "artifact cli",
       "command": "routines",
-      "gate": "forgejo",
-      "gate_main": "http://localhost:3300/EdgeVector/routines.git#main",
+      "gate": "github",
+      "gate_main": "https://github.com/EdgeVector/routines.git#main",
       "artifact_app": "routines",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -603,8 +603,7 @@
           "target": "$HOME/.local/bin/routines-llms-txt-install-smoke-gate"
         }
       ],
-      "notes": "Gate of record is Forgejo since 2026-09-05 (brain decision-2026-09-05-factory-repos-venue-back-to-forgejo); lastdb:///routines is disabled. The Forge CI publish job on every push to main builds the artifact, publishes it into artifact_root and promotes stable with `lastgit artifact promote --gate forgejo` (EdgeVector/lastgit#591). track_gate_main is false on purpose: the node's ref for this repo no longer moves, and promote-to-main from a frozen LastGit tip would roll the channel back. host-track follows the stable channel head. Routines LastGit artifact install from CI-published dist/routines; track_gate_main promotes stable to green+published main. post_install reloads the LaunchAgent so current and routinesd stay on the same digest. The zero-LLM gate scripts ship at dist/probes/*.sh and get PATH names here, so routinesd gate_command entries resolve to a file the artifact contains. links[] is a literal enumeration - host-track does not glob dist/probes - so a probe added in the routines repo gets NO PATH name until it is listed here. The failure is silent: the file installs, no link appears, and a registry gate_command naming it exits 127. llms-txt-install-smoke-gate.sh shipped 2026-08-30T06:20Z and sat unlinked until 2026-08-30T15:10Z; that gap was read as a forgotten entry, and a second mechanism produces the identical gap with the entry present and correct in the same commit, so do not assume an authoring mistake. When you add a probe to the routines repo, add its link entry here in the same change.",
-      "track_gate_main": false,
+      "notes": "Gate of record is GitHub EdgeVector/routines since 2026-09-30 (brain decision-2026-09-29-retire-lastgit-all-repos-to-github); the LastGit and Forgejo copies are frozen. The ci-required workflow's publish job builds dist/routines and dist/probes on a macOS runner and uploads the Actions artifact ht-artifact-<sha>; host-track refresh runs last-stack-github-artifact-pull, which checks the ci-required check run and every digest and then promotes stable in the artifact CAS. track_gate_main is unset, so host-track follows green published GitHub main. post_install reloads the LaunchAgent so current and routinesd stay on the same digest. The zero-LLM gate scripts ship at dist/probes/*.sh and get PATH names here, so routinesd gate_command entries resolve to a file the artifact contains. links[] is a literal enumeration - host-track does not glob dist/probes - so a probe added in the routines repo gets NO PATH name until it is listed here. The failure is silent: the file installs, no link appears, and a registry gate_command naming it exits 127. llms-txt-install-smoke-gate.sh shipped 2026-08-30T06:20Z and sat unlinked until 2026-08-30T15:10Z; that gap was read as a forgotten entry, and a second mechanism produces the identical gap with the entry present and correct in the same commit, so do not assume an authoring mistake. When you add a probe to the routines repo, add its link entry here in the same change.",
       "post_install": "$HOME/.local/state/last-stack/artifacts/current/bin/last-stack-routines-host-track-post-install",
       "safe_upgrade": {
         "soak_hours": 1,
@@ -633,7 +632,9 @@
         "configurations",
         "lastdbd",
         "brain"
-      ]
+      ],
+      "gate_remote": "https://github.com/EdgeVector/routines.git",
+      "gate_ref": "refs/heads/main"
     },
     {
       "app": "lastsecrets",
