@@ -32,31 +32,30 @@ include **realpaths** under `~/.local/state/last-stack`, not only `~/.last-stack
 For long-running agent work, prefer installed global CLIs over binaries from a
 random WIP checkout. Source `last-stack-shell-prelude` or otherwise ensure
 `~/.local/bin` is ahead of ad-hoc repo paths; host-track-managed installs live
-there. When `brain`, `kanban`, `situations`, `lastgit`, or another shared CLI
+there. When `brain`, `kanban`, `situations`, or another shared CLI
 misbehaves, first run `host-track status` when available and `command -v <cmd>`.
-Use `<cmd> which` only when that CLI documents the subcommand, such as `lastgit which`.
+Use `<cmd> which` only when that CLI documents the subcommand.
 Routines and Loom do not implement `which`. Check the installed path before
 you change PATH or use a checkout-local binary.
 
-### New repository venue default: Forgejo (won't-undo — 2026-09-06)
+### Repository venue: GitHub (Tom, 2026-09-29; supersedes the Forgejo and LastGit defaults)
 
-Create new repositories on the local Forgejo forge first:
-`http://localhost:3300/EdgeVector/<slug>` is the canonical remote and the gate
-of record. Commit `.last-stack/pr-venue` with `forgejo` on its first line, add
-`.forgejo/workflows/ci.yml` whose `ci-required` job runs `.lastgit/ci.sh` on
-the `macos-arm64` host lane, and protect `main` with the required context
-`Forge CI / ci-required (pull_request)`. Open PRs with `last-stack-forge-api`
-(`sop-forge-pr-workflow`). Do not create a LastGit repo (`lastdb:///<slug>`),
-and do not create a GitHub source repository unless the repository is
-explicitly public or a mirror is part of the request.
+Tom retired LastGit and moved every EdgeVector repo except `lastgit` to GitHub
+(brain `decision-2026-09-29-retire-lastgit-all-repos-to-github`, playbook
+`sop-migrate-repo-to-github`). Create new repositories on GitHub under
+`EdgeVector/<slug>`. Commit `.last-stack/pr-venue` with `github` on its first
+line. Add `.github/workflows/ci-required.yml` with a required `ci-required`
+job, and protect `main` with that check. Open PRs with `gh pr create`. Arm
+merge with `gh pr merge <n> -R EdgeVector/<repo> --auto --squash`. If GraphQL
+returns a 502, use
+`gh api -X PUT repos/EdgeVector/<repo>/pulls/<n>/merge -f merge_method=squash`.
 
-LastGit is not a default for any repository (Tom, 2026-09-06). Every
-EdgeVector repo moved its gate of record to Forgejo on 2026-09-05/06 and its
-LastGit repo is disabled: brain
-`decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default`. Do not run
-`lastgit cr create` and do not push to any `lastdb:///<slug>` remote.
-`last-stack-pr-venue` answers `forgejo` for every EdgeVector repo that is not
-a listed GitHub primary; LastGit routing is explicit opt-in only.
+Only `EdgeVector/lastgit` stays on the local Forgejo forge. For that repo,
+use `last-stack-forge-api` (`sop-forge-pr-workflow`). Do not run
+`lastgit cr create` and do not push to any `lastdb:///<slug>` remote: LastGit
+is retired. `last-stack-pr-venue` is the only authority: run
+`last-stack-pr-venue EdgeVector/<repo> <repo-root>` before any PR, push, or
+merge.
 
 ### Transport: the unix socket, NOT TCP — a `:9001` failure is NOT an outage
 

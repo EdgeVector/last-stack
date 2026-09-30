@@ -67,21 +67,21 @@ re-running that proof independently.
 
 ## Venue check (do this FIRST)
 
-Resolve the PR venue, then preflight loom. github, forgejo, and lastgit all
-take the factory path when `loom ping` succeeds. Fold stays Forgejo; do not
-send it back to GitHub. New repos stay LastGit.
+Resolve the PR venue, then preflight loom. github and forgejo both take the
+factory path when `loom ping` succeeds. Every repo except `EdgeVector/lastgit`
+is on GitHub (LastGit retired 2026-09-30). New repos start on GitHub.
 
 ```bash
-last-stack-pr-venue <owner/repo> <repo-root>   # github | forgejo | lastgit
+last-stack-pr-venue <owner/repo> <repo-root>   # github | forgejo
 loom ping                        # node reachable
 ```
 
-- `github`, `forgejo`, `lastgit` → factory path (this skill, below).
+- `github`, `forgejo` → factory path (this skill, below).
 - Per-venue CI and merge after each slice:
-  - github: `gh pr checks` then auto-merge
-  - forgejo: required context `Forge CI / ci-required`, then
+  - github: `gh pr checks` (required `ci-required`), then
+    `gh pr merge <n> -R <repo> --auto --squash`
+  - forgejo (`lastgit` repo only): required context `Forge CI / ci-required`, then
     `merge_when_checks_succeed`
-  - lastgit: `lastgit cr complete --once` after `ci-required`
 - If loom is missing or the node is down, use the legacy fallback and say so.
   Venue is not a reason to skip the factory.
 
@@ -195,7 +195,7 @@ it:
 
 1. Run `proof_command` yourself against the live surface — paste the result.
 2. Confirm the merged PR(s) exist (`context.slice_results`; github
-   `gh pr view`, forgejo `last-stack-forge-api`, lastgit `lastgit cr view`).
+   `gh pr view`, forgejo `last-stack-forge-api`).
 3. Confirm the graph's own closeout record exists:
    `brain get closeout-loom-<execution-id-lowercased>`.
 
@@ -210,7 +210,7 @@ you gave up instead: how far, what blocks, and the smallest decision needed.
 3. Match the surrounding code.
 4. Dev/ephemeral over prod — never touch prod while a plan is in flight.
 5. Proper fix over quick patch. A defect the walk exposes in the factory
-   itself gets fixed and merged (loom repo, venue lastgit), papercut filed —
+   itself gets fixed and merged (loom repo, venue github), papercut filed —
    the factory debugging itself is normal operation.
 6. Only the gate breaks silence.
 
@@ -229,7 +229,7 @@ you gave up instead: how far, what blocks, and the smallest decision needed.
 ## Legacy fallback — North Star → milestone → cards
 
 Use ONLY when loom is genuinely unavailable (missing binary or node down).
-Do not use this because the repo venue is forgejo or lastgit — ship-slice is
+Do not use this because the repo venue is forgejo — ship-slice is
 venue-aware. The flow is the pre-factory pipeline; its SOP of record is brain
 `sop-feature-ship-loop`:
 

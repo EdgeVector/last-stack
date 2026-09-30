@@ -57,14 +57,12 @@ route_json="$("$last_stack/bin/last-stack-pr-venue" --json <owner>/<repo> "$WT")
 venue="$(printf '%s\n' "$route_json" | jq -r .venue)"
 ```
 
-Use GitHub `gh` only when `venue=github`; use the local Forgejo SOP/API helper
-when `venue=forgejo`; use `lastgit cr` when `venue=lastgit`. LastGit routing is
-explicit opt-in only. For LastGit-native repos, use the native LastGit review
-path, push the branch to the `lastgit`
-remote, create `lastgit cr create <slug> --head <branch> --base main
---auto-merge --require-status <context> --json`, and drive it with
-`lastgit cr view`, `lastgit ci status`, and `lastgit cr complete --once`. Do not
-run LastGit CI watchers against the primary brain socket.
+Use GitHub `gh` (`gh pr create`, `gh pr merge <n> -R <owner>/<repo> --auto
+--squash`, required check `ci-required`) when `venue=github`. This is the
+default for every EdgeVector repo except `EdgeVector/lastgit`. Use the local
+Forgejo SOP/API helper only when `venue=forgejo` (the `lastgit` repo). LastGit
+is retired (brain `decision-2026-09-29-retire-lastgit-all-repos-to-github`): if
+`venue=lastgit`, do not push to a `lastdb:///` remote; file a brain papercut.
 
 Close-out/backstop hooks that check for local commits ahead of the canonical
 remote should resolve the comparison ref through the same helper:
@@ -74,10 +72,7 @@ compare_ref="$("$last_stack/bin/last-stack-pr-venue" --compare-ref <owner>/<repo
 git -C "$WT" rev-list --count "$compare_ref"..HEAD
 ```
 
-For LastGit-native repos this uses `lastgit/<current-branch>` when present, so a
-local `main` that already matches `lastgit/main` is not reported as unpushed just
-because `origin/main` is a lagging mirror. Non-LastGit repos keep the existing
-upstream/origin comparison behavior.
+The helper compares against the upstream/origin ref of the resolved venue.
 
 ```bash
 REPO="$HOME/code/<repo>"
@@ -124,11 +119,11 @@ gh pr view <N> --repo <owner>/<repo> --json state,mergeStateStatus,autoMergeRequ
 (Auto-merge can show `autoMergeRequest:null` even when enabled — confirm via the
 `enabledAt` GraphQL field.)
 
-For LastGit-native repos, `lastgit cr create ... --auto-merge --require-status
-<context>` is the arm step. A foreground `lastgit cr complete <slug> --once
---json` is the cheap merge driver once `lastgit ci status <head-oid> --repo
-<slug> --json` is green. Red/missing status blocks; do not use `--admin` unless
-a human explicitly clears that bypass.
+On GitHub, `gh pr merge <n> -R <owner>/<repo> --auto --squash` is the arm step.
+If GraphQL returns a 502, use
+`gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f merge_method=squash`.
+A red or missing `ci-required` check blocks; do not use `--admin` unless a
+human explicitly clears that bypass.
 
 ## 3. Produce the proof — at the tier the change demands
 
@@ -254,7 +249,7 @@ tags: [closeout]
 <command / CI job / acceptance check, and what it showed>
 
 ## Artifacts
-- PR/CR: <url or lastgit://slug/cr/id>
+- PR: <url>
 - Card: <kanban slug or none>
 - Worktree: <path or already reclaimed>
 

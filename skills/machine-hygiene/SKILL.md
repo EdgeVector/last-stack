@@ -136,7 +136,7 @@ on branch `app-iso/dev-deploy-code-signature`). `~/.cline/worktrees/` is now emp
 **Shared-checkout mirror contract:**
 the ambient checkout in `~/code/edgevector/<repo>` is nobody's working copy. It
 stays on `main`, tracks the repo's **venue** remote (`.last-stack/pr-venue` →
-lastgit/forgejo/github — NOT blindly `origin`), and is never edited in place;
+github/forgejo — NOT blindly `origin`), and is never edited in place;
 agents work in isolated worktrees branched from the venue main. The old recipe
 here ("if on main and clean: pull origin") let every parked or dirty repo drift
 forever — fold got 134 commits behind, last-stack 256 (re-parked 2026-07-19).

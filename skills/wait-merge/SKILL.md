@@ -71,7 +71,7 @@ red/blocked as real if it persists across at least two polls.
 
 ### Forgejo: empty status is not "pending"
 
-On Forgejo-venue PRs, `commits/<sha>/status` returning
+On Forgejo-venue PRs (only the `EdgeVector/lastgit` repo), `commits/<sha>/status` returning
 `state:""` / `total_count:0` for **many minutes** with zero
 `actions/tasks` for that head is a **dead CI trigger** (branch
 deleted-and-recreated under an open PR) — not a slow pending check.

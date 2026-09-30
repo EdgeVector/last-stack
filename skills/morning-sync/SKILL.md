@@ -218,7 +218,7 @@ waiting on Tom. Steps:
      moves, quieter machine, fewer ghost branches, backup still not fully
      trusted, etc.).
    - End §4A with a **one-line "effect on the database"** when anything touched
-     LastDB / brain / board / lastgit storage — same data vs cheaper writes vs
+     LastDB / brain / board storage — same data vs cheaper writes vs
      cleaner reads vs durability still open. If nothing database-shaped moved,
      say so in one line.
    - Prefer a few short paragraphs over a long bullet wall. If overnight was
@@ -274,7 +274,7 @@ Brief skeleton:
 
 ### 🔬 New releases — working well?
 - <claim> — **working** · <probe you ran>
-- <claim> — **not on this machine yet** · lastgit/main `<oid>` vs host_head `<oid>`
+- <claim> — **not on this machine yet** · origin/main `<oid>` vs host_head `<oid>`
 - <claim> — **broken** · <one line of live evidence>
 - (or: no new releases in the window)
 

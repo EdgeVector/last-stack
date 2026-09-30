@@ -53,10 +53,10 @@ gap — not a dead LastDB node. Check Situations notices; do not restart primary
 cd ~/code/edgevector/<portal>   # e.g. routines, last-stack portal if any
 ./bin/wt start kanban/<card-slug>
 # → print path under ~/.fkanban/worktrees/…
-# ONLY edit that path; ship via lastgit cr / forge as venue says
+# ONLY edit that path; ship via gh pr (venue github; Forgejo only for the lastgit repo)
 ```
 
 CLI hygiene: prefer host-track / `~/.local/bin` tools (`brain`, `kanban`,
-`lastgit`, `situations`) over random WIP checkouts. If a CLI misbehaves:
+`situations`) over random WIP checkouts. If a CLI misbehaves:
 `host-track status` / `command -v <cmd>` first. Use `<cmd> which` only when
 the CLI documents that subcommand. Routines and Loom do not implement it.
