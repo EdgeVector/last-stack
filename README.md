@@ -73,8 +73,7 @@ Routines, Dogfood Graph, Org, LastSecrets, Search, and LastDB Browser. The
 `routines` CLI is linked alongside the other commands; installing its daemon is
 an explicit follow-up because it starts scheduled agent work. The browser
 launcher is linked as `lastdb-browser` and reads the machine's own LastDB
-socket. LastGit is intentionally excluded until it is stable enough for the
-public bundle. See [`docs/lastdb-apps.md`](docs/lastdb-apps.md) for the full
+socket. LastGit is retired and is not in the bundle. See [`docs/lastdb-apps.md`](docs/lastdb-apps.md) for the full
 guide.
 
 > Prefer to copy skills by hand? Each skill is a self-contained directory under
@@ -177,15 +176,14 @@ Dogfood evidence (2026-07-15, non-secret): staged + approved
 
 ## Repository Venue
 
-The Last Stack is homed in LastGit at `lastdb:///last-stack`; agent-authored
-changes go through LastGit change requests with the required `ci-required` gate
-from `.lastgit/ci.sh`. The GitHub repository remains the public read-only clone
-and browse mirror for installers and documentation links.
+The Last Stack is homed on GitHub at `EdgeVector/last-stack` (since 2026-09-30;
+LastGit is retired). Agent-authored changes go through GitHub pull requests
+(`gh pr create`) with the required `ci-required` check from
+`.github/workflows/ci-required.yml`, which runs `.lastgit/ci.sh` in shards.
+Merge with `gh pr merge <n> -R EdgeVector/last-stack --auto --squash`.
 
-The committed `.last-stack/pr-venue` marker is what makes the shared
-`last-stack-pr-venue` helper route this repo to LastGit. Mirror synchronization
-is an operational concern of the LastGit multi-repo mirror supervisor; do not
-open ordinary development PRs against the GitHub mirror.
+The committed `.last-stack/pr-venue` marker (`github`) is what makes the shared
+`last-stack-pr-venue` helper route this repo to GitHub.
 
 ## Keeping The Last Stack Current
 
@@ -314,8 +312,8 @@ bin/
   last-stack-json-get       extract one simple field path from socket/API JSON
                             without relying on jq or inline python/node parsing
   last-stack-repo-op-guard  reject workspace roots before repo-scoped git/gh
-  last-stack-pr-venue       route a repo to forgejo (the default), github, or
-                            explicit opt-in LastGit CR handling before PR/CR ops
+  last-stack-pr-venue       route a repo to github (the default) or forgejo
+                            (only EdgeVector/lastgit) before PR ops
   last-stack-gh-pr-queue-state
                             GraphQL PR queue-state helper without gh -R drift
   last-stack-forge-ci-log   print a failing forge (Forgejo) CI job's log tail —

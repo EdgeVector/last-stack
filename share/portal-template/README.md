@@ -4,7 +4,7 @@ This directory is an **EdgeVector portal**, not a clone of the product repo.
 
 - **No product source lives here.** It cannot go “stale” as a working tree.
 - **All work happens in a git worktree** created via `bin/wt`.
-- The gate-of-record remote is declared under `.portal/` (usually LastGit).
+- The gate-of-record remote is declared under `.portal/` (usually GitHub).
 
 ## Start work (agents)
 
@@ -33,8 +33,8 @@ Refresh cache only:
 | Path | Role |
 |------|------|
 | `.portal/slug` | Short name (e.g. `fkanban`) |
-| `.portal/venue` | `lastgit` \| `forgejo` \| `github` |
-| `.portal/remote` | Gate URL (`lastdb:///fkanban`, …) |
+| `.portal/venue` | `github` \| `forgejo` |
+| `.portal/remote` | Gate URL (`https://github.com/EdgeVector/fkanban.git`, …) |
 | `.portal/cache` | Bare object store path |
 | `bin/wt` | Wrapper → `last-stack-portal-wt` |
 
