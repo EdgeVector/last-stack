@@ -450,6 +450,8 @@ ci_test tests/last-stack-github-artifact-pull.sh
 ci_test tests/host-track-github-gate.sh
 # remote gates on GitHub (retire LastGit): registry entry + validate-registry.
 ci_test tests/host-track-remote-github-gate.sh
+# state-machine gates on GitHub (retire LastGit): registry entry + validate-registry.
+ci_test tests/host-track-state-machine-github-gate.sh
 # configurations gates on GitHub (retire LastGit): registry entry + validate-registry.
 ci_test tests/host-track-configurations-github-gate.sh
 # search gates on GitHub (retire LastGit): registry entry + validate-registry.
