@@ -151,6 +151,7 @@ run_worker() {
   # ci run). Since 2026-09-06 no repo defaults to LastGit, so opt the fixture
   # repo in the way a real repo would.
   env PATH="$tmp/bin:/usr/bin:/bin" \
+    LAST_STACK_LASTGIT_ENABLED=1 \
     LAST_STACK_LASTGIT_NATIVE_REPOS="EdgeVector/situations" \
     QUIET_REMOTE="$remote" \
     QUIET_STATUS_DIR="$tmp/status" \
