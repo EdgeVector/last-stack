@@ -2,8 +2,8 @@
 # Zero-agent pre-dispatch gate for pipeline-health.
 #
 # Delegates to last-stack-merge-demand-gate. Quiet inventories skip. There is
-# no hourly deep-pulse proceed. LastGit-disabled tool failures are quiet.
-# Aged Forge PRs and blocked deploys still proceed.
+# no hourly deep-pulse proceed. LastGit is retired and is not read.
+# Aged open PRs and blocked deploys still proceed.
 set -euo pipefail
 
 self_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
@@ -22,15 +22,14 @@ last-stack-pipeline-health-gate
 Exit 0 prints a noop result and skips the full agent.
 Exit 10 asks routinesd to start the full pipeline-health agent.
 
-Does not force a deep pass on a timer. LastGit ghosts and LastGit-disabled
-tool failures are quiet. Forge aged-open PRs and blocked deploys proceed.
+Does not force a deep pass on a timer. LastGit is retired and is not read.
+Aged-open PRs (GitHub, plus the lastgit repo on Forgejo) and blocked deploys proceed.
 
 Environment:
   LAST_STACK_PIPELINE_GATE_MIN_AGE_MIN       stuck merge age (default 10)
   LAST_STACK_PIPELINE_GATE_TIMEOUT_SEC       per-read cap (default 20)
   LAST_STACK_PIPELINE_GATE_DEPLOY_TAIL_BYTES deploy log tail (default 16777216)
   LAST_STACK_PIPELINE_GATE_FORGE_REPOS       comma list (default seven-repo file)
-  LAST_STACK_LASTGIT_NATIVE_REPOS            opt-in LastGit venues; empty = disabled
   LAST_STACK_MERGE_DEMAND_FORGE_REPOS        overrides the Forge list
 USAGE
 }

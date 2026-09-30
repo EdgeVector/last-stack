@@ -30,14 +30,24 @@ cat > "$todo_json" <<'JSON'
     "body": "Kind: pr\nPriority: P0"
   },
   {
-    "slug": "stuck-lastgit-brain-cr-closeddemo",
-    "title": "Stuck CR already closed",
+    "slug": "stuck-github-brain-pr-11",
+    "title": "Stuck PR already closed",
     "column": "todo",
     "kind": "pr",
-    "tags": ["pipeline", "p0", "merge", "lastgit"],
+    "tags": ["pipeline", "p0", "merge"],
     "milestone": "",
     "north_star": "",
-    "body": "CR: cr-closeddemo\nlastgit://brain/cr/cr-closeddemo"
+    "body": "PR: https://github.com/EdgeVector/brain/pull/11"
+  },
+  {
+    "slug": "stuck-forge-lastgit-pr-5",
+    "title": "Stuck PR on the forgejo repo, merged",
+    "column": "todo",
+    "kind": "pr",
+    "tags": ["pipeline", "p0", "merge"],
+    "milestone": "",
+    "north_star": "",
+    "body": "Kind: pr"
   },
   {
     "slug": "good-milestone-frontier-pr",
@@ -113,26 +123,34 @@ esac
 STUB
 chmod +x "$stub"
 
-# Fake lastgit: closeddemo is closed; everything else unknown/open.
+# Fake gh: PR 11 on brain is merged; everything else is open. The lastgit repo
+# is read through the forge API stub, never gh; lastgit CLI must never run.
 fake_bin="$tmp/fakebin"
 mkdir -p "$fake_bin"
-cat > "$fake_bin/lastgit" <<'LG'
+cat > "$fake_bin/gh" <<'GH'
 #!/usr/bin/env bash
 set -euo pipefail
-# lastgit cr view <repo> <cr_id> --json
-if [ "${1:-}" = "cr" ] && [ "${2:-}" = "view" ]; then
-  repo="${3:-}"; cr="${4:-}"
-  if [ "$cr" = "cr-closeddemo" ] || [ "$cr" = "closeddemo" ]; then
-    printf '%s\n' '{"state":"closed","merge_oid":"abc","repo":"'"$repo"'","cr_id":"'"$cr"'"}'
-    exit 0
-  fi
-  printf '%s\n' '{"state":"open","repo":"'"$repo"'","cr_id":"'"$cr"'"}'
-  exit 0
-fi
-echo "unexpected lastgit $*" >&2
-exit 2
+[ "${1:-}" = "api" ] || { echo "unexpected gh $*" >&2; exit 2; }
+echo "gh $2" >>"${STUB_LOG:?}.gh"
+case "${2:-}" in
+  repos/EdgeVector/brain/pulls/11) printf '%s\n' '{"state":"closed","merged":true,"merged_at":"2026-09-30T00:00:00Z"}' ;;
+  repos/EdgeVector/*/pulls/*) printf '%s\n' '{"state":"open","merged":false}' ;;
+  *) echo "unexpected gh path $2" >&2; exit 2 ;;
+esac
+GH
+cat > "$fake_bin/lastgit" <<'LG'
+#!/usr/bin/env bash
+echo "lastgit must not be called: $*" >&2
+exit 99
 LG
-chmod +x "$fake_bin/lastgit"
+cat > "$tmp/forge-api" <<'FA'
+#!/usr/bin/env bash
+echo "forge $1" >>"${STUB_LOG:?}.forge"
+[ "$1" = "repos/EdgeVector/lastgit/pulls/5" ] || exit 2
+printf '%s\n' '{"state":"closed","merged":true}'
+FA
+chmod +x "$fake_bin/gh" "$fake_bin/lastgit" "$tmp/forge-api"
+export LAST_STACK_FORGE_API="$tmp/forge-api"
 
 export PATH="$fake_bin:$PATH"
 export STUB_LOG="$log"
@@ -151,11 +169,16 @@ assert d["closed"] >= 1, d
 parked=set(d["parked_slugs"])
 closed=set(d["closed_slugs"])
 assert "stuck-lastgit-last-stack-cr-ms6hdcc1-44bc" in parked, d
-assert "stuck-lastgit-brain-cr-closeddemo" in closed, d
+assert "stuck-github-brain-pr-11" in closed, d
+assert "stuck-forge-lastgit-pr-5" in closed, d
 assert "good-milestone-frontier-pr" not in parked and "good-milestone-frontier-pr" not in closed, d
 assert "ordinary-product-pr" not in parked and "ordinary-product-pr" not in closed, d
 print("classify ok", d)
 '
+
+grep -q 'repos/EdgeVector/brain/pulls/11' "$log.gh" || { echo "GitHub PR was not point-read through gh" >&2; exit 1; }
+grep -q 'repos/EdgeVector/lastgit/pulls/5' "$log.forge" || { echo "lastgit repo PR was not read through the forge API" >&2; exit 1; }
+if grep -q 'lastgit/pulls' "$log.gh"; then echo "lastgit repo must not go through gh" >&2; exit 1; fi
 
 # Dry-run must not move
 : >"$log"
@@ -180,7 +203,7 @@ echo "$skip" | python3 -c '
 import json,sys
 d=json.load(sys.stdin)
 assert d["closed"] == 0, d
-assert "stuck-lastgit-brain-cr-closeddemo" in d["parked_slugs"], d
+assert "stuck-github-brain-pr-11" in d["parked_slugs"], d
 '
 
 # List projections store no body. A full-brief pipeline P0 with north_star

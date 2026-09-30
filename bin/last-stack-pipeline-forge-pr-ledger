@@ -70,8 +70,13 @@ normalized to the Forgejo shapes this file already understands: open PRs from
 `pulls`, mergeability and the auto-merge arm from `pulls/<n>`, required
 contexts from branch protection (default `ci-required`), and check runs as the
 per-context statuses. A cancelled check run is reported with the description
-"Has been cancelled" so CANCELLED still applies. `merge-green --apply` does
-not write to GitHub: arm auto-merge with `gh pr merge --auto`.
+"Has been cancelled" so CANCELLED still applies. Any repo that is not
+EdgeVector/lastgit is a GitHub repo, listed or not.
+`merge-green --apply` on a GitHub PR runs `gh pr merge <n> -R <repo> --auto
+--squash` for an unarmed green PR (with --arm), and merges an armed green PR
+that sat idle past --grace-sec with `gh api -X PUT repos/<repo>/pulls/<n>/merge
+-f merge_method=squash` (the fallback when auto-merge does not fire, and the
+answer to a GraphQL 502 from `gh pr merge`).
 
 LastGit is not read. It is retired for every EdgeVector repo
 (decision-2026-09-29-retire-lastgit-all-repos-to-github).
@@ -297,8 +302,17 @@ def github_repos() -> set[str]:
     return found or set(GITHUB_FALLBACK_REPOS)
 
 
+# Only EdgeVector/lastgit stays on Forgejo. Every other repo, including one
+# created after this file was written, is a GitHub repo. An explicit
+# LAST_STACK_MERGE_DEMAND_GITHUB_REPOS (even empty) is an exact list, which is
+# how fixtures pin a repo to the Forgejo path.
+FORGEJO_ONLY_REPOS = {"EdgeVector/lastgit"}
+
+
 def is_github_repo(repo: str) -> bool:
-    return repo in github_repos()
+    if os.environ.get("LAST_STACK_MERGE_DEMAND_GITHUB_REPOS") is not None:
+        return repo in github_repos()
+    return repo not in FORGEJO_ONLY_REPOS
 
 
 def gh_bin() -> str:
@@ -1374,6 +1388,26 @@ def green_since(status_doc: Any, required: list[str]) -> dt.datetime | None:
     return max(stamps) if len(stamps) == len(required) and stamps else None
 
 
+def github_merge(out: dict[str, Any], repo: str, number: int, armed: bool) -> dict[str, Any]:
+    """Write to GitHub through gh. Branch protection still enforces ci-required."""
+    if not armed:
+        proc = run([gh_bin(), "pr", "merge", str(number), "-R", repo, "--auto", "--squash"], timeout=60)
+        out["merge_rc"] = proc.returncode
+        if proc.returncode == 0:
+            return {**out, "verdict": "armed-now"}
+        # GraphQL 502 (or "clean status": nothing to wait for): merge through REST.
+    proc = run([gh_bin(), "api", "-X", "PUT", f"repos/{repo}/pulls/{number}/merge",
+                "-f", "merge_method=squash"], timeout=60)
+    out["merge_rc"] = proc.returncode
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout).strip()[:300]
+        return {**out, "verdict": "merge-405" if "405" in err else "merge-failed", "error": err}
+    after = forge_get(f"repos/{repo}/pulls/{number}")
+    if isinstance(after, dict) and after.get("merged"):
+        return {**out, "verdict": "merged-now", "merge_commit_sha": after.get("merge_commit_sha") or ""}
+    return {**out, "verdict": "merge-unconfirmed"}
+
+
 def merge_green_once(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.repo[0] if "/" in args.repo[0] else f"EdgeVector/{args.repo[0]}"
     number = args.pr
@@ -1422,9 +1456,7 @@ def merge_green_once(args: argparse.Namespace) -> dict[str, Any]:
     if not args.apply:
         return {**out, "verdict": "would-merge"}
     if is_github_repo(repo):
-        # GitHub auto-merge fires on its own; nothing here writes to GitHub.
-        return {**out, "verdict": "github-venue-no-write",
-                "error": f"use: gh pr merge {number} -R {repo} --auto --squash"}
+        return github_merge(out, repo, number, armed)
     # Forgejo 15.0.3 only evaluates a scheduled auto-merge on a NEW commit-status
     # event. A schedule armed after the last required status went green never
     # fires (papercut-forgejo-auto-merge-armed-after-green-never-fires-20260923;
