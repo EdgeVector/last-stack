@@ -41,7 +41,7 @@ case "$before" in ARTIFACT_UPDATE_AVAILABLE*) ;; *) fail "artifact update check 
 
 prompt="$($ROOT/bin/last-stack-routine-read kanban-watch 2>"$tmp/rr.err")"
 [ ! -f "$HOST_TRACK_TEST_STATE" ] || fail "claim path must not run host-track refresh"
-printf '%s\n' "$prompt" | grep -q 'card_batch_limit' || fail "routine reader did not return the prompt"
+grep -q 'card_batch_limit' <<<"$prompt" || fail "routine reader did not return the prompt"
 grep -q 'LAST_STACK_ROUTINE_STALE_PROCEED' "$tmp/rr.err" || fail "off-channel reader did not proceed without refresh"
 [ "$($ROOT/bin/last-stack-update-check)" != UP_TO_DATE ] || fail "off-channel update-check must not be UP_TO_DATE"
 

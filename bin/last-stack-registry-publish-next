@@ -201,7 +201,10 @@ else
   rm -rf "$TAP_DIR"
   git clone --quiet "$TAP_URL" "$TAP_DIR"
 fi
-branch="registry/next-$(printf '%s' "$build" | tr -c 'A-Za-z0-9.-' '_')-$(date -u +%Y%m%dT%H%M%SZ)"
+# The process id keeps two publishes of one build in the same second on distinct
+# branches (the second push was refused non-fast-forward; the venue and partial-rows
+# tests hit it on fast runners).
+branch="registry/next-$(printf '%s' "$build" | tr -c 'A-Za-z0-9.-' '_')-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 git -C "$TAP_DIR" checkout --quiet -b "$branch"
 
 index="$TAP_DIR/registry/$CHANNEL.json"

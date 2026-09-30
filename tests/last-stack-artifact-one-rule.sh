@@ -67,6 +67,6 @@ SH
 chmod +x "$compat/.artifacts/current/bin/last-stack-self-upgrade"
 
 prompt="$("$compat/bin/last-stack-routine-read" kanban-watch)"
-printf '%s\n' "$prompt" | grep -q 'card_batch_limit' || fail "routine-read did not return prompt under artifact mode"
+grep -q 'card_batch_limit' <<<"$prompt" || fail "routine-read did not return prompt under artifact mode"
 
 printf 'ok: artifact one-rule (no git self-upgrade fall-through)\n'
