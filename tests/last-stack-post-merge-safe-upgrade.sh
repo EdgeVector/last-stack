@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
+# The post-merge worker reads merged GitHub PRs (gh) and refreshes the mapped
+# host-track artifact app. Stubs stand in for gh and host-track; no network.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
-tmp="$(mktemp -d)"
-cleanup() { rm -rf "$tmp"; }
+WORKER="$ROOT/bin/last-stack-post-merge-safe-upgrade"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-post-merge-test.XXXXXX")"
+cleanup() { [ -n "${KEEP:-}" ] || rm -rf "$tmp"; }
 trap cleanup EXIT
 
 fail() {
@@ -20,142 +23,91 @@ jq -e '
 ' "$ROOT/config/host-track/apps.json" >/dev/null \
   || fail "last-stack registry does not publish the post-merge worker"
 
-map_out="$("$ROOT/bin/last-stack-post-merge-safe-upgrade" --map)"
+map_out="$("$WORKER" --map)"
 printf '%s\n' "$map_out" | grep -q '^last-stack[[:space:]]*-> artifact:last-stack$' \
-  || fail "last-stack is not mapped to the artifact-backed post-merge action"
+  || fail "last-stack is not mapped to the artifact action"
 printf '%s\n' "$map_out" | grep -q '^loom[[:space:]]*-> artifact:loom$' \
-  || fail "loom is not mapped to the artifact-backed post-merge action"
+  || fail "loom is not mapped to the artifact action"
 
 mkdir -p "$tmp/bin" "$tmp/state"
-cat >"$tmp/bin/lastgit" <<'SH'
+# gh stub: `gh pr list -R EdgeVector/<repo> ...` prints rows from $GH_ROWS_DIR/<repo>.
+cat >"$tmp/bin/gh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-
-if [ "$1" = cr ] && [ "$2" = list ] && [ "${3:-}" = --all-open ]; then
-  printf '[]\n'
-  exit 0
-fi
-
-if [ "$1" = cr ] && [ "$2" = view ] && [ "$3" = loom ] && [ "$4" = cr-loom ]; then
-  cat <<'JSON'
-{
-  "cr_id": "cr-loom",
-  "repo": "loom",
-  "state": "merged",
-  "base_ref": "refs/heads/main",
-  "head_oid": "3333333333333333333333333333333333333333",
-  "merge_oid": "4444444444444444444444444444444444444444"
-}
-JSON
-  exit 0
-fi
-
-if [ "$1" = cr ] && [ "$2" = view ] && [ "$3" = last-stack ] && [ "$4" = cr-test ]; then
-  cat <<'JSON'
-{
-  "cr_id": "cr-test",
-  "repo": "last-stack",
-  "state": "merged",
-  "base_ref": "refs/heads/main",
-  "head_oid": "1111111111111111111111111111111111111111",
-  "merge_oid": "2222222222222222222222222222222222222222"
-}
-JSON
-  exit 0
-fi
-
-printf 'unexpected lastgit args: %s\n' "$*" >&2
-exit 2
+[ "${1:-}" = pr ] && [ "${2:-}" = list ] || { printf 'unexpected gh args: %s\n' "$*" >&2; exit 2; }
+repo=""
+while [ $# -gt 0 ]; do
+  case "$1" in -R) repo="${2#EdgeVector/}"; shift 2 ;; *) shift ;; esac
+done
+[ -f "$GH_ROWS_DIR/$repo" ] && cat "$GH_ROWS_DIR/$repo"
+exit 0
 SH
-chmod +x "$tmp/bin/lastgit"
+cat >"$tmp/bin/host-track" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  refresh) printf '%s\n' "${2:-}" >>"$HT_REFRESH_LOG"; [ ! -f "$HT_REFRESH_FAIL" ] || exit 1 ;;
+  status) app="${3:-}"; if [ -f "$HT_STALE_DIR/$app" ]; then
+      printf '{"install_mode":"artifact","stale":true,"main_unpublished":false}\n'
+    else printf '{"install_mode":"artifact","stale":false,"main_unpublished":false}\n'; fi ;;
+  *) exit 2 ;;
+esac
+SH
+chmod +x "$tmp/bin/gh" "$tmp/bin/host-track"
+mkdir -p "$tmp/rows" "$tmp/stale"
+: >"$tmp/refresh.log"
 
-printf 'last-stack:cr-test\nloom:cr-loom\n' >"$tmp/state/fleet.open"
+run_worker() {
+  env PATH="$tmp/bin:$PATH" \
+    GH_ROWS_DIR="$tmp/rows" HT_REFRESH_LOG="$tmp/refresh.log" \
+    HT_REFRESH_FAIL="$tmp/refresh-fail" HT_STALE_DIR="$tmp/stale" \
+    LAST_STACK_POST_MERGE_LOG="$tmp/post-merge.log" \
+    LAST_STACK_POST_MERGE_MAX_ATTEMPTS=2 \
+    LAST_STACK_POST_MERGE_CONVERGE_INTERVAL=0 \
+    "$WORKER" --once --all "$tmp/state" >/dev/null 2>&1
+}
 
-PATH="$tmp/bin:$PATH" \
-  LAST_STACK_POST_MERGE_DRY_RUN=1 \
+# Pass 1 seeds: existing merged PRs are history, never upgraded.
+printf '7\t%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >"$tmp/rows/last-stack"
+printf '3\t%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb >"$tmp/rows/loom"
+run_worker
+[ ! -s "$tmp/refresh.log" ] || fail "seed pass refreshed history"
+grep -qx '7' "$tmp/state/last-stack.handled" || fail "seed did not record last-stack #7"
+
+# Pass 2: a new merged PR on loom refreshes loom only, once.
+printf '3\t%s\n4\t%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccccccccccccccccccc >"$tmp/rows/loom"
+run_worker
+[ "$(cat "$tmp/refresh.log")" = loom ] || fail "new loom merge did not refresh exactly loom: $(cat "$tmp/refresh.log")"
+grep -qx '4' "$tmp/state/loom.handled" || fail "loom #4 not marked handled"
+run_worker
+[ "$(wc -l <"$tmp/refresh.log" | tr -d ' ')" = 1 ] || fail "handled PR refreshed again"
+
+# Pass 3: a failing refresh retries up to the cap, then gives up visibly.
+printf '5\t%s\n' dddddddddddddddddddddddddddddddddddddddd >>"$tmp/rows/loom"
+: >"$tmp/refresh-fail"
+run_worker
+grep -q 'FAIL upgrade app=artifact:loom repo=loom pr=5 attempt=1/2' "$tmp/post-merge.log" || fail "first failure not logged"
+run_worker
+grep -q 'GIVE_UP app=artifact:loom repo=loom pr=5 after 2 attempts' "$tmp/post-merge.log" || fail "give-up not logged"
+grep -qx '5' "$tmp/state/loom.handled" || fail "given-up PR not marked handled"
+rm -f "$tmp/refresh-fail"
+
+# Convergence: a stale app is refreshed even with no new merge.
+: >"$tmp/refresh.log"
+: >"$tmp/stale/situations"
+run_worker
+grep -qx 'situations' "$tmp/refresh.log" || fail "stale situations was not refreshed by the convergence tail"
+grep -qx 'brain' "$tmp/refresh.log" && fail "fresh brain was refreshed"
+
+# Dry run logs and does not call host-track refresh.
+: >"$tmp/refresh.log"
+printf '9\t%s\n' eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee >>"$tmp/rows/last-stack"
+env PATH="$tmp/bin:$PATH" GH_ROWS_DIR="$tmp/rows" HT_REFRESH_LOG="$tmp/refresh.log" \
+  HT_REFRESH_FAIL="$tmp/refresh-fail" HT_STALE_DIR="$tmp/stale" \
+  LAST_STACK_POST_MERGE_DRY_RUN=1 LAST_STACK_POST_MERGE_CONVERGE=0 \
   LAST_STACK_POST_MERGE_LOG="$tmp/post-merge.log" \
-  "$ROOT/bin/last-stack-post-merge-safe-upgrade" --once --all "$tmp/state" >/dev/null
+  "$WORKER" --once --all "$tmp/state" >/dev/null 2>&1
+grep -q 'DRY_RUN: would refresh host-track last-stack repo=last-stack pr=9' "$tmp/post-merge.log" || fail "dry run did not log"
+[ ! -s "$tmp/refresh.log" ] || fail "dry run called host-track refresh"
 
-grep -q 'DRY_RUN: would promote last-stack artifact and refresh host-track repo=last-stack cr=cr-test oid=2222222222222222222222222222222222222222' \
-  "$tmp/post-merge.log" || fail "dry-run log did not promote the merge OID"
-grep -qx 'cr-test' "$tmp/state/last-stack.handled" \
-  || fail "last-stack CR was not marked handled after artifact action"
-
-# A merged Loom CR must take the same build-capable artifact promotion path as
-# last-stack (era-3: any artifact-backed app may need `lastgit artifact
-# publish` run from source once it merges via a LastGit CR, not just a bare
-# host-track refresh assuming someone else already published a manifest), not
-# the unsupported-repo silent-handled path (which never logs an action).
-grep -q 'DRY_RUN: would promote loom artifact and refresh host-track repo=loom cr=cr-loom' \
-  "$tmp/post-merge.log" || fail "loom merge did not take the artifact promotion path"
-grep -qx 'cr-loom' "$tmp/state/loom.handled" \
-  || fail "loom CR was not marked handled after artifact action"
-
-
-# --- transient departure: a CR read as `merging` must defer, not burn --------
-# The completer holds a CR in `merging` for a moment after it leaves the open
-# index. Marking it handled on that read drops the only departure event, so
-# the merge is never installed (loom cr-mtgf4rnz-5d48, 2026-08-30).
-mkdir -p "$tmp/bin2" "$tmp/state2"
-cat >"$tmp/bin2/lastgit" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-if [ "$1" = cr ] && [ "$2" = list ] && [ "${3:-}" = --all-open ]; then
-  printf '[]\n'
-  exit 0
-fi
-if [ "$1" = cr ] && [ "$2" = view ] && [ "$3" = loom ] && [ "$4" = cr-transient ]; then
-  n=0
-  [ -f "$TRANSIENT_COUNT_FILE" ] && n="$(cat "$TRANSIENT_COUNT_FILE")"
-  n=$((n + 1))
-  printf '%s\n' "$n" >"$TRANSIENT_COUNT_FILE"
-  if [ "$n" -eq 1 ]; then state=merging; else state=merged; fi
-  cat <<JSON
-{
-  "cr_id": "cr-transient",
-  "repo": "loom",
-  "state": "$state",
-  "base_ref": "refs/heads/main",
-  "head_oid": "5555555555555555555555555555555555555555",
-  "merge_oid": "6666666666666666666666666666666666666666"
-}
-JSON
-  exit 0
-fi
-printf 'unexpected lastgit args: %s\n' "$*" >&2
-exit 2
-SH
-chmod +x "$tmp/bin2/lastgit"
-
-printf 'loom:cr-transient\n' >"$tmp/state2/fleet.open"
-
-# Pass 1: the view says merging. Expect defer, key retained, no handled mark.
-PATH="$tmp/bin2:$PATH" \
-  TRANSIENT_COUNT_FILE="$tmp/state2/view-count" \
-  LAST_STACK_POST_MERGE_DRY_RUN=1 \
-  LAST_STACK_POST_MERGE_CONVERGE=0 \
-  LAST_STACK_POST_MERGE_LOG="$tmp/post-merge2.log" \
-  "$ROOT/bin/last-stack-post-merge-safe-upgrade" --once --all "$tmp/state2" >/dev/null
-
-grep -q 'defer loom cr-transient state=merging' "$tmp/post-merge2.log" \
-  || fail "merging CR was not deferred"
-if [ -f "$tmp/state2/loom.handled" ] && grep -qx 'cr-transient' "$tmp/state2/loom.handled"; then
-  fail "merging CR was marked handled on the transient read"
-fi
-grep -qx 'loom:cr-transient' "$tmp/state2/fleet.open" \
-  || fail "deferred CR fell out of the open snapshot"
-
-# Pass 2: the view says merged. Expect the refresh path plus the handled mark.
-PATH="$tmp/bin2:$PATH" \
-  TRANSIENT_COUNT_FILE="$tmp/state2/view-count" \
-  LAST_STACK_POST_MERGE_DRY_RUN=1 \
-  LAST_STACK_POST_MERGE_CONVERGE=0 \
-  LAST_STACK_POST_MERGE_LOG="$tmp/post-merge2.log" \
-  "$ROOT/bin/last-stack-post-merge-safe-upgrade" --once --all "$tmp/state2" >/dev/null
-
-grep -q 'DRY_RUN: would promote loom artifact and refresh host-track repo=loom cr=cr-transient' "$tmp/post-merge2.log" \
-  || fail "settled merge did not take the artifact promotion path after the defer"
-grep -qx 'cr-transient' "$tmp/state2/loom.handled" \
-  || fail "settled merge was not marked handled"
-
-printf 'ok: last-stack post-merge artifact upgrade\n'
+printf 'ok: post-merge worker refreshes artifact apps from merged GitHub PRs\n'

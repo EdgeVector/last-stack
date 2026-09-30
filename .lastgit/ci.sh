@@ -522,7 +522,6 @@ ci_test tests/last-stack-artifact-layout-mirror-clean.sh
 ci_test tests/last-stack-artifact-routine-freshness.sh
 ci_test tests/last-stack-artifact-one-rule.sh
 ci_test tests/last-stack-post-merge-safe-upgrade.sh
-ci_test tests/last-stack-post-merge-convergence.sh
 ci_test tests/last-stack-lastdb-safe-upgrade-launchd-job.sh
 ci_test tests/last-stack-lastdb-safe-upgrade-live-socket-health.sh
 ci_test tests/last-stack-lastdb-safe-upgrade-candidate-class.sh

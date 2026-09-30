@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Pin the post-merge repo→app map: a merged Loom or Remote CR must resolve to
+# Pin the post-merge repo→app map: a merged Loom or Remote PR must resolve to
 # the artifact-backed action, never the unsupported-repo skip path (the era-3
 # reverse migration silently no-oped every `remote` merge before this pin
 # existed — `remote` had a host-track artifact channel and a
-# `.lastgit/artifacts.json` but was missing from `map_repo_to_app`, so
-# `handle_departure` marked its CRs handled without ever building or
+# GitHub publish job but was missing from `map_repo_to_app`, so
+# `handle_merge` marked its PRs handled without ever building or
 # publishing anything). `--map` prints the table and exits before any
-# state-dir or lastgit access, so this test touches no shared state and
+# state-dir or GitHub access, so this test touches no shared state and
 # mutates nothing.
 set -euo pipefail
 
