@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Zero-LLM demand gate for merge-class routines.
 #
-# Skip when the seven-repo Forge pass is quiet, LastGit ghosts are not demand,
-# and deploy is not blocked. Aged open Forge PRs and blocked deploys proceed.
+# Skip when the open-PR pass (every EdgeVector repo on GitHub, plus the lastgit
+# repo on Forgejo) is quiet, LastGit ghosts are not demand, and deploy is not
+# blocked. Aged open PRs and blocked deploys proceed.
 #
 # LastGit is opt-in (`LAST_STACK_LASTGIT_NATIVE_REPOS`). An empty list is
 # LastGit-disabled: lastgit-missing / unreadable / json-invalid / index-drift
@@ -31,17 +32,17 @@ last-stack-merge-demand-gate
 
 Zero-LLM gate for merge class. Exit 0 = skip; 10 = proceed.
 
-Default Forge list is config/merge-demand-forge-repos (lastgit, exemem-infra,
-last-stack, fkanban, routines, loom). fold is canonical on GitHub since
-2026-09-29 and is read from config/merge-demand-github-repos. Ghost LastGit does not
-count. Aged Forge PRs and blocked deploys proceed.
+Default Forge list is config/merge-demand-forge-repos (only lastgit stays on
+Forgejo). Every other EdgeVector repo is canonical on GitHub since 2026-09-30 and
+is read from config/merge-demand-github-repos. Ghost LastGit does not count.
+Aged open PRs and blocked deploys proceed.
 
 Environment:
   LAST_STACK_MERGE_DEMAND_FORGE_REPOS     comma list (overrides file)
   LAST_STACK_PIPELINE_GATE_FORGE_REPOS    alias used by pipeline-health-gate
   LAST_STACK_MERGE_DEMAND_GITHUB_REPOS    comma list of repos read from GitHub
                                           (default config/merge-demand-github-repos:
-                                          fold). A repo on this list is always read
+                                          every moved repo). A repo on this list is always read
                                           through gh, even if a Forge list names it.
   LAST_STACK_PIPELINE_GATE_GH_BIN         gh binary (default: gh on PATH)
   LAST_STACK_LASTGIT_NATIVE_REPOS         opt-in LastGit venues; empty = disabled
@@ -67,7 +68,7 @@ positive_int() {
 }
 
 default_repos() {
-  printf '%s' "EdgeVector/lastgit,EdgeVector/exemem-infra,EdgeVector/last-stack,EdgeVector/fkanban,EdgeVector/routines,EdgeVector/loom"
+  printf '%s' "EdgeVector/lastgit"
 }
 
 load_forge_repos() {
@@ -103,7 +104,7 @@ load_forge_repos() {
   printf '\n'
 }
 
-# Repos whose open PRs live on GitHub (fold: decision-2026-09-29-fold-venue-back-to-github).
+# Repos whose open PRs live on GitHub (all but lastgit: decision-2026-09-29-retire-lastgit-all-repos-to-github).
 load_github_repos() {
   if [ -n "${LAST_STACK_MERGE_DEMAND_GITHUB_REPOS+x}" ]; then
     printf '%s\n' "$LAST_STACK_MERGE_DEMAND_GITHUB_REPOS"
@@ -118,7 +119,7 @@ load_github_repos() {
       list="${list:+${list},}${repo}"
     done <"$cfg"
   fi
-  [ -n "$list" ] || list="EdgeVector/fold"
+  [ -n "$list" ] || list="EdgeVector/fold,EdgeVector/last-stack,EdgeVector/fkanban,EdgeVector/routines,EdgeVector/loom,EdgeVector/brain,EdgeVector/situations,EdgeVector/configurations,EdgeVector/lastsecrets,EdgeVector/search,EdgeVector/remote,EdgeVector/state-machine,EdgeVector/reconciler,EdgeVector/lastdb-browser,EdgeVector/lastseek,EdgeVector/exemem-infra,EdgeVector/exemem-workspace,EdgeVector/schema-infra,EdgeVector/fold_db_website,EdgeVector/homebrew-lastdb,EdgeVector/ops-terminal,EdgeVector/kanban-factory,EdgeVector/code-atlas,EdgeVector/discovery,EdgeVector/dogfood-graph,EdgeVector/factory-graph,EdgeVector/demo-repository"
   printf '%s\n' "$list"
 }
 
