@@ -395,6 +395,7 @@ jobs:
         if: ${{ always() && !inputs.probe_only }}
         env:
           INPUT_FOLD_OID: ${{ inputs.fold_oid }}
+          INPUT_LASTDB_BUILD: ${{ inputs.lastdb_build }}
         run: |
           set -u
           # An earlier step can fail before the smoke runs. Say so in the verdict
@@ -416,11 +417,11 @@ jobs:
           jq --arg b "$rb" --arg o "$co" --arg os "$cosrc" --arg src "${LASTDB_SOURCE:-unknown}" \
              --arg tag "${LASTDB_TAG:--}" --arg fold "${INPUT_FOLD_OID:-}" \
              --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-             --arg sha "$GITHUB_SHA" --arg cb "${cbuild:-}" \
+             --arg sha "$GITHUB_SHA" --arg cb "${cbuild:-}" --arg eb "${INPUT_LASTDB_BUILD:-}" \
              '. + {lastdb_build: (if (.lastdb_build // "") != "" then .lastdb_build else $b end),
                    lastdb_oid: (if (.lastdb_oid // "") != "" then .lastdb_oid else $o end),
                    lastdb_oid_source: $os, lastdb_source: $src, lastdb_release_tag: $tag,
-                   fold_oid: $fold, workflow_run: $run, last_stack_sha: $sha,
+                   fold_oid: $fold, lastdb_build_expected: $eb, workflow_run: $run, last_stack_sha: $sha,
                    cargo_build_seconds: (if $cb == "" then null else ($cb | tonumber) end)}' \
              "$BUNDLE/proof.json" > "$BUNDLE/proof.json.new" && mv "$BUNDLE/proof.json.new" "$BUNDLE/proof.json"
           bin/last-stack-registry-red-attribution --proof "$BUNDLE/proof.json" > "$BUNDLE/attribution.txt" 2> "$BUNDLE/attribution.err"
