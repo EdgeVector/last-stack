@@ -93,7 +93,11 @@ jobs:
         run: |
           set -euo pipefail
           t0=$SECONDS; rc=0
-          { brew install edgevector/lastdb/lastdb; } || rc=$?
+          # Current Homebrew refuses a formula from an untrusted third-party tap
+          # (run 36764050149 failed here). Trust is a local setting on this
+          # ephemeral runner; it is not a secret.
+          { brew tap edgevector/lastdb && brew trust --tap edgevector/lastdb \
+              && brew install edgevector/lastdb/lastdb; } || rc=$?
           printf 'brew-install\t%s\t%s\n' "$((SECONDS - t0))" "$rc" >> "$BUNDLE/timings.tsv"
           exit "$rc"
 
@@ -227,6 +231,12 @@ jobs:
         if: ${{ always() }}
         run: |
           set -u
+          # An earlier step can fail before the smoke runs. Say so in the verdict
+          # instead of failing this step on a missing proof file.
+          if [ ! -s "$BUNDLE/proof.json" ]; then
+            failed="$(awk -F'\t' 'NR>1 && $3!=0 {print $1; exit}' "$BUNDLE/timings.tsv")"
+            jq -n --arg s "${failed:-unknown-before-smoke}" '{verdict:"RED",fails:["runner-setup:"+$s]}' > "$BUNDLE/proof.json"
+          fi
           bin/last-stack-registry-red-attribution --proof "$BUNDLE/proof.json" > "$BUNDLE/attribution.txt" 2> "$BUNDLE/attribution.err"
           echo "attribution rc=$?"
           cat "$BUNDLE/attribution.txt"
