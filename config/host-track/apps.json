@@ -776,8 +776,10 @@
       "install_mode": "artifact",
       "kind": "artifact cli",
       "command": "search",
-      "gate": "forgejo",
-      "gate_main": "http://localhost:3300/EdgeVector/search.git#main",
+      "gate": "github",
+      "gate_main": "https://github.com/EdgeVector/search.git#main",
+      "gate_remote": "https://github.com/EdgeVector/search.git",
+      "gate_ref": "refs/heads/main",
       "artifact_app": "search",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -788,7 +790,7 @@
           "target": "$HOME/.local/bin/search"
         }
       ],
-      "notes": "Search LastGit artifact install (source pack + post_install npm/bun deps + neural smoke); track_gate_main promotes stable to green+published main.",
+      "notes": "Search artifact install (source pack + post_install npm/bun deps + neural smoke). Gate of record is GitHub (EdgeVector/search, since 2026-09-30). The ci-required workflow publish job builds the artifact on GitHub; host-track refresh runs last-stack-github-artifact-pull, which re-checks the ci-required check run, the run provenance and every digest before it promotes stable. Brain: design-github-artifact-publish-path, sop-github-artifact-app-migration.",
       "post_install": "$HOME/.host-track/apps/search/current/bin/search-host-track-post-install",
       "safe_upgrade": {
         "soak_hours": 1,
@@ -814,7 +816,6 @@
           }
         ]
       },
-      "track_gate_main": false,
       "requires": [
         "lastdbd"
       ]
