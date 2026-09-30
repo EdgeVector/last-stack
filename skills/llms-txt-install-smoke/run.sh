@@ -203,7 +203,11 @@ unset _obs_key || true
 # token the sandbox HOME cannot see. Hand git the token through GIT_CONFIG_*
 # (git >= 2.31; no file touched) only when Forge sources are expected. A public
 # `stable` install never carries a token and never needs one.
-if [ -n "$SMOKE_CANDIDATE_SET" ] || [ "${SMOKE_INSTALL_CHANNEL:-}" = next ] || [ "${SMOKE_FORGE_GIT_AUTH:-0}" = 1 ]; then
+# SMOKE_NO_FORGE_AUTH=1 skips the lookup. A GitHub-hosted runner has no Forge and
+# no token file, so the lookup only costs time there (registry-proof workflow).
+# The default (unset) is unchanged.
+# forge-auth-block-begin
+if [ "${SMOKE_NO_FORGE_AUTH:-0}" != 1 ] && { [ -n "$SMOKE_CANDIDATE_SET" ] || [ "${SMOKE_INSTALL_CHANNEL:-}" = next ] || [ "${SMOKE_FORGE_GIT_AUTH:-0}" = 1 ]; }; then
   smoke_forge_token=""
   if [ -f "${LAST_STACK_ROOT:-$REAL_HOME/.last-stack}/lib/forge-token.sh" ]; then
     # shellcheck source=/dev/null
@@ -221,6 +225,7 @@ if [ -n "$SMOKE_CANDIDATE_SET" ] || [ "${SMOKE_INSTALL_CHANNEL:-}" = next ] || [
   fi
   unset smoke_forge_token
 fi
+# forge-auth-block-end
 
 LOG="$FRESH_ROOT/run.log"
 exec 3>&1 4>&2
