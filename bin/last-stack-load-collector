@@ -189,6 +189,9 @@ def status_vitals(buf):
             "uds_rej": uds.get("queue_full_rejects"),
             "sync": sy.get("state"),
             "sync_why": sy.get("degraded_reasons"),
+            # mutation_log_lag is nanoseconds; store seconds so the trend reads as an RPO
+            "mlog_lag_s": int(sy["mutation_log_lag"] / 1e9) if isinstance(sy.get("mutation_log_lag"), (int, float)) else None,
+            "rp_age_s": sy.get("mutation_log_recovery_point_age_secs"),
         }
     except Exception as e:  # a parse failure must not cost the sample
         return {"error": type(e).__name__}
@@ -597,6 +600,9 @@ def report(minutes, as_json):
             "uds_rej_max": max((x.get("uds_rej") or 0) for x in vs),
             "gov": sorted({str(x.get("gov")) for x in vs}),
             "sync": sync,
+            "mlog_lag_s_max": max([x["mlog_lag_s"] for x in vs if x.get("mlog_lag_s") is not None] or [None], key=lambda v: -1 if v is None else v),
+            "mlog_lag_s_last": vs[-1].get("mlog_lag_s"),
+            "rp_age_s_max": max([x["rp_age_s"] for x in vs if x.get("rp_age_s") is not None] or [None], key=lambda v: -1 if v is None else v),
         }
     out["delivery"] = read_delivery(minutes)
     if as_json:
