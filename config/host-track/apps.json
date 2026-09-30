@@ -948,8 +948,10 @@
       "install_mode": "artifact",
       "kind": "artifact cli",
       "command": "loom",
-      "gate": "forgejo",
-      "gate_main": "http://localhost:3300/EdgeVector/loom.git#main",
+      "gate": "github",
+      "gate_main": "https://github.com/EdgeVector/loom.git#main",
+      "gate_remote": "https://github.com/EdgeVector/loom.git",
+      "gate_ref": "refs/heads/main",
       "artifact_app": "loom",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -960,8 +962,7 @@
           "target": "$HOME/.local/bin/loom"
         }
       ],
-      "notes": "Gate of record is Forgejo since 2026-09-05 (brain decision-2026-09-05-factory-repos-venue-back-to-forgejo); lastdb:///loom is disabled. The Forge CI publish job on every push to main builds the artifact, publishes it into artifact_root and promotes stable with `lastgit artifact promote --gate forgejo` (EdgeVector/lastgit#591). track_gate_main is false on purpose: the node's ref for this repo no longer moves, and promote-to-main from a frozen LastGit tip would roll the channel back. host-track follows the stable channel head. loom LastGit artifact install from CI-published dist/loom plus scripts/. track_gate_main promotes stable to green+published main. Do not symlink ~/.local/bin/loom at a DEV worktree.",
-      "track_gate_main": false,
+      "notes": "Gate of record is GitHub (EdgeVector/loom) since 2026-09-30. The publish job of ci-required.yml builds dist/loom plus scripts/ on a macOS runner and uploads the Actions artifact ht-artifact-<sha>; host-track pulls it with last-stack-github-artifact-pull and promotes stable in the local CAS. The old LastGit artifact-release watcher and the Forgejo publish job are retired; lastdb:///loom is disabled and the Forgejo copy is archived. Do not symlink ~/.local/bin/loom at a DEV worktree.",
       "safe_upgrade": {
         "soak_hours": 1,
         "probes": [
