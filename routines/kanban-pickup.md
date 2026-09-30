@@ -205,8 +205,8 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   final_column=doing`, print the `ROUTINE_RESULT` token followed by
   `outcome=<ok> detail=worked=<slug> result=in-flight-budget-handoff pr=<url>`,
   and EXIT.
-  Do not start another fetch, rebase, push, validation retry, CI poll, manual
-  LastGit status publication, `lastgit cr complete`, or merge-closeout command
+  Do not start another fetch, rebase, push, validation retry, CI poll, or
+  merge-closeout command
   after the 10-minute remaining stop line; `kanban-watch` or a later pickup fire
   can reconcile a visible in-flight PR/CR, but routinesd cannot recover a killed
   foreground process cleanly.
@@ -269,13 +269,13 @@ sessions do not set `DRIVEN_BY=routine`. When you land code:
 
 1. Prefer commits via `"$last_stack/bin/last-stack-git-commit" -m "…" …` so
    trailers are automatic. Or append `"$last_stack/bin/last-stack-attribution-trailers"`.
-2. Every commit message and every PR body (GitHub PR; a LastGit CR body only for
-   a legacy `lastgit` venue) must end with:
+2. Every commit message and every PR body (GitHub PR, or a Forgejo PR for the
+   `lastgit` repo) must end with:
    - `Driven-By: routine`
    - `Automation-Id: <this Automation ID>`
    - `Run-Id: <ROUTINES_RUN_ID if set>`
-3. (Legacy `lastgit` venue only.) LastGit CR actor is already `routine:<id>` via
-   `LASTGIT_ACTOR` — do not override it to your shell username.
+3. Do not set a git author override to your shell username; the commit helper
+   above stamps the routine actor.
 4. Situations notices: `--actor routine:<Automation ID>` (or `routine:<id>`).
 
 Never invent these trailers when `DRIVEN_BY` is unset (interactive Tom-driven
@@ -345,7 +345,7 @@ back to `todo` (or `pending_rollback=` in memory) per transport rules below.
 - Record `run_started_epoch` / `run_timeout_min` for the run-budget guard above.
   The prelude must leave `~/.local/bin` ahead of ad-hoc checkout paths so
   host-track-managed CLI installs win over stale WIP binaries. Before expensive
-  work, or whenever `brain`, `<board-cli>`, `situations`, `lastgit`, or another
+  work, or whenever `brain`, `<board-cli>`, `situations`, or another
   shared CLI behaves oddly, run `host-track status` when available and
   `command -v <cmd>` before you change PATH or use a checkout-local command.
   Use `<cmd> which` only when that CLI documents it. Routines and Loom do not.
@@ -438,10 +438,8 @@ back to `todo` (or `pending_rollback=` in memory) per transport rules below.
   answers `forgejo`: use the local Forgejo API through
   `last-stack-forge-api` for it, and poll forge PR/CI JSON with
   `"$last_stack/bin/last-stack-forge-json-jq"` rather than raw `jq`. A repo
-  whose marker or git config still says `lastgit` is legacy: use
-  `lastgit cr create … --auto-merge` and drive it with `lastgit cr view` /
-  `lastgit ci status` / `lastgit cr complete --once`, and never run LastGit CI
-  against the primary brain socket.
+  whose marker or git config still says `lastgit` is a stale marker: LastGit is
+  retired. Run no `lastgit` command; see the `venue=lastgit` step below.
 
 ### Recover prior transport/board-write interruptions
 
@@ -725,17 +723,12 @@ Why this runs after the claim, not before, as of 2026-09-05:
    - `venue=forgejo` (only the `lastgit` repo): local Forgejo SOP/API only —
      never `gh` for it; record `pr_url` and `branch` on the card immediately
      after create.
-   - `venue=lastgit` (legacy; no repo answers it since 2026-09-30):
-     `lastgit cr create … --auto-merge …`, then **immediately**
-     stamp structured fields (not body-only):
-     `<board CLI> add <slug> --pr-url "lastgit://<repo>/cr/<cr-id>" --branch "<branch>"`
-     (also keep a body `PR: lastgit://…` line for humans). Drive with
-     `lastgit cr view` / `ci status` / `cr complete --once`. Never heartbeat
-     `in-flight-budget-handoff` / `in-flight-ci-pending` with an empty
-     structured `pr_url` when a CR id exists.
+   - `venue=lastgit` (retired; no repo answers it since 2026-09-30): stop, do not
+     push. Report `noop` with `reason=venue-lastgit-retired` and let a human fix
+     the stale marker. Never run a `lastgit` command.
    - Before every expensive post-publish operation (fetch/rebase after a
      non-fast-forward push, another push, validation retry, CI watch/poll,
-     `lastgit ci status`, `lastgit cr complete`, or merge-closeout polling),
+     or merge-closeout polling),
      recompute elapsed/remaining budget from
      `run_started_epoch` / `run_timeout_min`. If a PR/CR URL and branch are
      already recorded and fewer than **10 minutes** remain, do not continue the
@@ -748,8 +741,8 @@ Why this runs after the claim, not before, as of 2026-09-05:
      bounded handoff, not an error; the card is visible with a review artifact
      for `kanban-watch` / the next scheduled fire.
    - If pushing or opening the PR/CR fails because the review venue or required
-     board transport is unavailable (for example a missing LastGit socket,
-     socket-unreachable, `service_timeout`, "node did not respond", or "too
+     board transport is unavailable (for example a GitHub API 5xx, a missing
+     board socket, socket-unreachable, `service_timeout`, "node did not respond", or "too
      many concurrent reads") **before a PR/CR URL is recorded**, do not report a
      routine `error` and do not leave the card silently claimed. Try to move the
      card back to `todo` so the next pickup can retry from a clean claim. If
@@ -769,7 +762,7 @@ Why this runs after the claim, not before, as of 2026-09-05:
    For every shipped slug, run the closeout helper (preferred) or equivalent:
    ```bash
    "$last_stack/bin/last-stack-card-closeout" <slug> \
-     --pr-url "<merged-pr-or-lastgit-cr-url>" \
+     --pr-url "<merged-pr-url>" \
      --branch "<head-branch>"
    ```
    The helper stamps PR/branch, moves to `done`, and **re-reads** the card.

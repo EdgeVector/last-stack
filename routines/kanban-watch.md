@@ -119,15 +119,14 @@ reason=budget-low processed=<n> remaining=<n> next=<slug-or-phase>`, print the
 same one-line report to stdout, and exit 0. Budget handoff is normal bounded
 progress, not an error.
 
-Do not start any foreground LastGit reconcile command that can wait on
-transport, mergeability probes, or local merge/push work (`lastgit stuck`,
-`lastgit cr complete --once`, `lastgit cr merge`, and any `git fetch` through
-the `lastdb:///` remote) unless the command budget above leaves at least 60
-seconds.
+Do not start any foreground reconcile command that can wait on the network,
+mergeability probes, or local merge/push work (`gh pr merge`, `gh run rerun`, a
+Forgejo API merge, and any `git fetch` or `git push`) unless the command
+budget above leaves at least 60 seconds.
 
 When a foreground command is allowed, run it under `timeout -k 30s
 <command_budget>s ...` or `gtimeout -k 30s <command_budget>s ...`. If no timeout
-binary is available, do not start a potentially blocking LastGit reconcile
+binary is available, do not start a potentially blocking reconcile
 command; record `reason=no-command-timebox` as the same handoff. If the timeout
 fires, immediately read durable state with only short point reads, update the
 card with `WATCH-HANDOFF: <command> timed out after <n>s; durable state=<...>`,
@@ -143,7 +142,7 @@ and exit. A handoff with a live card is an `ok` routine result, not `error`.
   ```
 - The prelude must leave `~/.local/bin` ahead of ad-hoc checkout paths so
   host-track-managed CLI installs win over stale WIP binaries. Before a heavy
-  reconcile fix, or whenever `brain`, `<board-cli>`, `situations`, `lastgit`, or
+  reconcile fix, or whenever `brain`, `<board-cli>`, `situations`, or
   another shared CLI behaves oddly, run `host-track status` when available and
   `command -v <cmd>` before you change PATH or use a checkout-local command.
   Use `<cmd> which` only when that CLI documents it. Routines and Loom do not.
@@ -161,10 +160,10 @@ and exit. A handoff with a live card is an `ok` routine result, not `error`.
   have landed), then use `gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f
   merge_method=squash`. Only the `lastgit` repo answers `forgejo`: do every PR
   read/advance for it through the Forgejo API (`last-stack-forge-api`). A
-  `.venue == "lastgit"` answer is legacy: use `lastgit cr view/list`, `lastgit ci
-  status`, and `lastgit cr complete --once`, treat `lastgit://<slug>/cr/<id>` card
-  lines as review artifacts, and never run LastGit CI watchers against the primary
-  brain socket.
+  `.venue == "lastgit"` answer means a stale marker: LastGit is retired. Run no
+  `lastgit` command, treat a `lastgit://<slug>/cr/<id>` card line as a dead
+  reference, and find the real PR by branch on GitHub (or Forgejo for the
+  `lastgit` repo).
 
 ## DONE-WHEN evaluator for non-PR cards
 `Kind: pr` cards still reach `done` only through a verified merged PR. For
@@ -326,7 +325,7 @@ the loop.
 
 For every card in `doing` (from the column preview):
 1. Skip non-PR kinds that use `DONE-WHEN` (evaluate those on the normal path).
-2. If the card has an explicit `PR:` / `pr_url` / `lastgit://…/cr/…`, skip
+2. If the card has an explicit `PR:` / `pr_url`, skip
    (in-flight review artifact — normal PR reconcile owns it).
 3. If head-branch lookup finds an open/merged PR/CR for `kanban/<slug>` (or the
    card's `Branch:`), skip (record URL if missing, then advance normally).
@@ -349,8 +348,8 @@ For every card in `doing` (from the column preview):
        `dirty-worktree-deferred=<slug>` in the heartbeat.
      - If they are mixed-scope/unrelated, do **not** commit them into this
        card. Check whether blocker IDs named in the body are already resolved
-       (for LastGit, `lastgit cr view <repo-slug> <cr-id> --json` plus open CR
-       list; for GitHub/Forgejo, the routed PR/CR view). If the blocker is
+       (the routed PR view: `gh -R <repo> pr view <n> --json state,mergedAt`
+       for GitHub, the Forgejo API for the `lastgit` repo). If the blocker is
        merged or the card's operational end state is otherwise provably true,
        append `RESOLVED: dirty worktree parked; blocker resolved by <evidence>`
        and move the card out of `doing` (`done` only with a verified merged
@@ -576,18 +575,16 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
       card is either a registry card or a surfaced needs_human conflict, neither of
       which is meant for this PR-advance flow.
    d. Find its PR/CR. Route the repo first with `last-stack-pr-venue`. PREFER an
-      explicit `PR:` line / URL / `lastgit://<slug>/cr/<id>` in the body (work landed
+      explicit `PR:` line / URL in the body (work landed
       outside this flow won't use the `kanban/<slug>` branch). If the preview
       does not include enough body to know, read just that card with `<board CLI>
       show <slug> --json`. Only if NO URL is in the body, fall back to the
-      head-branch lookup. For LastGit, use `lastgit cr view <slug> <id> --json`
-      for explicit CRs, or `lastgit cr list <slug> --json` and match the card
-      branch when no explicit CR is recorded.
+      head-branch lookup: `gh -R <repo> pr list --head <branch> --state all --json
+      number,state,mergedAt,url` (GitHub) or the Forgejo API (`lastgit` repo).
    e. Advance it — but the DEFAULT for any swept card is LEAVE IT ALONE. Only act
       on concrete PR/branch evidence; when in doubt, do nothing.
       If you need merge-queue membership, do not request `isInMergeQueue` through `gh pr view/list --json`; use `$last_stack/bin/last-stack-gh-pr-queue-state <owner>/<repo> <n>` or `gh api graphql` with explicit owner/name variables for the queue flag and `autoMergeRequest{enabledAt}`. Never use `gh -R <repo> api graphql`.
-      - **Merged** (`state=MERGED` / `mergedAt` set for GitHub/Forgejo, or
-        `state=="merged"` with non-empty `merge_oid` for LastGit) → run
+      - **Merged** (`state=MERGED` / `mergedAt` set for GitHub/Forgejo) → run
         `last-stack-card-closeout <slug> --pr-url <url> --branch <branch>`.
         This is the ONLY path to `done` — a verified merged PR/CR plus any
         machine gate declared on the card. If the body includes
@@ -617,10 +614,10 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
           reclaim happens.
         - In `review`: leave alone (human gate / BLOCKED note owns it).
       - **No PR/CR + a `kanban/<slug>` branch with commits** → finish landing it
-        using the routed venue: GitHub (every repo but `lastgit`) `gh -R <repo> pr create
-        --fill`, Forgejo local API create (`lastgit` repo only), or legacy LastGit `git push lastgit HEAD:<branch>` plus
-        `lastgit cr create <slug> --head <branch> --base <base> --auto-merge
-        --require-status <context> --json`.
+        using the routed venue: GitHub (every repo but `lastgit`) `git push origin
+        HEAD:<branch>`, then `gh -R <repo> pr create --fill --head <branch>
+        --base <base>`, then `gh -R <repo> pr merge <n> --auto --squash`;
+        Forgejo local API create (`lastgit` repo only).
       - **Auto-merge OFF/dropped** (`autoMergeRequest` null) while CLEAN and not
         merged → re-arm: `gh -R <repo> pr merge <n> --auto --squash`. The merge queue silently DROPS
         auto-merge whenever it ejects a PR; nothing else re-fires it, so a
@@ -648,27 +645,18 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
           passing → just `gh run rerun <run-id> --failed` and confirm auto-merge
           is armed. This is a CHEAP, UNCAPPED advance — do it for EVERY such PR.
           A flaky-cancelled required check is the #1 reason a green-able PR rots.
-          **READ THE DESCRIPTION, NOT THE STATUS VALUE.** Forgejo stores a
-          cancelled run as a plain `failure`; only the description says
-          `Has been cancelled`. So a red required context is infra, not a
-          product failure, whenever
-          `GET repos/<owner>/<repo>/commits/<head-sha>/status` gives that
-          context a description matching `cancel` — one command, before you
-          open any log:
-
-              last-stack-forge-api GET "repos/<owner>/<repo>/commits/<sha>/status" > /tmp/st.json 2> /tmp/st.err
-              jq -r '.statuses[] | [.context, .status, (.description // "-")] | @tsv' /tmp/st.json
-
-          On 2026-09-25, 7 of the latest 40 first-parent commits on
-          EdgeVector/fold main read `failure` on `Forge CI / ci-required` with
-          no failing test, because `ci.yml` shares one concurrency group across
-          the whole ref and a later merge cancels the earlier commit's run
-          (papercut-fold-ci-required-cancelled-run-stored-as-a-required-red-20260925).
+          On GitHub a cancelled run reads `cancelled` in `gh -R <repo> pr checks
+          <n>`, and a concurrency-group cancel (a later merge cancels the earlier
+          run) is infra, not a product failure. Find the run id with `gh -R
+          <repo> run list --branch <branch> --json databaseId,conclusion,name`.
           Routing one of those to the heavy arm spends a build attempt changing
-          code that was never broken. `last-stack-pipeline-forge-pr-ledger`
-          makes the same distinction from the same field: its rows carry
-          `shape=cancelled` and `cancelled=<contexts>`, and a row titled
-          `... is stuck on a CANCELLED required run (re-run it)` is this arm.
+          code that was never broken. For the `lastgit` repo (Forgejo), a
+          cancelled run is stored as a plain `failure`; only the status
+          description says `Has been cancelled`. Read
+          `last-stack-forge-api GET "repos/<owner>/<repo>/commits/<sha>/status"`
+          into a file and check the description before you open any log.
+          `last-stack-pipeline-forge-pr-ledger` makes the same distinction:
+          its rows carry `shape=cancelled`.
         - **Stale base** — CHEAP, UNCAPPED, and checked BEFORE "Real failing
           check". If the base branch moved since the PR head was cut (the PR
           head does not contain the current base tip: `git merge-base
@@ -681,7 +669,7 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
           (papercut-kanban-watch-red-ci-retry-never-checks-base-staleness).
         - **Unrelated-lane flake** — CHEAP. Before you write "real failure",
           compare the failing test's crate/package path with the PR file list
-          (`GET repos/<owner>/<repo>/pulls/<n>/files` on Forgejo). When no
+          (`gh api repos/<owner>/<repo>/pulls/<n>/files`; the same path on the Forgejo API). When no
           changed path is inside that crate/package AND the base is green on
           the same lane, write `WATCH: unrelated-lane flake <test> — rerun`
           and rerun the failed job. Do not re-dispatch the card, and do not
@@ -711,25 +699,22 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
       - **Changes requested** → address the comments, push, reply briefly.
       - **Clean + approved but not merging** → re-assert auto-merge. Never
         force-merge around a failing required gate.
-      - **LastGit open CR** → inspect
-        `lastgit ci status <head-oid> --repo <slug> --json`. If the current
-        head is green and `auto_merge=="true"`, run
-        `lastgit cr complete <slug> --once --json` and re-read the CR. If green
-        but not auto-merge, run `lastgit cr merge <slug> <cr-id>
-        --require-status <context>`. If red and the heavy budget is available,
-        fix in the worktree, re-run VERIFY, and push to the `lastgit` remote.
-        If pending/missing, leave it for the next sweep. If merge/CAS conflict
-        is reported, rebase/push when mechanical; otherwise block with a concise
-        human decision note.
-        Every `lastgit stuck`, `lastgit cr complete --once`, `lastgit cr merge`,
-        and `git fetch` over `lastdb:///` in this path must use the run-budget
-        guard above. If the guarded command times out or returns socket/transport
-        oddities such as `node_unreachable` / `Was there a typo in the url or
-        port?`, stop trying to merge in this wake: update or file one card
-        (for example the carded CR or `routine-error-last-stack-fkanban-watch`)
-        with exact CR id, head ref, head oid, last known CI state, and the
-        transport text; then heartbeat `ok result=watch-budget-handoff`.
-        Do not chain a second heavy LastGit merge attempt after such a timeout.
+      - **Open GitHub PR** → read `gh -R <repo> pr checks <n>`. If the current
+        head is green with `ci-required` and auto-merge is armed, leave it: the
+        merge lands by itself. If green and auto-merge is off, run `gh -R <repo>
+        pr merge <n> --auto --squash --delete-branch`. If red and the heavy
+        budget is available, fix in the worktree, re-run VERIFY, and push to
+        `origin`. If pending or missing, leave it for the next sweep. If the
+        merge reports a conflict, rebase and push when mechanical; otherwise
+        block with a concise human decision note.
+        Every `gh pr merge`, `gh run rerun`, `git fetch` and `git push` in this
+        path must use the run-budget guard above. If the guarded command times
+        out or returns a GitHub API error (5xx, rate limit), stop trying to
+        merge in this wake: update or file one card (for example the carded PR
+        or `routine-error-last-stack-fkanban-watch`) with the exact PR number,
+        head ref, head sha, last known CI state, and the error text; then
+        heartbeat `ok result=watch-budget-handoff`.
+        Do not chain a second heavy merge attempt after such a timeout.
       - **Pending** (CI running / awaiting human) → leave it for next sweep.
    f. Give-up guard: human-only decision/gate or dependency-blocked work stays
       in `todo` or `backlog` with `block_status=needs_human|deferred` and a
@@ -741,8 +726,8 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
       re-dispatching; never silently loop a builder forever, never auto-merge
       around a failing gate.
 
-## Catch UNCARDED stranded PRs/CRs
-The carded sweep above only sees PRs/CRs with a card. PRs opened directly (no card)
+## Catch UNCARDED stranded PRs
+The carded sweep above only sees PRs with a card. PRs opened directly (no card)
 with auto-merge ON can go red and rot silently. After the carded loop, run ONE
 scan of your repos for these. A PR is a STRANDED candidate when ALL hold:
 - NOT merged and NOT just pending CI — specifically stuck in either (i)
@@ -757,13 +742,11 @@ Apply the CHEAP fixes to EVERY stranded candidate found within the remaining
 budget: re-arm auto-merge
 on each CLEAN-but-unarmed one; update-branch the oldest few clean-green-BEHIND
 ones through the CI-in-flight guard (Forgejo:
-`last-stack-forge-pr-update-branch --apply`); `gh run rerun <run-id> --failed` on every flaky-cancellation. For LastGit
-repos, list open CRs with **one** `lastgit cr list --all-open --json` (never
-N× `cr list <slug>`), run `lastgit cr complete <slug> --once --json` only for
-repos that actually have open auto_merge CRs, and leave pending/missing-status
-CRs alone. AT MOST ONE HEAVY fix per wake (a real
+`last-stack-forge-pr-update-branch --apply`); `gh run rerun <run-id> --failed` on every flaky-cancellation. List open PRs
+with **one** `gh -R <repo> pr list --state open --json ...` per repo (never a
+per-PR loop of point reads), and leave pending/missing-status PRs alone. AT MOST ONE HEAVY fix per wake (a real
 mechanical fix in a worktree, OR a DIRTY rebase). If a fix isn't clearly
-mechanical, comment/record the blocker and move on. Handling stranded PRs/CRs
+mechanical, comment/record the blocker and move on. Handling stranded PRs
 COUNTS as forward action.
 
 ## When the sweep is quiet — FILE a card, don't ship code

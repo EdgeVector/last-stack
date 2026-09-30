@@ -37,11 +37,8 @@ control characters in PR bodies cannot make `jq` abort.
 Before enumerating a repo, resolve its concrete checkout and run
 `"$last_stack/bin/last-stack-pr-venue" --json <owner/repo> "$target_repo"`.
 The answer is `github` for every repo except `lastgit` (`forgejo`). A
-`.venue == "lastgit"` answer is legacy: use the native LastGit review contract and
-drain `lastgit cr` change requests (`lastgit cr list/view`, `lastgit ci status`,
-`lastgit cr complete --once`, `lastgit cr merge --require-status`, `lastgit cr
-close`); never run LastGit CI watchers against the primary brain socket and never
-put raw CI secrets in records/logs. For a GitHub repo a green PR merges with
+`.venue == "lastgit"` answer is a stale marker: LastGit is retired. Run no
+`lastgit` command and skip that repo with a flag. For a GitHub repo a green PR merges with
 `gh -R <owner>/<repo> pr merge <n> --auto --squash --delete-branch` (the required
 check is the `ci-required` check run; on a GraphQL 502 read the state first, then
 `gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f merge_method=squash`).

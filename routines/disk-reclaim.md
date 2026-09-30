@@ -145,7 +145,7 @@ continue — do not fail the whole run.
    are still the below-floor pass: run it here too, because the gate does not
    sweep when it proceeds.
 3b. **Reclaim leaked LastDB dev homes.** Agents given a private
-   `LASTDB_DEV_HOME` left 74 GB of CoW clones on 2026-09-22 and the Forge CI
+   `LASTDB_DEV_HOME` left 74 GB of CoW clones on 2026-09-22 and the CI
    host then failed tests with `Too many open files (os error 24)`
    (brain `papercut-agent-supplied-lastdb-dev-homes-leak-cow-clones-and-exhaust-fds`).
    No process survives in that failure, so a process scan reads clean. Run:
