@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# last-stack-fold-ci-health — zero-LLM Fold/Forge CI capacity check (Class C).
+# last-stack-fold-ci-health — zero-LLM Forge CI capacity check (Class C).
 #
-# Fold merge gates depend on local Forgejo runners. When the Mac host runner
-# is unloaded or PC WSL is asleep, overnight merges freeze (factory graph
-# fold_ci_fallback).
+# The name is historical. Fold and every other repo except `lastgit` moved to
+# GitHub (2026-09-30), so only the local Forgejo merge-gate runner is checked: it
+# gates the lastgit repo. The repo-scoped host runners (fold, exemem-infra) and
+# the gaming PC runner are retired and not checked.
 #
 # Usage:
 #   last-stack-fold-ci-health [--json] [--page]
@@ -26,8 +27,6 @@ done
 uid="$(id -u)"
 agents=(
   com.edgevector.forgejo-runner
-  com.edgevector.forgejo-runner-host
-  com.edgevector.forgejo-runner-host-exemem-infra
 )
 
 ok=0
@@ -51,7 +50,7 @@ for agent in "${agents[@]}"; do
   fi
 done
 
-# merge-gate runner is required; host heavy is required for fold
+# the merge-gate runner is the only lane checked
 level="ok"
 merge_state="missing"
 for r in "${rows[@]}"; do
@@ -73,7 +72,7 @@ if [ "$JSON" -eq 1 ]; then
 else
   printf 'FOLD_CI_HEALTH level=%s ok=%s bad=%s detail=%s\n' "$level" "$ok" "$bad" "$detail"
   if [ "$level" != "ok" ]; then
-    printf 'hint: docs/forge-runner-lanes.md — reload launchd agents; PC WSL runner is the docker merge-gate SPOF overnight\n'
+    printf 'hint: docs/forge-runner-lanes.md — reload the com.edgevector.forgejo-runner launchd agent\n'
   fi
 fi
 
