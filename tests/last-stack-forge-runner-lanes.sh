@@ -49,14 +49,14 @@ cat >"$tmp/mixed/.runner" <<'EOF'
 {
   "id": 9,
   "name": "bad-merge",
-  "labels": ["docker:docker://x", "heavy:host"]
+  "labels": ["macos-arm64:host", "heavy:host"]
 }
 EOF
 cat >"$tmp/mixed/config.yml" <<'EOF'
 runner:
   capacity: 3
   labels:
-    - docker:docker://x
+    - macos-arm64:host
     - heavy:host
 EOF
 
@@ -113,7 +113,7 @@ print("mixed fixture correctly rejected")
 "$BIN" --config "$CFG" --homes "$tmp/merge" >/dev/null
 
 # --- live: an offline runner is not a healthy lane ---
-# papercut-forge-runner-lanes-check-ok-while-all-pc-runners-offline-20260922
+# papercut-forge-runner-lanes-check-ok-while-all-pc-runners-offline-20260922 (fixture runners are Mac names now)
 PORT_FILE="$tmp/port"
 python3 - "$PORT_FILE" "$tmp/scenario" <<'MOCK' >"$tmp/mock.log" 2>&1 &
 import json, sys
@@ -123,12 +123,11 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
         scen = open(scenario_file).read().strip()
-        pc = "offline" if scen == "pc-down" else "idle"
+        gate = "offline" if scen == "gate-down" else "idle"
         if self.path.startswith("/api/v1/admin/actions/runners"):
             body = [
-                {"id": 1, "name": "mac-forge-runner", "status": "idle", "labels": ["macos-arm64"]},
-                {"id": 2, "name": "pc-forge-runner", "status": pc, "labels": ["pc-linux", "docker"]},
-                {"id": 3, "name": "pc-heavy-runner", "status": pc, "labels": ["heavy"]},
+                {"id": 1, "name": "mac-forge-runner", "status": gate, "labels": ["macos-arm64"]},
+                {"id": 3, "name": "mac-heavy-fixture", "status": gate, "labels": ["heavy"]},
             ]
         else:
             body = []
@@ -151,19 +150,19 @@ live_env=(env FORGE_ROOT="http://127.0.0.1:$(cat "$PORT_FILE")" FORGE_TOKEN=test
 
 "${live_env[@]}" "$BIN" --json --check --live --repos EdgeVector/fold --config "$CFG" --homes "$tmp/merge:$tmp/heavy" >"$tmp/live-ok.json" \
   || { echo "healthy live fixture should pass --check" >&2; cat "$tmp/live-ok.json" >&2; exit 1; }
-echo pc-down >"$tmp/scenario"
+echo gate-down >"$tmp/scenario"
 set +e
 "${live_env[@]}" "$BIN" --json --check --live --repos EdgeVector/fold --config "$CFG" --homes "$tmp/merge:$tmp/heavy" >"$tmp/live-down.json"
 rc=$?
 set -e
-[ "$rc" -ne 0 ] || { echo "check_ok must fail with every PC runner offline" >&2; cat "$tmp/live-down.json" >&2; exit 1; }
+[ "$rc" -ne 0 ] || { echo "check_ok must fail with every runner offline" >&2; cat "$tmp/live-down.json" >&2; exit 1; }
 python3 - "$tmp/live-down.json" <<'CHK'
 import json, sys
 d = json.load(open(sys.argv[1]))
 assert d["live"]["ok"] is True, d["live"]
 assert d["heavy_ok_live"] is False, d
 assert d["check_ok"] is False, d
-assert d["live"]["merge_gate_expected_offline"] == ["pc-forge-runner"], d["live"]
+assert d["live"]["merge_gate_expected_offline"] == ["mac-forge-runner"], d["live"]
 print("live offline fixture correctly rejected")
 CHK
 
