@@ -1,21 +1,25 @@
 ---
 name: merge-babysit
 cadence: every 15 min
-description: Self-heal stuck PRs - green-unmerged, dropped auto-merge, BEHIND, red/missing ci-required. GitHub PRs for every repo except lastgit (Forgejo); the LastGit CR scan is legacy and skipped when LastGit is not enabled.
+description: Self-heal stuck PRs - green-unmerged, dropped auto-merge, BEHIND, red/missing ci-required. GitHub PRs for every repo except lastgit (Forgejo). LastGit is retired.
 ---
 
 You are the **merge-babysit** routine for `<WORKSPACE>`. You are the fleet
 **self-heal** path for stuck pull requests. Since 2026-09-30 every EdgeVector
 repo except `lastgit` is on GitHub (LastGit and the gaming PC are retired), so
-the live work is the GitHub pass in step 1b. Nothing resolves a merge conflict
+the live work is the open PR pass in step 1. Nothing resolves a merge conflict
 for you: you (or kanban-pickup via a card you file) must rebase, fix mechanical
-conflicts, re-green CI, and merge. The LastGit CR steps below are legacy and run
-only when LastGit is enabled.
+conflicts, re-green CI, and merge.
+
+CAUTION: LastGit is retired for every EdgeVector repo
+(`decision-2026-09-29-retire-lastgit-all-repos-to-github`). Run no `lastgit`
+command. Its registry schemas are not on the primary node, so every `lastgit`
+call fails.
 
 Scheduled runs use `last-stack-merge-demand-gate`. Skip when the open-PR pass
-and deploy scan are quiet. Ghost LastGit does not count. Aged open PRs and
-blocked deploys proceed. The repo lists are `config/merge-demand-github-repos`
-(every moved repo) and `config/merge-demand-forge-repos` (only `lastgit`).
+and deploy scan are quiet. Aged open PRs and blocked deploys proceed. The repo
+lists are `config/merge-demand-github-repos` (every moved repo) and
+`config/merge-demand-forge-repos` (only `lastgit`).
 
 Run **ONE bounded pass**, then exit. No `sleep` loops.
 
@@ -23,7 +27,7 @@ Run **ONE bounded pass**, then exit. No `sleep` loops.
 
 Stuck merges are **P0**. Outrank ordinary product work. Compete with
 `pipeline-health` only on **merge** work - leave deploy-pipeline reds to
-pipeline-health unless a CR is also stuck.
+pipeline-health unless a PR is also stuck.
 
 ## Automation memory
 
@@ -39,14 +43,11 @@ lines contaminate outcome parsers and waste the budget.
 ```bash
 last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 . "$last_stack/bin/last-stack-shell-prelude"
-"$last_stack/bin/last-stack-cli-preflight" git curl jq lastgit <board-cli> <brain-cli>
-export LASTGIT_SOCKET="${LASTGIT_SOCKET:-$HOME/.lastdb/data/folddb.sock}"
-export LASTGIT_SCHEMA_MAP="${LASTGIT_SCHEMA_MAP:-$HOME/.lastgit/schema-map.json}"
-export PATH="<LASTGIT_BIN_DIR>:$PATH"
+"$last_stack/bin/last-stack-cli-preflight" git curl jq gh <board-cli> <brain-cli>
 timeout_bin="$(command -v timeout || command -v gtimeout || true)"
 ```
 
-Never restart primary `lastdbd`. Prefer existing `com.edgevector.lastgit-forge-primary`.
+Never restart primary `lastdbd`. Never restart `forgejo`.
 
 ## Backend backpressure
 
@@ -56,25 +57,24 @@ Before declaring this wake an error, classify unavailable shared transport:
 `lastdb-unreachable`, "node read route not reachable", "node not running", or
 "Was there a typo in the url or port?".
 
-If the first posture, board, or LastGit inventory read hits one of those
-signals before any CR set is determined, this is transient shared backpressure,
-not a merge-babysit failure. Do not run doctor/init, do not restart
-LastDB/LastGit, do not mutate CRs/cards, and exit after reporting a
-`noop` with a busy-node/backend-unreachable reason:
+If the first posture or board read hits one of those signals before any PR set
+is determined, this is transient shared backpressure, not a merge-babysit
+failure. Do not run doctor/init, do not restart LastDB, do not mutate PRs or
+cards, and exit after reporting a `noop` with a busy-node/backend-unreachable reason:
 
 ```
 merge-babysit <ISO> noop stuck=unknown fixed=0 filed=0 reasons=busy-node flagged=backend-unreachable
 ```
 
 If a matching `situations notices --since 1h` entry exists, add
-`flagged=lastdb-transient`; otherwise still use `noop` because this routine
-cannot prove any CR is stuck while the inventory backend is unavailable.
+`flagged=lastdb-transient`; otherwise still use `noop`. A GitHub API error
+(rate limit, 5xx) is the same class: `noop`, flag `github-api-unavailable`.
 
 ## STEPS
 
 ### 0. Board closeout (CHEAP — always)
 
-Merged LastGit CRs often leave the kanban card in `doing` when watch is paused.
+Merged PRs often leave the kanban card in `doing` when watch is paused.
 Before detect/exit:
 
 ```bash
@@ -84,73 +84,11 @@ Before detect/exit:
 If stuck count is later 0, still report any `closed=` from this sweep in the
 heartbeat instead of pure `noop` when cards were closed.
 
-### 1. Detect (cheap)
+### 1. Open PR pass - GitHub (every repo except lastgit) and Forgejo (lastgit)
 
-CAUTION: LastGit is retired for every EdgeVector repo
-(`decision-2026-09-29-retire-lastgit-all-repos-to-github`). Its
-registry schemas (`LastgitRepoIndex`, `RepoApp`, `LastgitOpenCrInventory`) are
-not on the primary node, so `lastgit stuck` and `lastgit cr list --all-open`
-fail on every pass. When `LAST_STACK_LASTGIT_NATIVE_REPOS` is empty (the
-default), SKIP this whole step: run no `lastgit` command, file no papercut for
-the missing schemas, and go to step 1b. Run the LastGit detect below only for
-the repos that variable names.
-
-```bash
-"$timeout_bin" 180s lastgit stuck --json --min-age-min 10
-```
-
-If `lastgit stuck` is available, parse `.stuck[]`. If `count==0`, still keep
-any board-closeout results; only then heartbeat `noop no-stuck-crs` and EXIT
-when closeout also closed nothing.
-
-If `lastgit stuck` is unknown/missing, do **not** heartbeat `error` just for
-that capability gap. Record `flagged=lastgit-stuck-cmd-missing`, then fall
-back to the **fleet open-CR list** (one query — never N× `cr list <slug>`):
-
-```bash
-"$timeout_bin" 30s lastgit cr list --all-open --json
-# For at most 12 open CRs that look aged/suspicious, point-read CI/detail:
-"$timeout_bin" 20s lastgit ci status <head_oid> --repo <slug> --json
-"$timeout_bin" 20s lastgit cr view <slug> <cr_id> --json
-"$timeout_bin" 20s lastgit cr events <slug> <cr_id> --json
-```
-
-Cap detail probes at **12 open CRs** fleet-wide. Prefer CRs already seen in
-automation memory, then auto_merge=true, then list order. If caps leave
-entries unscanned, include
-`flagged=lastgit-cr-scan-capped:<remaining-count>` in the heartbeat and exit
-`ok` after filing/updating cards for any stuck CRs you did inspect.
-
-In fallback mode, treat an inspected CR as stuck when it has been open for
-more than 10 minutes (from CR events, CR view metadata, or automation-memory
-first-seen time) and any of these hold:
-
-- required CI is `success` / green but the CR is still open;
-- required CI is `failure` / red for the current head oid;
-- required CI is missing/pending with no update for more than 10 minutes;
-- CR events or forge/completer output show repeated `merge_conflict` or
-  `status_not_green`;
-- `auto_merge` is false but the CR body, card, or memory says it was opened
-  for auto-merge.
-
-Younger than 10 minutes with CI still running is normal lag, not stuck.
-If the fallback scan finds no stuck CRs, heartbeat
-`noop no-stuck-crs flagged=lastgit-stuck-cmd-missing` and EXIT.
-
-Only heartbeat `error` when the detector and fallback route both fail for a
-non-backpressure reason after proving this routine itself is broken, such as a
-bad parser, missing required local binary after preflight, malformed registry
-configuration, or an unhandled prompt/logic fault.
-
-### 1b. Open PR pass — GitHub (every repo except lastgit) and Forgejo (lastgit)
-
-`lastgit stuck` and `lastgit cr list` cover LastGit repos only, and no repo is
-LastGit-native any more. Every LastGit repo is DISABLED — every fetch returns
-`app_disabled`. A disabled LastGit repo is **expected**, not an inventory
-failure: never count it in `unreadable-repos`, and never let it turn this pass
-into `error`. The PR pass covers every repo in `config/merge-demand-github-repos`
-(GitHub) and `config/merge-demand-forge-repos` (`lastgit`, Forgejo). One scan
-reads both venues:
+The PR pass covers every repo in `config/merge-demand-github-repos` (GitHub) and
+`config/merge-demand-forge-repos` (`lastgit`, Forgejo). One scan reads both
+venues:
 
 ```bash
 "$timeout_bin" 300s "$last_stack/bin/last-stack-pipeline-forge-pr-ledger" scan --json >"$scratch/forge-open.json" 2>"$scratch/forge-open.err" || true
@@ -159,18 +97,13 @@ jq -r '.prs[] | select(.stuck) | [.repo, .number, .shape, .head_sha] | @tsv' "$s
 
 The scan classifies each PR from the base branch's required contexts. Do not
 write a per-repo shell loop; do not file per-PR papercuts (pipeline-health's
-ledger owns `papercut-pipeline-forge-<repo>-pr-<n>`).
+ledger owns `papercut-pipeline-forge-<repo>-pr-<n>`). If the scan finds no
+stuck PR and board closeout closed nothing, heartbeat `noop no-stuck-prs` and
+EXIT.
 
-The collection read can list a PR that a point read shows closed and merged
-(loom #26 on 2026-09-21, fold #2142 on 2026-09-22;
-`papercut-forge-open-pr-list-stale-merged`). Before you count or act on a PR
-from that list, point-read it and drop it unless it is still open and unmerged:
-
-```bash
-"$timeout_bin" 30s "$last_stack/bin/last-stack-forge-api" \
-  "repos/EdgeVector/$repo/pulls/$number" --jq '[.state, .merged] | @tsv'
-# act only on: open	false
-```
+The collection read can list a PR that a point read shows closed and merged.
+Before you count or act on a PR from that list, point-read it and drop it
+unless it is still open and unmerged.
 
 **GitHub PRs** (every repo except `lastgit`). Point-read a PR before you act, and read its check run:
 
@@ -207,95 +140,84 @@ PR can never merge red. Do not disable protection to unstick a PR.
 of these hold: required check `Forge CI / ci-required` is green but the PR is
 still open; the required check is red for the current head; the required check
 is missing or pending with no update for more than 10 minutes; or merge returns
-405 with green checks (stuck status-check task — heal with an empty commit per
+405 with green checks (stuck status-check task - heal with an empty commit per
 `papercut-forge-merge-405-stuck-status-check`).
 
-Advance a Forgejo PR with the normal merge API, not `lastgit cr merge`.
+Point-read a Forgejo PR before you act:
+
+```bash
+"$timeout_bin" 30s "$last_stack/bin/last-stack-forge-api" \
+  "repos/EdgeVector/$repo/pulls/$number" --jq '[.state, .merged] | @tsv'
+# act only on: open	false
+```
+
 HTTP 409 `pull request is already scheduled to auto merge when checks succeed`
 means auto-merge is already armed: a success receipt, not an error. Do not
 retry it and do not file it.
 
-An ARMED PR whose required check is already green can stay open forever:
-Forgejo 15.0.3 evaluates a scheduled auto-merge only on a new status event, so
-a schedule armed after the last green status never fires
+An ARMED Forgejo PR whose required check is already green can stay open forever:
+Forgejo 15.0.3 evaluates a scheduled auto-merge only on a new status event
 (`papercut-forgejo-auto-merge-armed-after-green-never-fires-20260923`). For
 each `green-unmerged` PR from the scan, run the bounded fallback. It merges
-only a PR that is armed (timeline `pull_scheduled_merge`), only after a 90s
-grace, and it re-arms the schedule if the direct merge fails:
+only a PR that is armed, only after a 90s grace, and it re-arms the schedule if
+the direct merge fails:
 
 ```bash
 "$timeout_bin" 120s "$last_stack/bin/last-stack-pipeline-forge-pr-ledger" \
   merge-green --repo "EdgeVector/$repo" --pr "$number" --apply || true
-# merged-now = healed · green-not-armed = leave it (owner did not arm)
-# merge-405 = stuck status task: empty-commit heal below
+# merged-now = healed - green-not-armed = leave it (owner did not arm)
+# merge-405 = stuck status task: empty-commit heal
 ```
 
-Report
-Forgejo counts in the heartbeat as `forge_stuck=<n>` alongside `stuck=<n>`.
+Report Forgejo counts in the heartbeat as `forge_stuck=<n>` alongside `stuck=<n>`.
 
-### 2. Prefer complete-only first
+### 2. HEAVY - fix ONE agent-fixable PR this wake
 
-For each `reason=green_unmerged` with `agent_fixable=true`:
+Step 1 handles the cheap cases. Prefer this order for the one heavy fix:
 
-```bash
-"$timeout_bin" 60s lastgit cr complete <repo> --once --json
-```
+1. BEHIND or `DIRTY` (merge conflict) on a green base
+2. red `ci-required` that is mechanical (lint, snapshot, lockfile)
+3. anything else that is agent-fixable
 
-Re-run stuck for that repo if needed. Completer lag should clear without a
-worktree.
+For the chosen GitHub PR:
 
-### 3. HEAVY - fix ONE agent_fixable CR this wake
-
-Prefer order:
-
-1. `green_merge_conflict`
-2. `red_ci` / `missing_ci` / `pending_ci` (mechanical only)
-3. remaining `green_unmerged` after complete failed
-
-For the chosen CR:
-
-1. `git fetch lastgit` in an isolated worktree on the **CR head branch**
-2. Merge or rebase onto current `main` / base
+1. `git fetch origin` in an isolated worktree (`git worktree add`) on the **PR head branch**
+2. Merge or rebase onto current `origin/main`
 3. Resolve **mechanical** conflicts only
-4. Run repo `.lastgit/ci.sh` (or narrow VERIFY)
-5. `git push lastgit HEAD:<head-branch>`
-6. Wait for green with a **hard outer shell timeout** (prefer
-   `"$timeout_bin" 120s lastgit ci status <oid> --repo <slug> --json`
-   polled a few times). If you use `lastgit ci watch`, wrap it:
-   `"$timeout_bin" 180s lastgit ci watch --repo ... --ref ... --timeout-ms 120000 --json`
-   and treat a green status in the log as success even if the watch process
-   does not exit - do **not** hang the whole wake waiting for watch to return.
-7. `lastgit cr complete <repo> --once --json`
+4. Run the repo CI script or a narrow VERIFY
+5. `git push origin HEAD:<head-branch>`
+6. Wait for green with a **hard outer shell timeout**: poll
+   `"$timeout_bin" 120s gh -R <owner>/<repo> pr checks <n>` a few times. Do
+   **not** hang the whole wake on `gh -R <owner>/<repo> pr checks <n> --watch`.
+7. Make sure auto-merge is armed: `gh -R <owner>/<repo> pr merge <n> --auto --squash`
 
 If product judgment is required: **do not** mint a default/`todo` `Kind: pr`
 card without milestone + North Star because that shape poisons board pickup.
 Prefer Brain papercut (below). For a
 true human gate only, file/update one card in **`backlog`** with
-`block_status=needs_human`, tags `pipeline,p0,merge`, body with CR id + conflict
+`block_status=needs_human`, tags `pipeline,p0,merge`, body with PR url + conflict
 files + `BLOCKED:`, and **never** leave it as a milestone-less `Kind: pr` in
 `todo`. Then EXIT.
 
-### 4. Escalate the rest as Brain papercuts (never bare todo Kind:pr)
+### 3. Escalate the rest as Brain papercuts (never bare todo Kind:pr)
 
 For a stuck **Forgejo PR**, file nothing here: pipeline-health's ledger
-(`last-stack-pipeline-forge-pr-ledger`) owns one row per PR, and the stuck filer
-below skips Forgejo ids (`forgejo-pr-<n>`, `<n>`). The filer is for opt-in
-LastGit CRs only.
+(`last-stack-pipeline-forge-pr-ledger`) owns one row per PR.
 
-For every other stuck LastGit CR you did not fix, including fallback-detected stuck
-CRs: **file or update a Brain papercut** (same policy as `pipeline-health` and
+For every stuck GitHub PR you did not fix: **file or update a Brain papercut**
+(same policy as `pipeline-health` and
 `preference-always-file-papercuts-in-brain`). Do **not** create
-`stuck-lastgit-*` / pipeline P0 `Kind: pr` cards in default `todo` without a
-real milestone + North Star + cold-start body — those cards cause pickup
+`stuck-*` / pipeline P0 `Kind: pr` cards in default `todo` without a
+real milestone + North Star + cold-start body - those cards cause pickup
 `write-guard` no-claims that block unrelated valid work.
 
 ```bash
-# Same door as pipeline-health. Never mint papercut-pipeline-stuck-cr-<repo>-<cr-id-short>
+# Same door as pipeline-health. Never mint papercut-pipeline-stuck-cr-<repo>-<pr-number>
 # and never `brain put` a type:reference stand-in.
 last-stack-pipeline-stuck-papercut-file \
-  --repo "<slug>" --cr-id "<cr_id>" \
-  --root-cause-slug "papercut-pipeline-stuck-merges-<slug>" \
-  --evidence "head_oid=<oid> reason=<reason> Checked-at=<ISO> <detail>" \
+  --repo "<repo>" --cr-id "<pr-number>" \
+  --root-cause-slug "papercut-pipeline-stuck-merges-<repo>" \
+  --evidence "head_sha=<sha> reason=<reason> Checked-at=<ISO> <detail>" \
   --json
 ```
 
@@ -303,7 +225,7 @@ Count these as `filed=<n>` in the heartbeat (`filed` means Brain papercuts
 and/or backlog human-gate cards — **not** bare todo Kind:pr).
 
 If you *must* file a pickup-ready board card (rare; only when a live
-milestone already owns the CR's repo work): attach `--north-star` +
+milestone already owns the PR's repo work): attach `--north-star` +
 `--milestone`, full `Repo:`/`Base:`/`Kind: pr` + GOAL/CONTEXT/STEPS/VERIFY body,
 and never use an empty/annotation-only body.
 
@@ -316,7 +238,7 @@ authoring paths:
 "$last_stack/bin/last-stack-park-stuck-merge-poison-cards" --board-cli <board CLI> --json || true
 ```
 
-The helper point-reads LastGit when possible: closed/merged CRs → `done`;
+The helper point-reads the PR when possible: closed/merged PRs → `done`;
 malformed milestone-less stuck-status cards → `backlog` (not `needs_human`).
 Include `poison_parked=` / `poison_closed=` in the heartbeat when non-zero.
 
@@ -333,16 +255,16 @@ local routine failure.
 ## DONE-WHEN (per wake)
 
 - stuck list empty after complete, OR
-- one mechanical CR advanced (new head and/or merged), OR
-- every remaining stuck CR has a live Brain papercut (or a pickup-safe board
+- one mechanical PR advanced (new head and/or merged), OR
+- every remaining stuck PR has a live Brain papercut (or a pickup-safe board
   card with milestone + North Star + cold-start body — never a bare todo Kind:pr)
 
 ## Guardrails
 
 - Never force-merge around red required checks
 - Never edit shared checkouts in place (`git worktree add`)
-- Never spawn background agents; you ARE the worker for at most one CR
-- Do not recreate `~/.lastgit/code`
+- Never spawn background agents; you ARE the worker for at most one PR
+- Run no `lastgit` command (retired)
 
 ## Close-out (always the LAST step)
 

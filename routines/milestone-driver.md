@@ -236,7 +236,7 @@ For each proposed slice:
 
    A read-only check needs no worktree. Use `./bin/wt start` only for edits.
 2. Point-read the merged reviews named by the proposal, milestone history, and
-   known closeouts. Do not use a GitHub mirror for a LastGit or Forgejo repo.
+   known closeouts. Do not use a GitHub mirror for the Forgejo-hosted `lastgit` repo.
 3. Point-read the known closeout cards with `kanban show`. Do not infer closeout
    state from a board list.
 4. Read the exact `Automation memory:` path from the dispatch envelope. If the

@@ -66,7 +66,7 @@ filing a fix **card** over landing code in this routine.
   read the PR and its `ci-required` check run with `gh`, and qualify every `gh`
   command with `-R owner/repo`. Only the `lastgit` repo answers `forgejo` (use the
   Forgejo SOP for it). LastGit is retired; a `lastgit://…/cr/…` line on an old card
-  is history, judged with the legacy LastGit SOP.
+  is a dead reference: find the real PR by the card branch on GitHub.
 
 ## Step 0 — cheap DONE-WHEN sweep (zero LLM work, do first)
 
