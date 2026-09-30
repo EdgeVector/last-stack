@@ -19,6 +19,10 @@ jobs:
       - name: hooks guards
         continue-on-error: true
         run: bash tests/last-stack-hooks-guards.sh 2>&1 | tail -30
+      - name: fqdn timing
+        continue-on-error: true
+        run: |
+          hostname; time python3 -c "import socket; print(socket.getfqdn('127.0.0.1'))"
       - name: env
         run: |
           echo "SHELL=$SHELL"; which bash python3; bash --version | head -1; python3 --version; sw_vers

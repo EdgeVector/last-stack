@@ -20,6 +20,13 @@ if [ "${#missing[@]}" -gt 0 ]; then
 fi
 export PATH="/opt/homebrew/bin:$PATH"
 [ -z "${GITHUB_PATH:-}" ] || echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+# python http.server calls socket.getfqdn() when it binds. On a runner whose
+# hostname does not resolve that blocks for many seconds, and the mock-server
+# tests give up after 2 s. Map the hostname to loopback like a normal host.
+h="$(hostname)"
+if ! grep -qw "$h" /etc/hosts 2>/dev/null; then
+  printf '127.0.0.1 %s %s\n' "$h" "$(hostname -s)" | sudo tee -a /etc/hosts >/dev/null
+fi
 # A cold python start on a fresh runner VM took longer than the 2.5 s the mock
 # server tests wait for; warm the import cache first.
 python3 -c "import http.server, json, sqlite3" >/dev/null
