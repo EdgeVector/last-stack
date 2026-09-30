@@ -337,28 +337,27 @@ bin/last-stack-artifact-host-track-proof
 Refresh stamps are written under `~/.host-track/stamps/<app>.json`, or under
 `HOST_TRACK_STAMP_DIR` when set.
 
-## Post-merge auto safe-upgrade (completer companion)
+## Post-merge auto safe-upgrade
 
-After a LastGit CR **merges to main**, the local forge supervisor can run
-install-side safe-upgrade so PATH tracks main without stuffing that into CI.
+After a PR **merges to main** on GitHub, `last-stack-post-merge-safe-upgrade`
+runs `host-track refresh <app>` so PATH tracks main without stuffing that into
+CI. The GitHub `ci-required` and publish workflow builds the artifact;
+`host-track refresh` pulls it with `last-stack-github-artifact-pull`.
 
 - **Script:** `last-stack-post-merge-safe-upgrade --all`
-- **Supervised by:** lastgit `.lastgit/forge-run.sh` (same process as CI watch +
-  Discord notify) when the binary is on PATH
-- **Detects merges** like `notify-discord.sh`: fleet open-CR index → open→gone →
-  `cr view` → if `state=merged` and base is `main` and repo is mapped → upgrade
+- **Supervisor:** none by default. LastGit's forge supervisor (retired
+  2026-09-30) used to start it. Run it by hand or from a LaunchAgent you own.
+- **Detects merges:** `gh pr list -R EdgeVector/<repo> --state merged --base main`
+  for each mapped repo. The first pass only seeds the handled set.
 - **Mapped apps:** last-stack / brain / situations / fkanban|kanban (app `kanban`) /
-  routines / lastsecrets / configurations / remote / search / loom → find the merge
-  oid's published manifest; if none exists yet (a LastGit-native repo has no
-  Forgejo `publish` job to have made one), clone `lastdb:///<repo>`, run
-  `.lastgit/ci.sh`, and `lastgit artifact publish` it from source; then
-  `lastgit artifact promote --gate lastgit` and `host-track refresh` (artifact
-  + `track_gate_main`)
+  routines / lastsecrets / configurations / remote / search / loom
+- **Convergence:** a refresh right after a merge can hold while the publish job
+  runs. Every 5 minutes the worker refreshes any mapped app that host-track
+  reports stale or main-unpublished.
 - **Failure:** log + retry (max 3); **does not unmerge**; operator can run
   `host-track refresh <app>` (artifact) or `last-stack-safe-upgrade-cli <app>`
   (local-safe) manually
-- **State:** `~/.lastgit/post-merge-safe-upgrade/`
-- **Disable:** `LAST_STACK_POST_MERGE_DISABLE=1` on the forge LaunchAgent env
+- **State:** `~/.local/state/last-stack/post-merge-safe-upgrade/`
 
 ```bash
 # map
