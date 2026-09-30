@@ -40,23 +40,26 @@ git -C "$repo" update-ref refs/remotes/origin/main "$initial_head"
 # the machine it happens to run on.
 unset LAST_STACK_LASTGIT_NATIVE_REPOS
 
-# Defaults without marker. 2026-09-06 (Tom): every EdgeVector repo is a Forgejo
-# gate of record; LastGit is opt-in only; GitHub copies are read-only mirrors,
-# so an unknown repo defaults to forgejo, never github or lastgit.
-test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo")" = "forgejo"
-test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/fkanban "$repo")" = "forgejo"
-test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/routines "$repo")" = "forgejo"
-test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/loom "$repo")" = "forgejo"
-test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/brain "$repo")" = "forgejo"
-test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/fold "$repo")" = "forgejo"
+# Defaults without marker. 2026-09-30 (Tom): every EdgeVector repo is on GitHub,
+# including an unknown one. Only the `lastgit` repo stays on Forgejo. LastGit is
+# retired (decision-2026-09-29-retire-lastgit-all-repos-to-github).
+for name in last-stack fkanban routines loom brain fold exemem-infra schema-infra configurations situations never-heard-of-it Keepside_Desktop; do
+  test "$("$ROOT/bin/last-stack-pr-venue" "EdgeVector/$name" "$repo")" = "github" \
+    || { echo "FAIL: EdgeVector/$name must default to github" >&2; exit 1; }
+done
 test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/lastgit "$repo")" = "forgejo"
-test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/exemem-infra "$repo")" = "forgejo"
-# An unknown EdgeVector repo is forgejo too (never github: mirrors are read-only).
-test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/never-heard-of-it "$repo")" = "forgejo"
-test "$("$ROOT/bin/last-stack-pr-venue" --json EdgeVector/never-heard-of-it "$repo" | jq -r .reason)" = "default:forgejo"
-# True GitHub primaries still default to github.
-test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/Keepside_Desktop "$repo")" = "github"
+test "$("$ROOT/bin/last-stack-pr-venue" --json EdgeVector/lastgit "$repo" | jq -r .reason)" = "default:forgejo-lastgit-repo"
+test "$("$ROOT/bin/last-stack-pr-venue" --json EdgeVector/never-heard-of-it "$repo" | jq -r .reason)" = "default:github"
+# No repo root at all still answers github (a routine shell has none).
+test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/loom)" = "github"
 test "$("$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo")" = "origin/main"
+
+# An ambient LAST_STACK_LASTGIT_NATIVE_REPOS (set in every routine shell) must not
+# bring the retired venue back. It counts only with LAST_STACK_LASTGIT_ENABLED=1.
+test "$(LAST_STACK_LASTGIT_NATIVE_REPOS="EdgeVector/last-stack EdgeVector/loom" "$ROOT/bin/last-stack-pr-venue" EdgeVector/loom "$repo")" = "github"
+test "$(LAST_STACK_LASTGIT_NATIVE_REPOS="EdgeVector/loom" "$ROOT/bin/last-stack-pr-venue" EdgeVector/loom)" = "github"
+# An explicit repo-local venue still wins over the default, and the env forgejo list works.
+test "$(LAST_STACK_FORGEJO_REPOS="EdgeVector/loom" "$ROOT/bin/last-stack-pr-venue" EdgeVector/loom)" = "forgejo"
 
 git -C "$repo" config laststack.pr-venue lastgit
 git -C "$repo" config laststack.lastgit-slug last-stack-shadow
@@ -86,7 +89,7 @@ test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo")" = "lastg
 test "$("$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo")" = "lastgit/main"
 
 rm "$repo/.last-stack/pr-venue"
-test "$(LAST_STACK_LASTGIT_NATIVE_REPOS="EdgeVector/last-stack EdgeVector/other" "$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo")" = "lastgit"
+test "$(LAST_STACK_LASTGIT_ENABLED=1 LAST_STACK_LASTGIT_NATIVE_REPOS="EdgeVector/last-stack EdgeVector/other" "$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo")" = "lastgit"
 
 printf '%s\n' "not-a-venue" > "$repo/.last-stack/pr-venue"
 if "$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo" >/dev/null 2>"$tmp/bad.err"; then

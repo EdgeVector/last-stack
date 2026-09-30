@@ -8,11 +8,18 @@ Usage: last-stack-pr-venue [--json|--compare-ref] <owner/repo> [repo-root]
 Print the PR/CR venue for a repo: github, forgejo, or lastgit.
 With --compare-ref, print the canonical ref for local-ahead checks.
 
-LastGit is opt-in only. A repo opts in with one of:
-  git config laststack.pr-venue lastgit
-  git config laststack.prVenue lastgit
-  .last-stack/pr-venue containing lastgit
-  LAST_STACK_LASTGIT_NATIVE_REPOS containing owner/repo
+Default (2026-09-30, decision-2026-09-29-retire-lastgit-all-repos-to-github):
+every EdgeVector repo is on GitHub, including an unknown one. The only exception
+is EdgeVector/lastgit, which stays on Forgejo. LastGit is retired.
+
+An explicit answer for one repo comes from, in this order:
+  git config laststack.pr-venue <venue>
+  git config laststack.prVenue <venue>
+  .last-stack/pr-venue, first line <venue>
+  LAST_STACK_LASTGIT_NATIVE_REPOS containing owner/repo, only when
+    LAST_STACK_LASTGIT_ENABLED=1 (an ambient list from a routine shell is
+    ignored, or it would bring a retired venue back)
+  LAST_STACK_FORGEJO_REPOS containing owner/repo
 
 Repo-local config may also set:
   git config laststack.lastgit-slug <slug>
@@ -149,7 +156,8 @@ list_contains_repo() {
   return 1
 }
 
-if [ -z "$venue" ] && list_contains_repo "${LAST_STACK_LASTGIT_NATIVE_REPOS:-}"; then
+if [ -z "$venue" ] && [ "${LAST_STACK_LASTGIT_ENABLED:-0}" = "1" ] \
+   && list_contains_repo "${LAST_STACK_LASTGIT_NATIVE_REPOS:-}"; then
   venue="lastgit"
   reason="env:LAST_STACK_LASTGIT_NATIVE_REPOS"
 fi
@@ -161,24 +169,19 @@ fi
 
 if [ -z "$venue" ]; then
   case "$repo" in
-    # True GitHub primaries only (Tom 2026-07-03: Keepside_Desktop is someone
-    # else's; the rest are public GitHub-native).
-    EdgeVector/Keepside_Desktop|EdgeVector/.github|EdgeVector/edgevectorlabs-website|EdgeVector/canonical-samples|EdgeVector/runner-smoke)
-      venue="github"
-      reason="default:github-primary"
-      ;;
-    # Everything else: the local Forgejo forge is the gate of record.
-    # 2026-09-06 (Tom): every EdgeVector repo left LastGit for Forgejo and
-    # LastGit is no longer a default for any repo — brain
-    # decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default. The
-    # four factory repos moved on 2026-09-05
-    # (decision-2026-09-05-factory-repos-venue-back-to-forgejo); fold and
-    # lastgit were Forgejo since 2026-07. GitHub copies are read-only mirrors,
-    # so an unknown repo must never default to github. LastGit stays explicit
-    # opt-in only (marker, git config, or LAST_STACK_LASTGIT_NATIVE_REPOS).
-    *)
+    # The one repo that stays on the local Forgejo forge (Tom, 2026-09-29):
+    # LastGit hosts itself there. Every other repo is on GitHub.
+    EdgeVector/lastgit)
       venue="forgejo"
-      reason="default:forgejo"
+      reason="default:forgejo-lastgit-repo"
+      ;;
+    # Everything else, moved or unknown, is a GitHub repo. History: all repos
+    # moved to Forgejo on 2026-09-06 and to LastGit era 3 on 2026-09-26; both
+    # were retired by decision-2026-09-29-retire-lastgit-all-repos-to-github.
+    # The last repo (last-stack) moved on 2026-09-30.
+    *)
+      venue="github"
+      reason="default:github"
       ;;
   esac
 fi
