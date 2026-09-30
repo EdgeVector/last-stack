@@ -58,21 +58,17 @@ git -C "$WORK/tap-src" add registry
 git -C "$WORK/tap-src" -c user.name=t -c user.email=t@example.com commit --quiet -m seed
 git clone --quiet --bare "$WORK/tap-src" "$WORK/tap.git"
 
-# --- a fake Forge API: publish-next posts a PR then a best-effort merge.
-# Real PR/merge calls never happen in this test -- the fake just has to hand
-# back a PR number so the script's own success/failure path is exercised. ---
-cat >"$WORK/forge-api" <<'FAKE'
+# --- a fake gh: publish-next opens a PR then arms auto-merge. Real PR/merge
+# calls never happen in this test -- the fake hands back a PR URL so the
+# script's own success/failure path is exercised. ---
+cat >"$WORK/gh" <<'FAKE'
 #!/usr/bin/env bash
-set -euo pipefail
-for a in "$@"; do
-  if [ "$a" = "--jq" ]; then
-    echo 4242
-    exit 0
-  fi
-done
-echo '{}'
+case "$1 $2" in
+  "pr create") echo "https://github.com/EdgeVector/homebrew-lastdb/pull/4242" ;;
+esac
+exit 0
 FAKE
-chmod +x "$WORK/forge-api"
+chmod +x "$WORK/gh"
 
 # --- a candidate set naming all 9 apps --------------------------------------
 python3 - "$apps9" >"$WORK/candidate-set.json" <<'PY'
@@ -89,27 +85,15 @@ out = {
 json.dump(out, sys.stdout)
 PY
 
-# This test covers the Forgejo PR path (status=pr). Pin that venue, and hand
-# lastgit a fake that fails loudly: the LastGit default would otherwise reach
-# the real node (tests/last-stack-registry-publish-next-venue.sh covers it).
-cat >"$WORK/lastgit" <<'FAKE'
-#!/usr/bin/env bash
-echo "fake lastgit: this test must not reach LastGit: $*" >&2
-exit 97
-FAKE
-chmod +x "$WORK/lastgit"
-
+# This test covers the default GitHub PR path (status=pr) against a fake gh.
 run_publish() {
   local proof="$1" run_id="$2" tap_dir="$3"
   shift 3
-  LAST_STACK_REGISTRY_TAP_VENUE=forgejo \
-  LASTGIT_BIN="$WORK/lastgit" \
+  GH_BIN="$WORK/gh" \
   LAST_STACK_REGISTRY_TAP_URL="$WORK/tap.git" \
   LAST_STACK_REGISTRY_TAP_DIR="$tap_dir" \
   LASTDB_REGISTRY_SIGNING_KEY="$WORK/signing.key" \
   LASTDB_BIN="$WORK/lastdb" \
-  FORGE_API_BIN="$WORK/forge-api" \
-  FORGE_GIT_BIN="$WORK/no-such-forge-git" \
   LAST_STACK_REGISTRY_KNOWN_APPS="$apps9" \
     "$BIN" --candidate-set "$WORK/candidate-set.json" --proof "$proof" \
       --lastdb-bin "$WORK/lastdb" --proof-run "$run_id" "$@"

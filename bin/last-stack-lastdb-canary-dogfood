@@ -748,7 +748,7 @@ def missing_forge_main_candidate() -> Candidate:
         note = (
             "no local lastdbd built from fold main tip; "
             f"main={main_oid[:12] if main_oid else 'unavailable'}; "
-            "build from Forgejo fold main (package-lastdb-bundle / cargo --release) "
+            "build from GitHub fold main (package-lastdb-bundle / cargo --release) "
             f"and stage under {canary_builds_root()}/<oid>/lastdbd. "
             "LAST_STACK_CANARY_LOCAL_FALLBACK_BIN also works but is a TRUST "
             "ESCAPE HATCH: it skips the mainline/oid check entirely, so it can "

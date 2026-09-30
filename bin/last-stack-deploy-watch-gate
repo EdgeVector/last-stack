@@ -2,9 +2,12 @@
 # The deploy-watch routine, zero-agent. Every tick, for each enabled repo in
 # config/deploy/repos.json:
 #
-#   1. read the forge tip of `ref` (default refs/heads/main)
+#   1. read the tip of `ref` (default refs/heads/main) from the repo's venue
+#      (github by default, via `gh`; forgejo only for a repo whose entry says
+#      "venue": "forgejo", which today is only the `lastgit` repo)
 #   2. if it differs from the last receipt for that repo and the commit's
-#      Forge CI combined status is `success`, start the deploy-main Loom
+#      CI state is `success` (GitHub: the `ci-required` check run; Forgejo:
+#      the combined commit status), start the deploy-main Loom
 #      graph for exactly that OID (last-stack-deploy-loom)
 #   3. otherwise say why not, in one line
 #
@@ -44,6 +47,7 @@ result() {
 command -v jq >/dev/null 2>&1 || result error "evidence=jq_missing"
 [ -x "$DEPLOY_BIN" ] || result error "evidence=tool_missing tool=$DEPLOY_BIN"
 
+default_venue="$(jq -r '.defaults.venue // "github"' "$CONFIG")"
 forge_root="$(jq -r '.defaults.forge_root // "http://localhost:3300"' "$CONFIG")"
 owner="$(jq -r '.defaults.owner // "EdgeVector"' "$CONFIG")"
 default_ref="$(jq -r '.defaults.ref // "refs/heads/main"' "$CONFIG")"
@@ -60,20 +64,41 @@ if [ -r "$ROOT/lib/forge-token.sh" ]; then
   esac
 fi
 
+repo_venue() {
+  local v
+  v="$(jq -r --arg r "$1" --arg d "$default_venue" '[.repos[] | select(.repo == $r) | .venue][0] // $d' "$CONFIG")"
+  case "$v" in github|forgejo) printf '%s' "$v" ;; *) printf 'github' ;; esac
+}
+
 read_tip() {
   local repo="$1" ref="$2"
   if [ -n "$TIP_CMD" ]; then
     "$TIP_CMD" "$repo" "$ref"
     return
   fi
+  if [ "$(repo_venue "$repo")" = github ]; then
+    timeout 60 gh api "repos/$owner/$repo/git/ref/${ref#refs/}" --jq '.object.sha' 2>/dev/null | head -n1
+    return
+  fi
   local url="$forge_root/$owner/$repo.git"
   GIT_TERMINAL_PROMPT=0 timeout 60 git ls-remote "$url" "$ref" 2>/dev/null | awk '{print $1}' | head -n1
 }
 
+# CI state for one commit: success | pending | failure | unknown.
 read_status() {
   local repo="$1" oid="$2"
   if [ -n "$STATUS_CMD" ]; then
     "$STATUS_CMD" "$repo" "$oid"
+    return
+  fi
+  if [ "$(repo_venue "$repo")" = github ]; then
+    # The required check is `ci-required`. No run yet is pending; a
+    # non-success conclusion is failure.
+    timeout 60 gh api "repos/$owner/$repo/commits/$oid/check-runs?check_name=ci-required" \
+      --jq 'if (.check_runs | length) == 0 then "pending"
+            elif (.check_runs | map(select(.status != "completed")) | length) > 0 then "pending"
+            elif (.check_runs | map(select(.conclusion == "success")) | length) > 0 then "success"
+            else "failure" end' 2>/dev/null || echo unknown
     return
   fi
   [ -x "$ROOT/bin/last-stack-forge-api" ] || { echo unknown; return; }

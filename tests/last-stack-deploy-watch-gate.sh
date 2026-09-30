@@ -75,4 +75,34 @@ grep -q "site=deployed@${C:0:12}" <<<"$out" || fail "recovery on new tip: $out"
 : >"$tmp/tip.txt"
 out="$(run)"; grep -q 'outcome=error' <<<"$out" && grep -q "site=tip_unreadable" <<<"$out" || fail "unreadable: $out"
 
+# GitHub venue (default): tip and CI come from `gh` (PATH stub), not Forgejo.
+mkdir -p "$tmp/ghbin"
+cat >"$tmp/ghbin/gh" <<'SH'
+#!/usr/bin/env bash
+echo "gh $*" >>"${GH_LOG:?}"
+case "$2" in
+  repos/T/site/git/ref/heads/main) cat "${TIP_FILE:?}" ;;
+  repos/T/site/commits/*/check-runs*) cat "${STATUS_FILE:?}" ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$tmp/ghbin/gh"
+grun() {
+  env PATH="$tmp/ghbin:$PATH" GH_LOG="$tmp/gh.log" LAST_STACK_DEPLOY_CONFIG="$tmp/repos.json" \
+    LAST_STACK_DEPLOY_LOOM_BIN="$tmp/deploy" TIP_FILE="$tmp/tip.txt" STATUS_FILE="$tmp/gstatus.txt" \
+    DEPLOY_LOG="$tmp/deploy.log" "$@" "$GATE"
+}
+: >"$tmp/gh.log"; rm -rf "$tmp/state"
+D="$(printf 'd%.0s' {1..40})"
+echo "$D" >"$tmp/tip.txt"
+# the stub returns what --jq would print, so the gate must ask for the check run
+echo success >"$tmp/gstatus.txt"
+out="$(grun)"
+grep -q "site=deployed@${D:0:12}" <<<"$out" || fail "github green: $out"
+grep -q 'gh api repos/T/site/git/ref/heads/main' "$tmp/gh.log" || fail "gh tip call: $(cat "$tmp/gh.log")"
+grep -q 'gh api repos/T/site/commits/'"$D"'/check-runs?check_name=ci-required' "$tmp/gh.log" || fail "gh check-runs call: $(cat "$tmp/gh.log")"
+grep -q -- "--repo site --oid $D" "$tmp/deploy.log" || fail "github deploy args"
+E="$(printf 'e%.0s' {1..40})"; echo "$E" >"$tmp/tip.txt"; echo pending >"$tmp/gstatus.txt"
+out="$(grun)"; grep -q "site=ci_pending@${E:0:12}" <<<"$out" || fail "github pending: $out"
+
 echo "PASS last-stack-deploy-watch-gate"

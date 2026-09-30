@@ -228,16 +228,15 @@ jq -e '
   .apps[] | select(.app == "situations")
   | .install_mode == "artifact"
     and .kind == "artifact cli"
-    and .gate == "forgejo"
-    and .gate_main == "http://localhost:3300/EdgeVector/situations.git#main"
-    and .track_gate_main == false
+    and .gate == "github"
+    and .gate_main == "https://github.com/EdgeVector/situations.git#main"
     and (.refresh | not)
     and .artifact_app == "situations"
     and .artifact_channel == "stable"
     and .artifact_root == "$HOME/.lastgit/artifacts"
     and .install_root == "$HOME/.host-track/apps/situations"
     and any(.links[]; .source == "dist/situations" and .target == "$HOME/.local/bin/situations")
-' "$default_registry" >/dev/null || fail "default situations registry is not a real LastGit host-track entry"
+' "$default_registry" >/dev/null || fail "default situations registry is not a real GitHub-gated host-track entry"
 
 remote_status="$(HOME="$tmp/default-home" HOST_TRACK_REGISTRY="$default_registry" "$ROOT/bin/host-track" status --json remote)"
 printf '%s\n' "$remote_status" | jq -e '
@@ -245,8 +244,8 @@ printf '%s\n' "$remote_status" | jq -e '
   and .install_mode == "artifact"
   and .kind == "artifact cli"
   and .command == "ra"
-  and .gate == "forgejo"
-  and .gate_main == "http://localhost:3300/EdgeVector/remote.git#main"
+  and .gate == "github"
+  and .gate_main == "https://github.com/EdgeVector/remote.git#main"
   and .artifact_app == "remote"
   and .artifact_channel == "stable"
   and (.artifact_root | endswith("/default-home/.lastgit/artifacts"))

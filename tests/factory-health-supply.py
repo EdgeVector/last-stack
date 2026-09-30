@@ -210,7 +210,7 @@ else:
     raise SystemExit(99)
 ''', encoding="utf-8")
     stub.chmod(0o755)
-    for name in ("kanban", "fkanban", "ra", "lastgit", "last-stack-forge-api", "brain"):
+    for name in ("kanban", "fkanban", "ra", "gh", "last-stack-forge-api", "brain"):
         (binaries / name).symlink_to(stub.name)
     config = root / "config.toml"
     # Every non-supply band off so the verdict is the supply verdict alone.

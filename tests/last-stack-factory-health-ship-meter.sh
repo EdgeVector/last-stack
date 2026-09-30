@@ -167,48 +167,55 @@ check("board fallback gone: last_h unavailable", snap.ships_last_h, None)
 check("board fallback gone: h24 unavailable", snap.ships_24h, None)
 check("board fallback gone: available false", snap.ships_available, False)
 
-# ── lastgit rows count merges, not cards ──────────────────────────────────
+# ── GitHub rows count merges, not cards ───────────────────────────────────
 rows = [
-    {"repo": "fold", "merged_at": "2026-09-04T04:48:12Z", "merge_oid": "abc"},
-    {"repo": "loom", "merged_at": "2026-09-04T04:10:00Z", "merge_oid": "def"},
+    {"closedAt": "2026-09-04T04:48:12Z"},
+    {"closedAt": "2026-09-04T04:10:00Z"},
 ]
 now = ts("2026-09-04T06:05:00Z")
-times = [fh.parse_merge_ts(r["merged_at"]) for r in rows]
-read = fh.ships_from_merge_times(times, now=now, use_completed_hour=True, source="lastgit")
-check("lastgit completed-hour count", read.last_h, 2.0)
-check("lastgit source", read.source, "lastgit")
+times = [fh.parse_merge_ts(r["closedAt"]) for r in rows]
+read = fh.ships_from_merge_times(times, now=now, use_completed_hour=True, source="github")
+check("github completed-hour count", read.last_h, 2.0)
+check("github source", read.source, "github")
+check("default source is github", fh.ships_from_merge_times(times, now=now).source, "github")
+
+gh_calls = []
 
 
-def stub_lastgit_only(cmd, timeout=0):
-    if cmd and cmd[0] == "lastgit":
+def stub_github_only(cmd, timeout=0):
+    gh_calls.append(cmd)
+    if cmd and cmd[0] == "gh":
         return 0, json.dumps(rows), ""
     return 1, "", "no forgejo in this stub"
 
 
-resolved = fh.resolve_ships(None, True, now=now, runner=stub_lastgit_only)
-check("resolve uses lastgit when dashboard is absent", resolved.source, "lastgit")
-check("resolve lastgit last_h", resolved.last_h, 2.0)
+resolved = fh.resolve_ships(None, True, now=now, runner=stub_github_only)
+check("resolve uses github when dashboard is absent", resolved.source, "github")
+check("resolve github last_h", resolved.last_h, 2.0)
+gh_cmd = next(c for c in gh_calls if c[0] == "gh")
+check("gh search prs is the reader", gh_cmd[1:3], ["search", "prs"])
+check("gh search is merged-only", "--merged" in gh_cmd, True)
+check("no lastgit CLI is called", any(c[0] == "lastgit" for c in gh_calls), False)
 
-# lastgit empty + forgejo fail → unavailable, not a measured zero
-def stub_both_fail(cmd, timeout=0):
-    if cmd and cmd[0] == "lastgit":
+
+def stub_gh_empty(cmd, timeout=0):
+    if cmd and cmd[0] == "gh":
         return 0, "[]", ""
     return 1, "", "forge down"
 
 
-empty = fh.resolve_ships(None, True, now=now, runner=stub_both_fail)
-check("empty lastgit + failed forgejo is unavailable", empty.source, "unavailable")
-check("empty lastgit + failed forgejo last_h is None", empty.last_h, None)
-check("empty lastgit + failed forgejo available", empty.available, False)
+zero = fh.resolve_ships(None, True, now=now, runner=stub_gh_empty)
+check("successful empty github read is a measured zero", zero.h24, 0.0)
+check("successful empty github read is available", zero.available, True)
 
 
-def stub_lastgit_fail(cmd, timeout=0):
-    return 1, "", "lastgit disabled"
+def stub_gh_fail(cmd, timeout=0):
+    return 1, "", "gh not authenticated"
 
 
-both_fail = fh.resolve_ships(None, True, now=now, runner=stub_lastgit_fail)
-check("both CLIs failed → unavailable", both_fail.source, "unavailable")
-check("both CLIs failed → no invented zero", both_fail.h24, None)
+both_fail = fh.resolve_ships(None, True, now=now, runner=stub_gh_fail)
+check("both readers failed → unavailable", both_fail.source, "unavailable")
+check("both readers failed → no invented zero", both_fail.h24, None)
 
 # ── replay of the six overnight hours that paged ships_h=0 ────────────────
 # Heartbeats vs real merges that hour (papercut 2026-09-04):
@@ -237,7 +244,7 @@ check("replay six flagged hours", replay_hours, [4, 4, 4, 5, 3, 2])
 # (the hour containing the heartbeat) must read 5, not 0.
 hb_now = ts("2026-09-04T04:20:26Z")
 inside = fh.ships_from_merge_times(
-    replay_ts, now=hb_now, use_completed_hour=False, source="lastgit"
+    replay_ts, now=hb_now, use_completed_hour=False, source="github"
 )
 check("04Z heartbeat hour reads 5, not 0", inside.last_h, 5.0)
 
@@ -283,8 +290,8 @@ fg_calls = []
 
 def stub_forge_only(cmd, timeout=0):
     fg_calls.append(cmd[-1])
-    if cmd[0] == "lastgit":
-        return 1, "", "repo-list index read failed"
+    if cmd[0] == "gh":
+        return 1, "", "gh search failed"
     path = cmd[-1]
     if path.startswith("orgs/EdgeVector/repos"):
         return 0, json.dumps([

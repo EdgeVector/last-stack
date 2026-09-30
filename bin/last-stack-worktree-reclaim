@@ -102,10 +102,10 @@ board_read_ok=0
 # Open PR / CR index. A worktree whose branch is the head of an OPEN change
 # request is not finished, however clean and however old: it is a change in
 # CI. On 2026-09-06 this sweep deleted the same brain worktree twice
-# (`reclaim finished … age_h=1 clean=1`) while its branch had an open LastGit
-# CR and then an open Forgejo PR — the agent lost its checkout mid-run both
-# times. Built once per sweep from LastGit's fleet open-CR index and the
-# Forgejo open-PR lists; lines are `<repo>\t<branch>`. When the index cannot
+# (`reclaim finished … age_h=1 clean=1`) while its branch had an open change
+# request — the agent lost its checkout mid-run twice. Built once per sweep
+# from the GitHub open-PR lists (every EdgeVector repo except `lastgit`) and
+# the Forgejo open-PR lists (the `lastgit` repo); lines are `<repo>\t<branch>`. When the index cannot
 # be read, the fast finished-work path is DISABLED (fail closed) and only the
 # conservative --max-age-hours gate applies, the same shape as board_unavailable.
 # LAST_STACK_RECLAIM_OPEN_HEADS_FILE injects a prebuilt index (tests, offline);
@@ -117,10 +117,11 @@ open_pr_check=1
 [ "${LAST_STACK_RECLAIM_SKIP_OPEN_PR:-0}" = "1" ] && open_pr_check=0
 open_heads_file="${LAST_STACK_RECLAIM_OPEN_HEADS_FILE:-}"
 # Offline mode (SKIP_BOARD is the tests/offline knob): no board, no forge, no
-# lastgit — unless a prebuilt index was injected. Every reclaim test in the
+# GitHub — unless a prebuilt index was injected (or OPEN_PR_LIVE=1 is set). Every reclaim test in the
 # required gate runs this way, and a network read per test put the gate past
 # its 25-minute deadline twice on 2026-09-07 (runs 144 and 146).
-if [ "${LAST_STACK_RECLAIM_SKIP_BOARD:-0}" = "1" ] && [ -z "$open_heads_file" ]; then
+if [ "${LAST_STACK_RECLAIM_SKIP_BOARD:-0}" = "1" ] && [ -z "$open_heads_file" ] \
+  && [ "${LAST_STACK_RECLAIM_OPEN_PR_LIVE:-0}" != "1" ]; then
   open_pr_check=0
 fi
 kept_open_pr=0
@@ -574,7 +575,7 @@ save_dirty_patch() {
   fi
 }
 
-# Repo slug of a worktree, as LastGit and Forgejo name it: the basename of the
+# Repo slug of a worktree, as GitHub and Forgejo name it: the basename of the
 # common git dir with any `.git` suffix removed (`~/.cache/edgevector-git/brain.git`
 # → brain, `~/code/edgevector/last-stack` → last-stack).
 worktree_repo_slug() {
@@ -595,7 +596,7 @@ worktree_branch() {
 # BOTH sources answered (or were injected); a partial read protects nothing it
 # did not see, so it counts as unreadable.
 build_open_head_index() {
-  local out="$1" ok=1 lg_bin forge_api tout repos r
+  local out="$1" ok=1 forge_api tout repos r
   : >"$out"
   if [ -n "$open_heads_file" ]; then
     [ -f "$open_heads_file" ] || { open_index_ok=0; return 0; }
@@ -604,25 +605,26 @@ build_open_head_index() {
     return 0
   fi
   tout="$(command -v timeout || command -v gtimeout || true)"
-  # LastGit fleet open-CR index: one keyed read, rows carry repo + head_ref.
-  # LastGit is retired as a review venue
-  # (decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default): no repo
-  # opens a CR there, so its failing `cr list` must not mark the whole index
-  # unreadable and disable finished-work reclaim every run
-  # (papercut-disk-reclaim-open-pr-index-unreadable-20260922). Opt back in with
-  # LAST_STACK_RECLAIM_LASTGIT_OPEN_CRS=1.
-  lg_bin=""
-  if [ "${LAST_STACK_RECLAIM_LASTGIT_OPEN_CRS:-0}" = "1" ]; then
-    lg_bin="$(command -v lastgit || true)"
-  fi
-  if [ -n "$lg_bin" ]; then
-    if ! ${tout:+"$tout" 20s} "$lg_bin" cr list --all-open --json 2>/dev/null \
-      | jq -r '(if type == "array" then . else (.rows // .crs // []) end) | .[]? | select((.state // "open") != "merged" and (.state // "open") != "closed") | [(.repo // ""), ((.head_ref // .head // .head_branch // "") | sub("^refs/heads/"; ""))] | select(.[0] != "" and .[1] != "") | @tsv' >>"$out" 2>/dev/null; then
-      log "open-pr index: lastgit cr list --all-open failed"
+  # GitHub: every repo with an open PR, then that repo's open PR heads. This
+  # is the venue of every repo except `lastgit`, so an unreadable GitHub side
+  # marks the index unreadable (fail closed).
+  if command -v gh >/dev/null 2>&1; then
+    repos="$(${tout:+"$tout" 30s} gh search prs --owner EdgeVector --state open --json repository --limit 200 2>/dev/null \
+      | jq -r '.[]? | .repository.name // empty' 2>/dev/null | sort -u || true)"
+    if [ -z "$repos" ] && ! ${tout:+"$tout" 30s} gh search prs --owner EdgeVector --state open --json number --limit 1 >/dev/null 2>&1; then
+      log "open-pr index: gh search prs failed"
       ok=0
     fi
+    for r in $repos; do
+      if ! ${tout:+"$tout" 30s} gh pr list -R "EdgeVector/$r" --state open --json headRefName --limit 100 2>/dev/null \
+        | jq -r --arg r "$r" '.[]? | [$r, (.headRefName // "")] | select(.[1] != "") | @tsv' >>"$out" 2>/dev/null; then
+        log "open-pr index: gh pr list failed for $r"
+        ok=0
+      fi
+    done
   else
-    log "open-pr index: LastGit venue skipped (retired; set LAST_STACK_RECLAIM_LASTGIT_OPEN_CRS=1 to read it)"
+    log "open-pr index: gh not found (GitHub venue unreadable)"
+    ok=0
   fi
   # Forgejo: every repo with an open PR, then that repo's open PR heads.
   forge_api="${LAST_STACK_FORGE_API:-$HOME/.last-stack/bin/last-stack-forge-api}"

@@ -154,10 +154,10 @@ clone_or_update() {
   fi
 }
 
-# A candidate set can name a LastGit source (lastdb:///<repo>): since LastGit
-# era 3 (2026-09-26/27) that is every app's gate of record, and the Forgejo
-# copy is frozen. Only the internal proving path (Tom's machine) writes such a
-# set; a public install resolves GitHub sources and never reaches this.
+# An old candidate set can name a LastGit source (lastdb:///<repo>). LastGit is
+# retired (2026-09-30): every app's gate of record is its GitHub repo and the
+# candidate set no longer writes lastdb:/// sources. This handling stays only
+# so a set written before the retirement still installs.
 #
 # git reaches lastdb:// through the `git-remote-lastdb` helper, which finds
 # the node socket and its schema map under $HOME. The install smoke runs under
@@ -196,9 +196,9 @@ install_pinned() {
   esac
   if [ -d "$dest/.git" ]; then
     echo "==> pinning $name to ${sha:0:12} ($why)"
-    # The pinned source wins over whatever an earlier run cloned from. Since
-    # LastGit era 3 an app's gate of record moved from Forgejo to LastGit, so
-    # a clone made from the frozen Forgejo copy never sees a newer commit.
+    # The pinned source wins over whatever an earlier run cloned from. An
+    # app's gate of record is its GitHub repo, so a clone made from a frozen
+    # Forgejo or LastGit copy never sees a newer commit.
     origin="$(git -C "$dest" remote get-url origin 2>/dev/null || true)"
     if [ -n "$url" ] && [ "$origin" != "$url" ]; then
       git -C "$dest" remote set-url origin "$url" 2>/dev/null \

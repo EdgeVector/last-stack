@@ -13,8 +13,10 @@ app="$(printf '%s' "$input" | jq -r '.app // empty')"
 repo="$app"
 [ "$repo" = "kanban" ] && repo="fkanban"
 
-command -v lastgit >/dev/null 2>&1 || exit 1
-tip="$(lastgit ref "$repo" main 2>/dev/null | awk '{print $1}')"
+command -v gh >/dev/null 2>&1 || exit 1
+tip="$(gh api "repos/EdgeVector/$repo/git/ref/heads/main" --jq '.object.sha' 2>/dev/null || true)"
 [ -n "$tip" ] || exit 1
-state="$(lastgit ci status "$tip" --repo "$repo" --json 2>/dev/null | jq -r '.state // empty')"
+# GitHub gate of record: the required `ci-required` check run must be green.
+state="$(gh api "repos/EdgeVector/$repo/commits/$tip/check-runs?check_name=ci-required" \
+  --jq '[.check_runs[] | select(.status == "completed") | .conclusion] | if index("success") then "success" else "other" end' 2>/dev/null || true)"
 [ "$state" = "success" ]

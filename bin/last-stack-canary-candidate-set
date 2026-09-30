@@ -8,27 +8,25 @@ that gets published, not "whatever main was when the user cloned".
 
 Per app the commit comes from, in order:
   1. --pin <app>=<sha>                    operator override
-  2. the LastGit artifact CAS channel     channels/<artifact_app>/<channel>.json
+  2. the artifact CAS channel             channels/<artifact_app>/<channel>.json
      (the app's released head: built and green-published)
   3. `git ls-remote <source> refs/heads/main`
 
-The source is the app's gate of record. Since 2026-09-30 that is `github` (the
-GitHub repo) in config/registry/apps.json for every app that moved (LastGit is
-retired: decision-2026-09-29-retire-lastgit-all-repos-to-github). An app that
-has not moved keeps `lastgit` (lastdb:///<repo>) in config/registry/apps.json;
-each repo's Forgejo copy (`forge`) is frozen read-only and never gets a new commit.
-A set that names the frozen copy pins commits it cannot serve: measured
-2026-09-27, routines' artifact head 3bf55c676a14 was on LastGit only, and
-every primary-rows smoke went RED on it. `--source-venue` picks the venues:
-`auto` tries `github` (when the app has one), then `lastgit` (when the app has
-one and git-remote-lastdb is on PATH), and then `forge`; `github`, `lastgit` or
-`forge` tries only that one.
+The source is the app's gate of record: `github` (the GitHub repo) in
+config/registry/apps.json. Every EdgeVector repo except `lastgit` is on GitHub
+(2026-09-30, decision-2026-09-29-retire-lastgit-all-repos-to-github); LastGit is
+retired and this script no longer reads it. Each repo's Forgejo copy (`forge`)
+is frozen read-only and never gets a new commit. A set that names the frozen
+copy pins commits it cannot serve: measured 2026-09-27, routines' artifact head
+3bf55c676a14 was not on the frozen copy, and every primary-rows smoke went RED
+on it. `--source-venue` picks the venues: `auto` tries `github` (when the app
+has one), then `forge`; `github` or `forge` tries only that one.
 
 Each pin is probed on each candidate source in order (one depth-1 fetch into
 a throwaway repo), and the first source that serves it wins. A fallback is
-normal for a commit released before the cutover to a LastGit repo that was
-seeded from a squash (situations, 2026-09-28: artifact head 38b0b7f6d689 is
-on Forgejo and GitHub, not on LastGit). It prints a NOTE and the row records
+normal for a commit released before a repo was seeded from a squash
+(situations, 2026-09-28: artifact head 38b0b7f6d689 was on the frozen Forgejo
+copy but not on the squash-seeded repo). It prints a NOTE and the row records
 `source_fallback_from`. A pin that no source serves prints a WARNING and the
 row records `source_reachable: false`; the smoke then fails that app alone.
 
@@ -48,7 +46,6 @@ import argparse
 import datetime as dt
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -167,14 +164,9 @@ def main_oid(url: str) -> str:
     return ""
 
 
-def lastgit_helper_available() -> bool:
-    return shutil.which("git-remote-lastdb", path=forge_git_env().get("PATH")) is not None
-
-
 def source_candidates(app: str, cfg: dict, venue: str) -> list[tuple[str, str]]:
     """Ordered (url, venue) sources to try for one app. See the module docstring."""
     github = str(cfg.get("github") or "")
-    lastgit = str(cfg.get("lastgit") or "")
     forge = str(cfg.get("forge") or "")
     if venue == "github":
         if not github:
@@ -182,24 +174,9 @@ def source_candidates(app: str, cfg: dict, venue: str) -> list[tuple[str, str]]:
         return [(github, "github")]
     if venue == "forge":
         return [(forge, "forge")] if forge else []
-    if venue == "lastgit":
-        if not lastgit:
-            die(f"--source-venue lastgit: app {app!r} has no `lastgit` field", 2)
-        if not lastgit_helper_available():
-            die("--source-venue lastgit: git-remote-lastdb is not on PATH", 2)
-        return [(lastgit, "lastgit")]
     out: list[tuple[str, str]] = []
     if github:
         out.append((github, "github"))
-    if lastgit and lastgit_helper_available():
-        out.append((lastgit, "lastgit"))
-    elif lastgit and not github:
-        # Say so: the frozen copy is the failure this venue choice exists to avoid.
-        print(
-            f"last-stack-canary-candidate-set: WARNING {app}: git-remote-lastdb is not on PATH; "
-            f"reading the frozen Forgejo copy {forge} instead of {lastgit}",
-            file=sys.stderr,
-        )
     if forge:
         out.append((forge, "forge"))
     return out
@@ -211,7 +188,7 @@ def commit_reachable(probe_root: Path, url: str, sha: str) -> bool:
     Never the version cache: it keeps commits from every source it ever read,
     so a commit found there says nothing about THIS source. Measured
     2026-09-28: situations' artifact head 38b0b7f6d689 was in the cache (read
-    from Forgejo) but not on LastGit, whose history for situations starts at a
+    from Forgejo) but not on GitHub, whose history for situations starts at a
     squashed era-3 seed commit."""
     probe_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="probe.", dir=str(probe_root)) as tmp:
@@ -267,10 +244,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--artifact-channel", default="stable", help="artifact CAS channel that names each app's released head")
     parser.add_argument(
         "--source-venue",
-        choices=("auto", "github", "lastgit", "forge"),
+        choices=("auto", "github", "forge"),
         default=os.environ.get("LAST_STACK_CANDIDATE_SOURCE_VENUE", "auto"),
         help="where each app's source is read: auto (github when the app has one, then "
-        "lastgit when git-remote-lastdb is on PATH, then forge), github, lastgit, or forge (the frozen copy)",
+        "forge), github, or forge (the frozen copy)",
     )
     parser.add_argument("--cache-root", type=Path, default=DEFAULT_CACHE_ROOT)
     parser.add_argument("--no-version-lookup", action="store_true", help="skip the package.json fetch; versions read 0.0.0")
@@ -324,10 +301,9 @@ def main(argv: list[str]) -> int:
         if not sha:
             missing.append(app)
             continue
-        # The first source that serves the commit wins. LastGit first: it is
+        # The first source that serves the commit wins. GitHub first: it is
         # the gate of record. The frozen Forgejo copy still serves every commit
-        # made before the era-3 cutover, which a LastGit repo seeded from a
-        # squash does not have.
+        # made before a squash-seeded repo, which GitHub may not have.
         source, venue = candidates[0]
         reachable = True
         fallback_from = ""

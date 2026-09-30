@@ -395,7 +395,7 @@ def ships_from_merge_times(
     timestamps: list[float],
     now: Optional[float] = None,
     use_completed_hour: bool = True,
-    source: str = "lastgit",
+    source: str = "github",
 ) -> ShipRead:
     """Bucket merge timestamps into last completed hour and the last 24 h."""
     now = time.time() if now is None else now
@@ -428,22 +428,32 @@ def ships_from_merge_times(
     )
 
 
-def lastgit_merged_times(
-    since_h: float = 26.0, runner=None
+def github_merged_times(
+    since_h: float = 26.0, org: str = "EdgeVector", runner=None, now: Optional[float] = None
 ) -> Optional[list[float]]:
-    """Fleet merged-CR timestamps, or None when the CLI itself failed."""
+    """Merged GitHub PR timestamps across one org, or None when `gh` failed.
+
+    Every EdgeVector repo except `lastgit` is on GitHub (decision-2026-09-29-
+    retire-lastgit-all-repos-to-github). One search call reads the fleet; the
+    closedAt of a merged PR is its merge time.
+    """
     runner = runner or run
+    now = time.time() if now is None else now
+    since = datetime.fromtimestamp(now - since_h * HOUR_S, tz=timezone.utc)
     code, out, _err = runner(
         [
-            "lastgit",
-            "cr",
-            "list",
-            "--all-repos",
-            "--state",
-            "merged",
-            "--since",
-            f"{int(since_h)}h",
+            "gh",
+            "search",
+            "prs",
+            "--owner",
+            org,
+            "--merged",
+            "--merged-at",
+            ">=" + since.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "--json",
+            "closedAt",
+            "--limit",
+            "1000",
         ],
         timeout=45.0,
     )
@@ -459,12 +469,7 @@ def lastgit_merged_times(
     for row in rows:
         if not isinstance(row, dict):
             continue
-        ts = parse_merge_ts(
-            row.get("merged_at")
-            or row.get("mergedAt")
-            or row.get("closed_at")
-            or row.get("updated_at")
-        )
+        ts = parse_merge_ts(row.get("closedAt") or row.get("closed_at"))
         if ts is not None:
             times.append(ts)
     return times
@@ -573,7 +578,7 @@ def resolve_ships(
     now: Optional[float] = None,
     runner=None,
 ) -> ShipRead:
-    """Dashboard merge-derived first, then lastgit, then Forgejo. Never board cards."""
+    """Dashboard merge-derived first, then GitHub (plus Forgejo for the lastgit repo). Never board cards."""
     dash = ships_from_dashboard(factory, use_completed_hour)
     if dash is not None and dash.available:
         return dash
@@ -588,33 +593,22 @@ def _resolve_ships_direct(
     now: Optional[float] = None,
     runner=None,
 ) -> ShipRead:
-    """lastgit, then Forgejo. Used when the dashboard is absent or unavailable."""
-    lg = lastgit_merged_times(since_h=26.0, runner=runner)
-    if lg:
-        return ships_from_merge_times(
-            lg, now=now, use_completed_hour=use_completed_hour, source="lastgit"
-        )
+    """GitHub, plus Forgejo (the `lastgit` repo only). Used when the dashboard is absent or unavailable."""
+    gh = github_merged_times(since_h=26.0, runner=runner, now=now)
     fg = forgejo_merged_times(since_h=26.0, runner=runner, now=now)
-    if fg:
+    if gh is None and fg is None:
+        return ShipRead.missing("unavailable")
+    if gh is None:
+        # GitHub is where nearly every merge lands; Forgejo alone is a
+        # partial read, so it is only a fallback when it saw a merge.
+        if not fg:
+            return ShipRead.missing("unavailable")
         return ships_from_merge_times(
             fg, now=now, use_completed_hour=use_completed_hour, source="forgejo"
         )
-    # lastgit returned [] and forgejo failed, or both failed.
-    if lg is None and fg is None:
-        return ShipRead.missing("unavailable")
-    # A successful empty lastgit with a failed forgejo is not a measured zero
-    # after the 2026-09-06 venue flip (LastGit repos are disabled).
-    if lg is not None and len(lg) == 0 and fg is None:
-        return ShipRead.missing("unavailable")
-    if fg is not None and len(fg) == 0:
-        return ships_from_merge_times(
-            fg, now=now, use_completed_hour=use_completed_hour, source="forgejo"
-        )
-    if lg is not None:
-        return ships_from_merge_times(
-            lg, now=now, use_completed_hour=use_completed_hour, source="lastgit"
-        )
-    return ShipRead.missing("unavailable")
+    return ships_from_merge_times(
+        gh + (fg or []), now=now, use_completed_hour=use_completed_hour, source="github"
+    )
 
 
 def factory_status_label(fetch: FactoryFetch) -> str:

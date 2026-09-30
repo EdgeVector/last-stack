@@ -41,7 +41,7 @@ else:
     raise SystemExit(99)
 ''', encoding="utf-8")
     stub.chmod(0o755)
-    for name in ("kanban", "fkanban", "ra", "lastgit", "last-stack-forge-api", "brain"):
+    for name in ("kanban", "fkanban", "ra", "gh", "last-stack-forge-api", "brain"):
         (binaries / name).symlink_to(stub.name)
     config = root / "config.toml"
     config.write_text('''[general]

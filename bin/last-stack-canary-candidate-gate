@@ -2,13 +2,13 @@
 # The nightly LastDB candidate-set action, zero-agent. One routine does what
 # build-main and dogfood did, plus the two steps the release loop needed:
 #
-#   1. build   — Forge fold main → canary-builds/<oid>/ (idempotent)
+#   1. build   — GitHub fold main → canary-builds/<oid>/ (idempotent)
 #   2. resolve — the candidate build and the cutover-hold policy
 #   3. set     — fix one commit per app: the candidate set
 #   4. smoke   — the isolated llms-txt install smoke on exactly that set,
 #                booting the candidate lastdbd (never the primary)
 #   5. cutover — safe-upgrade probe + primary cutover (existing action)
-#   6. rows    — write the proved pairs to registry `next` (Forgejo PR)
+#   6. rows    — write the proved pairs to registry `next` (GitHub PR on the tap repo)
 #
 # When step 2 finds no build to cut over to (the primary already runs the
 # candidate) or the cutover is held, the gate does NOT stop: it runs the
@@ -42,7 +42,7 @@
 # (fkanban PR 45 on 2026-09-26, against a 2375 row that pinned kanban b654aecf)
 # got no row until the daily pass, and that pass noops when fold main equals the
 # primary build. After the rows-present probe, step 0 asks the candidate-set
-# tool for each app's head (the same pick: artifact channel, else Forge main)
+# tool for each app's head (the same pick: artifact channel, else GitHub main)
 # and compares it with the pin `next` holds for the primary build. A head that
 # moved runs the same set + smoke + publish-next, at most one smoke an hour, and
 # a RED set is not smoked again until a head moves.
@@ -498,7 +498,7 @@ heads_check() {
   #   20  the heads could not be read (reported, never smoked on)
   #
   # The head pick is the candidate-set tool's own (artifact channel head, else
-  # Forge main), run with --no-version-lookup: no package.json fetch, no smoke.
+  # GitHub main), run with --no-version-lookup: no package.json fetch, no smoke.
   local app="$1" heads_dir heads_file rc=0 stamp stamp_fp stamp_result stamp_at age last_at last_age
   heads_moved=""
   heads_fp=""

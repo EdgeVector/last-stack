@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-remote="${FKANBAN_HOST_TRACK_REMOTE:-http://localhost:3300/EdgeVector/fkanban.git}"  # Forgejo gate of record since 2026-09-05
+remote="${FKANBAN_HOST_TRACK_REMOTE:-https://github.com/EdgeVector/fkanban.git}"  # GitHub gate of record since 2026-09-30
 host_root="${HOST_TRACK_HOME:-$HOME/.host-track}"
 host_track="${FKANBAN_HOST_TRACK_DIR:-$host_root/fkanban}"
 refresh_script="$host_track/bin/host-track-refresh"
