@@ -468,6 +468,8 @@ ci_test tests/host-track-lastdb-browser-github-gate.sh
 ci_test tests/host-track-requires.sh
 # situations gates on GitHub (retire LastGit): registry entry + validate-registry.
 ci_test tests/host-track-situations-github-gate.sh
+# routines gates on GitHub (retire LastGit): registry entry + validate-registry.
+ci_test tests/host-track-routines-github-gate.sh
 ci_test tests/last-stack-brew-app-publish.sh
 ci_test tests/host-track-on-channel-unpublished-main.sh
 ci_test tests/host-track-safe-upgrade-probe.sh
