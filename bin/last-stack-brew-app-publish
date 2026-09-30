@@ -15,8 +15,9 @@ Steps (each refuses on the first failure):
   2. version `<version_argv>` in the current tree; tag `<formula>-v<version>`
   3. package tarball + bundle manifest + SHA256SUMS.txt
   4. release PUBLIC: `gh release create <tag> --latest=false` on the tap
-  5. formula render templates/homebrew/<formula>.rb.tmpl, open a Forgejo tap PR
-     with auto-merge (PUBLIC when the GitHub push mirror syncs)
+  5. formula render templates/homebrew/<formula>.rb.tmpl, open a GitHub tap PR
+     with auto-merge (the tap's gate of record is GitHub since 2026-09-30;
+     branch protection requires `ci-required` and blocks a direct push to main)
 
 The FIRST release of a formula needs --approve-first-release (Tom approves
 the first upload of each app). Later releases run unattended from
@@ -51,8 +52,7 @@ SELF = Path(os.path.realpath(__file__))
 ROOT = SELF.parent.parent
 TRIPLE = "aarch64-apple-darwin"
 TAP_GITHUB = "EdgeVector/homebrew-lastdb"
-TAP_FORGE_REPO = "EdgeVector/homebrew-lastdb"
-FORGE_BASE = os.environ.get("LAST_STACK_FORGE_BASE", "http://localhost:3300")
+TAP_CLONE_URL = os.environ.get("LAST_STACK_TAP_CLONE_URL", f"https://github.com/{TAP_GITHUB}.git")
 SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 
 EXIT_OK = 0
@@ -309,31 +309,14 @@ def create_release(gh: str, bundle: dict) -> None:
         raise Refuse(f"gh release create {bundle['tag']} failed: {proc.stderr.strip()[:400]}")
 
 
-# --- formula PR on the Forgejo tap (PUBLIC after mirror sync) ----------------
+# --- formula PR on the GitHub tap ---------------------------------------------
 
-def forge_git_env() -> dict[str, str]:
-    """Return env dict with forge token as GIT_CONFIG_* for http clones."""
-    env = dict(os.environ)
-    if not FORGE_BASE.startswith("http"):
-        return env
-    token = env.get("FORGE_TOKEN", "").strip()
-    if not token:
-        proc = run(["bash", "-c", f'. "{ROOT / "lib" / "forge-token.sh"}" && last_stack_forge_token'])
-        token = proc.stdout.strip() if proc.returncode == 0 else ""
-    if not token:
-        return env
-    env["GIT_CONFIG_COUNT"] = "1"
-    env["GIT_CONFIG_KEY_0"] = f"http.{FORGE_BASE}/.extraHeader"
-    env["GIT_CONFIG_VALUE_0"] = f"Authorization: token {token}"
-    return env
-
-
-def tap_formula_state(bundle: dict, forge_api: str) -> str:
+def tap_formula_state(bundle: dict, gh: str) -> str:
     """'current' when tap main already points at this tarball, 'open-pr' when the
     release branch has an open PR, else 'missing'."""
     formula = bundle["formula"]
-    proc = run([forge_api, f"repos/{TAP_FORGE_REPO}/contents/Formula/{formula}.rb?ref=main",
-                "--jq", ".content"])
+    proc = run([gh, "api", f"repos/{TAP_GITHUB}/contents/Formula/{formula}.rb?ref=main",
+                "--jq", ".content"], env=gh_env())
     if proc.returncode == 0 and proc.stdout.strip():
         import base64
         try:
@@ -343,26 +326,23 @@ def tap_formula_state(bundle: dict, forge_api: str) -> str:
         if bundle["tarball_sha256"] in text and f"/{bundle['tag']}/" in text:
             return "current"
     branch = f"brew/{formula}-v{bundle['version']}"
-    proc = run([forge_api, f"repos/{TAP_FORGE_REPO}/pulls/main/{branch}", "--jq", ".state"])
-    if proc.returncode == 0 and proc.stdout.strip() == "open":
+    proc = run([gh, "pr", "list", "--repo", TAP_GITHUB, "--head", branch, "--state", "open",
+                "--json", "number", "--jq", "length"], env=gh_env())
+    if proc.returncode == 0 and proc.stdout.strip().isdigit() and int(proc.stdout.strip()) > 0:
         return "open-pr"
     return "missing"
 
 
-def open_formula_pr(bundle: dict, formula_text: str, forge_git: str, forge_api: str) -> str:
+def open_formula_pr(bundle: dict, formula_text: str, gh: str) -> str:
     formula = bundle["formula"]
     branch = f"brew/{formula}-v{bundle['version']}"
     with tempfile.TemporaryDirectory(prefix="brew-tap-") as tmp:
         clone = Path(tmp) / "tap"
-        url = f"{FORGE_BASE}/{TAP_FORGE_REPO}.git"
-        # last-stack-forge-git wraps an EXISTING repo (-C <repo>, origin auth),
-        # so it cannot clone; clone with plain git and the forge token in env.
-        env = forge_git_env()
         for cmd in (
-            ["git", "clone", "--quiet", "--depth", "1", "--branch", "main", url, str(clone)],
+            ["git", "clone", "--quiet", "--depth", "1", "--branch", "main", TAP_CLONE_URL, str(clone)],
             ["git", "-C", str(clone), "checkout", "-q", "-b", branch],
         ):
-            proc = run(cmd, env=env if cmd[0] == "git" and "clone" in cmd else None)
+            proc = run(cmd)
             if proc.returncode != 0:
                 raise Refuse(f"{' '.join(cmd[:4])} failed: {proc.stderr.strip()[:300]}")
         target = clone / "Formula" / f"{formula}.rb"
@@ -379,25 +359,23 @@ def open_formula_pr(bundle: dict, formula_text: str, forge_git: str, forge_api: 
             ["git", "-C", str(clone), "add", f"Formula/{formula}.rb"],
             ["git", "-C", str(clone), "-c", "user.name=last-stack", "-c",
              "user.email=last-stack@localhost", "commit", "-q", "-m", msg],
-            [forge_git, "-C", str(clone), "push", "-q", "origin", f"HEAD:{branch}"],
+            ["git", "-C", str(clone), "push", "-q", "origin", f"HEAD:{branch}"],
         ):
             proc = run(cmd)
             if proc.returncode != 0:
                 raise Refuse(f"{' '.join(cmd[:4])} failed: {proc.stderr.strip()[:300]}")
-    body = {"title": f"{formula} {bundle['version']}", "head": branch, "base": "main",
-            "body": msg}
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-        json.dump(body, f)
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
+        f.write(msg + "\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n")
         body_path = f.name
-    proc = run([forge_api, "--method", "POST", "--data", f"@{body_path}",
-                f"repos/{TAP_FORGE_REPO}/pulls", "--jq", ".number"])
+    proc = run([gh, "pr", "create", "--repo", TAP_GITHUB, "--base", "main", "--head", branch,
+                "--title", f"{formula} {bundle['version']}", "--body-file", body_path], env=gh_env())
     os.unlink(body_path)
-    number = proc.stdout.strip()
+    number = proc.stdout.strip().rsplit("/", 1)[-1]
     if proc.returncode != 0 or not number.isdigit():
         raise Refuse(f"opening the tap PR failed: {proc.stderr.strip()[:300]}")
-    arm = run([forge_api, "POST", "--data", '{"Do":"merge","merge_when_checks_succeed":true}',
-               f"repos/{TAP_FORGE_REPO}/pulls/{number}/merge"])
-    if arm.returncode != 0 and "already scheduled" not in (arm.stdout + arm.stderr):
+    arm = run([gh, "pr", "merge", number, "--repo", TAP_GITHUB, "--squash", "--auto", "--delete-branch"],
+              env=gh_env())
+    if arm.returncode != 0:
         log(f"tap PR {number} opened; auto-merge not armed yet ({arm.stderr.strip()[:200]})")
     return number
 
@@ -424,10 +402,10 @@ def main(argv: list[str] | None = None) -> int:
                                                 Path.home() / ".local/state/last-stack/brew-app-publish")))
     ap.add_argument("--templates", type=Path, default=ROOT / "templates/homebrew")
     ap.add_argument("--gh", default=os.environ.get("LAST_STACK_GH_BIN", "gh"))
-    ap.add_argument("--forge-git", default=os.environ.get(
-        "LAST_STACK_FORGE_GIT_BIN", str(ROOT / "bin/last-stack-forge-git")))
-    ap.add_argument("--forge-api", default=os.environ.get(
-        "LAST_STACK_FORGE_API_BIN", str(ROOT / "bin/last-stack-forge-api")))
+    # Deprecated no-ops (the tap PR goes through gh since 2026-09-30); kept so
+    # existing callers that pass them do not fail.
+    ap.add_argument("--forge-git", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--forge-api", default=None, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
     try:
@@ -477,10 +455,9 @@ def main(argv: list[str] | None = None) -> int:
                 # finish that half from the RELEASED tarball's facts.
                 released = {**bundle, "tarball_sha256": prior_manifest.get("tarball_sha256", ""),
                             "tarball": prior_manifest.get("tarball", bundle["tarball"])}
-                tap = tap_formula_state(released, args.forge_api)
+                tap = tap_formula_state(released, args.gh)
                 if tap == "missing":
-                    pr = open_formula_pr(released, render_formula(template, released),
-                                         args.forge_git, args.forge_api)
+                    pr = open_formula_pr(released, render_formula(template, released), args.gh)
                     log(f"tap PR {pr} opened for Formula/{formula}.rb (release existed, formula did not)")
                 else:
                     log(f"tap formula for {tag}: {tap}")
@@ -500,7 +477,7 @@ def main(argv: list[str] | None = None) -> int:
 
         create_release(args.gh, bundle)
         log(f"PUBLIC: released {tag} on {TAP_GITHUB}")
-        pr = open_formula_pr(bundle, formula_text, args.forge_git, args.forge_api)
+        pr = open_formula_pr(bundle, formula_text, args.gh)
         log(f"tap PR {pr} opened for Formula/{formula}.rb")
         args.state_dir.mkdir(parents=True, exist_ok=True)
         state.write_text(json.dumps({"manifest_digest": digest, "tag": tag, "result": "released",

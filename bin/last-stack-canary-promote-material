@@ -17,7 +17,7 @@ export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 
 candidate="${LAST_STACK_CANARY_CANDIDATE:-}"
 promote_root="${LAST_STACK_CANARY_PROMOTE_ROOT:-$HOME/.local/state/last-stack/canary-promote}"
-tap_url="${LAST_STACK_REGISTRY_TAP_URL:-${FORGE_ROOT_URL:-http://localhost:3300}/EdgeVector/homebrew-lastdb.git}"
+tap_url="${LAST_STACK_REGISTRY_TAP_URL:-https://github.com/EdgeVector/homebrew-lastdb.git}"   # GitHub is the tap gate of record since 2026-09-30
 next_index="${LAST_STACK_REGISTRY_NEXT_INDEX:-}"   # tests: a local next.json
 notify="${LAST_STACK_CANARY_NOTIFY_CMD:-ra notify}"
 no_notify=0

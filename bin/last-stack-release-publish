@@ -42,7 +42,9 @@ ROOT = Path(__file__).resolve().parents[1]
 HOME = Path.home()
 FORGE_ROOT_URL = os.environ.get("FORGE_ROOT_URL", "http://localhost:3300")
 TAP_REPO = os.environ.get("LAST_STACK_REGISTRY_TAP_REPO", "EdgeVector/homebrew-lastdb")
-TAP_URL = os.environ.get("LAST_STACK_REGISTRY_TAP_URL", f"{FORGE_ROOT_URL}/{TAP_REPO}.git")
+# Gate of record for the tap is GitHub since 2026-09-30
+# (decision-2026-09-29-retire-lastgit-all-repos-to-github). PRs + auto-merge.
+TAP_URL = os.environ.get("LAST_STACK_REGISTRY_TAP_URL", f"https://github.com/{TAP_REPO}.git")
 CANARY_BUILDS = Path(os.environ.get("LAST_STACK_CANARY_BUILDS_DIR", HOME / ".local/state/last-stack/canary-builds"))
 PROMOTE_ROOT = Path(os.environ.get("LAST_STACK_CANARY_PROMOTE_ROOT", HOME / ".local/state/last-stack/canary-promote"))
 SIGNING_KEY = Path(os.environ.get("LASTDB_REGISTRY_SIGNING_KEY", HOME / ".lastdb/registry-index-signing.key"))
@@ -314,7 +316,8 @@ def main(argv: list[str]) -> int:
         artifact_dir = out_dir / f"artifacts-{tag}"
         stage_assets(build_dir, artifact_dir)
         cmd = ["bash", str(promote_sh), "--version-tag", tag, "--artifact-dir", str(artifact_dir),
-               "--source-git-oid", oid, "--proof-report", str(out_dir / f"proof-{tag}.json")]
+               "--source-git-oid", oid, "--proof-report", str(out_dir / f"proof-{tag}.json"),
+               "--formula-venue", "github"]
         env = os.environ.copy()
         if args.dry_run:
             tap_dir = Path(tempfile.mkdtemp(prefix="release-publish-tap."))
@@ -390,27 +393,23 @@ def main(argv: list[str]) -> int:
         if args.dry_run:
             registry_result = f"dry-run ({tap_dir})"
         else:
-            forge_git_bin = ROOT / "bin" / "last-stack-forge-git"
-            if forge_git_bin.is_file():
-                push_cmd = [str(forge_git_bin), "-C", str(tap_dir), "push", "--quiet", "-u", "origin", branch]
-                push = run(push_cmd, timeout=120)
-            else:
-                push_cmd = ["git", "-C", str(tap_dir), "push", "--quiet", "-u", "origin", branch]
-                push = run(push_cmd, timeout=120, env=forge_git_env())
+            push = run(["git", "-C", str(tap_dir), "push", "--quiet", "-u", "origin", branch], timeout=120)
             if push.returncode != 0:
                 die(f"push failed: {push.stderr.strip()}")
-            forge_api = ROOT / "bin" / "last-stack-forge-api"
             body = (f"## What\n\n`registry/stable.json`: the `next` rows proved with lastdb `{build}`, promoted alongside brew `{tag}`. "
                     "Sources point at the public mirrors; each commit was fetched from its public source before this PR was opened.\n\n"
                     "🤖 Generated with [Claude Code](https://claude.com/claude-code)")
-            pr = run([str(forge_api), "POST", "--data",
-                      json.dumps({"title": f"registry(stable): rows proved with lastdb {build} ({tag})", "head": branch, "base": "main", "body": body}),
-                      f"repos/{TAP_REPO}/pulls", "--jq", ".number"])
-            number = pr.stdout.strip()
-            if pr.returncode != 0 or not number:
+            body_file = tap_dir / ".registry-pr-body.md"
+            body_file.write_text(body, encoding="utf-8")
+            pr = run(["gh", "pr", "create", "--repo", TAP_REPO, "--base", "main", "--head", branch,
+                      "--title", f"registry(stable): rows proved with lastdb {build} ({tag})",
+                      "--body-file", str(body_file)])
+            number = pr.stdout.strip().rsplit("/", 1)[-1]
+            if pr.returncode != 0 or not number.isdigit():
                 die(f"PR create failed: {pr.stderr.strip()}")
-            run([str(forge_api), "POST", "--data", '{"Do":"merge","merge_when_checks_succeed":true,"delete_branch_after_merge":true}',
-                 f"repos/{TAP_REPO}/pulls/{number}/merge"])
+            arm = run(["gh", "pr", "merge", number, "--repo", TAP_REPO, "--squash", "--auto", "--delete-branch"])
+            if arm.returncode != 0:
+                print(f"last-stack-release-publish: PR {number} opened; auto-merge not armed ({arm.stderr.strip()[:200]})", file=sys.stderr)
             registry_result = f"PR {TAP_REPO}#{number}"
 
     summary = {

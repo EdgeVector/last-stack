@@ -4,7 +4,10 @@
 # mirror (what `lastdb app resolve` reads) follows LastGit, and the Forgejo
 # copy is frozen. A row merged on Forgejo never reaches a reader.
 #
-#   1. default venue: the row branch is pushed to the tap URL, a LastGit CR is
+#   0. default venue is github (since 2026-09-30): the row branch is pushed to
+#      the tap URL, `gh pr create` + `gh pr merge --squash --auto` run, and no
+#      LastGit or Forgejo call is made.
+#   1. venue=lastgit (frozen path): the row branch is pushed to the tap URL, a LastGit CR is
 #      opened with auto-merge gated on ci-required, and no Forgejo call is made.
 #   2. a tap checkout cloned from the frozen copy follows the venue URL.
 #   3. the rows carry the candidate set's `source` (the LastGit URL).
@@ -66,7 +69,7 @@ cat >"$work/set.json" <<'EOF'
 EOF
 printf '{"verdict":"GREEN","pass":30,"sandbox":"/tmp/x","lastdb_build":"0.23.3-999-gtest"}\n' >"$work/proof.json"
 
-out="$(LAST_STACK_REGISTRY_TAP_URL="$work/lastgit.git" LAST_STACK_REGISTRY_TAP_DIR="$work/tapdir" \
+out="$(LAST_STACK_REGISTRY_TAP_VENUE=lastgit LAST_STACK_REGISTRY_TAP_URL="$work/lastgit.git" LAST_STACK_REGISTRY_TAP_DIR="$work/tapdir" \
   LASTDB_REGISTRY_SIGNING_KEY="$work/signing.key" LASTDB_BIN="$fake/lastdb" LASTGIT_BIN="$fake/lastgit" \
   FORGE_API_BIN="$fake/forge-api" FORGE_GIT_BIN="$fake/forge-api" \
   "$BIN" --candidate-set "$work/set.json" --proof "$work/proof.json" --proof-run run-venue 2>"$work/err")" \
@@ -91,7 +94,7 @@ git --git-dir "$work/lastgit.git" cat-file -e "$branch:registry/proofs/run-venue
 
 # The real lastgit with a non-LastGit tap URL is refused before any CR call:
 # a test that overrides only the tap URL must never reach the real node.
-if env -u LASTGIT_BIN LAST_STACK_REGISTRY_TAP_URL="$work/lastgit.git" LAST_STACK_REGISTRY_TAP_DIR="$work/tapdir2" \
+if env -u LASTGIT_BIN LAST_STACK_REGISTRY_TAP_VENUE=lastgit LAST_STACK_REGISTRY_TAP_URL="$work/lastgit.git" LAST_STACK_REGISTRY_TAP_DIR="$work/tapdir2" \
   LASTDB_REGISTRY_SIGNING_KEY="$work/signing.key" LASTDB_BIN="$fake/lastdb" \
   FORGE_API_BIN="$fake/forge-api" FORGE_GIT_BIN="$fake/forge-api" PATH="$fake:$PATH" \
   "$BIN" --candidate-set "$work/set.json" --proof "$work/proof.json" --proof-run run-guard >/dev/null 2>"$work/guard.err"; then
@@ -99,6 +102,30 @@ if env -u LASTGIT_BIN LAST_STACK_REGISTRY_TAP_URL="$work/lastgit.git" LAST_STACK
 fi
 grep -q 'is not a lastdb:// remote' "$work/guard.err" || fail "guard message: $(cat "$work/guard.err")"
 if grep -q 'run-guard' "$work/lastgit.calls"; then fail "the guard case reached lastgit"; fi
+
+# --- default venue: github -------------------------------------------------
+cat >"$fake/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$work/gh.calls"
+case "\$1 \$2" in
+  "pr create") printf 'https://github.com/EdgeVector/homebrew-lastdb/pull/321\n' ;;
+esac
+EOF
+chmod +x "$fake/gh"
+: >"$work/lastgit.calls"
+git clone --quiet "$work/lastgit.git" "$work/tapdir-gh"
+out="$(LAST_STACK_REGISTRY_TAP_URL="$work/lastgit.git" LAST_STACK_REGISTRY_TAP_DIR="$work/tapdir-gh" \
+  LASTDB_REGISTRY_SIGNING_KEY="$work/signing.key" LASTDB_BIN="$fake/lastdb" LASTGIT_BIN="$fake/lastgit" GH_BIN="$fake/gh" \
+  FORGE_API_BIN="$fake/forge-api" FORGE_GIT_BIN="$fake/forge-api" \
+  "$BIN" --candidate-set "$work/set.json" --proof "$work/proof.json" --proof-run run-gh 2>"$work/err")" \
+  || { cat "$work/err" >&2; fail "github publish-next failed"; }
+printf '%s\n' "$out" | grep -q '^REGISTRY_NEXT status=pr build=0.23.3-999-gtest apps=1 proof_run=run-gh pr=EdgeVector/homebrew-lastdb/321$' \
+  || fail "github result line: $out"
+[ ! -s "$work/lastgit.calls" ] || fail "the LastGit path ran on the github venue"
+[ ! -e "$work/forge.calls" ] || fail "the Forgejo path ran on the github venue"
+grep -q '^pr create --repo EdgeVector/homebrew-lastdb --base main --head registry/next-0.23.3-999-gtest-' "$work/gh.calls" || fail "gh pr create: $(cat "$work/gh.calls")"
+grep -q '^pr merge 321 --repo EdgeVector/homebrew-lastdb --squash --auto --delete-branch$' "$work/gh.calls" || fail "gh pr merge: $(cat "$work/gh.calls")"
+git --git-dir "$work/lastgit.git" for-each-ref --format='%(refname:short)' 'refs/heads/registry/*' | grep -q 'run-gh\|0.23.3-999' || fail "row branch not pushed"
 
 # An unknown venue is refused before any write.
 if LAST_STACK_REGISTRY_TAP_VENUE=gitlab "$BIN" --candidate-set "$work/set.json" --proof "$work/proof.json" >/dev/null 2>&1; then
