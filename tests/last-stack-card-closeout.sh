@@ -75,7 +75,7 @@ col_file="${REESTAMP_COL:?}"
 case "${1:-}" in
   show)
     col="$(cat "$col_file")"
-    printf '{"slug":"%s","column":"%s","body":"Repo: EdgeVector/last-stack\\nKind: pr\\n","pr_url":"lastgit://last-stack/cr/cr-mskqwa3y-78c9`","north_star":"`north-star-org-cloud-principal-membership`","milestone":"ms-org-cloud-principal-membership"}\n' "${2:-}" "$col"
+    printf '{"slug":"%s","column":"%s","body":"Repo: EdgeVector/last-stack\\nKind: pr\\n","pr_url":"https://github.com/EdgeVector/last-stack/pull/782`","north_star":"`north-star-org-cloud-principal-membership`","milestone":"ms-org-cloud-principal-membership"}\n' "${2:-}" "$col"
     ;;
   add)
     printf '%s\n' "$*" >>"${REESTAMP_ADDS:?}"
@@ -99,24 +99,22 @@ EOF
 chmod +x "$restamp_board"
 stub_bin="$restamp_tmp/stub-bin"
 mkdir -p "$stub_bin"
-cat >"$stub_bin/lastgit" <<'EOF'
+cat >"$stub_bin/gh" <<'EOF'
 #!/usr/bin/env bash
-# lastgit cr view <slug> <id> --json
-if [ "${1:-}" = "cr" ] && [ "${2:-}" = "view" ]; then
-  printf '{"state":"merged","merge_oid":"abc123"}\n'
-  exit 0
-fi
-echo "unexpected lastgit $*" >&2
-exit 2
+# gh -R <owner/repo> pr view <n> --json state,mergedAt
+case "$*" in
+  *"pr view"*) printf '{"state":"MERGED","mergedAt":"2026-09-30T00:00:00Z"}\n' ;;
+  *) echo "unexpected gh $*" >&2; exit 2 ;;
+esac
 EOF
-chmod +x "$stub_bin/lastgit"
+chmod +x "$stub_bin/gh"
 export PATH="$stub_bin:$PATH"
 export REESTAMP_MOVES="$restamp_moves"
 export REESTAMP_ADDS="$restamp_adds"
 export REESTAMP_COL="$restamp_tmp/col"
 echo doing >"$REESTAMP_COL"
 set +e
-restamp_out="$("$bin" restamp-card --board-cli "$restamp_board" --pr-url 'lastgit://last-stack/cr/cr-mskqwa3y-78c9`' 2>&1)"
+restamp_out="$("$bin" restamp-card --board-cli "$restamp_board" --pr-url 'https://github.com/EdgeVector/last-stack/pull/782`' 2>&1)"
 restamp_rc=$?
 set -e
 if [ "$restamp_rc" -eq 0 ]; then
@@ -138,12 +136,12 @@ grep -q 'restamp-card done' "$restamp_moves" || {
   exit 1
 }
 # --pr-url passed to add must be sanitized (no trailing backtick)
-if grep -q 'cr-mskqwa3y-78c9`' "$restamp_adds"; then
+if grep -q 'pull/782`' "$restamp_adds"; then
   echo "FAIL: restamp add received dirty pr_url:" >&2
   cat "$restamp_adds" >&2
   exit 1
 fi
-grep -q 'lastgit://last-stack/cr/cr-mskqwa3y-78c9' "$restamp_adds" || {
+grep -q 'https://github.com/EdgeVector/last-stack/pull/782' "$restamp_adds" || {
   echo "FAIL: expected sanitized pr_url on restamp add:" >&2
   cat "$restamp_adds" >&2
   exit 1
@@ -178,19 +176,20 @@ case "${1:-}" in
 esac
 EOF
 chmod +x "$unmerged_board"
-cat >"$stub_bin/lastgit" <<'EOF'
+cat >"$stub_bin/gh" <<'EOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "cr" ] && [ "${2:-}" = "view" ]; then
-  printf '{"state":"closed","merge_oid":""}\n'
-  exit 0
-fi
-exit 2
+# gh -R <owner/repo> pr view <n> --json state,mergedAt
+case "$*" in
+  *"pr view"*) printf '{"state":"CLOSED","mergedAt":null}\n' ;;
+  *) echo "unexpected gh $*" >&2; exit 2 ;;
+esac
 EOF
+chmod +x "$stub_bin/gh"
 export UNMERGED_MOVES="$unmerged_moves"
 export UNMERGED_COL="$unmerged_tmp/col"
 echo doing >"$UNMERGED_COL"
 set +e
-unmerged_out="$("$bin" unmerged-card --board-cli "$unmerged_board" --pr-url 'lastgit://fold/cr/cr-notmerged' 2>&1)"
+unmerged_out="$("$bin" unmerged-card --board-cli "$unmerged_board" --pr-url 'https://github.com/EdgeVector/fold/pull/900' 2>&1)"
 unmerged_rc=$?
 set -e
 if [ "$unmerged_rc" -eq 0 ]; then
@@ -265,16 +264,17 @@ chmod +x "$todo_board"
 export TODO_MOVES="$todo_moves"
 export TODO_COL="$todo_col"
 export TODO_URL="$todo_url"
-cat >"$stub_bin/lastgit" <<'EOF'
+cat >"$stub_bin/gh" <<'EOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "cr" ] && [ "${2:-}" = "view" ]; then
-  printf '{"state":"merged","merge_oid":"def456"}\n'
-  exit 0
-fi
-exit 2
+# gh -R <owner/repo> pr view <n> --json state,mergedAt
+case "$*" in
+  *"pr view"*) printf '{"state":"MERGED","mergedAt":"2026-09-30T00:00:00Z"}\n' ;;
+  *) echo "unexpected gh $*" >&2; exit 2 ;;
+esac
 EOF
+chmod +x "$stub_bin/gh"
 set +e
-todo_out="$("$bin" todo-link-card --board-cli "$todo_board" --pr-url 'lastgit://fold/cr/cr-linked' 2>&1)"
+todo_out="$("$bin" todo-link-card --board-cli "$todo_board" --pr-url 'https://github.com/EdgeVector/fold/pull/901' 2>&1)"
 todo_rc=$?
 set -e
 if [ "$todo_rc" -ne 0 ]; then
@@ -292,7 +292,7 @@ grep -q 'todo-link-card done' "$todo_moves" || {
   cat "$todo_moves" >&2
   exit 1
 }
-[ "$(cat "$todo_url")" = "lastgit://fold/cr/cr-linked" ] || {
+[ "$(cat "$todo_url")" = "https://github.com/EdgeVector/fold/pull/901" ] || {
   echo "FAIL: expected persisted pr_url, got $(cat "$todo_url")" >&2
   exit 1
 }
@@ -370,7 +370,7 @@ export MONOTONIC_COL="$monotonic_col"
 export MONOTONIC_URL="$monotonic_url"
 export MONOTONIC_BODY="$monotonic_body"
 
-first_out="$("$bin" monotonic-card --board-cli "$monotonic_board" --pr-url 'lastgit://last-stack/cr/cr-monotonic' 2>&1)" || {
+first_out="$("$bin" monotonic-card --board-cli "$monotonic_board" --pr-url 'https://github.com/EdgeVector/last-stack/pull/902' 2>&1)" || {
   echo "FAIL: first close with PROOF must pass: $first_out" >&2
   exit 1
 }
@@ -489,7 +489,7 @@ export CUTOVER_COL="$cutover_col"
 export CUTOVER_URL="$cutover_url"
 export CUTOVER_BODY="$cutover_body"
 set +e
-cutover_out="$("$bin" helper-cutover-card --board-cli "$cutover_board" --pr-url 'lastgit://last-stack/cr/cr-cutover' 2>&1)"
+cutover_out="$("$bin" helper-cutover-card --board-cli "$cutover_board" --pr-url 'https://github.com/EdgeVector/last-stack/pull/903' 2>&1)"
 cutover_rc=$?
 set -e
 if [ "$cutover_rc" -eq 0 ]; then
@@ -509,7 +509,7 @@ fi
 printf '%s\n' 'PROOF: PASS host-track current carries the merged helper' >>"$cutover_body"
 echo doing >"$cutover_col"
 : >"$cutover_moves"
-cutover_ok_out="$("$bin" helper-cutover-card --board-cli "$cutover_board" --pr-url 'lastgit://last-stack/cr/cr-cutover' 2>&1)" || {
+cutover_ok_out="$("$bin" helper-cutover-card --board-cli "$cutover_board" --pr-url 'https://github.com/EdgeVector/last-stack/pull/903' 2>&1)" || {
   echo "FAIL: helper-cutover END STATE with PROOF must close: $cutover_ok_out" >&2
   exit 1
 }

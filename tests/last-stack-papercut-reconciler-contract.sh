@@ -55,7 +55,7 @@ cat >"$records" <<'JSON'
   {
     "slug": "papercut-demo-helper-drift",
     "title": "Demo helper drift",
-    "body": "Status: OPEN\nEvidence: lastgit://last-stack/cr/cr-demo\n"
+    "body": "Status: OPEN\nEvidence: https://github.com/EdgeVector/last-stack/pull/501\n"
   }
 ]
 JSON
@@ -71,7 +71,7 @@ case "$*" in
 EOF
     ;;
   "get papercut-demo-helper-drift --type papercut --json")
-    printf '%s\n' '{"slug":"papercut-demo-helper-drift","title":"Demo helper drift","status":"open","body":"Evidence: lastgit://last-stack/cr/cr-demo"}'
+    printf '%s\n' '{"slug":"papercut-demo-helper-drift","title":"Demo helper drift","status":"open","body":"Evidence: https://github.com/EdgeVector/last-stack/pull/501"}'
     ;;
   "papercut list --status open --index-only --json"|"papercut list --status open --json")
     printf '%s\n' '{"rows":[],"total":0,"method":"method: status-keyed papercut index (canary)"}'
@@ -97,20 +97,20 @@ set -euo pipefail
 [ "$*" = "show demo-card --json" ] || { echo "unexpected kanban args: $*" >&2; exit 2; }
 printf '{"column":"done"}\n'
 SH
-cat >"$fake_bin/lastgit" <<'SH'
+cat >"$fake_bin/gh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "$*" = "cr view last-stack cr-demo --json" ] || { echo "unexpected lastgit args: $*" >&2; exit 2; }
-printf '{"state":"merged","merge_oid":"abc123"}\n'
+[ "$*" = "pr view 501 -R EdgeVector/last-stack --json state,mergedAt" ] || { echo "unexpected gh args: $*" >&2; exit 2; }
+printf '{"state":"MERGED","mergedAt":"2026-09-30T00:00:00Z"}\n'
 SH
-chmod +x "$fake_bin/brain" "$fake_bin/kanban" "$fake_bin/lastgit"
+chmod +x "$fake_bin/brain" "$fake_bin/kanban" "$fake_bin/gh"
 
 export TEST_CLOSE_LOG="$tmp/close.log"
 export TEST_LEDGER_LOG="$tmp/ledger.log"
 : >"$TEST_CLOSE_LOG"
 : >"$TEST_LEDGER_LOG"
 
-out="$(PATH="/usr/bin:/bin" "$helper" --records-json "$records" --brain-bin "$fake_bin/brain" --lastgit-bin "$fake_bin/lastgit" --json)"
+out="$(PATH="/usr/bin:/bin" "$helper" --records-json "$records" --brain-bin "$fake_bin/brain" --gh-bin "$fake_bin/gh" --json)"
 printf '%s\n' "$out" | jq -e '.checked == 1 and (.fixed | length) == 1 and (.errors | length) == 0' >/dev/null
 grep -q '^CLOSE papercut close papercut-demo-helper-drift --status fixed ' "$TEST_CLOSE_LOG"
 grep -q 'papercut-demo-helper-drift' "$TEST_LEDGER_LOG"

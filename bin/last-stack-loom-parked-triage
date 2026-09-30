@@ -73,7 +73,7 @@ dir, and marks the card with one PROGRESS line.
 The last stdout line carries heartbeat tokens:
   parked_seen= escalated= resumed= handed_off= requeued= left= errors=
 
-Test knobs: LOOM_BIN, KANBAN_BIN, FORGE_API_BIN, SITUATIONS_BIN, REOPEN_BIN,
+Test knobs: LOOM_BIN, KANBAN_BIN, FORGE_API_BIN, GH_BIN, SITUATIONS_BIN, REOPEN_BIN,
 LAST_STACK_LOOM_TRIAGE_STATE (state dir).
 """
 import argparse
@@ -88,6 +88,7 @@ import time
 LOOM = os.environ.get("LOOM_BIN", "loom")
 KANBAN = os.environ.get("KANBAN_BIN", "kanban")
 FORGE_API = os.environ.get("FORGE_API_BIN", "last-stack-forge-api")
+GH = os.environ.get("GH_BIN", "gh")
 SITUATIONS = os.environ.get("SITUATIONS_BIN", "situations")
 REOPEN = os.environ.get(
     "REOPEN_BIN", str(Path(__file__).resolve().parent / "last-stack-card-reopen-validate"))
@@ -99,6 +100,7 @@ ESCALATE_MARKERS = ("reviser produced no commit", "review escalated at cap")
 TRANSIENT_INFRA_MARKERS = ("failed to renew cache ttl", "failed to load models cache")
 NO_EVIDENCE_MARKER = "no evidence recorded"
 PR_RE = re.compile(r"/([^/]+/[^/]+)/pulls/(\d+)")
+GH_PR_RE = re.compile(r"github\.com/([^/]+/[^/]+)/pull/(\d+)")
 # last-stack-forge-api's refusal line when a Situation blocks the merge.
 MERGE_FENCED_RE = re.compile(r"REFUSED merge on ([\w.-]+/[\w.-]+): Situations preflight says BLOCKED")
 
@@ -157,7 +159,13 @@ def parse_show(text):
 def pr_merged(ctx):
     if ctx.get("merged") is True:
         return True
-    m = PR_RE.search(str(ctx.get("pr_url") or ""))
+    url = str(ctx.get("pr_url") or "")
+    # GitHub is the default venue; Forgejo stays for the `lastgit` repo and old URLs.
+    g = GH_PR_RE.search(url)
+    if g:
+        rc, out, _ = run([GH, "api", f"repos/{g.group(1)}/pulls/{g.group(2)}", "--jq", ".merged"], 60)
+        return rc == 0 and out.strip() == "true"
+    m = PR_RE.search(url)
     if not m:
         return False
     rc, out, _ = run([FORGE_API, f"repos/{m.group(1)}/pulls/{m.group(2)}", "--jq", ".merged"], 60)

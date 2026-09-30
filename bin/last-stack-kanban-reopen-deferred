@@ -26,7 +26,7 @@ RECORDED_RE = re.compile(
     r"(?i)\b(?:merge|merged|commit|head|head_oid|merge_oid|oid|sha|source_oid)\s*[:=]\s*([0-9a-f]{7,40})\b"
 )
 PR_RE = re.compile(r"/(?:pull|pulls)/(\d+)(?:\b|/)", re.IGNORECASE)
-LASTGIT_RE = re.compile(r"lastgit://([^/]+)/cr/([^/\s?#]+)", re.IGNORECASE)
+GITHUB_PR_RE = re.compile(r"github\.com/[^/\s]+/[^/\s]+/pulls?/(\d+)", re.IGNORECASE)
 # Same markers kanban pickup reads (`bodyDeclaredValidateOnly`): the card's
 # code already merged and only a post-merge END STATE is left. Such a card goes
 # to doing for the validate lane, never to todo, where pickup would claim it as
@@ -122,7 +122,7 @@ def branch_from_card(card: dict[str, Any]) -> str:
     return match.group(1) if match else ""
 
 
-def recorded_commit(card: dict[str, Any], repo_dir: Path, forge_api: str, lastgit: str) -> str:
+def recorded_commit(card: dict[str, Any], repo_dir: Path, forge_api: str, gh: str = "gh") -> str:
     candidates = recorded_candidates(card)
     if candidates:
         return candidates[0]
@@ -132,23 +132,21 @@ def recorded_commit(card: dict[str, Any], repo_dir: Path, forge_api: str, lastgi
         match = re.search(r"(?im)^\s*(?:PR|CR):\s*(\S+)\s*$", body(card))
         url = match.group(1) if match else ""
 
-    lastgit_match = LASTGIT_RE.search(url)
-    if lastgit_match and lastgit:
-        result = run([lastgit, "cr", "view", lastgit_match.group(1), lastgit_match.group(2), "--json"])
-        if result.returncode == 0:
-            try:
-                record = parse_json(result.stdout)
-                record = record.get("cr", record) if isinstance(record, dict) else {}
-                return str(record.get("merge_oid") or record.get("head_oid") or "").lower()
-            except (json.JSONDecodeError, AttributeError):
-                pass
-
     pr_match = PR_RE.search(url)
     repo = str(card.get("repo") or "").strip()
-    if pr_match and forge_api and "/" in repo:
+    if pr_match and "/" in repo:
         owner, name = repo.split("/", 1)
-        result = run([forge_api, f"repos/{owner}/{name}/pulls/{pr_match.group(1)}"], timeout=45)
-        if result.returncode == 0:
+        # GitHub is the default venue. Forgejo stays for the `lastgit` repo and
+        # for a card that recorded an explicit non-GitHub URL.
+        forgejo = name == "lastgit" or (
+            re.match(r"https?://", url) is not None and GITHUB_PR_RE.search(url) is None
+        )
+        if forgejo:
+            argv = [forge_api, f"repos/{owner}/{name}/pulls/{pr_match.group(1)}"] if forge_api else []
+        else:
+            argv = [gh, "api", f"repos/{owner}/{name}/pulls/{pr_match.group(1)}"] if gh else []
+        result = run(argv, timeout=45) if argv else None
+        if result is not None and result.returncode == 0:
             try:
                 data = parse_json(result.stdout)
                 return str(
@@ -238,7 +236,7 @@ def reopen(args: argparse.Namespace) -> dict[str, Any]:
         if cache_key not in installed_cache:
             installed_cache[cache_key] = installed_head(repo, app, args.host_track, args.lastdb)
         installed = installed_cache[cache_key]
-        recorded = recorded_commit(card, repo_dir, args.forge_api, args.lastgit)
+        recorded = recorded_commit(card, repo_dir, args.forge_api, args.gh)
         if not installed or not recorded or not is_ancestor(repo_dir, recorded, installed):
             result["unchanged"].append({"slug": slug, "recorded": recorded or None, "installed": installed or None})
             continue
@@ -283,7 +281,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--board-cli", default=os.environ.get("BOARD_CLI", "kanban"))
     parser.add_argument("--host-track", default=os.environ.get("HOST_TRACK_BIN", "host-track"))
     parser.add_argument("--lastdb", default=os.environ.get("LASTDB_BIN", "lastdb"))
-    parser.add_argument("--lastgit", default=os.environ.get("LASTGIT_BIN", "lastgit"))
+    parser.add_argument("--gh", default=os.environ.get("GH_BIN", "gh"), help="GitHub CLI (default gh)")
+    # Accepted and ignored: LastGit is retired. Callers may still pass it.
+    parser.add_argument("--lastgit", default="", help=argparse.SUPPRESS)
     parser.add_argument(
         "--forge-api",
         default=os.environ.get(

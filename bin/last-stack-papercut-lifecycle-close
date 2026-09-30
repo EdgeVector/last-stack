@@ -1041,9 +1041,8 @@ def search_repair_prs(args: argparse.Namespace, slug: str) -> list[ReviewRef]:
 def is_absent_ref_error(text: str) -> bool:
     """The venue answered, and it does not have this review.
 
-    `lastgit cr view` on another repo's CR id exits 0 and streams
-    `cr_not_found`; the forge answers `HTTP 404`. Both are the venue saying the
-    id is not one of its reviews — a different fact from a lookup that failed.
+    The forge and GitHub answer `HTTP 404` for an id that is not one of their
+    reviews — a different fact from a lookup that failed.
     """
     lowered = text.lower()
     return "cr_not_found" in lowered or "http 404" in lowered or "404 not found" in lowered
@@ -1056,21 +1055,13 @@ def review_state(args: argparse.Namespace, ref: ReviewRef) -> tuple[str, str]:
     Only a `pipeline-stuck` papercut may act on `closed`; see
     close_review_records for why the two classes read the same state
     differently. `absent` means the venue answered and does not have this
-    review at all.
+    review at all. A retired LastGit CR is always `absent`.
     """
     if ref.kind == "lastgit":
-        data = run_json([args.lastgit_bin, "cr", "view", ref.repo, ref.ident, "--json"], timeout=60)
-        cr = data.get("cr") or data.get("change_request") or data if isinstance(data, dict) else {}
-        state = str(cr.get("state") or cr.get("status") or "").lower()
-        merge_oid = str(cr.get("merge_oid") or cr.get("mergeOid") or "")
-        detail = f"lastgit:{ref.repo}/{ref.ident}"
-        if state == "merged" or merge_oid:
-            return "merged", detail
-        if state in ("closed", "open"):
-            return state, detail
-        # A CR that exists always carries a state. An empty one is the
-        # `cr_not_found` stream, which `lastgit` emits on a zero exit.
-        return ("unknown" if state else "absent"), detail
+        # LastGit is retired (decision-2026-09-29-retire-lastgit-all-repos-to-github):
+        # a CR cannot be read any more. `absent` = not a review this closer can
+        # act on: it never closes a papercut and never blocks an aggregate row.
+        return "absent", f"lastgit-retired:{ref.repo}/{ref.ident}"
     if ref.kind == "forge":
         data = run_json([args.forge_api_bin, f"repos/{ref.owner}/{ref.repo}/pulls/{ref.ident}"], timeout=60)
         state = str(data.get("state") or "").lower() if isinstance(data, dict) else ""
@@ -1466,7 +1457,8 @@ def main() -> int:
     )
     parser.add_argument("--records-json")
     parser.add_argument("--brain-bin", default="brain")
-    parser.add_argument("--lastgit-bin", default="lastgit")
+    # Accepted and ignored: LastGit is retired. Callers still pass it.
+    parser.add_argument("--lastgit-bin", default="lastgit", help=argparse.SUPPRESS)
     parser.add_argument("--forge-api-bin", default="last-stack-forge-api")
     parser.add_argument("--gh-bin", default="gh")
     parser.add_argument(

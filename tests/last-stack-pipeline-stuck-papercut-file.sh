@@ -23,7 +23,7 @@ case "${1:-} ${2:-}" in
   "papercut file")
     slug="$3"
     jq --arg slug "$slug" \
-      '. + [{slug:$slug,title:"stuck",status:"open",component:"pipeline",severity:"p0",kind:"specified-fix",body:"Evidence: lastgit://demo/cr/cr-aaa"}]' \
+      '. + [{slug:$slug,title:"stuck",status:"open",component:"pipeline",severity:"p0",kind:"specified-fix",body:"Evidence: https://github.com/EdgeVector/demo/pull/601"}]' \
       "$state" >"$state.tmp"
     mv "$state.tmp" "$state"
     printf 'filed %s\n' "$slug"
@@ -86,21 +86,21 @@ esac
 SH
 chmod +x "$tmp/brain"
 
-cat >"$tmp/lastgit" <<'SH'
+cat >"$tmp/gh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-cr_id="${4:-}"
-case "$cr_id" in
-  cr-aaa|cr-bbb)
-    printf '{"cr_id":"%s","repo":"demo","state":"merged","merge_oid":"abc123"}\n' "$cr_id"
+# gh pr view <n> -R <owner/repo> --json state,mergedAt
+case "${3:-}" in
+  601)
+    printf '{"state":"MERGED","mergedAt":"2026-09-30T00:00:00Z"}\n'
     ;;
   *)
-    echo "unknown cr $cr_id" >&2
+    echo "unknown pr ${3:-}" >&2
     exit 1
     ;;
 esac
 SH
-chmod +x "$tmp/lastgit"
+chmod +x "$tmp/gh"
 
 export BRAIN_STATE="$tmp/brain-state.json"
 export BRAIN_CLOSE_LOG="$tmp/close.log"
@@ -141,11 +141,11 @@ jq -e --arg root "$root" \
 # Heal through the same lifecycle-close path the reconciler runs. The typed
 # status must leave the open snapshot; a Status: FIXED body stamp is not enough.
 jq --arg slug "$root" \
-  'map(if .slug == $slug then .body = "Evidence: lastgit://demo/cr/cr-aaa\n" else . end)' \
+  'map(if .slug == $slug then .body = "Evidence: https://github.com/EdgeVector/demo/pull/601\n" else . end)' \
   "$BRAIN_STATE" >"$BRAIN_STATE.tmp"
 mv "$BRAIN_STATE.tmp" "$BRAIN_STATE"
 
-"$closer" "$root" --brain-bin "$tmp/brain" --lastgit-bin "$tmp/lastgit" --json \
+"$closer" "$root" --brain-bin "$tmp/brain" --gh-bin "$tmp/gh" --json \
   | jq -e '.checked == 1 and (.fixed | length) == 1 and (.errors | length) == 0' >/dev/null
 grep -q '^CLOSE papercut close '"$root"' --status fixed ' "$BRAIN_CLOSE_LOG"
 if grep -q 'Status: FIXED' "$BRAIN_APPEND_LOG"; then

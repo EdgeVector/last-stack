@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Exit 0 if the review artifact at $1 is merged. Exit 1 otherwise.
-# lastgit://<slug>/cr/<id> | Forgejo .../pulls/<n> | GitHub .../pull/<n>
+# GitHub .../pull/<n> (the default venue) | Forgejo .../pulls/<n> (only the
+# `lastgit` repo and old cards). lastgit://... CR URLs are retired and never probe as merged.
 set -euo pipefail
 url="${1:-}"
 if [ -z "$url" ]; then
@@ -10,30 +11,10 @@ fi
 
 case "$url" in
   lastgit://*)
-    rest="${url#lastgit://}"
-    slug="${rest%%/cr/*}"
-    cr_id="${rest##*/cr/}"
-    cr_id="${cr_id%%[\`]*}"
-    if ! command -v lastgit >/dev/null 2>&1; then
-      echo "merge-probe: lastgit not on PATH for $url" >&2
-      exit 1
-    fi
-    json="$(lastgit cr view "$slug" "$cr_id" --json 2>/dev/null || true)"
-    python3 -c '
-import json,sys
-raw=sys.stdin.read().strip()
-if not raw:
-    sys.exit(1)
-try:
-    d=json.loads(raw)
-except Exception:
-    sys.exit(1)
-state=str(d.get("state") or "").lower()
-oid=str(d.get("merge_oid") or d.get("mergeOid") or "")
-if state=="merged" and oid:
-    sys.exit(0)
-sys.exit(1)
-' <<<"$json"
+    # LastGit is retired (decision-2026-09-29-retire-lastgit-all-repos-to-github).
+    # A CR URL cannot be probed any more; say so instead of reading as unmerged.
+    echo "merge-probe: lastgit CR URLs are retired, cannot probe $url" >&2
+    exit 1
     ;;
   */pulls/*)
     path="${url#*://}"
@@ -73,13 +54,24 @@ sys.exit(1)
       echo "merge-probe: gh not on PATH for $url" >&2
       exit 1
     fi
-    json="$(gh -R "$repo" pr view "$n" --json state,mergedAt 2>/dev/null || true)"
+    # Never report "not merged" for what is really a broken probe call.
+    gh_err="$(mktemp "${TMPDIR:-/tmp}/merge-probe-gh.XXXXXX")"
+    if ! json="$(gh -R "$repo" pr view "$n" --json state,mergedAt 2>"$gh_err")"; then
+      echo "merge-probe: gh query failed for $url" >&2
+      sed -n '1,5p' "$gh_err" >&2 || true
+      rm -f "$gh_err"
+      exit 1
+    fi
+    rm -f "$gh_err"
     python3 -c '
 import json,sys
 raw=sys.stdin.read().strip()
 if not raw:
     sys.exit(1)
-d=json.loads(raw)
+try:
+    d=json.loads(raw)
+except Exception:
+    sys.exit(1)
 if str(d.get("state") or "").upper()=="MERGED" and d.get("mergedAt"):
     sys.exit(0)
 sys.exit(1)

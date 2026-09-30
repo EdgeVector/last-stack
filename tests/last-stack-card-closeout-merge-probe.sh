@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pin the Forgejo (*/pulls/*) branch of the merge probe.
+# Pin the Forgejo (*/pulls/*) and GitHub (*/pull/*) branches of the merge probe.
 #
 # Regression: the probe called `last-stack-forge-api --jq -r '.merged' <path>`.
 # The wrapper accepts exactly ONE argument after --jq, so it consumed `-r` as
@@ -112,5 +112,35 @@ if LAST_STACK_FORGE_API="$tmp/does-not-exist" "$bin" "$base/1047" 2>"$err"; then
   exit 1
 fi
 grep -q "last-stack-forge-api missing" "$err"
+
+# 5. GitHub URLs go through `gh` (PATH stub). Merged -> 0, open -> 1, gh
+# failure -> 1 with a message, lastgit CR URL -> 1 with a retired message.
+ghbin="$tmp/ghbin"
+mkdir -p "$ghbin"
+cat >"$ghbin/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:?}"
+case "$*" in
+  *"pr view 10 "*) echo '{"state":"MERGED","mergedAt":"2026-09-30T00:00:00Z"}' ;;
+  *"pr view 11 "*) echo '{"state":"OPEN","mergedAt":null}' ;;
+  *) echo "gh: not found" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "$ghbin/gh"
+gh_url="https://github.com/EdgeVector/last-stack/pull"
+export GH_LOG="$tmp/gh.log"
+PATH="$ghbin:$PATH" "$bin" "$gh_url/10"
+grep -q -- "-R EdgeVector/last-stack pr view 10" "$GH_LOG"
+if PATH="$ghbin:$PATH" "$bin" "$gh_url/11"; then
+  echo "expected open GitHub PR to probe as unmerged" >&2; exit 1
+fi
+if PATH="$ghbin:$PATH" "$bin" "$gh_url/12" 2>"$err"; then
+  echo "expected failing gh to probe as not-merged" >&2; exit 1
+fi
+grep -q "gh query failed" "$err"
+if "$bin" "lastgit://last-stack/cr/cr-abc-1234" 2>"$err"; then
+  echo "expected a lastgit CR URL to fail the probe" >&2; exit 1
+fi
+grep -q "retired" "$err"
 
 echo "ok last-stack-card-closeout-merge-probe"

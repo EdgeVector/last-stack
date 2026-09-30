@@ -88,17 +88,17 @@ case "\${1:-}" in
   },
   {
     "slug": "healed-closed-cr",
-    "title": "malformed closed LastGit CR URL",
+    "title": "malformed closed GitHub PR URL",
     "column": "doing",
     "position": "3",
     "assignee": "",
     "tags": [],
-    "pr_url": "lastgit://code-atlas/cr/cr-mt3dnama-15b1).",
+    "pr_url": "https://github.com/EdgeVector/code-atlas/pull/315).",
     "branch": "kanban/healed-closed-cr",
     "base": "main",
     "repo": "EdgeVector/code-atlas",
     "updated_at": "2020-01-01T00:00:00.000Z",
-    "body": "Repo: EdgeVector/code-atlas\\nBase: main\\nKind: pr\\nPR: lastgit://code-atlas/cr/cr-mt3dnama-15b1).\\n"
+    "body": "Repo: EdgeVector/code-atlas\\nBase: main\\nKind: pr\\nPR: https://github.com/EdgeVector/code-atlas/pull/315).\\n"
   },
   {
     "slug": "wip-no-handoff",
@@ -146,17 +146,19 @@ chmod +x "$board"
 
 binwrap="$tmp/bin"
 mkdir -p "$binwrap"
-cat >"$binwrap/lastgit" <<'EOF'
+cat >"$binwrap/gh" <<'EOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "cr" ] && [ "${2:-}" = "view" ]; then
-  cat <<'JSON'
-{"cr":{"state":"closed","id":"cr-mt3dnama-15b1","merge_oid":""}}
-JSON
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
+  echo '{"state":"CLOSED","mergedAt":null,"headRefName":"kanban/healed-closed-cr"}'
+  exit 0
+fi
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "list" ]; then
+  echo '[]'
   exit 0
 fi
 exit 1
 EOF
-chmod +x "$binwrap/lastgit"
+chmod +x "$binwrap/gh"
 
 fake_stack="$tmp/fake-stack"
 mkdir -p "$fake_stack/bin"
@@ -268,7 +270,7 @@ for engine in node python3; do
     cat "$moves" >&2
     fail=1
   fi
-  if grep -E 'healed-closed-cr --pr-url lastgit://code-atlas/cr/cr-mt3dnama-15b1( |$)' "$adds" >/dev/null 2>&1; then
+  if grep -E 'healed-closed-cr --pr-url https://github.com/EdgeVector/code-atlas/pull/315( |$)' "$adds" >/dev/null 2>&1; then
     echo "FAIL[$engine]: sanitized closed CR URL was restamped" >&2
     cat "$adds" >&2
     fail=1

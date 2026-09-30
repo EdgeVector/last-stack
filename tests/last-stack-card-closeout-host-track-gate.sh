@@ -73,4 +73,28 @@ set -e
 printf '%s\n' "$out" | grep -q 'requires=host-track status=not-installed' || { echo "FAIL: $out" >&2; exit 1; }
 [ "$(cat "$HG_COL")" = doing ]
 
+# GitHub PR URL: the merge commit comes from `gh api` (PATH stub), never forge-api.
+echo doing >"$HG_COL"
+export HT_HEAD="$head_sha"
+cat >"$tmp/forge-api" <<'EOF'
+#!/usr/bin/env bash
+echo "forge-api must not run for a GitHub PR URL" >&2
+exit 2
+EOF
+cat >"$tmp/path/gh" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"pr view 7"*) echo '{"state":"MERGED","mergedAt":"2026-09-30T00:00:00Z"}' ;;
+  *repos/EdgeVector/widget/pulls/7*) echo '"$merge_sha"' ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod +x "$tmp/path/gh"
+gh_board="$tmp/board-gh"
+sed 's#http://localhost:3300/EdgeVector/widget/pulls/7#https://github.com/EdgeVector/widget/pull/7#' "$board" >"$gh_board"
+chmod +x "$gh_board"
+out="$("$bin" hg-card --board-cli "$gh_board" 2>&1)" || { echo "FAIL: GitHub merge must close: $out" >&2; exit 1; }
+printf '%s\n' "$out" | grep -q 'deploy gate host-track installed' || { echo "FAIL: $out" >&2; exit 1; }
+[ "$(cat "$HG_COL")" = done ]
+
 echo "ok last-stack-card-closeout-host-track-gate"

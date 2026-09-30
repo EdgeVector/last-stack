@@ -131,38 +131,10 @@ if [ -z "$CI_SHARD_INDEX" ]; then
     # One gate at a time on the Forge host (opt-in from the workflow). Two
     # gates side by side thrash each other past the job timeout; back to back
     # they both pass. See ci_host_lock_acquire.
-    # A PR run whose head is merged, closed or replaced tests nothing anyone
-    # will use. End it before (and again after) the host-lock wait instead of
-    # spending ~8 minutes of a capacity-2 lane on it. Fail-open: an unknown
-    # answer runs the gate. The workflow sets LAST_STACK_CI_PR_NUMBER only on
-    # pull_request events.
-    # papercut-forge-queued-runs-for-merged-pr-heads-cannot-be-cancelled-by-agents-20260923
-    # LAST_STACK_CI_PUSH_BRANCH (push events only) asks the same question of a
-    # main push run: a newer push is queued behind it in the serial group.
-    ci_exit_if_superseded() {
-      local out rc=0 target
-      if [ -n "${LAST_STACK_CI_PR_NUMBER:-}" ]; then
-        target=(--pr "$LAST_STACK_CI_PR_NUMBER" --sha "${LAST_STACK_CI_PR_HEAD_SHA:-${GITHUB_SHA:-}}")
-      elif [ -n "${LAST_STACK_CI_PUSH_BRANCH:-}" ] && [ -n "${GITHUB_SHA:-}" ]; then
-        target=(--branch "$LAST_STACK_CI_PUSH_BRANCH" --sha "$GITHUB_SHA")
-      else
-        return 0
-      fi
-      # A private token name: tests in this gate must never see FORGE_TOKEN.
-      out="$(FORGE_TOKEN="${LAST_STACK_CI_FORGE_TOKEN:-}" "$ROOT/bin/last-stack-ci-superseded" --repo "${GITHUB_REPOSITORY:-}" \
-        "${target[@]}")" || rc=$?
-      echo "$out"
-      if [ "$rc" -eq 0 ]; then
-        echo "last-stack required CI: SKIPPED — the tested head is superseded; no test ran"
-        exit 0
-      fi
-    }
-    ci_exit_if_superseded
     if [ "${LAST_STACK_CI_HOST_LOCK:-0}" = "1" ]; then
       ci_host_lock_acquire \
         "${LAST_STACK_CI_HOST_LOCK_DIR:-$HOME/.local/state/last-stack/ci-gate.lock}" \
         "${LAST_STACK_CI_HOST_LOCK_WAIT_SECS:-1500}" 3600 "$CI_PROGRESS_SECS"
-      ci_exit_if_superseded
     fi
     if [ -n "${LAST_STACK_CI_DEADLINE_SECS:-}" ]; then
       CI_DEADLINE_SECS="$LAST_STACK_CI_DEADLINE_SECS"
@@ -366,6 +338,7 @@ ci_test tests/last-stack-kanban-file-pr-host-track-install.sh
 ci_test tests/last-stack-kanban-decision-check.sh
 ci_test tests/last-stack-kanban-decision-check-gbrain.sh
 ci_test tests/last-stack-sanitize-structured-fields.sh
+ci_test tests/last-stack-board-closeout-github-venue.sh
 ci_test tests/last-stack-board-closeout-sweep-logic.sh
 ci_test tests/last-stack-board-closeout-sweep.sh
 ci_test tests/last-stack-board-closeout-stale-list-row.sh
@@ -879,7 +852,6 @@ ci_test tests/last-stack-kanban-watch-targeted-heal.sh
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-portal-wt-start-installs-deps.sh
 ci_test tests/last-stack-bin-root-resolves-symlinks.sh
-ci_test tests/last-stack-ci-superseded.sh
 # W3b routine papercuts (2026-09-23): CI-in-flight update-branch guard,
 # closeout failure reasons + terminal line, marker dedupe, and the
 # kanban-list envelope prompt guard. APPENDED: ci_test shards by position.

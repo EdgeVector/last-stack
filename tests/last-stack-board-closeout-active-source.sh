@@ -43,7 +43,7 @@ echo 'required deployment proof is incomplete' >&2
 exit 1
 SH
 # No fixture may inspect live process arguments or consult shared services.
-for command in ps lastgit brain kanban fkanban; do
+for command in ps gh brain kanban fkanban; do
   printf '#!/usr/bin/env bash\nexit 1\n' > "$tmp/stack/bin/$command"
 done
 chmod +x "$tmp/board" "$tmp/stack/bin/"*
