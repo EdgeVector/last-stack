@@ -99,6 +99,12 @@ jobs:
           { brew tap edgevector/lastdb && brew trust --tap edgevector/lastdb \
               && brew install edgevector/lastdb/lastdb; } || rc=$?
           printf 'brew-install\t%s\t%s\n' "$((SECONDS - t0))" "$rc" >> "$BUNDLE/timings.tsv"
+          {
+            echo "brew_version=$(brew --version | head -1)"
+            echo "brew_prefix=$(brew --prefix edgevector/lastdb/lastdb 2>&1)"
+            ls -la "$(brew --prefix edgevector/lastdb/lastdb 2>/dev/null)" 2>&1 | sed 's#/Users/runner#~#g'
+          } > "$BUNDLE/brew-probe.txt" 2>&1
+          cat "$BUNDLE/brew-probe.txt"
           exit "$rc"
 
       - name: Download the release binaries into the scratch dir
@@ -164,6 +170,7 @@ jobs:
       - name: Isolated llms.txt install smoke
         run: |
           set -u
+          set +e   # a RED smoke exits 1; keep going so the bundle is written
           t0=$SECONDS
           # Memory sampler: system used memory and the sum of all process RSS,
           # every 5 s, for the whole smoke.
@@ -202,6 +209,9 @@ jobs:
         run: |
           set -u
           sandbox="$(jq -r '.sandbox // empty' "$BUNDLE/proof.json" 2>/dev/null || true)"
+          if [ -z "$sandbox" ]; then
+            sandbox="$(ls -dt /tmp/llms-txt-install-smoke.* 2>/dev/null | head -1 || true)"
+          fi
           {
             echo "sandbox_present=$([ -n "$sandbox" ] && [ -d "$sandbox" ] && echo yes || echo no)"
           } > "$BUNDLE/sandbox.txt"
