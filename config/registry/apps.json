@@ -54,8 +54,7 @@
       "description": "Local dogfood graph UI."
     },
     "org": {
-      "lastgit": "lastdb:///org",
-      "forge": "http://localhost:3300/EdgeVector/org.git",
+      "github": "https://github.com/EdgeVector/org.git",
       "public": "https://github.com/EdgeVector/org.git",
       "artifact_app": null,
       "install_name": "org",
