@@ -63,7 +63,7 @@ run_set "$work/legacy.json" --only legacy || fail "legacy auto run failed"
 [ "$(jq -r .apps.legacy.source_venue "$work/legacy.json")" = forge ] || fail "legacy venue"
 
 # The shipped registry: every moved app names GitHub and no retired venue.
-bad="$(jq -r '.apps | to_entries[] | select(.key != "org")
+bad="$(jq -r '.apps | to_entries[]
   | select((.value.github // "") == "" or (.value | has("lastgit")) or (.value | has("forge"))) | .key' \
   "$ROOT/config/registry/apps.json")"
 [ -z "$bad" ] || fail "registry apps still on a retired venue: $bad"
