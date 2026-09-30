@@ -210,7 +210,14 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   after the 10-minute remaining stop line; `kanban-watch` or a later pickup fire
   can reconcile a visible in-flight PR/CR, but routinesd cannot recover a killed
   foreground process cleanly.
-- LastGit missing-CI is a handoff condition, not pickup work. After a LastGit CR
+- GitHub venue (every repo except `lastgit`): a `ci-required` check run that has
+  not started or is still pending is a handoff condition, not pickup work. After
+  the PR is recorded on the card, run **one** `gh -R <repo> pr checks <n>`
+  read. If `ci-required` is still absent, do not re-run it by hand and do not
+  keep polling: heartbeat `in-flight-ci-pending` as below and EXIT.
+- LastGit missing-CI is a handoff condition, not pickup work (legacy: LastGit is
+  retired since 2026-09-30, and `last-stack-pr-venue` answers `lastgit` for no
+  repo unless a marker or git config says so). After a LastGit CR
   is recorded on the card, you may run **one** bounded `lastgit cr complete
   --once` / `lastgit ci status` check. If that still shows no `ci-required`
   status, do **not** hand-build or manually publish the status from pickup, do
@@ -276,12 +283,13 @@ sessions do not set `DRIVEN_BY=routine`. When you land code:
 
 1. Prefer commits via `"$last_stack/bin/last-stack-git-commit" -m "…" …` so
    trailers are automatic. Or append `"$last_stack/bin/last-stack-attribution-trailers"`.
-2. Every commit message and every PR / LastGit CR body must end with:
+2. Every commit message and every PR body (GitHub PR; a LastGit CR body only for
+   a legacy `lastgit` venue) must end with:
    - `Driven-By: routine`
    - `Automation-Id: <this Automation ID>`
    - `Run-Id: <ROUTINES_RUN_ID if set>`
-3. LastGit CR actor is already `routine:<id>` via `LASTGIT_ACTOR` — do not
-   override it to your shell username.
+3. (Legacy `lastgit` venue only.) LastGit CR actor is already `routine:<id>` via
+   `LASTGIT_ACTOR` — do not override it to your shell username.
 4. Situations notices: `--actor routine:<Automation ID>` (or `routine:<id>`).
 
 Never invent these trailers when `DRIVEN_BY` is unset (interactive Tom-driven
@@ -434,19 +442,20 @@ back to `todo` (or `pending_rollback=` in memory) per transport rules below.
   no-spawn execution contract. If the active Codex skill registry does not
   expose `kanban-agent`, read `skills/kanban-agent/SKILL.md` from the resolved
   `last-stack` checkout and follow that canonical source directly.
-- **Forge-hosted repos:** `gh` only works for github.com remotes. If a card's
-  repo has its `origin` on a self-hosted forge (Forgejo/Gitea/GitLab, often on
-  localhost), use that forge's API for PR create/merge/status — check the
-  workspace brain/AGENTS.md for the repo's forge SOP, and never act on a
-  read-only GitHub mirror. Poll forge PR/CI JSON with
-  `"$last_stack/bin/last-stack-forge-json-jq"` rather than raw `jq`.
-- **LastGit-native repos:** resolve the concrete checkout and run
+- **Venue routing:** resolve the concrete checkout and run
   `"$last_stack/bin/last-stack-pr-venue" --json <owner/repo> "$target_repo"`.
-  If `.venue == "lastgit"`, use the configured repository slug and CI context,
-  open a `lastgit cr` instead of a
-  Forgejo/GitHub PR, and drive it with `lastgit cr view` / `lastgit ci status` /
-  `lastgit cr complete --once`. Never run LastGit CI against the primary brain
-  socket.
+  Every EdgeVector repo except `lastgit` is on GitHub (2026-09-30; LastGit and
+  the gaming PC are retired), so the answer is normally `github`: use `gh`
+  (`gh -R <repo> pr create`, `gh -R <repo> pr merge <n> --auto --squash
+  --delete-branch`, and `gh -R <repo> pr checks <n>` for the `ci-required`
+  check run). Only the `lastgit` repo
+  answers `forgejo`: use the local Forgejo API through
+  `last-stack-forge-api` for it, and poll forge PR/CI JSON with
+  `"$last_stack/bin/last-stack-forge-json-jq"` rather than raw `jq`. A repo
+  whose marker or git config still says `lastgit` is legacy: use
+  `lastgit cr create … --auto-merge` and drive it with `lastgit cr view` /
+  `lastgit ci status` / `lastgit cr complete --once`, and never run LastGit CI
+  against the primary brain socket.
 
 ### Recover prior transport/board-write interruptions
 
@@ -716,14 +725,22 @@ Why this runs after the claim, not before, as of 2026-09-05:
    ```bash
    route_json="$("$last_stack/bin/last-stack-pr-venue" --json "<repo>" "$target_repo")"
    ```
-   - `venue=github`: push → `gh -R <repo> pr create --fill --base <base>` →
+   - `venue=github` (the default for every repo except `lastgit`): push the
+     branch to the GitHub repo → `gh -R <repo> pr create --fill --base <base>`
+     (write a body that has backticks to a file and pass `--body-file`) →
      immediately record `pr_url` and `branch` on the card with
-     `<board CLI> add <slug> --pr-url <url> --branch <branch>` → enable
-     auto-merge per repo strategy → drive to MERGED with `wait-merge` or
-     sleepless `gh -R <repo> pr checks <n> --watch` (NEVER `sleep`).
-   - `venue=forgejo`: local Forgejo SOP/API only — never `gh` against a mirror;
-     record `pr_url` and `branch` on the card immediately after create.
-   - `venue=lastgit`: `lastgit cr create … --auto-merge …`, then **immediately**
+     `<board CLI> add <slug> --pr-url <url> --branch <branch>` → arm auto-merge
+     with `gh -R <repo> pr merge <n> --auto --squash --delete-branch` → drive to
+     MERGED with `wait-merge` or sleepless `gh -R <repo> pr checks <n> --watch`
+     (NEVER `sleep`). The required check is the `ci-required` check run. If
+     `gh pr merge` returns a GraphQL 502, read `gh -R <repo> pr view <n> --json state`
+     first (it may have landed), then retry with
+     `gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f merge_method=squash`.
+   - `venue=forgejo` (only the `lastgit` repo): local Forgejo SOP/API only —
+     never `gh` for it; record `pr_url` and `branch` on the card immediately
+     after create.
+   - `venue=lastgit` (legacy; no repo answers it since 2026-09-30):
+     `lastgit cr create … --auto-merge …`, then **immediately**
      stamp structured fields (not body-only):
      `<board CLI> add <slug> --pr-url "lastgit://<repo>/cr/<cr-id>" --branch "<branch>"`
      (also keep a body `PR: lastgit://…` line for humans). Drive with

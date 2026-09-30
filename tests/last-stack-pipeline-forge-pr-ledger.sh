@@ -335,6 +335,7 @@ echo "ok   a live named root cause absorbs PRs red only on its context"
 cat >"$tmp/guard-bin" <<'SH'
 #!/usr/bin/env bash
 # fake close guard: PR 13 is close-ok, anything else refuses
+echo "$*" >> "$(dirname "$0")/guard-args.log"
 pr=""; while [ "$#" -gt 0 ]; do case "$1" in --pr) pr="$2"; shift 2 ;; *) shift ;; esac; done
 if [ "$pr" = 13 ]; then echo '{"verdict":"close-ok","reason":"required-check-failed"}'; exit 0; fi
 echo '{"verdict":"refuse","reason":"green-unmerged-auto-merge"}'; exit 1
@@ -355,6 +356,13 @@ jq -e '[.reap_plan[] | select(.number==13)][0] | .guard_verdict=="close-ok" and 
 jq -e '[.reap_plan[] | select(.number==14)][0] | .may_close==false and .point.merged==true' "$tmp/plan.json" >/dev/null \
   || { echo "FAIL reap-plan must not close a PR the point read shows merged"; cat "$tmp/plan.json"; exit 1; }
 echo "ok   reap-plan pairs each over-age PR with its guard verdict and a fresh point read"
+# A Forgejo repo is judged with --venue forgejo; a GitHub repo (every repo but
+# lastgit) is judged with --venue github.
+grep -q -- '--venue forgejo --repo fold --pr 13' "$tmp/guard-args.log" \
+  || { echo "FAIL reap-plan must judge a Forgejo repo with --venue forgejo"; cat "$tmp/guard-args.log"; exit 1; }
+grep -q 'guard_venue = "github" if is_github_repo' "$LEDGER" \
+  || { echo "FAIL reap-plan must route GitHub repos to the github guard venue"; exit 1; }
+echo "ok   reap-plan routes the guard venue by repo venue"
 
 # 9e. a GREEN unmerged PR: armed is a defect, unarmed is somebody's decision
 #     Regression 2026-09-25: EdgeVector/routines#36 was green and mergeable for

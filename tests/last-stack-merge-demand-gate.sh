@@ -42,12 +42,13 @@ case "${STUB_FORGE_MODE:-quiet}" in
 esac
 EOF
 
-# fold is canonical on GitHub: its open PRs come from `gh api`, never the Forge API.
+# Every EdgeVector repo except lastgit is canonical on GitHub: its open PRs come
+# from `gh api`, never the Forge API.
 cat >"$fake_bin/gh" <<'EOF'
 #!/bin/sh
 [ "$1" = api ] || exit 2
 case "$2" in
-  repos/EdgeVector/fold/pulls\?state=open*) ;;
+  repos/EdgeVector/*/pulls\?state=open*) ;;
   *) echo "gh stub: unexpected path $2" >&2; exit 2 ;;
 esac
 case "${STUB_GH_MODE:-quiet}" in
@@ -152,7 +153,7 @@ run_case forge-old 10 'reason=forge-open-1'
 # GitHub PR is demand, and the Forge API stub (quiet) is not what answered.
 reset_modes
 export STUB_GH_MODE=old
-run_case github-fold-old 10 'reason=forge-open-1'
+LAST_STACK_MERGE_DEMAND_GITHUB_REPOS="EdgeVector/fold" run_case github-fold-old 10 'reason=forge-open-1'
 
 reset_modes
 export STUB_GH_MODE=error
@@ -162,19 +163,31 @@ reset_modes
 export STUB_DEPLOY_MODE=blocked
 run_case deploy-blocked 10 'reason=deploy-blocked-1'
 
-# File default: six Forge repos plus fold on GitHub, one old PR each.
+# File default: the lastgit repo on Forgejo plus every moved repo on GitHub, one
+# old PR each.
 reset_modes
 unset LAST_STACK_PIPELINE_GATE_FORGE_REPOS
 export STUB_FORGE_MODE=old STUB_GH_MODE=old
-run_case seven-repo-forge-and-github 10 'reason=forge-open-7'
+gh_count="$(grep -cE '^EdgeVector/' "$ROOT/config/merge-demand-github-repos")"
+run_case all-repos-forge-and-github 10 "reason=forge-open-$((gh_count + 1))"
 export LAST_STACK_PIPELINE_GATE_FORGE_REPOS="EdgeVector/fold,EdgeVector/lastgit"
 
 repos="$(grep -E '^EdgeVector/' "$ROOT/config/merge-demand-forge-repos" | wc -l | tr -d ' ')"
-[ "$repos" = "6" ] || { echo "merge-demand-forge-repos must list 6 repos (fold is on GitHub), got $repos" >&2; exit 1; }
-grep -qx 'EdgeVector/fold' "$ROOT/config/merge-demand-github-repos" \
-  || { echo "merge-demand-github-repos must list EdgeVector/fold" >&2; exit 1; }
-if grep -qx 'EdgeVector/fold' "$ROOT/config/merge-demand-forge-repos"; then
-  echo "fold must not be in merge-demand-forge-repos" >&2; exit 1
+[ "$repos" = "1" ] || { echo "merge-demand-forge-repos must list only lastgit, got $repos" >&2; exit 1; }
+grep -qx 'EdgeVector/lastgit' "$ROOT/config/merge-demand-forge-repos" \
+  || { echo "merge-demand-forge-repos must list EdgeVector/lastgit" >&2; exit 1; }
+# Every repo that moved is on the GitHub list and none of them is on the Forgejo list.
+for name in fold last-stack fkanban routines loom brain situations configurations lastsecrets search remote \
+    state-machine reconciler lastdb-browser lastseek exemem-infra exemem-workspace schema-infra fold_db_website \
+    homebrew-lastdb ops-terminal kanban-factory code-atlas discovery dogfood-graph factory-graph; do
+  grep -qx "EdgeVector/$name" "$ROOT/config/merge-demand-github-repos" \
+    || { echo "merge-demand-github-repos must list EdgeVector/$name" >&2; exit 1; }
+  if grep -qx "EdgeVector/$name" "$ROOT/config/merge-demand-forge-repos"; then
+    echo "$name must not be in merge-demand-forge-repos" >&2; exit 1
+  fi
+done
+if grep -qx 'EdgeVector/lastgit' "$ROOT/config/merge-demand-github-repos"; then
+  echo "lastgit must stay off the GitHub list (it is the one Forgejo repo)" >&2; exit 1
 fi
 
 echo "ok last-stack-merge-demand-gate"

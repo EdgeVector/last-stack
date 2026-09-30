@@ -1,19 +1,19 @@
 ---
 name: pipeline-health
 cadence: every 10 min
-description: Keep merge + post-merge deploy pipelines unblocked — Forgejo aged-open PRs and blocked deploys. LastGit is opt-in and is not demand when disabled. Anything blocked is P0 severity — fix this wake or file a Brain papercut so papercut-reconciler can promote clustered board work.
+description: Keep merge + post-merge deploy pipelines unblocked — aged-open PRs (GitHub for every repo except lastgit, Forgejo for lastgit) and blocked deploys. LastGit is retired and is not demand. Anything blocked is P0 severity — fix this wake or file a Brain papercut so papercut-reconciler can promote clustered board work.
 ---
 
 You are the **pipeline-health** routine for `<WORKSPACE>`. Run ONE bounded pass,
 then exit. Your job is to keep **merge and post-merge deploy pipelines** healthy
 so nothing silently rots:
 
-1. **Forgejo PRs** — every repo in `config/merge-demand-forge-repos` (fold,
-   lastgit, exemem-infra, last-stack, fkanban, routines, loom), read by
-   `last-stack-pipeline-forge-pr-ledger`.
-2. **LastGit CRs** — disabled. Read nothing unless
+1. **Open PRs** — every repo in `config/merge-demand-github-repos` (all moved
+   repos, read through `gh`) and `config/merge-demand-forge-repos` (only
+   `lastgit`, on Forgejo), read by `last-stack-pipeline-forge-pr-ledger`.
+2. **LastGit CRs** — retired. Read nothing unless
    `LAST_STACK_LASTGIT_NATIVE_REPOS` names a repo (see the LastGit section).
-3. **LastGit post-merge deploy-pipeline** — every
+3. **Post-merge deploy-pipeline** — every
    `~/.lastgit/deploy-*/deploy.log` (exemem-infra, schema-infra, …). A red or
    stuck deploy after main lands is a **pipeline block**, not a background
    ops note.
@@ -55,7 +55,8 @@ Complements:
 - `kanban-pickup` — WORK mode on **reconciler-filed** cards (and program work),
   **not** on pipeline-health-filed board P0s.
 - `drain-open-prs` — once-a-day broad PR drain / close dead weight.
-- Forgejo Actions runners — continuous CI for every repo. The LastGit
+- GitHub Actions (`ci-required`) — continuous CI for every repo except `lastgit`
+  (Forgejo Actions runner). The LastGit
   `deploy-run` daemon still writes the `~/.lastgit/deploy-*/deploy.log` files
   that the deploy scan reads.
 
@@ -66,7 +67,7 @@ merges conflict, or auto-merge drops — especially anything open **longer than
 ## Zero-agent gate
 
 Scheduled runs use `last-stack-pipeline-health-gate` before the full agent.
-That gate calls `last-stack-merge-demand-gate`. Quiet Forge and deploy
+That gate calls `last-stack-merge-demand-gate`. Quiet open-PR and deploy
 inventories skip. There is no hourly deep-pulse proceed.
 
 LastGit is opt-in (`LAST_STACK_LASTGIT_NATIVE_REPOS`). An empty list is
@@ -74,9 +75,9 @@ LastGit-disabled. Then lastgit-missing, unreadable, json-invalid, and
 index-drift are quiet. A stuck row with `cr_not_found` is a ghost and is
 not demand. Do not treat `lastgit cr list --all-open` as demand.
 
-Aged open Forge PRs on the seven-repo merge list and blocked deploys
-still proceed. The default list is `config/merge-demand-forge-repos`:
-fold, lastgit, exemem-infra, last-stack, fkanban, routines, loom.
+Aged open PRs on the merge-demand lists and blocked deploys still proceed. The
+default lists are `config/merge-demand-github-repos` (every moved repo) and
+`config/merge-demand-forge-repos` (only `lastgit`).
 
 ## Automation memory
 If the scheduled prompt includes an `Automation memory:` path, read and write
@@ -87,8 +88,9 @@ read/write, fail loudly if the resolved path is empty or starts with
 
 ## Action budget per wake
 - **CHEAP (uncapped this wake):** **deploy-pipeline scan** (mandatory — see
-  below); the Forgejo PR ledger sync; check daemon liveness via logs; re-arm Forgejo
-  `merge_when_checks_succeed` when checks are green; nudge BEHIND bases with a
+  below); the PR ledger sync; check daemon liveness via logs; re-arm auto-merge when
+  checks are green (GitHub: `gh -R <owner>/<repo> pr merge <n> --auto --squash
+  --delete-branch`; Forgejo, `lastgit` only: `merge_when_checks_succeed`); nudge BEHIND bases with a
   lease force-push only from a fresh worktree after rebase, and never while a
   CI run on the PR head is pending (probe first with
   `last-stack-forge-pr-update-branch --repo <r> --pr <n>`; exit 3 = in
@@ -244,10 +246,11 @@ Record in automation memory: `deploy_blocked=<repo:sha:…>` and
 filed/updated the Brain papercut (or fixed) every blocked entry this wake
 (then heartbeat `ok` with `deploy_blocked=… filed_papercut=…`).
 
-## LastGit (disabled — do not probe)
+## LastGit (retired — do not probe)
 
-LastGit is disabled for every EdgeVector repo
-(`decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default`; Situation
+LastGit is retired for every EdgeVector repo
+(`decision-2026-09-29-retire-lastgit-all-repos-to-github`, after
+`decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default`; Situation
 `factory-repos-venue-move-to-forgejo-20260905` blocks `lastgit-cr-create`,
 `push-lastdb-remote`, `lastgit-enable`). Its registry schemas are not on the
 primary node, so every LastGit inventory read (`lastgit stuck`, `lastgit cr
@@ -268,9 +271,18 @@ error. That failure is not a pipeline block and not a papercut.
   escalate a stuck CR with `last-stack-pipeline-stuck-papercut-file`, for that
   repo only.
 
-## Forgejo PRs — one helper, one row per PR
+## Open PRs — one helper, one row per PR
 
-Read every open PR on the merge-demand repo list and reconcile the per-PR
+The helper reads GitHub repos through `gh` and the `lastgit` repo through the
+Forgejo API, and normalizes both to one shape (the section is still named for the
+Forgejo API it started from). For a GitHub PR use the `gh` actions in the steps
+below instead of the Forgejo API calls: the required check is the `ci-required`
+check run (`gh -R <owner>/<repo> pr checks <n>`), auto-merge is
+`gh -R <owner>/<repo> pr merge <n> --auto --squash --delete-branch`, and on a
+GraphQL 502 read `gh -R <owner>/<repo> pr view <n> --json state` first and then
+use `gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f merge_method=squash`.
+
+Read every open PR on the merge-demand repo lists and reconcile the per-PR
 papercut ledger with ONE command. Do not write your own loop over repos, PR
 numbers, or SHAs: hand-written `for`/`set --` tuple loops split fields wrong
 under zsh and built malformed Forge URLs on most wakes of 2026-09-22
@@ -392,13 +404,15 @@ the PR, then merges it itself and waits for the merge (loom PR 43). A merge
 from outside the walk can land before its REVIEW step; on 2026-09-23 a sweep
 merged fold#2173 that way. Report the PR as `loom-owned`.
 
-Point-read the PR (`repos/<owner>/<repo>/pulls/<n>`) immediately before ANY
-mutation. The list can be stale: a PR that the point read shows closed, or a
+Point-read the PR (`gh -R <owner>/<repo> pr view <n> --json state,mergedAt` for
+GitHub; `repos/<owner>/<repo>/pulls/<n>` for the `lastgit` Forgejo repo)
+immediately before ANY mutation. The list can be stale: a PR that the point read shows closed, or a
 404, is benign inventory drift, not an error
 (`papercut-pipeline-forge-open-list-stale-20260921`).
 
 1. **Mergeable + every required context green (ledger shape `green-unmerged`)** →
-   re-arm:
+   re-arm. GitHub: `gh -R <owner>/<repo> pr merge <n> --auto --squash --delete-branch`.
+   Forgejo (the `lastgit` repo):
    ```bash
    "$last_stack/bin/last-stack-forge-api" --method POST \
      --data '{"Do":"merge","merge_when_checks_succeed":true,"delete_branch_after_merge":true}' \

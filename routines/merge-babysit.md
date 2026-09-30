@@ -1,18 +1,21 @@
 ---
 name: merge-babysit
 cadence: every 15 min
-description: Self-heal stuck LastGit CRs - green+conflict, red/missing CI, completer lag. Prefer lastgit stuck; fall back to bounded CR scans until every install has the stuck command.
+description: Self-heal stuck PRs - green-unmerged, dropped auto-merge, BEHIND, red/missing ci-required. GitHub PRs for every repo except lastgit (Forgejo); the LastGit CR scan is legacy and skipped when LastGit is not enabled.
 ---
 
 You are the **merge-babysit** routine for `<WORKSPACE>`. You are the fleet
-**self-heal** path for stuck LastGit change requests. LastGit forge **never**
-resolves merge conflicts (it only skips). You (or kanban-pickup via a card you
-file) must rebase, fix mechanical conflicts, re-green CI, and complete.
+**self-heal** path for stuck pull requests. Since 2026-09-30 every EdgeVector
+repo except `lastgit` is on GitHub (LastGit and the gaming PC are retired), so
+the live work is the GitHub pass in step 1b. Nothing resolves a merge conflict
+for you: you (or kanban-pickup via a card you file) must rebase, fix mechanical
+conflicts, re-green CI, and merge. The LastGit CR steps below are legacy and run
+only when LastGit is enabled.
 
-Scheduled runs use `last-stack-merge-demand-gate`. Skip when the seven-repo
-Forge pass and deploy scan are quiet. Ghost LastGit does not count. Aged
-Forge PRs and blocked deploys proceed. The repo list is
-`config/merge-demand-forge-repos`.
+Scheduled runs use `last-stack-merge-demand-gate`. Skip when the open-PR pass
+and deploy scan are quiet. Ghost LastGit does not count. Aged open PRs and
+blocked deploys proceed. The repo lists are `config/merge-demand-github-repos`
+(every moved repo) and `config/merge-demand-forge-repos` (only `lastgit`).
 
 Run **ONE bounded pass**, then exit. No `sleep` loops.
 
@@ -83,8 +86,8 @@ heartbeat instead of pure `noop` when cards were closed.
 
 ### 1. Detect (cheap)
 
-CAUTION: LastGit is disabled for every EdgeVector repo
-(`decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default`). Its
+CAUTION: LastGit is retired for every EdgeVector repo
+(`decision-2026-09-29-retire-lastgit-all-repos-to-github`). Its
 registry schemas (`LastgitRepoIndex`, `RepoApp`, `LastgitOpenCrInventory`) are
 not on the primary node, so `lastgit stuck` and `lastgit cr list --all-open`
 fail on every pass. When `LAST_STACK_LASTGIT_NATIVE_REPOS` is empty (the
@@ -139,16 +142,15 @@ non-backpressure reason after proving this routine itself is broken, such as a
 bad parser, missing required local binary after preflight, malformed registry
 configuration, or an unhandled prompt/logic fault.
 
-### 1b. Forge-venue repos (Forgejo) — LastGit cannot see them
+### 1b. Open PR pass — GitHub (every repo except lastgit) and Forgejo (lastgit)
 
-`lastgit stuck` and `lastgit cr list` cover LastGit repos only. On 2026-09-05
-(Situation `factory-repos-venue-move-to-forgejo-20260905`) **last-stack,
-fkanban, routines and loom** moved their gate of record to Forgejo and their
-LastGit repos were DISABLED — every fetch returns `app_disabled`. A disabled
-LastGit repo is **expected**, not an inventory failure: never count it in
-`unreadable-repos`, and never let it turn this pass into `error`.
-
-Those four repos plus fold, lastgit and exemem-infra need a Forgejo pass:
+`lastgit stuck` and `lastgit cr list` cover LastGit repos only, and no repo is
+LastGit-native any more. Every LastGit repo is DISABLED — every fetch returns
+`app_disabled`. A disabled LastGit repo is **expected**, not an inventory
+failure: never count it in `unreadable-repos`, and never let it turn this pass
+into `error`. The PR pass covers every repo in `config/merge-demand-github-repos`
+(GitHub) and `config/merge-demand-forge-repos` (`lastgit`, Forgejo). One scan
+reads both venues:
 
 ```bash
 "$timeout_bin" 300s "$last_stack/bin/last-stack-pipeline-forge-pr-ledger" scan --json >"$scratch/forge-open.json" 2>"$scratch/forge-open.err" || true
@@ -170,7 +172,38 @@ from that list, point-read it and drop it unless it is still open and unmerged:
 # act only on: open	false
 ```
 
-Treat a Forgejo PR as stuck when it is open for more than 10 minutes and any
+**GitHub PRs** (every repo except `lastgit`). Point-read a PR before you act, and read its check run:
+
+```bash
+gh -R <owner>/<repo> pr view <n> --json state,mergedAt,mergeable,mergeStateStatus,autoMergeRequest
+gh -R <owner>/<repo> pr checks <n>
+```
+
+Treat a GitHub PR as stuck when it is open for more than 10 minutes and one of
+these holds. Fix it with the cheap action, never a per-repo loop:
+
+- `ci-required` is green, the PR is CLEAN and auto-merge is OFF or dropped
+  (`autoMergeRequest` null): `gh -R <owner>/<repo> pr merge <n> --auto --squash
+  --delete-branch`.
+- The PR is BEHIND and `ci-required` is not running: `gh -R <owner>/<repo> pr
+  update-branch <n>`, then make sure auto-merge is armed. Never update a branch
+  while its `ci-required` run is pending; the new commit cancels the run.
+- `ci-required` failed for the current head on a flaky or cancelled job: `gh -R
+  <owner>/<repo> run rerun <run-id> --failed`. Find the run with `gh -R
+  <owner>/<repo> pr checks <n>`.
+- `ci-required` is missing (no check run) for more than 10 minutes: Actions may be
+  disabled or the workflow file is broken. Do not merge around it. Flag
+  `flagged=github-no-ci-required:<repo>#<n>` and let pipeline-health file it.
+- `gh pr merge` returns a GraphQL 502, "Something went wrong" or "Merge already in
+  progress": read `gh -R <owner>/<repo> pr view <n> --json state` first (the merge
+  may have landed), then retry with `gh api -X PUT
+  repos/<owner>/<repo>/pulls/<n>/merge -f merge_method=squash`. A 405 on that
+  call with green checks means a protection rule blocks it: flag, do not force.
+
+Branch protection requires the `ci-required` check and applies to admins, so a
+PR can never merge red. Do not disable protection to unstick a PR.
+
+**Forgejo PRs** (the `lastgit` repo only). Treat a Forgejo PR as stuck when it is open for more than 10 minutes and any
 of these hold: required check `Forge CI / ci-required` is green but the PR is
 still open; the required check is red for the current head; the required check
 is missing or pending with no update for more than 10 minutes; or merge returns

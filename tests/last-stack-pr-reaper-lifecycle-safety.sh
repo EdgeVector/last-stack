@@ -71,6 +71,9 @@ chmod +x "$tmp/guard-bin"
 
 export FAKE_FORGE_DIR="$fx" FAKE_BOARD_DIR="$tmp/board"
 export LAST_STACK_FORGE_API="$tmp/forge-api"
+# The fixtures name last-stack as a Forge repo; every real repo but lastgit is on GitHub
+# now, so turn the GitHub list off and keep the Forgejo stand-in.
+export LAST_STACK_MERGE_DEMAND_GITHUB_REPOS=""
 export LAST_STACK_CLOSE_GUARD="$tmp/guard-bin"
 export LAST_STACK_PR_LEDGER_NOW="2026-09-25T12:00:00Z"
 

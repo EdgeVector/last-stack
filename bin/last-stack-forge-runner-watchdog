@@ -2,8 +2,9 @@
 # last-stack-forge-runner-watchdog — page the owner when a CI runner lane is dead.
 #
 # Watches the lanes that, when down, silently stop merges:
-#   host       — mac-forge-runner-host[-exemem-infra] (macos host lanes)
-#   merge_gate — mac-forge-runner (macos-arm64)
+#   merge_gate — mac-forge-runner (macos-arm64), the CI lane of the lastgit repo
+#                (the one repo left on Forgejo; the host lanes for fold and
+#                exemem-infra are no longer watched, those repos are on GitHub)
 #   lastgit    — the `lastgit forge run` supervisor that merges LastGit CRs
 #
 # Why this exists: `last-stack-forge-runner-lanes` defaults to config-on-disk, so
@@ -248,13 +249,13 @@ check_local_lane() {  # label, human-name, what-it-blocks, [forge runner name]
   return 1
 }
 
-# 1+2+3. Local Forgejo runner lanes (all Mac).
-check_local_lane com.edgevector.forgejo-runner-host \
-  "Forge host runner (fold)" "fold macos host jobs" mac-forge-runner-host
-check_local_lane com.edgevector.forgejo-runner-host-exemem-infra \
-  "Forge host runner (exemem-infra)" "exemem-infra macos host jobs" mac-forge-runner-host-exemem-infra
+# 1. Local Forgejo runner lane (Mac). Only the merge-gate runner is watched: the
+#    repo-scoped host runners served fold and exemem-infra, which moved to GitHub
+#    (fold 2026-09-29, exemem-infra 2026-09-30), and every other repo except
+#    EdgeVector/lastgit moved too. This watchdog does not revive, page about, or
+#    stop com.edgevector.forgejo-runner-host or -host-exemem-infra any more.
 check_local_lane com.edgevector.forgejo-runner \
-  "Forge merge-gate runner" "all macos-arm64 CI jobs" mac-forge-runner
+  "Forge merge-gate runner" "all macos-arm64 CI jobs of the lastgit repo" mac-forge-runner
 
 # 3. Live registration, not just a running process. The Mac runners are checked
 #    through launchd above (with the forge inventory as the tie-breaker); a

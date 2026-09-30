@@ -70,6 +70,13 @@ cat >"$lanes_healthy" <<'EOF'
  "live": {"ok": true, "admin_runners": [{"name":"mac-forge-runner","status":"idle","labels":["macos-arm64"]}]}}
 EOF
 
+# A complete inventory that does not list the merge-gate runner: launchd is the
+# only evidence, so an unloaded lane is a real crash.
+lanes_no_runner="$tmp/lanes-no-runner.json"
+cat >"$lanes_no_runner" <<'EOF'
+{"heavy_ok_live": true, "live": {"ok": true, "admin_runners": []}}
+EOF
+
 # The LastGit forge.log check must read a fixture, not the host: after the
 # 2026-09-25 LastGit launchd pause the real log went stale and every run of
 # this test paged on the "healthy" fleet.
@@ -106,7 +113,7 @@ echo "ok: healthy fleet does not page"
 
 # --- 2. --dry-run must not write paging state or revive -----------------------
 : >"$loaded"; : >"$bootstrapped"; : >"$pages"
-touch "$plists/com.edgevector.forgejo-runner-host.plist"
+touch "$plists/com.edgevector.forgejo-runner.plist"
 sd="$tmp/s2"
 run_wd "$sd" "$lanes_healthy" --dry-run
 [ ! -s "$pages" ] || { echo "FAIL: --dry-run sent a page"; exit 1; }
@@ -118,37 +125,40 @@ echo "ok: --dry-run is side-effect free"
 
 # --- 3. crashed lane (live plist, no pause marker): revive, do not page -------
 : >"$loaded"; : >"$bootstrapped"; : >"$pages"
-for l in com.edgevector.forgejo-runner-host-exemem-infra com.edgevector.forgejo-runner; do
-  printf '111\t0\t%s\n' "$l" >> "$loaded"
-done
-touch "$plists/com.edgevector.forgejo-runner-host.plist"
+touch "$plists/com.edgevector.forgejo-runner.plist"
 sd="$tmp/s3"
-run_wd "$sd" "$lanes_healthy"
-grep -q "forgejo-runner-host.plist" "$bootstrapped" \
+run_wd "$sd" "$lanes_no_runner"
+grep -q "forgejo-runner.plist" "$bootstrapped" \
   || { echo "FAIL: crashed lane was not revived"; exit 1; }
 [ ! -s "$pages" ] || { echo "FAIL: paged for a lane it successfully revived"; cat "$pages"; exit 1; }
 echo "ok: crashed lane is revived without paging"
 
 # --- 4. deliberately paused lane: never revive, never page --------------------
 : >"$loaded"; : >"$bootstrapped"; : >"$pages"
-rm -f "$plists/com.edgevector.forgejo-runner-host.plist"
-touch "$plists/com.edgevector.forgejo-runner-host.plist.paused-20260727T180132Z"
-for l in com.edgevector.forgejo-runner-host-exemem-infra com.edgevector.forgejo-runner; do
-  printf '111\t0\t%s\n' "$l" >> "$loaded"
-done
+rm -f "$plists/com.edgevector.forgejo-runner.plist"
+touch "$plists/com.edgevector.forgejo-runner.plist.paused-20260727T180132Z"
 sd="$tmp/s4"
-run_wd "$sd" "$lanes_healthy"
+run_wd "$sd" "$lanes_no_runner"
 [ ! -s "$bootstrapped" ] || { echo "FAIL: revived a deliberately paused lane"; exit 1; }
 [ ! -s "$pages" ] || { echo "FAIL: paged about a deliberately paused lane"; cat "$pages"; exit 1; }
 echo "ok: a human's pause is respected, not undone"
 rm -f "$plists"/*.paused-* 2>/dev/null || true
 
+# --- 4b. the repo-scoped host lanes (fold, exemem-infra) moved to GitHub: they are
+# not watched, so an unloaded host runner is neither revived nor paged.
+: >"$loaded"; : >"$bootstrapped"; : >"$pages"
+printf '111\t0\t%s\n' com.edgevector.forgejo-runner >> "$loaded"
+touch "$plists/com.edgevector.forgejo-runner-host.plist" "$plists/com.edgevector.forgejo-runner-host-exemem-infra.plist"
+sd="$tmp/s4b"
+run_wd "$sd" "$lanes_healthy"
+[ ! -s "$bootstrapped" ] || { echo "FAIL: revived a retired host lane"; cat "$bootstrapped"; exit 1; }
+[ ! -s "$pages" ] || { echo "FAIL: paged about a retired host lane"; cat "$pages"; exit 1; }
+rm -f "$plists/com.edgevector.forgejo-runner-host.plist" "$plists/com.edgevector.forgejo-runner-host-exemem-infra.plist"
+echo "ok: retired host lanes are not watched"
+
 # --- 5. Mac merge-gate runner down and not revivable: page --------------------
 # No plist to bootstrap, so the revive fails and the outage is real.
 : >"$loaded"; : >"$bootstrapped"; : >"$pages"
-for l in com.edgevector.forgejo-runner-host com.edgevector.forgejo-runner-host-exemem-infra; do
-  printf '111\t0\t%s\n' "$l" >> "$loaded"
-done
 rm -f "$plists"/com.edgevector.forgejo-runner.plist
 sd="$tmp/s5"
 run_wd "$sd" "$lanes_offline_gate"
@@ -261,20 +271,17 @@ cat >"$lanes_partial" <<'EOF4'
 {"heavy_ok_live": false,
  "live": {"ok": false, "error": "HTTP Error 403: Forbidden",
   "admin_runners": [],
-  "repo_runners": {"EdgeVector/fold": [
-   {"name":"mac-forge-runner-host","status":"idle","labels":["macos"]}]}}}
+  "repo_runners": {"EdgeVector/lastgit": [
+   {"name":"mac-forge-runner","status":"idle","labels":["macos-arm64"]}]}}}
 EOF4
 : >"$loaded"; : >"$bootstrapped"; : >"$pages"
-for l in com.edgevector.forgejo-runner-host-exemem-infra com.edgevector.forgejo-runner; do
-  printf '111\t0\t%s\n' "$l" >> "$loaded"
-done
-touch "$plists/com.edgevector.forgejo-runner-host.plist"
+touch "$plists/com.edgevector.forgejo-runner.plist"
 sd="$tmp/s22"
 run_wd "$sd" "$lanes_partial"
 [ ! -s "$bootstrapped" ] || { echo "FAIL: revived a runner the partial inventory reports idle"; cat "$bootstrapped"; exit 1; }
-grep -q "forge reports runner mac-forge-runner-host 'idle'" "$sd/watchdog.log" \
+grep -q "forge reports runner mac-forge-runner 'idle'" "$sd/watchdog.log" \
   || { echo "FAIL: partial inventory not used for the launchd-blind fallback"; cat "$sd/watchdog.log"; exit 1; }
-rm -f "$plists/com.edgevector.forgejo-runner-host.plist"
+rm -f "$plists/com.edgevector.forgejo-runner.plist"
 echo "ok: a partial inventory still feeds the launchd-blind fallback"
 
 # --- 23. blind launchd view + incomplete inventory: no revive, no page ------

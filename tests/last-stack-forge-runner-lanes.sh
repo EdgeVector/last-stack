@@ -60,8 +60,14 @@ runner:
     - heavy:host
 EOF
 
-CFG="$ROOT/config/forge-runner-lanes.json"
-[ -f "$CFG" ] || { echo "missing $CFG" >&2; exit 1; }
+SHIPPED_CFG="$ROOT/config/forge-runner-lanes.json"
+[ -f "$SHIPPED_CFG" ] || { echo "missing $SHIPPED_CFG" >&2; exit 1; }
+
+# The shipped policy retires the heavy lane (2026-09-30: fold and exemem-infra are
+# on GitHub). The heavy-lane assertions below run on the same policy with the
+# lane switched back on; the retired policy has its own assertions at the end.
+CFG="$tmp/policy-heavy.json"
+jq '.heavy.retired = false' "$SHIPPED_CFG" >"$CFG"
 
 # Healthy pair
 out="$("$BIN" --json --check --config "$CFG" --homes "$tmp/merge:$tmp/heavy")"
@@ -165,5 +171,22 @@ assert d["check_ok"] is False, d
 assert d["live"]["merge_gate_expected_offline"] == ["mac-forge-runner"], d["live"]
 print("live offline fixture correctly rejected")
 CHK
+
+# --- retired heavy lane (the shipped policy) ---
+jq -e '.heavy.retired == true and (.heavy.expected_runners | length) == 0' "$SHIPPED_CFG" >/dev/null \
+  || { echo "shipped policy must retire the heavy lane" >&2; exit 1; }
+if jq -e '[.. | strings | select(test("EdgeVector/(fold|exemem-infra)"))] | length > 0' "$SHIPPED_CFG" >/dev/null; then
+  echo "shipped policy still names a repo that moved to GitHub" >&2; exit 1
+fi
+# A merge-gate home alone is healthy: no heavy runner is required.
+"$BIN" --check --config "$SHIPPED_CFG" --homes "$tmp/merge" >/dev/null \
+  || { echo "retired heavy lane: merge-gate home alone must pass --check" >&2; exit 1; }
+"$BIN" --json --config "$SHIPPED_CFG" --homes "$tmp/merge" | jq -e '.heavy_retired == true and .heavy_ok == true and .check_ok == true' >/dev/null \
+  || { echo "retired heavy lane report is wrong" >&2; exit 1; }
+# Separation still applies: a merge-gate home that advertises heavy fails.
+if "$BIN" --check --config "$SHIPPED_CFG" --homes "$tmp/mixed" >/dev/null 2>&1; then
+  echo "retired heavy lane must still reject a mixed merge-gate home" >&2; exit 1
+fi
+echo "retired heavy lane ok"
 
 echo "ok last-stack-forge-runner-lanes"

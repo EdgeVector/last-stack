@@ -62,9 +62,9 @@ This helper replaces both:
          `situations-unreadable` (policy unreadable, so it fails closed), exit 3
          for both, with the blocking slug rendered in JSON and text.
 
-GitHub venue (2026-09-29): EdgeVector/fold is canonical on GitHub
-(decision-2026-09-29-fold-venue-back-to-github), so its Forgejo copy is
-archived and shows no PRs. Repos listed in config/merge-demand-github-repos
+GitHub venue (2026-09-30): every EdgeVector repo except lastgit is canonical on
+GitHub (decision-2026-09-29-retire-lastgit-all-repos-to-github), so its Forgejo
+copy is archived and shows no PRs. Only EdgeVector/lastgit stays on Forgejo. Repos listed in config/merge-demand-github-repos
 (or $LAST_STACK_MERGE_DEMAND_GITHUB_REPOS) are read through `gh api` and
 normalized to the Forgejo shapes this file already understands: open PRs from
 `pulls`, mergeability and the auto-merge arm from `pulls/<n>`, required
@@ -73,8 +73,8 @@ per-context statuses. A cancelled check run is reported with the description
 "Has been cancelled" so CANCELLED still applies. `merge-green --apply` does
 not write to GitHub: arm auto-merge with `gh pr merge --auto`.
 
-LastGit is not read. It is disabled for every EdgeVector repo
-(decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default).
+LastGit is not read. It is retired for every EdgeVector repo
+(decision-2026-09-29-retire-lastgit-all-repos-to-github).
 """
 
 from __future__ import annotations
@@ -97,13 +97,7 @@ from typing import Any
 HERE = Path(__file__).resolve().parent
 DEFAULT_REPOS_FILE = HERE.parent / "config" / "merge-demand-forge-repos"
 FALLBACK_REPOS = [
-    "EdgeVector/fold",
     "EdgeVector/lastgit",
-    "EdgeVector/exemem-infra",
-    "EdgeVector/last-stack",
-    "EdgeVector/fkanban",
-    "EdgeVector/routines",
-    "EdgeVector/loom",
 ]
 DEFAULT_REQUIRED = ["Forge CI / ci-required"]
 RED = {"failure", "error"}
@@ -277,6 +271,15 @@ class ForgeError(RuntimeError):
 
 
 DEFAULT_GITHUB_REPOS_FILE = HERE.parent / "config" / "merge-demand-github-repos"
+# Used only when config/merge-demand-github-repos is unreadable. The file is the source.
+GITHUB_FALLBACK_REPOS = [
+    "EdgeVector/fold",
+    "EdgeVector/last-stack",
+    "EdgeVector/fkanban",
+    "EdgeVector/routines",
+    "EdgeVector/loom",
+    "EdgeVector/exemem-infra",
+]
 GITHUB_DEFAULT_REQUIRED = ["ci-required"]
 
 
@@ -291,7 +294,7 @@ def github_repos() -> set[str]:
             ln = ln.split("#", 1)[0].strip()
             if ln:
                 found.add(ln)
-    return found or {"EdgeVector/fold"}
+    return found or set(GITHUB_FALLBACK_REPOS)
 
 
 def is_github_repo(repo: str) -> bool:
@@ -413,7 +416,7 @@ def load_repos(args: argparse.Namespace) -> list[str]:
             repos = [ln.strip() for ln in path.read_text().splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
     if not repos:
         repos = list(FALLBACK_REPOS)
-    # GitHub-venue repos (fold) are always scanned, even when a Forge list omits them.
+    # GitHub-venue repos (every moved repo) are always scanned, even when a Forge list omits them.
     for gh_repo in sorted(github_repos()):
         if gh_repo not in repos:
             repos.append(gh_repo)
@@ -1262,7 +1265,10 @@ def reap_plan(args: argparse.Namespace) -> dict[str, Any]:
             skipped_on_budget.append(f"{pr['repo']}#{pr['number']}")
             continue
         name = pr["repo"].rsplit("/", 1)[-1]
-        proc = run([guard_bin(), "--venue", "forgejo", "--repo", name, "--pr", str(pr["number"]), "--json"], timeout=120)
+        # A GitHub PR (every repo but lastgit) is judged through gh; only the
+        # lastgit repo's PRs are read from Forgejo.
+        guard_venue = "github" if is_github_repo(pr["repo"]) else "forgejo"
+        proc = run([guard_bin(), "--venue", guard_venue, "--repo", name, "--pr", str(pr["number"]), "--json"], timeout=120)
         try:
             guard = json.loads(proc.stdout)
         except json.JSONDecodeError:
