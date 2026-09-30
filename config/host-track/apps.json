@@ -684,8 +684,10 @@
       "install_mode": "artifact",
       "kind": "artifact cli",
       "command": "configurations",
-      "gate": "forgejo",
-      "gate_main": "http://localhost:3300/EdgeVector/configurations.git#main",
+      "gate": "github",
+      "gate_main": "https://github.com/EdgeVector/configurations.git#main",
+      "gate_remote": "https://github.com/EdgeVector/configurations.git",
+      "gate_ref": "refs/heads/main",
       "artifact_app": "configurations",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -696,7 +698,7 @@
           "target": "$HOME/.local/bin/configurations"
         }
       ],
-      "notes": "Configurations LastGit artifact install from CI-published dist/configurations; track_gate_main promotes stable to green+published main.",
+      "notes": "Configurations artifact install from the compiled dist/configurations. Gate of record is GitHub (EdgeVector/configurations, private, since 2026-09-30). The ci-required workflow publish job builds the darwin-arm64 artifact on GitHub; host-track refresh runs last-stack-github-artifact-pull, which re-checks the ci-required check run, the run provenance and every digest before it promotes stable. track_gate_main is on (the default for a GitHub gate_main). Brain: design-github-artifact-publish-path, sop-github-artifact-app-migration.",
       "safe_upgrade": {
         "soak_hours": 1,
         "probes": [
@@ -716,7 +718,6 @@
           }
         ]
       },
-      "track_gate_main": false,
       "requires": [
         "lastdbd"
       ]
