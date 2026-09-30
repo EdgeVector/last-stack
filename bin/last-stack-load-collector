@@ -309,11 +309,20 @@ def save_state(st):
     os.replace(tmp, os.path.join(DIR, ".state.json"))
 
 
-def detach(argv):
+def tool_env():
+    """Child env with the user tool dirs on PATH. launchd PATH has no ~/.bun/bin, so
+    `ra` (exec bun) exited 127 and no phone alert ever left the host (2026-09-30)."""
+    extra = os.environ.get("LOAD_MON_EXTRA_PATH", os.path.join(HOME, ".bun/bin") + ":" + os.path.join(HOME, ".local/bin"))
+    env = dict(os.environ)
+    env["PATH"] = extra + ":" + env.get("PATH", "/usr/bin:/bin")
+    return env
+
+
+def detach(argv, env=None):
     """Start argv and never wait for it. Failure to start is not an error."""
     try:
         subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True)
+                         stderr=subprocess.DEVNULL, start_new_session=True, env=env)
     except (OSError, subprocess.SubprocessError):
         pass
 
@@ -328,7 +337,7 @@ def detach_logged(channel, alert, argv):
             'a="$1"; c="$2"; l="$3"; shift 3; s=$(date +%s); "$@" >/dev/null 2>&1; rc=$?; '
             'printf \'{"ts":"%s","alert":"%s","channel":"%s","rc":%d,"secs":%d}\\n\' '
             '"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$a" "$c" "$rc" "$(( $(date +%s) - s ))" >>"$l"',
-            "sh", alert, channel, log] + list(argv))
+            "sh", alert, channel, log] + list(argv), env=tool_env())
 
 
 def sentry_dsn(now):
