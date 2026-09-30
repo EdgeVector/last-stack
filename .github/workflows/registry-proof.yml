@@ -153,6 +153,7 @@ jobs:
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
           FOLD_OID: ${{ inputs.fold_oid }}
+          PROBE_ONLY: ${{ inputs.probe_only }}
         run: |
           set -u
           # Presence only. The value is never printed, and GH_TOKEN below is the
@@ -170,6 +171,10 @@ jobs:
           cat "$BUNDLE/preflight.txt"
           if [ -n "$FOLD_OID" ] && [ "$pat" != present ]; then
             echo "::error::GH_PAT is not available to this workflow; cannot check out private fold"
+            exit 1
+          fi
+          if [ -n "$FOLD_OID" ] && [ "${PROBE_ONLY:-false}" != true ] && ! grep -q '^fold_commit_visible=yes' "$BUNDLE/preflight.txt"; then
+            echo "::error::fold commit $FOLD_OID is not on GitHub fold (a Forgejo-only oid cannot be built in CI)"
             exit 1
           fi
 
@@ -402,6 +407,11 @@ jobs:
           # instead of failing this step on a missing proof file.
           if [ ! -s "$BUNDLE/proof.json" ]; then
             failed="$(awk -F'\t' 'NR>1 && $3!=0 {print $1; exit}' "$BUNDLE/timings.tsv")"
+            if [ -z "$failed" ] && grep -q '^fold_commit_visible=no' "$BUNDLE/preflight.txt" 2>/dev/null; then
+              failed="fold-oid-not-on-github"
+            elif [ -z "$failed" ] && grep -q '^gh_pat=absent' "$BUNDLE/preflight.txt" 2>/dev/null; then
+              failed="gh-pat-absent"
+            fi
             jq -n --arg s "${failed:-unknown-before-smoke}" '{verdict:"RED",fails:["runner-setup:"+$s]}' > "$BUNDLE/proof.json"
           fi
           # Every verdict, RED as well as GREEN, names the build it judged: the
