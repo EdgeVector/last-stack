@@ -257,6 +257,108 @@ grep -q 'fetch --quiet --no-write-fetch-head origin refs/pull/7/head' "$tmp/forg
 jq -e '.verdict == "refuse"' "$tmp/out.json" >/dev/null || { echo "FAIL wrapper fetch verdict (rc=$rc)" >&2; cat "$tmp/out.json" >&2; exit 1; }
 echo "ok   forgejo: ancestry fetch goes through last-stack-forge-git"
 
+# ── 10c. GitHub PRs go through the same ladder (LastGit retired, 2026-09-30) ──
+# The PR row, the ci-required check run of the head and base, and the compare
+# status come from `gh api`; every input can be a file.
+gh_pr_row() { # gh_pr_row <state> <merged> <head>
+  cat <<JSON
+{"number":7,"state":"$1","merged":$2,"merged_at":null,"head":{"ref":"x","sha":"$3"},"base":{"ref":"main","sha":"$MAIN"}}
+JSON
+}
+gh_checks() { # gh_checks <status> <conclusion>
+  cat <<JSON
+{"total_count":2,"check_runs":[
+  {"name":"ci-required","status":"$1","conclusion":$2,"started_at":"2026-09-30T10:00:00Z"},
+  {"name":"publish","status":"queued","conclusion":null,"started_at":"2026-09-30T10:00:01Z"}]}
+JSON
+}
+gh_compare() { echo "{\"status\":\"$1\"}"; }
+run_gh() { # run_gh <label> <verdict> <exit> <pr> <head-checks> <base-checks> <compare> [extra...]
+  local label="$1" want_verdict="$2" want_exit="$3" prj="$4" hc="$5" bc="$6" cmp="$7" rc=0
+  shift 7
+  "$guard" --venue github --repo brain --pr 7 \
+    --pr-json "$prj" --head-check-json "$hc" --base-check-json "$bc" --compare-json "$cmp" \
+    --base-oid "$MAIN" --json "$@" >"$tmp/out.json" 2>"$tmp/out.err" || rc=$?
+  local got
+  got="$(jq -r '.verdict' "$tmp/out.json" 2>/dev/null || echo PARSE-FAIL)"
+  if [ "$got" != "$want_verdict" ] || [ "$rc" != "$want_exit" ]; then
+    echo "FAIL $label: want verdict=$want_verdict exit=$want_exit, got verdict=$got exit=$rc" >&2
+    cat "$tmp/out.json" "$tmp/out.err" >&2 || true
+    exit 1
+  fi
+  echo "ok   $label ($got, exit $rc)"
+}
+gh_pr_row open false "$STRAY" > "$tmp/gpr-open.json"
+gh_checks completed '"failure"' > "$tmp/gc-head-red.json"
+gh_checks completed '"failure"' > "$tmp/gc-base-red.json"
+gh_checks completed '"success"' > "$tmp/gc-base-green.json"
+gh_checks completed '"success"' > "$tmp/gc-head-green.json"
+gh_checks in_progress null > "$tmp/gc-head-pending.json"
+gh_checks completed '"cancelled"' > "$tmp/gc-head-cancelled.json"
+gh_compare ahead > "$tmp/gcmp-ahead.json"
+gh_compare diverged > "$tmp/gcmp-diverged.json"
+gh_compare behind > "$tmp/gcmp-behind.json"
+gh_compare identical > "$tmp/gcmp-identical.json"
+run_gh "github: red head under a red main is indeterminate" indeterminate 3 "$tmp/gpr-open.json" "$tmp/gc-head-red.json" "$tmp/gc-base-red.json" "$tmp/gcmp-ahead.json"
+jq -e '.reason == "base-gate-red" and .venue == "github"' "$tmp/out.json" >/dev/null \
+  || { echo "FAIL: github base-gate-red must be named" >&2; exit 1; }
+run_gh "github: red head under a green main closes" close-ok 0 "$tmp/gpr-open.json" "$tmp/gc-head-red.json" "$tmp/gc-base-green.json" "$tmp/gcmp-ahead.json"
+run_gh "github: cancelled head closes" close-ok 0 "$tmp/gpr-open.json" "$tmp/gc-head-cancelled.json" "$tmp/gc-base-green.json" "$tmp/gcmp-diverged.json"
+run_gh "github: green unmerged head refuses" refuse 1 "$tmp/gpr-open.json" "$tmp/gc-head-green.json" "$tmp/gc-base-green.json" "$tmp/gcmp-ahead.json"
+run_gh "github: pending head is indeterminate" indeterminate 3 "$tmp/gpr-open.json" "$tmp/gc-head-pending.json" "$tmp/gc-base-green.json" "$tmp/gcmp-ahead.json"
+jq -e '.reason == "required-check-running"' "$tmp/out.json" >/dev/null || { echo "FAIL: github pending must read required-check-running" >&2; exit 1; }
+gh_pr_row closed true "$STRAY" > "$tmp/gpr-merged.json"
+run_gh "github: a merged PR is already terminal" close-ok 0 "$tmp/gpr-merged.json" "$tmp/gc-head-red.json" "$tmp/gc-base-red.json" "$tmp/gcmp-ahead.json"
+gh_pr_row closed false "$STRAY" > "$tmp/gpr-closed.json"
+run_gh "github: a closed PR is already terminal" close-ok 0 "$tmp/gpr-closed.json" "$tmp/gc-head-green.json" "$tmp/gc-base-green.json" "$tmp/gcmp-ahead.json"
+run_gh "github: head already in main (compare behind) closes" close-ok 0 "$tmp/gpr-open.json" "$tmp/gc-head-green.json" "$tmp/gc-base-green.json" "$tmp/gcmp-behind.json"
+jq -e '.head_in_base == "true"' "$tmp/out.json" >/dev/null || { echo "FAIL: compare behind must read head_in_base=true" >&2; exit 1; }
+run_gh "github: identical compare closes" close-ok 0 "$tmp/gpr-open.json" "$tmp/gc-head-green.json" "$tmp/gc-base-green.json" "$tmp/gcmp-identical.json"
+echo '{"message":"Not Found"}' > "$tmp/gcmp-bad.json"
+run_gh "github: an unreadable compare is indeterminate" indeterminate 3 "$tmp/gpr-open.json" "$tmp/gc-head-green.json" "$tmp/gc-base-green.json" "$tmp/gcmp-bad.json"
+jq -e '.reason == "ancestry-unreadable"' "$tmp/out.json" >/dev/null || { echo "FAIL: github unreadable compare must name ancestry-unreadable" >&2; exit 1; }
+echo '{"check_runs":[]}' > "$tmp/gc-head-none.json"
+run_gh "github: no ci-required check run is indeterminate" indeterminate 3 "$tmp/gpr-open.json" "$tmp/gc-head-none.json" "$tmp/gc-base-green.json" "$tmp/gcmp-ahead.json"
+# With --git-dir the guard uses local ancestry (objects only), same verdicts.
+run_gh "github: --git-dir ancestry, green unmerged refuses" refuse 1 "$tmp/gpr-open.json" "$tmp/gc-head-green.json" "$tmp/gc-base-green.json" "$tmp/gcmp-bad.json" --git-dir "$repo" --no-fetch
+
+# --venue auto and the --pr default route through last-stack-pr-venue.
+cat >"$tmp/pr-venue-github" <<'SH'
+#!/usr/bin/env bash
+echo github
+SH
+cat >"$tmp/pr-venue-forgejo" <<'SH'
+#!/usr/bin/env bash
+echo forgejo
+SH
+cat >"$tmp/pr-venue-lastgit" <<'SH'
+#!/usr/bin/env bash
+echo lastgit
+SH
+chmod +x "$tmp/pr-venue-github" "$tmp/pr-venue-forgejo" "$tmp/pr-venue-lastgit"
+rc=0
+LAST_STACK_PR_VENUE_BIN="$tmp/pr-venue-github" "$guard" --repo brain --pr 7 \
+  --pr-json "$tmp/gpr-open.json" --head-check-json "$tmp/gc-head-green.json" --base-check-json "$tmp/gc-base-green.json" \
+  --compare-json "$tmp/gcmp-ahead.json" --base-oid "$MAIN" --json >"$tmp/out.json" 2>"$tmp/out.err" || rc=$?
+if [ "$rc" != 1 ] || ! jq -e '.venue == "github" and .verdict == "refuse"' "$tmp/out.json" >/dev/null; then
+  echo "FAIL: --pr with no --venue must route to github (rc=$rc)" >&2; cat "$tmp/out.json" "$tmp/out.err" >&2; exit 1
+fi
+rc=0
+LAST_STACK_PR_VENUE_BIN="$tmp/pr-venue-forgejo" "$guard" --venue auto --repo brain --pr 7 \
+  --pr-json "$tmp/pr-open.json" --head-status-json "$tmp/fs-head-green.json" --base-status-json "$tmp/fs-base-green.json" \
+  --base-oid "$MAIN" --git-dir "$repo" --no-fetch --json >"$tmp/out.json" 2>"$tmp/out.err" || rc=$?
+if [ "$rc" != 1 ] || ! jq -e '.venue == "forgejo" and .verdict == "refuse"' "$tmp/out.json" >/dev/null; then
+  echo "FAIL: --venue auto must route to forgejo when the venue helper says forgejo (rc=$rc)" >&2; cat "$tmp/out.json" "$tmp/out.err" >&2; exit 1
+fi
+rc=0
+LAST_STACK_PR_VENUE_BIN="$tmp/pr-venue-lastgit" "$guard" --venue auto --repo brain --pr 7 >"$tmp/out.json" 2>"$tmp/out.err" || rc=$?
+[ "$rc" = 2 ] || { echo "FAIL: a lastgit answer with --pr must be a usage error (rc=$rc)" >&2; exit 1; }
+# A --cr with no --venue is still a LastGit CR (compat).
+rc=0
+"$guard" --repo last-stack --cr cr-test-0001 --cr-json "$tmp/cr-green.json" --ci-json "$tmp/ci-success.json" --base-oid "$MAIN" --git-dir "$repo" --no-fetch --json >"$tmp/out.json" 2>/dev/null || rc=$?
+jq -e '.venue == "lastgit"' "$tmp/out.json" >/dev/null || { echo "FAIL: --cr with no --venue must stay lastgit" >&2; exit 1; }
+echo "ok   github: --venue auto and the --pr default route through last-stack-pr-venue"
+
 # ── 11. the prompt must actually run the guard ─────────────────────────────
 # A helper nothing calls is not a guard. This is the half that failed before:
 # routines/pr-reaper.md STEP 2 had a two-branch ladder and no call site.
