@@ -65,7 +65,7 @@ import sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 merge = data["merge_gate"]
 heavy = data["heavy"]
-assert "pc-linux" in merge["labels"]
+
 assert "macos-arm64" in merge["labels"]
 assert "heavy" in merge["forbidden_on_lane"]
 assert "heavy" in heavy["labels"]
@@ -119,14 +119,14 @@ cat >"$TMP/merge/.runner" <<'EOF'
   "id": 1,
   "name": "fixture-merge-gate",
   "address": "http://fixture.invalid",
-  "labels": ["pc-linux:docker://fixture"]
+  "labels": ["macos-arm64:host"]
 }
 EOF
 cat >"$TMP/merge/config.yml" <<'EOF'
 runner:
   capacity: 2
   labels:
-    - pc-linux:docker://fixture
+    - macos-arm64:host
 EOF
 cat >"$TMP/heavy/.runner" <<'EOF'
 {

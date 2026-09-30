@@ -192,7 +192,7 @@ fixture, alternate OS runner, or throwaway probe that never saw the bug.
 Examples of **insufficient** proof:
 - Fixture-only unit test while the scheduled routine still noops with the same
   heartbeat signature on the live host.
-- Green CI on `pc-linux` while the macOS GitHub `Release` lane still 404s the
+- Green CI on a Linux lane while the macOS GitHub `Release` lane still 404s the
   same step.
 - PR merged to `fold` main while primary `lastdbd` still runs a pre-merge binary
   (needs safe-upgrade / live version evidence).

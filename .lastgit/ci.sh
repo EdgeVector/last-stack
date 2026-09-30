@@ -846,7 +846,6 @@ ci_test tests/last-stack-board-closeout-failure-reasons.sh
 ci_test tests/last-stack-kanban-mark-once.sh
 ci_test tests/last-stack-prompt-kanban-json-envelope.sh
 ci_test tests/last-stack-portal-wt-forge-credential.sh
-ci_test tests/last-stack-pc-run.sh
 ci_test tests/last-stack-forge-dbfs-read.sh
 # Offline terminal proof for north-star-exemem-hands-off-prod-deploy.
 # Fixture tree and a redacted evidence file. No deploy, no LastDB home.
