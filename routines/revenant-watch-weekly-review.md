@@ -158,7 +158,7 @@ Allowed autonomous improvements (small, reversible):
 - Restart primary LastDB / forgejo.
 - Rewrite the whole skill.
 
-If a product code fix is needed, open one last-stack Kind:pr CR (LastGit) with
+If a product code fix is needed, open one last-stack Kind:pr (a GitHub PR) with
 a real END STATE — do not leave a hollow card.
 
 ## Step 5 — Report to Tom

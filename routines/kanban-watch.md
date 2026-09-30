@@ -23,8 +23,9 @@ FOLLOW the board — advance in-flight work — NOT to author or ship new featur
 code. If the sweep is quiet and you spotted something worth doing, FILE it as a
 card for the `kanban-pickup` + `kanban-agent` pipeline to build.
 
-Scheduled runs use `last-stack-merge-demand-gate`. Skip when Forge and deploy
-are quiet. Ghost LastGit does not count.
+Scheduled runs use `last-stack-merge-demand-gate`. Skip when open PRs (GitHub
+for every repo except `lastgit`, Forgejo for `lastgit`) and deploy are quiet.
+Ghost LastGit does not count.
 
 ## Hollow Kind:pr (won't-undo — 2026-08-17)
 
@@ -71,8 +72,10 @@ envelope). Do not invent trailers when `DRIVEN_BY` is unset.
   **re-arm auto-merge on every PR that is CLEAN/mergeable but has auto-merge OFF
   or *dropped*** (a dropped auto-merge is the #1 strand and nothing else
   re-fires it); and update-branch the oldest few clean-green-BEHIND
-  carded PRs whose CI is NOT in flight (Forgejo: through
-  `last-stack-forge-pr-update-branch --apply`, which refuses a pending run). These are lightweight remote API / board moves and must not be
+  carded PRs whose CI is NOT in flight (GitHub: `gh -R <repo> pr update-branch
+  <n>` when the `ci-required` check run is not running; Forgejo, the `lastgit`
+  repo only: through `last-stack-forge-pr-update-branch --apply`, which refuses a
+  pending run). These are lightweight remote API / board moves and must not be
   left to rot one-per-hour. In steady state most PRs are driven to merge by
   their own `kanban-agent`; this sweep is the BACKSTOP for whatever slips — so
   be thorough on the cheap advances.
@@ -147,19 +150,21 @@ and exit. A handoff with a live card is an `ok` routine result, not `error`.
 - Drive the board CLI from `<board repo dir>` with `<board CLI> ...`.
 - Follow the **kanban-agent** skill, RECONCILE mode — it is the source of truth
   for behavior; this prompt is the trigger.
-- **Forge-hosted repos:** `gh` only works for github.com remotes. For a repo
-  whose `origin` points at a self-hosted forge (Forgejo/Gitea/GitLab, often on
-  localhost), do every PR read/advance via that forge's API — check the
-  workspace brain/AGENTS.md for the repo's forge SOP before assuming GitHub,
-  and never act on a read-only GitHub mirror of a forge-hosted repo.
-- **LastGit-native repos:** before PR/CR lookup or advance, resolve the concrete
-  checkout and run `"$last_stack/bin/last-stack-pr-venue" --json <owner/repo>
-  "$target_repo"`. If `.venue == "lastgit"`, use the native LastGit review
-  contract and treat `lastgit://<slug>/cr/<id>`
-  card lines as review artifacts, and use `lastgit cr view/list`, `lastgit ci
-  status`, and `lastgit cr complete --once` instead of Forgejo/GitHub commands.
-  LastGit routing is opt-in only; all other repos keep their existing route.
-  Never run LastGit CI watchers against the primary brain socket.
+- **Venue routing:** before PR lookup or advance, resolve the concrete checkout
+  and run `"$last_stack/bin/last-stack-pr-venue" --json <owner/repo>
+  "$target_repo"`. Every EdgeVector repo except `lastgit` is on GitHub
+  (2026-09-30; LastGit and the gaming PC are retired), so the answer is normally
+  `github`: read PRs with `gh -R <repo> pr list/view`, read the `ci-required`
+  check run with `gh -R <repo> pr checks <n>`, arm auto-merge with
+  `gh -R <repo> pr merge <n> --auto --squash --delete-branch`. When `gh pr merge`
+  returns a GraphQL 502, read `gh -R <repo> pr view <n> --json state` (it may
+  have landed), then use `gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f
+  merge_method=squash`. Only the `lastgit` repo answers `forgejo`: do every PR
+  read/advance for it through the Forgejo API (`last-stack-forge-api`). A
+  `.venue == "lastgit"` answer is legacy: use `lastgit cr view/list`, `lastgit ci
+  status`, and `lastgit cr complete --once`, treat `lastgit://<slug>/cr/<id>` card
+  lines as review artifacts, and never run LastGit CI watchers against the primary
+  brain socket.
 
 ## DONE-WHEN evaluator for non-PR cards
 `Kind: pr` cards still reach `done` only through a verified merged PR. For
@@ -458,11 +463,11 @@ looks completely healthy (mergeable, clean, no failing check) — this is
 INVISIBLE to plain PR-state checks; you must query the queue entry itself.
 
 For every repo this routine touches that runs a GitHub merge queue (check via
-the query below; note `EdgeVector/fold` no longer qualifies — since 2026-07-02
-fold lives on the local Forgejo forge at `http://localhost:3300`, which has no
-merge queue; see `brain get sop-forge-pr-workflow`):
+the query below; a repo that is not on GitHub has no merge queue — only the
+`lastgit` repo stays on the local Forgejo forge at `http://localhost:3300`, see
+`brain get sop-forge-pr-workflow`):
 
-For forge-hosted repos, every PR/CI JSON poll should use:
+For the `lastgit` repo (Forgejo), every PR/CI JSON poll should use:
 
 ```bash
 curl -fsS "$URL" -H "Authorization: token $TOKEN" |
@@ -612,12 +617,12 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
           reclaim happens.
         - In `review`: leave alone (human gate / BLOCKED note owns it).
       - **No PR/CR + a `kanban/<slug>` branch with commits** → finish landing it
-        using the routed venue: GitHub `gh -R <repo> pr create --fill`, Forgejo
-        local API create, or LastGit `git push lastgit HEAD:<branch>` plus
+        using the routed venue: GitHub (every repo but `lastgit`) `gh -R <repo> pr create
+        --fill`, Forgejo local API create (`lastgit` repo only), or legacy LastGit `git push lastgit HEAD:<branch>` plus
         `lastgit cr create <slug> --head <branch> --base <base> --auto-merge
         --require-status <context> --json`.
       - **Auto-merge OFF/dropped** (`autoMergeRequest` null) while CLEAN and not
-        merged → re-arm: `gh -R <repo> pr merge <n> --auto`. The merge queue silently DROPS
+        merged → re-arm: `gh -R <repo> pr merge <n> --auto --squash`. The merge queue silently DROPS
         auto-merge whenever it ejects a PR; nothing else re-fires it, so a
         green-and-ready PR sits forever. A CLEAN PR with auto-merge OFF is a
         STRAND. CHEAP advance.

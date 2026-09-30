@@ -55,8 +55,10 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 
 3. **Update website** when install/use instructions are wrong or incomplete:
    worktree → edit `public/llms.txt` (+ Start/docs install pages as needed) →
-   `lastgit cr` on `EdgeVector/fold_db_website` → drive/merge → wait for live
-   content when possible. Do not paper over product bugs with fake docs.
+   GitHub PR on `EdgeVector/fold_db_website` (`gh -R EdgeVector/fold_db_website pr
+   create --fill`, then `gh -R EdgeVector/fold_db_website pr merge <n> --auto
+   --squash --delete-branch`; the required check is `ci-required`) → drive/merge →
+   wait for live content when possible. Do not paper over product bugs with fake docs.
 
 4. **Smoke (ephemeral node)** — always isolated:
    ```bash

@@ -187,8 +187,11 @@ it:
 
 1. Dedupe: `routines list`, `ls ~/.last-stack/routines`, brain ask the gap.
 2. Author a real prompt (frontmatter + bounded steps + close-out + heartbeat).
-3. Land it in EdgeVector/last-stack via an isolated worktree + LastGit CR
-   (`last-stack-pr-venue`, `lastgit cr create … --auto-merge`), **and**
+3. Land it in EdgeVector/last-stack via an isolated worktree + GitHub PR
+   (`last-stack-pr-venue` answers `github`; push the branch, `gh -R
+   EdgeVector/last-stack pr create --fill --base main`, then `gh -R
+   EdgeVector/last-stack pr merge <n> --auto --squash --delete-branch`; the required
+   check is `ci-required`), **and**
    write the live TOML yourself:
    `${ROUTINES_HOME:-$HOME/.routines}/registry/<id>.toml` with
    `difficulty` (no pin) + `prompt_path` at

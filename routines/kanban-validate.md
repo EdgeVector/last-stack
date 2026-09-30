@@ -61,10 +61,12 @@ filing a fix **card** over landing code in this routine.
   ```
 - Read this routine through the guarded reader when the scheduler supports it:
   `"$last_stack/bin/last-stack-routine-read" "kanban-validate"`.
-- **Forge-hosted repos:** `gh` only works for github.com remotes. Use
-  `last-stack-pr-venue` + forge/LastGit SOPs. Never act on a read-only GitHub
-  mirror of a forge-hosted repo.
-- PUBLIC repos keep normal GitHub flow. Qualify GitHub commands with `-R owner/repo`.
+- **Venue:** run `last-stack-pr-venue` for the card's repo. Every EdgeVector repo
+  except `lastgit` is on GitHub (2026-09-30), so the answer is normally `github`:
+  read the PR and its `ci-required` check run with `gh`, and qualify every `gh`
+  command with `-R owner/repo`. Only the `lastgit` repo answers `forgejo` (use the
+  Forgejo SOP for it). LastGit is retired; a `lastgit://…/cr/…` line on an old card
+  is history, judged with the legacy LastGit SOP.
 
 ## Step 0 — cheap DONE-WHEN sweep (zero LLM work, do first)
 
@@ -265,14 +267,16 @@ Then re-eval the DONE-WHEN. Do not invent new harness slugs not listed by
 
 ### PR/CR merge evidence (Pool A only)
 
-Prefer explicit `PR:` / `lastgit://…/cr/…` in the body. Fallbacks:
+Prefer explicit `PR:` (a GitHub PR URL) in the body; a `lastgit://…/cr/…` line
+is an old card. Fallbacks:
 
 ```bash
 gh -R <owner>/<repo> pr list --head kanban/<slug> --state all --json number,state,mergedAt,headRefName,url
 ```
 
-Forge/LastGit: use venue SOP. Pool A requires merged (`MERGED` / `mergedAt` /
-LastGit `state=merged` + `merge_oid`).
+Forgejo (the `lastgit` repo only) and legacy LastGit: use the venue SOP. Pool A
+requires merged (GitHub `MERGED` / `mergedAt`; LastGit `state=merged` + `merge_oid`
+for an old card).
 
 ## Run the validation
 

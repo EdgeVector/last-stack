@@ -263,13 +263,13 @@ echo "ok   forgejo: ancestry fetch goes through last-stack-forge-git"
 prompt="$ROOT/routines/pr-reaper.md"
 grep -q 'bin/last-stack-pr-reaper-close-guard' "$prompt" \
   || { echo "FAIL: routines/pr-reaper.md must invoke the close guard" >&2; exit 1; }
-for token in 'close-refused-green-unmerged' 'close-indeterminate' 'close-deferred-base-gate-red' '--venue forgejo'; do
+for token in 'close-refused-green-unmerged' 'close-indeterminate' 'close-deferred-base-gate-red' '--venue auto' '--venue github' '--venue forgejo' 'gh -R <owner>/<repo> pr close'; do
   grep -q -- "$token" "$prompt" \
     || { echo "FAIL: pr-reaper.md must carry $token so the refusal stays measurable" >&2; exit 1; }
 done
 # The call site must precede the close verbs it gates, or it gates nothing.
 guard_line="$(grep -n 'bin/last-stack-pr-reaper-close-guard' "$prompt" | head -1 | cut -d: -f1)"
-close_line="$(grep -n 'lastgit cr close' "$prompt" | tail -1 | cut -d: -f1)"
+close_line="$(grep -n 'pr close\|lastgit cr close' "$prompt" | tail -1 | cut -d: -f1)"
 if [ -z "$guard_line" ] || [ -z "$close_line" ] || [ "$guard_line" -gt "$close_line" ]; then
   echo "FAIL: the guard must be introduced before the last close verb (guard=$guard_line close=$close_line)" >&2
   exit 1

@@ -1262,7 +1262,10 @@ def reap_plan(args: argparse.Namespace) -> dict[str, Any]:
             skipped_on_budget.append(f"{pr['repo']}#{pr['number']}")
             continue
         name = pr["repo"].rsplit("/", 1)[-1]
-        proc = run([guard_bin(), "--venue", "forgejo", "--repo", name, "--pr", str(pr["number"]), "--json"], timeout=120)
+        # A GitHub PR (every repo but lastgit) is judged through gh; only the
+        # lastgit repo's PRs are read from Forgejo.
+        guard_venue = "github" if is_github_repo(pr["repo"]) else "forgejo"
+        proc = run([guard_bin(), "--venue", guard_venue, "--repo", name, "--pr", str(pr["number"]), "--json"], timeout=120)
         try:
             guard = json.loads(proc.stdout)
         except json.JSONDecodeError:

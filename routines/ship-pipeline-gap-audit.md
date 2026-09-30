@@ -83,7 +83,7 @@ Look specifically for:
 2. **Active milestones** with zero Kind:pr cards in todo/doing (hollow outcome).
 3. **Kind:pr in todo** with `unattached-outcome` / missing milestone / abandoned MS.
 4. **Pickup ready>0** but no recent pickup claim / doing=0 for hours.
-5. **Doing** cards aged / PR open but CI red / closeout can't see Forge/LastGit.
+5. **Doing** cards aged / PR open but CI red / closeout can't see the GitHub PR (or Forgejo for lastgit).
 6. **Complete milestones** without proof when proof is required.
 7. **Drivers** nooping for wrong reasons (portfolio undercount, superseded
    program-driver still burning runs, feature-prove cwd/harness broken).

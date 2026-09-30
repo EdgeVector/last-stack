@@ -9,7 +9,7 @@ directive from Tom on 2026-07-19: **no PR or CR stays open longer
 than ONE HOUR.** Other routines flag and defer; you terminalize. Run **ONE
 bounded pass**, then exit. No `sleep` loops.
 
-Scheduled runs use `last-stack-merge-demand-gate`. Skip when Forge and deploy
+Scheduled runs use `last-stack-merge-demand-gate`. Skip when open PRs and deploy
 are quiet. Ghost LastGit does not count.
 
 ## Setup
@@ -35,10 +35,11 @@ If the FIRST inventory read hits `service_timeout`, "node did not respond",
 transient shared backpressure, not a reaper failure. Do not restart anything;
 heartbeat `noop reasons=busy-node` and exit.
 
-## STEP 0 — LastGit is disabled: read nothing from it
+## STEP 0 — LastGit is retired: read nothing from it
 
-LastGit is disabled for every EdgeVector repo
-(`decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default`). Its
+LastGit is retired for every EdgeVector repo
+(`decision-2026-09-29-retire-lastgit-all-repos-to-github`). Every repo except
+`lastgit` is on GitHub; `lastgit` is on Forgejo. Its
 registry schemas are not on the primary node, so `lastgit cr list --all-open`,
 `lastgit stuck`, and `last-stack-pr-reaper-stale-open-heal` fail with a
 missing-schema error on every pass. That error is not a reaper failure and not
@@ -66,8 +67,9 @@ if [ "$plan_valid" != "true" ] && jq -e '.unreadable | length > 0' "$run_dir/rea
 fi
 ```
 
-The helper reads every repo in `config/merge-demand-forge-repos` (fold,
-lastgit, exemem-infra, last-stack, fkanban, routines, loom). For each PR open
+The helper reads every repo in `config/merge-demand-github-repos` (all moved
+repos, through `gh`) and `config/merge-demand-forge-repos` (only `lastgit`,
+through the Forgejo API). For each PR open
 longer than 60 minutes it has ALREADY run the close guard (STEP 2) and a fresh
 point read. `may_close=true` means: guard `close-ok`, still open, head
 unchanged, and NOT owned by an active Loom recovery. `may_merge=true` means: every required context green, still open,
@@ -98,10 +100,11 @@ only a real `open=0` when `.unreadable` is empty. If a repo query fails, report
 `flagged=venue-unreadable:<repo>` — never fold an unreadable repo into
 `all venue inventories empty`.
 
-**Age:** use `.age_min` from the helper (Forgejo `created_at`).
+**Age:** use `.age_min` from the helper (the PR `created_at`).
 
-Point-read the PR (`repos/<owner>/<repo>/pulls/<n>`) immediately before any
-merge or close. A PR the point read shows merged or closed, or a 404, is benign
+Point-read the PR (`gh -R <owner>/<repo> pr view <n> --json state,mergedAt,headRefOid`
+for a GitHub repo; `repos/<owner>/<repo>/pulls/<n>` on Forgejo for `lastgit`)
+immediately before any merge or close. A PR the point read shows merged or closed, or a 404, is benign
 inventory drift: count it as already terminal and move on.
 
 ## STEP 2 — Reap every item older than 60 minutes
@@ -109,12 +112,12 @@ inventory drift: count it as already terminal and move on.
 Age ≤ 60 min → leave it. Age > 60 min → it leaves this run in a TERMINAL
 state. Decide in this order:
 
-For Forgejo PRs the reap plan (STEP 1) already holds each guard verdict
+For GitHub and Forgejo PRs the reap plan (STEP 1) already holds each guard verdict
 (`guard_verdict`, `guard_reason`) from the command below. Read it; do not run
 the guard again per PR. Run the guard by hand only for one PR you re-check.
 
-**Before any CLOSE on a LastGit CR or a Forgejo PR, run the close guard —
-won't-undo 2026-09-05 (Forgejo PRs added 2026-09-07).** This ladder used to have two branches: MERGE if green and
+**Before any CLOSE on a GitHub PR, a Forgejo PR or a LastGit CR, run the close guard —
+won't-undo 2026-09-05 (Forgejo PRs added 2026-09-07, GitHub PRs 2026-09-30).** This ladder used to have two branches: MERGE if green and
 mergeable right now, else CLOSE everything else. A CR that is green and
 driving, but cannot merge because the merge machinery is failing
 (`base_ref_rewound` on an unfetchable cache tip, completer abort/recover
@@ -130,10 +133,13 @@ close_guard_rc=0
 "$last_stack/bin/last-stack-pr-reaper-close-guard" \
   --repo <repo> --cr <cr-id> --json >/tmp/pr-reaper-close-guard.json \
   2>/tmp/pr-reaper-close-guard.err || close_guard_rc=$?
-# Forgejo PR: the same guard, the same verdicts
+# GitHub PR (every repo except lastgit) or Forgejo PR (lastgit): the same guard,
+# the same verdicts. --venue auto routes through last-stack-pr-venue; the guard
+# reads the ci-required check run (GitHub) or status (Forgejo).
 "$last_stack/bin/last-stack-pr-reaper-close-guard" \
-  --venue forgejo --repo <repo> --pr <n> --json >/tmp/pr-reaper-close-guard.json \
+  --venue auto --repo <repo> --pr <n> --json >/tmp/pr-reaper-close-guard.json \
   2>/tmp/pr-reaper-close-guard.err || close_guard_rc=$?
+# Explicit forms: --venue github --repo <repo> --pr <n>, --venue forgejo --repo <repo> --pr <n>
 # 0 = close-ok · 1 = refuse · 3 = indeterminate · 2 = usage
 ```
 
@@ -160,7 +166,7 @@ close_guard_rc=0
 - `2` — usage/preflight. Fix the invocation. Never close on a guard that did
   not run.
 
-Never close a LastGit CR or a Forgejo PR whose guard verdict you did not read. The guard is
+Never close a GitHub PR, a Forgejo PR or a LastGit CR whose guard verdict you did not read. The guard is
 read-only and refuses narrowly: of 51 auto-merge last-stack CRs closed in the
 14 days to 2026-09-05, 37 heads never reached main, and a 12-row sample of
 those read 8 `ci-required=failure`, 2 absent, 2 `success`. It holds only the
@@ -170,7 +176,10 @@ Then decide in this order:
 
 1. **MERGE** if required CI is green on the current head AND it is mergeable
    right now AND it is not an explicitly human-gated PROD cutover/flip.
-   Forgejo: normal merge API. (LastGit, opt-in repos only:
+   GitHub: `gh -R <owner>/<repo> pr merge <n> --squash --delete-branch` (or arm
+   `--auto` when the check is still running; on a GraphQL 502 read the state,
+   then `gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f merge_method=squash`).
+   Forgejo (`lastgit` repo): normal merge API. (LastGit, legacy repos only:
    `lastgit cr merge <repo> <cr-id> --require-status ci-required`.)
    NEVER bypass a failing/pending required check to merge.
    HTTP 409 `pull request is already scheduled to auto merge when checks
@@ -183,8 +192,9 @@ Then decide in this order:
    on a stale head, draft, spike, AND human-gated publish/content PRs (blog
    posts etc.): a lingering publish decision belongs in the morning-sync
    decision queue, not an open PR. Comment first where the venue supports it
-   (Forgejo: `issues/<n>/comments` then PATCH `pulls/<n>` state=closed;
-   LastGit: `lastgit cr close <repo> <cr-id>`). The branch is always preserved
+   (GitHub: `gh -R <owner>/<repo> pr close <n> --comment "<why>"`, the branch is
+   kept; Forgejo: `issues/<n>/comments` then PATCH `pulls/<n>` state=closed;
+   LastGit, legacy: `lastgit cr close <repo> <cr-id>`). The branch is always preserved
    — say so in the comment.
 
 **Narrow live-work exception (one round only):** skip an over-age item ONLY if
