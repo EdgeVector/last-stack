@@ -19,9 +19,9 @@ jq -e '
   | .install_mode == "artifact"
     and .kind == "artifact cli"
     and .command == "lastseek"
-    and .gate == "forgejo"
-    and .gate_main == "http://localhost:3300/EdgeVector/lastseek.git#main"
-    and (.track_gate_main | not)
+    and .gate == "github"
+    and .gate_main == "https://github.com/EdgeVector/lastseek.git#main"
+    and (has("track_gate_main") | not)
     and .artifact_app == "lastseek"
     and .artifact_channel == "stable"
     and .artifact_root == "$HOME/.lastgit/artifacts"
