@@ -159,10 +159,22 @@ def host_sample():
     rows.sort(key=lambda r: r[1], reverse=True)
     h["top"] = [[p, c, r, os.path.basename(n)] for p, c, r, n in rows[:12]]
     h["lastdbd"] = None
-    for p, c, r, n in rows:
-        if os.path.basename(n) == "lastdbd":
-            h["lastdbd"] = {"pid": p, "cpu": c, "rss_mb": r}
-            break
+    h["lastdbd_other"] = []
+    cands = [r for r in rows if os.path.basename(r[3]) == "lastdbd"]
+    if cands:
+        rc, out = run(["ps", "-o", "pid=,command=", "-p", ",".join(str(r[0]) for r in cands)], 3)
+        cmd = {}
+        for line in (out or "").splitlines():
+            a, _, b = line.strip().partition(" ")
+            if a.isdigit():
+                cmd[int(a)] = b
+        for p, c, r, n in cands:
+            dd = re.search(r"--data-dir[= ](\S+)", cmd.get(p, ""))
+            # the primary owns ~/.lastdb; a dev/test node passes another --data-dir
+            if dd and os.path.realpath(os.path.expanduser(dd.group(1))) != os.path.realpath(os.path.join(HOME, ".lastdb")):
+                h["lastdbd_other"].append({"pid": p, "cpu": c, "rss_mb": r, "data_dir": dd.group(1)})
+            elif h["lastdbd"] is None:
+                h["lastdbd"] = {"pid": p, "cpu": c, "rss_mb": r}
     return h
 
 
@@ -423,7 +435,8 @@ def evaluate_alerts(rec, now):
     st["swap_hot"] = st.get("swap_hot", 0) + 1 if swap is not None and swap >= SWAP_MB else 0
     load = rec["host"].get("load") or [0]
     st["load_hot"] = st.get("load_hot", 0) + 1 if load[0] >= LOAD1 else 0
-    hog = next(((t[3], t[1]) for t in rec["host"].get("top") or [] if t[3] != "lastdbd"), None)
+    prim = (lastdbd or {}).get("pid")
+    hog = next(((t[3], t[1]) for t in rec["host"].get("top") or [] if t[0] != prim), None)
     hog_name = hog[0] if hog and hog[1] >= HOG_PCT else None
     st["hog_hot"] = st.get("hog_hot", 0) + 1 if hog_name and hog_name == st.get("hog_name") else (1 if hog_name else 0)
     st["hog_name"] = hog_name
