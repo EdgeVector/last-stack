@@ -122,6 +122,14 @@ for _ in $(seq 1 50); do jq -se 'any(.[]; .rc==7)' "$T/mon/delivery.jsonl" >/dev
 jq -se 'any(.[]; .channel=="phone" and .rc==7)' "$T/mon/delivery.jsonl" >/dev/null || fail "failed push should record its rc"
 "$BIN" report --minutes 5 | grep -q "alert delivery: .*failed" || fail "report should show delivery failures"
 
+# 5f. a push whose helper needs a tool outside the launchd PATH must still arrive (ra -> bun)
+mkdir -p "$T/toolbin"; printf '#!/bin/sh\necho ok >"%s/bun.ran"\n' "$T" >"$T/toolbin/needtool"; chmod +x "$T/toolbin/needtool"
+printf '#!/bin/sh\nexec needtool\n' >"$T/ra-tool"; chmod +x "$T/ra-tool"
+printf '{}' >"$T/mon/.state.json"
+LOAD_MON_EXTRA_PATH="$T/toolbin" LOAD_MON_PHONE=1 LOAD_MON_RA="$T/ra-tool" LOAD_MON_ALERT_LOAD1=0 LOAD_MON_ALERT_LOAD_CONSEC=1 "$BIN" sample
+for _ in $(seq 1 50); do [ -s "$T/bun.ran" ] && break; sleep 0.2; done
+[ -s "$T/bun.ran" ] || fail "push helper must find tools on the extra PATH"
+
 # 6. report runs and counts the states
 OUT="$("$BIN" report --minutes 5 --json)"
 [ "$(printf '%s' "$OUT" | jq -r '.node_states.busy')" = "3" ] || fail "report should count 3 busy passes"
