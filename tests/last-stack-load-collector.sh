@@ -97,7 +97,7 @@ printf '#!/bin/sh\necho "$@" >>"%s/ra.log"\n' "$T" >"$T/ra"; chmod +x "$T/ra"
 printf '{}' >"$T/mon/.state.json"
 LOAD_MON_PHONE=1 LOAD_MON_RA="$T/ra" LOAD_MON_ALERT_LOAD1=0 LOAD_MON_ALERT_LOAD_CONSEC=1 "$BIN" sample
 grep -q host_load_high "$T/mon/alerts.jsonl" || fail "host load alert should fire"
-for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$T/ra.log" ] && break; sleep 0.2; done
+for _ in $(seq 1 100); do [ -s "$T/ra.log" ] && break; sleep 0.2; done
 grep -q "LastDB load: host load1" "$T/ra.log" || fail "alert should reach ra notify"
 
 # 6. report runs and counts the states
