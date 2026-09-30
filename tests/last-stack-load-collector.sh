@@ -26,7 +26,8 @@ printf '#!/bin/sh\nsleep 30\n' >"$T/lastdb-hang"
 printf '#!/bin/sh\nprintf "  1. app=kanban verb=query count=90 avg=44ms p95=- max=900ms err=1 body_sum=1B\\n  2. app=loom verb=query count=10 avg=25ms p95=- max=50ms err=0 body_sum=1B\\n"\n' >"$T/lastdb-ok"
 chmod +x "$T/lastdb-hang" "$T/lastdb-ok"
 
-export LOAD_MON_NOTIFY=0 LOAD_MON_DEADLINE_SEC=1 LOAD_MON_DIR="$T/mon" LOAD_MON_SOCKET="$S/n.sock"
+export LOAD_MON_ALERT_SWAP_MB=999999999 LOAD_MON_ALERT_LOAD1=999999 LOAD_MON_ALERT_HOG_PCT=999999
+export LOAD_MON_NOTIFY=0LOAD_MON_DEADLINE_SEC=1 LOAD_MON_DIR="$T/mon" LOAD_MON_SOCKET="$S/n.sock"
 
 last_field() { tail -n 1 "$T/mon"/load-*.jsonl | jq -r "$1"; }
 
@@ -89,6 +90,14 @@ grep -q lastdbd_footprint_high "$T/mon/alerts.jsonl" || fail "footprint alert sh
 grep -q lastdb_sync_degraded "$T/mon/alerts.jsonl" || fail "sync degraded alert should fire"
 "$BIN" report --minutes 5 | grep -q "node vitals" || fail "report should print node vitals"
 kill "$FAKE_PID"; wait "$FAKE_PID" 2>/dev/null || true; FAKE_PID=""
+
+# 5c. host alerts and the phone channel: a fake `ra` records what would be pushed
+printf '#!/bin/sh\necho "$@" >>"%s/ra.log"\n' "$T" >"$T/ra"; chmod +x "$T/ra"
+printf '{}' >"$T/mon/.state.json"
+LOAD_MON_PHONE=1 LOAD_MON_RA="$T/ra" LOAD_MON_ALERT_LOAD1=0 LOAD_MON_ALERT_LOAD_CONSEC=1 "$BIN" sample
+grep -q host_load_high "$T/mon/alerts.jsonl" || fail "host load alert should fire"
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$T/ra.log" ] && break; sleep 0.2; done
+grep -q "LastDB load: host load1" "$T/ra.log" || fail "alert should reach ra notify"
 
 # 6. report runs and counts the states
 OUT="$("$BIN" report --minutes 5 --json)"
