@@ -30,8 +30,7 @@ Included (all **public** on GitHub):
 
 Not included in this bundle:
 
-- **LastGit**: review/CI venue for EdgeVector contributors (not required for a
-  cold invitee install of the app CLIs).
+- **LastGit**: retired (2026-09-30). Contributors use GitHub pull requests.
 
 ## One Command
 
