@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Regression: pr-reaper closed green auto-merge CRs whose head never reached
-# main (papercut-lastgit-pr-reaper-closes-green-unmerged-cr, p0). The CR left
-# the open inventory, so `lastgit stuck` and `cr list --all-open` both read
-# empty while the change was off main.
+# Regression: pr-reaper closed green auto-merge PRs whose head never reached
+# main (papercut-lastgit-pr-reaper-closes-green-unmerged-cr, p0). The PR left
+# the open inventory while the change was off main. Judged through GitHub
+# (gh stub) and Forgejo (forge-api stub); the LastGit CR path is retired.
 #
 # The guard must refuse exactly that shape and stay out of the way of every
 # other close, because most unlanded closes on this fleet are correct: of 51
@@ -40,121 +40,6 @@ MAIN="$LANDED"
 "$git_bin" -C "$repo" checkout --quiet -b stray "$BASE_PARENT"
 echo stray > "$repo/f"; "$git_bin" -C "$repo" commit --quiet -am stray
 STRAY="$("$git_bin" -C "$repo" rev-parse HEAD)"
-
-cr_row() { # cr_row <state> <auto_merge> <head>
-  cat <<JSON
-{"cr_id":"cr-test-0001","repo":"last-stack","state":"$1","auto_merge":"$2",
- "head_oid":"$3","base_ref":"refs/heads/main","require_status":"ci-required"}
-JSON
-}
-ci_row() { # ci_row <state> [event_id]
-  cat <<JSON
-{"repo":"last-stack","context":"ci-required","state":"$1","event_id":"${2:-mtah78jw-aeef94a857c3}"}
-JSON
-}
-
-# run <label> <expected-verdict> <expected-exit> <cr-json> <ci-json>
-run() {
-  local label="$1" want_verdict="$2" want_exit="$3" crj="$4" cij="$5" rc=0
-  "$guard" --repo last-stack --cr cr-test-0001 \
-    --cr-json "$crj" --ci-json "$cij" \
-    --base-oid "$MAIN" --git-dir "$repo" --no-fetch --json \
-    >"$tmp/out.json" 2>"$tmp/out.err" || rc=$?
-  local got
-  got="$(jq -r '.verdict' "$tmp/out.json" 2>/dev/null || echo PARSE-FAIL)"
-  if [ "$got" != "$want_verdict" ] || [ "$rc" != "$want_exit" ]; then
-    echo "FAIL $label: want verdict=$want_verdict exit=$want_exit, got verdict=$got exit=$rc" >&2
-    cat "$tmp/out.json" "$tmp/out.err" >&2 || true
-    exit 1
-  fi
-  echo "ok   $label ($got, exit $rc)"
-}
-
-# ── 1. the defect: green, driving, and not on main ──────────────────────────
-cr_row open true "$STRAY" > "$tmp/cr-green.json"
-ci_row success > "$tmp/ci-success.json"
-run "green unmerged auto-merge refuses" refuse 1 "$tmp/cr-green.json" "$tmp/ci-success.json"
-jq -e '.reason == "green-unmerged-auto-merge"' "$tmp/out.json" >/dev/null \
-  || { echo "FAIL: refusal must name green-unmerged-auto-merge" >&2; exit 1; }
-
-# ── 2. a real red verdict is the reaper doing its job ───────────────────────
-ci_row failure > "$tmp/ci-failure.json"
-run "red required check closes" close-ok 0 "$tmp/cr-green.json" "$tmp/ci-failure.json"
-
-# ── 3. the opposite ancestry direction: the work already landed ─────────────
-# Guarded explicitly because a check written only against case 1 passes while
-# refusing every close of already-landed work, which is the shape a phantom
-# merge heal leaves behind.
-cr_row open true "$LANDED" > "$tmp/cr-landed.json"
-run "head already in base closes" close-ok 0 "$tmp/cr-landed.json" "$tmp/ci-success.json"
-jq -e '.reason == "head-already-in-base"' "$tmp/out.json" >/dev/null \
-  || { echo "FAIL: landed close must name head-already-in-base" >&2; exit 1; }
-
-# ── 4. nothing is driving it, so the reaper's judgment stands ───────────────
-cr_row open false "$STRAY" > "$tmp/cr-noauto.json"
-run "not auto-merge closes" close-ok 0 "$tmp/cr-noauto.json" "$tmp/ci-success.json"
-
-# ── 5. an already-terminal CR is not being closed by this decision ──────────
-cr_row closed true "$STRAY" > "$tmp/cr-closed.json"
-run "already terminal closes" close-ok 0 "$tmp/cr-closed.json" "$tmp/ci-success.json"
-
-# ── 6/7. pending is not evidence that green work should be discarded ────────
-ci_row pending "ci-lease:v1:abc123" > "$tmp/ci-live.json"
-run "pending under a live lease is indeterminate" indeterminate 3 "$tmp/cr-green.json" "$tmp/ci-live.json"
-jq -e '.reason == "required-check-running"' "$tmp/out.json" >/dev/null \
-  || { echo "FAIL: leased pending must read required-check-running" >&2; exit 1; }
-
-ci_row pending "mtah78jw-aeef94a857c3" > "$tmp/ci-torn.json"
-run "pending with no lease prefix is indeterminate" indeterminate 3 "$tmp/cr-green.json" "$tmp/ci-torn.json"
-jq -e '.reason == "required-check-pending-unleased"' "$tmp/out.json" >/dev/null \
-  || { echo "FAIL: torn pending must be distinguishable from a live run" >&2; exit 1; }
-
-# ── 8. no required-check row at all ────────────────────────────────────────
-echo '{}' > "$tmp/ci-absent.json"
-run "absent required check is indeterminate" indeterminate 3 "$tmp/cr-green.json" "$tmp/ci-absent.json"
-
-# ── 9. the required context is read by name, not by position ───────────────
-cat > "$tmp/ci-multi.json" <<'JSON'
-{"checks":[{"context":"lint","state":"failure","event_id":"x"},
-           {"context":"ci-required","state":"success","event_id":"y"}]}
-JSON
-run "reads the required context by name" refuse 1 "$tmp/cr-green.json" "$tmp/ci-multi.json"
-
-# ── 10. an unreadable CR row fails closed, never open ──────────────────────
-echo 'not json' > "$tmp/cr-bad.json"
-run "unreadable CR row fails closed" indeterminate 3 "$tmp/cr-bad.json" "$tmp/ci-success.json"
-
-# ── 12/13. base-gate-red: a red head under a red base is fleet state ────────
-# 2026-09-06: the Forge host runner failed every brain run identically (main
-# and every PR, 23 failures each); the reaper closed a PR whose fix for that
-# defect was in flight. A base that is red on the same context makes the
-# head's red a non-verdict.
-run_base() { # run_base <label> <verdict> <exit> <cr> <ci> <base-ci>
-  local label="$1" want_verdict="$2" want_exit="$3" crj="$4" cij="$5" bcij="$6" rc=0
-  "$guard" --repo last-stack --cr cr-test-0001 \
-    --cr-json "$crj" --ci-json "$cij" --base-ci-json "$bcij" \
-    --base-oid "$MAIN" --git-dir "$repo" --no-fetch --json \
-    >"$tmp/out.json" 2>"$tmp/out.err" || rc=$?
-  local got
-  got="$(jq -r '.verdict' "$tmp/out.json" 2>/dev/null || echo PARSE-FAIL)"
-  if [ "$got" != "$want_verdict" ] || [ "$rc" != "$want_exit" ]; then
-    echo "FAIL $label: want verdict=$want_verdict exit=$want_exit, got verdict=$got exit=$rc" >&2
-    cat "$tmp/out.json" "$tmp/out.err" >&2 || true
-    exit 1
-  fi
-  echo "ok   $label ($got, exit $rc)"
-}
-ci_row failure > "$tmp/base-failure.json"
-ci_row success > "$tmp/base-success.json"
-run_base "red head under a red base is indeterminate" indeterminate 3 "$tmp/cr-green.json" "$tmp/ci-failure.json" "$tmp/base-failure.json"
-jq -e '.reason == "base-gate-red" and .base_ci_state == "failure"' "$tmp/out.json" >/dev/null \
-  || { echo "FAIL: must name base-gate-red and carry base_ci_state" >&2; exit 1; }
-run_base "red head under a green base closes" close-ok 0 "$tmp/cr-green.json" "$tmp/ci-failure.json" "$tmp/base-success.json"
-jq -e '.reason == "required-check-failed"' "$tmp/out.json" >/dev/null \
-  || { echo "FAIL: a real red under a green base must stay required-check-failed" >&2; exit 1; }
-# A base that cannot be read does not excuse the head: unreadable base ⇒ red head closes.
-echo 'not json' > "$tmp/base-bad.json"
-run_base "red head with an unreadable base closes" close-ok 0 "$tmp/cr-green.json" "$tmp/ci-failure.json" "$tmp/base-bad.json"
 
 # ── 14-17. Forgejo PRs go through the same ladder ───────────────────────────
 pr_row() { # pr_row <state> <merged> <head>
@@ -322,6 +207,27 @@ run_gh "github: no ci-required check run is indeterminate" indeterminate 3 "$tmp
 # With --git-dir the guard uses local ancestry (objects only), same verdicts.
 run_gh "github: --git-dir ancestry, green unmerged refuses" refuse 1 "$tmp/gpr-open.json" "$tmp/gc-head-green.json" "$tmp/gc-base-green.json" "$tmp/gcmp-bad.json" --git-dir "$repo" --no-fetch
 
+# The guard reads every input through `gh api` when no fixture file is given.
+mkdir -p "$tmp/ghstub"
+cat >"$tmp/ghstub/gh" <<SH
+#!/usr/bin/env bash
+[ "\$1" = api ] || exit 9
+case "\$2" in
+  repos/EdgeVector/brain/pulls/7) cat "$tmp/gpr-open.json" ;;
+  repos/EdgeVector/brain/branches/main) echo '{"commit":{"sha":"$MAIN"}}' ;;
+  repos/EdgeVector/brain/commits/$STRAY/check-runs*) cat "$tmp/gc-head-green.json" ;;
+  repos/EdgeVector/brain/compare/*) cat "$tmp/gcmp-ahead.json" ;;
+  *) echo "unexpected gh api \$2" >&2; exit 8 ;;
+esac
+SH
+chmod +x "$tmp/ghstub/gh"
+rc=0
+LAST_STACK_GH_BIN="$tmp/ghstub/gh" "$guard" --venue github --repo brain --pr 7 --json >"$tmp/out.json" 2>"$tmp/out.err" || rc=$?
+if [ "$rc" != 1 ] || ! jq -e '.venue == "github" and .reason == "green-unmerged-auto-merge"' "$tmp/out.json" >/dev/null; then
+  echo "FAIL: gh-stub live read must refuse the green unmerged PR (rc=$rc)" >&2; cat "$tmp/out.json" "$tmp/out.err" >&2; exit 1
+fi
+echo "ok   github: every read goes through gh api"
+
 # --venue auto and the --pr default route through last-stack-pr-venue.
 cat >"$tmp/pr-venue-github" <<'SH'
 #!/usr/bin/env bash
@@ -353,10 +259,16 @@ fi
 rc=0
 LAST_STACK_PR_VENUE_BIN="$tmp/pr-venue-lastgit" "$guard" --venue auto --repo brain --pr 7 >"$tmp/out.json" 2>"$tmp/out.err" || rc=$?
 [ "$rc" = 2 ] || { echo "FAIL: a lastgit answer with --pr must be a usage error (rc=$rc)" >&2; exit 1; }
-# A --cr with no --venue is still a LastGit CR (compat).
+# LastGit is retired: --cr and --venue lastgit are usage errors, never a lastgit call.
 rc=0
-"$guard" --repo last-stack --cr cr-test-0001 --cr-json "$tmp/cr-green.json" --ci-json "$tmp/ci-success.json" --base-oid "$MAIN" --git-dir "$repo" --no-fetch --json >"$tmp/out.json" 2>/dev/null || rc=$?
-jq -e '.venue == "lastgit"' "$tmp/out.json" >/dev/null || { echo "FAIL: --cr with no --venue must stay lastgit" >&2; exit 1; }
+"$guard" --repo last-stack --cr cr-test-0001 --json >"$tmp/out.json" 2>"$tmp/out.err" || rc=$?
+[ "$rc" = 2 ] || { echo "FAIL: --cr must be a usage error (rc=$rc)" >&2; exit 1; }
+rc=0
+"$guard" --venue lastgit --repo last-stack --pr 7 --json >"$tmp/out.json" 2>"$tmp/out.err" || rc=$?
+[ "$rc" = 2 ] || { echo "FAIL: --venue lastgit must be a usage error (rc=$rc)" >&2; exit 1; }
+# An unreadable GitHub PR row fails closed.
+echo 'not json' > "$tmp/gpr-bad.json"
+run_gh "github: an unreadable PR row fails closed" indeterminate 3 "$tmp/gpr-bad.json" "$tmp/gc-head-green.json" "$tmp/gc-base-green.json" "$tmp/gcmp-ahead.json"
 echo "ok   github: --venue auto and the --pr default route through last-stack-pr-venue"
 
 # ── 11. the prompt must actually run the guard ─────────────────────────────
@@ -371,7 +283,7 @@ for token in 'close-refused-green-unmerged' 'close-indeterminate' 'close-deferre
 done
 # The call site must precede the close verbs it gates, or it gates nothing.
 guard_line="$(grep -n 'bin/last-stack-pr-reaper-close-guard' "$prompt" | head -1 | cut -d: -f1)"
-close_line="$(grep -n 'pr close\|lastgit cr close' "$prompt" | tail -1 | cut -d: -f1)"
+close_line="$(grep -n 'pr close' "$prompt" | tail -1 | cut -d: -f1)"
 if [ -z "$guard_line" ] || [ -z "$close_line" ] || [ "$guard_line" -gt "$close_line" ]; then
   echo "FAIL: the guard must be introduced before the last close verb (guard=$guard_line close=$close_line)" >&2
   exit 1

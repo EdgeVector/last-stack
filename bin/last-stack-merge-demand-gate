@@ -2,12 +2,12 @@
 # Zero-LLM demand gate for merge-class routines.
 #
 # Skip when the open-PR pass (every EdgeVector repo on GitHub, plus the lastgit
-# repo on Forgejo) is quiet, LastGit ghosts are not demand, and deploy is not
-# blocked. Aged open PRs and blocked deploys proceed.
+# repo on Forgejo) is quiet and deploy is not blocked. Aged open PRs and
+# blocked deploys proceed.
 #
-# LastGit is opt-in (`LAST_STACK_LASTGIT_NATIVE_REPOS`). An empty list is
-# LastGit-disabled: lastgit-missing / unreadable / json-invalid / index-drift
-# are quiet. lastgit stuck rows with reason cr_not_found are ghosts.
+# LastGit is retired (2026-09-30): there is no `lastgit stuck` read any more,
+# and LAST_STACK_LASTGIT_NATIVE_REPOS / LAST_STACK_PIPELINE_GATE_LASTGIT_BIN
+# are ignored.
 #
 #   exit 0  → skip harness (noop)
 #   exit 10 → proceed
@@ -34,7 +34,7 @@ Zero-LLM gate for merge class. Exit 0 = skip; 10 = proceed.
 
 Default Forge list is config/merge-demand-forge-repos (only lastgit stays on
 Forgejo). Every other EdgeVector repo is canonical on GitHub since 2026-09-30 and
-is read from config/merge-demand-github-repos. Ghost LastGit does not count.
+is read from config/merge-demand-github-repos (through gh, `ci-required` era).
 Aged open PRs and blocked deploys proceed.
 
 Environment:
@@ -45,7 +45,6 @@ Environment:
                                           every moved repo). A repo on this list is always read
                                           through gh, even if a Forge list names it.
   LAST_STACK_PIPELINE_GATE_GH_BIN         gh binary (default: gh on PATH)
-  LAST_STACK_LASTGIT_NATIVE_REPOS         opt-in LastGit venues; empty = disabled
   LAST_STACK_PIPELINE_GATE_MIN_AGE_MIN    stuck / aged-open minutes (default 10)
   LAST_STACK_PIPELINE_GATE_TIMEOUT_SEC    per-read cap (default 20)
   LAST_STACK_MERGE_DEMAND_PROCEED_PREFIX  proceed line name
@@ -172,10 +171,6 @@ done
 now_epoch="${LAST_STACK_PIPELINE_GATE_NOW_EPOCH:-$(date -u +%s)}"
 positive_int "$now_epoch" || { echo "invalid current epoch: $now_epoch" >&2; exit 2; }
 
-lastgit_native="$(printf '%s' "${LAST_STACK_LASTGIT_NATIVE_REPOS:-}" | tr -d '[:space:]')"
-lastgit_enabled=0
-[ -n "$lastgit_native" ] && lastgit_enabled=1
-
 proceed() {
   local reason="$1"
   printf '%s reason=%s\n' "$proceed_prefix" "$reason"
@@ -201,15 +196,11 @@ if [ -z "$timeout_bin" ]; then
 fi
 [ -n "$timeout_bin" ] && [ -x "$timeout_bin" ] || proceed "timeout-tool-missing"
 
-lastgit_bin="${LAST_STACK_PIPELINE_GATE_LASTGIT_BIN:-$(command -v lastgit 2>/dev/null || true)}"
 forge_api="${LAST_STACK_PIPELINE_GATE_FORGE_API_BIN:-${last_stack}/bin/last-stack-forge-api}"
 deploy_scan="${LAST_STACK_PIPELINE_GATE_DEPLOY_SCAN_BIN:-${last_stack}/bin/last-stack-pipeline-deploy-scan}"
 gh_bin="${LAST_STACK_PIPELINE_GATE_GH_BIN:-$(command -v gh 2>/dev/null || true)}"
 jq_bin="${LAST_STACK_PIPELINE_GATE_JQ_BIN:-$(command -v jq 2>/dev/null || true)}"
 
-if [ "$lastgit_enabled" -eq 1 ]; then
-  [ -n "$lastgit_bin" ] && [ -x "$lastgit_bin" ] || proceed "lastgit-missing"
-fi
 [ -x "$forge_api" ] || proceed "forge-api-missing"
 if [ "${#github_repo_list[@]}" -gt 0 ]; then
   [ -n "$gh_bin" ] && [ -x "$gh_bin" ] || proceed "gh-missing"
@@ -229,12 +220,6 @@ run_capped() {
   "$timeout_bin" -k 2s "${timeout_sec}s" "$@" >"$out" 2>"$err"
 }
 
-lastgit_pid=""
-if [ "$lastgit_enabled" -eq 1 ]; then
-  run_capped "$tmp/lastgit.json" "$tmp/lastgit.err" \
-    "$lastgit_bin" stuck --json --min-age-min "$min_age_min" --no-probe-merge --no-verify &
-  lastgit_pid=$!
-fi
 run_capped "$tmp/deploy.json" "$tmp/deploy.err" \
   "$deploy_scan" --json --tail-bytes "$deploy_tail_bytes" &
 deploy_pid=$!
@@ -257,11 +242,6 @@ for repo in ${read_repo_list[@]+"${read_repo_list[@]}"}; do
 done
 
 set +e
-lastgit_rc=0
-if [ -n "$lastgit_pid" ]; then
-  wait "$lastgit_pid"
-  lastgit_rc=$?
-fi
 wait "$deploy_pid"
 deploy_rc=$?
 forge_rc=0
@@ -272,40 +252,8 @@ for pid in $forge_pids; do
 done
 set -e
 
-if [ "$lastgit_enabled" -eq 1 ]; then
-  [ "$lastgit_rc" -eq 0 ] || proceed "lastgit-read-rc-${lastgit_rc}"
-fi
 [ "$deploy_rc" -eq 0 ] || proceed "deploy-read-rc-${deploy_rc}"
 [ "$forge_rc" -eq 0 ] || proceed "forge-read-rc-${forge_rc}"
-
-if [ "$lastgit_enabled" -eq 1 ]; then
-  if ! "$jq_bin" -e '
-    type == "object"
-    and (.stuck | type == "array")
-    and (.unreadable_repos == null or (.unreadable_repos | type) == "array")
-    and all(.stuck[]; (.age_min | type) == "number")
-  ' "$tmp/lastgit.json" >/dev/null 2>&1; then
-    proceed "lastgit-json-invalid"
-  fi
-
-  unreadable_count="$("$jq_bin" -r '(.unreadable_repos // []) | length' "$tmp/lastgit.json")"
-  [ "$unreadable_count" -eq 0 ] || proceed "lastgit-unreadable-${unreadable_count}"
-  if "$jq_bin" -e '.index_drift != null' "$tmp/lastgit.json" >/dev/null 2>&1; then
-    proceed "lastgit-index-drift"
-  fi
-
-  # Ghost rows (cr_not_found) are not demand. Count only real aged stuck.
-  # shellcheck disable=SC2016  # jq expands $min
-  lastgit_stuck="$("$jq_bin" -r --argjson min "$min_age_min" '
-    [
-      .stuck[]
-      | select(.age_min >= $min)
-      | select((.reason // "") != "cr_not_found")
-      | select((.error // "") != "cr_not_found")
-    ] | length
-  ' "$tmp/lastgit.json")"
-  [ "$lastgit_stuck" -eq 0 ] || proceed "lastgit-stuck-${lastgit_stuck}"
-fi
 
 forge_open=0
 for forge_file in $forge_files; do
@@ -353,7 +301,7 @@ deploy_unknown="$("$jq_bin" -r '[.[] | select(.status == "unknown" or .status ==
 deploy_blocked="$("$jq_bin" -r '[.[] | select(.blocked == true)] | length' "$tmp/deploy.json")"
 [ "$deploy_blocked" -eq 0 ] || proceed "deploy-blocked-${deploy_blocked}"
 
-detail="quiet-gate lastgit_enabled=${lastgit_enabled} lastgit_stuck=0 open_forge=0 deploy_blocked=0"
+detail="quiet-gate open_forge=0 deploy_blocked=0"
 heartbeat "${heartbeat_id} $(iso_now) noop ${detail}"
 printf 'ROUTINE_RESULT outcome=noop detail=%s\n' "$detail"
 exit 0

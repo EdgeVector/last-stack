@@ -51,6 +51,9 @@ exit 1
 SH
 chmod +x "$tmp/forge-api"
 export FAKE_FORGE_DIR="$fx" LAST_STACK_FORGE_API="$tmp/forge-api"
+# The Forgejo half pins widget to the Forgejo path with an explicit empty GitHub
+# list. The GitHub half at the bottom lists it through gh.
+export LAST_STACK_MERGE_DEMAND_GITHUB_REPOS=""
 export LAST_STACK_PR_LEDGER_NOW="2026-09-23T16:40:00Z"
 
 # Fake situations preflight. The real one reads the live LastDB node, which a
@@ -102,7 +105,7 @@ J
 }
 reset() { rm -f "$fx/writes.log" "$fx/merged.flag"; : >"$fx/writes.log"; }
 verdict() { "$LEDGER" merge-green --repo "$R" --pr 7 --json "$@" | jq -r '.merge_green.verdict'; }
-fail() { echo "FAIL: $1" >&2; cat "$fx/writes.log" >&2; exit 1; }
+fail() { echo "FAIL: $1" >&2; cat "$fx/writes.log" >&2; cat "${gx:-/dev/null}/last.json" >&2 2>/dev/null; exit 1; }
 
 # 1) Armed after green (the schema-infra PR 7 shape), idle past grace: merge directly.
 green_status; armed_at "2026-09-23T16:30:33Z"; reset
@@ -223,4 +226,75 @@ set -e
 [ ! -s "$fx/writes.log" ] || fail "a missing NAMED preflight binary must write nothing"
 
 echo "ok last-stack-forge-merge-green situations gate"
+
+# ── GitHub venue: every read and write goes through gh; the forge API is never called ──
+cat >"$tmp/forge-fail" <<'SH'
+#!/usr/bin/env bash
+echo "forge api must not be called for a GitHub repo: $*" >&2; exit 9
+SH
+chmod +x "$tmp/forge-fail"
+gx="$tmp/gh-fx"; mkdir -p "$gx"
+cat >"$tmp/gh-bin" <<'SH'
+#!/usr/bin/env bash
+echo "$*" >>"$GH_FX/calls.log"
+# gh pr merge <n> -R <repo> --auto --squash
+if [ "$1" = pr ] && [ "$2" = merge ]; then
+  [ "${FAKE_GH_PR_MERGE_502:-0}" = 1 ] && { echo "HTTP 502 Bad Gateway (GraphQL)" >&2; exit 1; }
+  [ "${FAKE_GH_ARM_AUTO_MERGE:-1}" = 1 ] && touch "$GH_FX/armed.flag"
+  exit 0
+fi
+[ "$1" = api ] || exit 2
+shift
+if [ "$1" = -X ]; then
+  [ "$2" = PUT ] || exit 2
+  [ "${FAKE_GH_PUT_FAIL:-0}" = 1 ] && { echo "HTTP 405 Method Not Allowed" >&2; exit 1; }
+  touch "$GH_FX/merged.flag"; echo '{"merged":true}'; exit 0
+fi
+case "$1" in
+  repos/EdgeVector/gizmo/pulls/9)
+    if [ -f "$GH_FX/merged.flag" ]; then
+      echo '{"number":9,"state":"closed","merged":true,"merge_commit_sha":"deadbeef"}'
+    else
+      am=null; [ -f "$GH_FX/armed.flag" ] || [ "${FAKE_GH_ARMED:-0}" = 1 ] && am='{"merge_method":"squash"}'
+      echo '{"number":9,"state":"open","merged":false,"mergeable":true,"draft":false,"auto_merge":'"$am"',"head":{"sha":"a9"},"base":{"ref":"main"}}'
+    fi ;;
+  repos/EdgeVector/gizmo/branches/main/protection/required_status_checks)
+    echo '{"contexts":["ci-required"],"checks":[]}' ;;
+  repos/EdgeVector/gizmo/commits/a9/check-runs*)
+    echo '{"check_runs":[{"name":"ci-required","status":"completed","conclusion":"success","completed_at":"2026-09-23T16:26:40Z"}]}' ;;
+  *) echo "fake gh: no fixture for $1" >&2; exit 1 ;;
+esac
+SH
+chmod +x "$tmp/gh-bin"
+gverdict() {
+  ( [ -z "${GDEBUG:-}" ] || set -x
+    unset LAST_STACK_MERGE_DEMAND_GITHUB_REPOS
+    GH_FX="$gx" LAST_STACK_LEDGER_GH="$tmp/gh-bin" LAST_STACK_FORGE_API="$tmp/forge-fail"       "$LEDGER" merge-green --repo EdgeVector/gizmo --pr 9 --json "$@" >"$gx/last.json" || true; jq -r '.merge_green.verdict' "$gx/last.json" )
+}
+greset() { rm -f "$gx/armed.flag" "$gx/merged.flag" "$gx/calls.log"; : >"$gx/calls.log"; }
+
+# G1) Unarmed green PR without --arm: never touched (a repo absent from every list is GitHub).
+greset; v="$(gverdict --apply)"
+[ "$v" = green-not-armed ] || fail "github unarmed green PR must stay untouched (got $v)"
+grep -q 'pr merge\|-X PUT' "$gx/calls.log" && fail "github unarmed green PR must not be written"
+# G2) --arm --apply: gh pr merge --auto --squash, no REST merge.
+greset; v="$(gverdict --arm --apply)"
+[ "$v" = armed-now ] || fail "github --arm must arm auto-merge through gh (got $v)"
+grep -q '^pr merge 9 -R EdgeVector/gizmo --auto --squash$' "$gx/calls.log" || fail "github arm must be gh pr merge --auto --squash"
+grep -q -- '-X PUT' "$gx/calls.log" && fail "github arm must not use the REST merge"
+# G3) GraphQL 502 from gh pr merge: fall back to the REST merge.
+greset; v="$(FAKE_GH_PR_MERGE_502=1 gverdict --arm --apply)"
+[ "$v" = merged-now ] || fail "github 502 must fall back to REST merge (got $v)"
+grep -q '^api -X PUT repos/EdgeVector/gizmo/pulls/9/merge -f merge_method=squash$' "$gx/calls.log" || fail "github fallback must PUT merge_method=squash"
+# G4) Armed green PR idle past the grace: REST merge directly.
+greset; v="$(FAKE_GH_ARMED=1 gverdict --apply)"
+[ "$v" = merged-now ] || fail "github armed green PR past grace must merge (got $v)"
+# G5) Dry run writes nothing.
+greset; v="$(FAKE_GH_ARMED=1 gverdict)"
+[ "$v" = would-merge ] || fail "github dry run must report would-merge (got $v)"
+grep -q 'pr merge\|-X PUT' "$gx/calls.log" && fail "github dry run must not write"
+# G6) A failing REST merge is reported, not swallowed.
+greset; v="$(FAKE_GH_ARMED=1 FAKE_GH_PUT_FAIL=1 gverdict --apply)"
+[ "$v" = merge-405 ] || fail "github merge refusal must surface (got $v)"
+echo "ok last-stack-forge-merge-green github venue"
 echo "ok last-stack-forge-merge-green"
