@@ -151,7 +151,7 @@ brain get "$slug" --type project | head -20   # confirm
 Template quality bar (same as a hand-written NS like CodeRings / Discovery):
 
 - End state is **product outcomes**, not a file list
-- Names the repo / LastGit venue when known
+- Names the repo / PR venue when known
 - Lists current live + done cards so the next agent can drive
 - Explicit **NOT driving** so scope does not creep
 

@@ -36,8 +36,8 @@ observes and files cards. This is the weekly **heal** loop.
 2. **Never** write to real `~/.brain`, `~/.kanban`, `~/.situations` during smoke.
 3. Product code only in **DEV worktrees** (`./bin/wt start` / portal wt). Never
    edit portals, `~/.last-stack` install tree, or host-track `current`.
-4. Venue: `fold_db_website` and `last-stack` are **lastgit** — `lastgit cr`, never
-   GitHub PRs on read-only mirrors.
+4. Venue: `fold_db_website` and `last-stack` are on **GitHub** (LastGit retired
+   2026-09-30) — `gh pr create`, `gh pr merge <n> -R <repo> --auto --squash`.
 5. Honor `brain get sop-routine-shared-contract --type sop` (heartbeat LAST;
    papercuts → brain only; real blockers may card).
 6. **Bounded loop** — not infinite. Default: **max 3 heal cycles** per weekly
@@ -78,7 +78,7 @@ product path:
 2. Update `public/llms.txt` and human pages so they match a path that the
    ephemeral smoke can pass (same steps the smoke asserts).
 3. Bump any "Last reviewed" stamps.
-4. `lastgit cr create` with a full body; drive to merge (or leave auto-merge
+4. `gh pr create --body-file <file>` with a full body; drive to merge (or leave auto-merge
    armed and wait within budget).
 5. After merge, wait until **live** `https://thelastdb.com/llms.txt` reflects
    the change (or until deploy timeout → note and continue smoke on product
@@ -114,7 +114,7 @@ Capture failing step names + short log excerpts.
 | Class | Action this cycle | Re-smoke? |
 |-------|-------------------|-----------|
 | **Docs lag** | Ship `fold_db_website` fix (step 2) | Yes after live (or local source) updated |
-| **Installer / last-stack path** | Small fix in last-stack worktree + lastgit CR; or P0 card if large | Yes after merge when possible |
+| **Installer / last-stack path** | Small fix in last-stack worktree + GitHub PR; or P0 card if large | Yes after merge when possible |
 | **App/product break** (brain/kanban/situations/daemon) | File/update **one** P0/P1 card per cluster with evidence; optional minimal fix if you can land it this run | Yes only if a fix landed |
 | **Infra / mirror stale** | Card the mirror/deploy owner; do not thrash | No spin-wait; next cycle |
 

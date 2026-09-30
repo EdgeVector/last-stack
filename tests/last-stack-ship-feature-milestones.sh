@@ -24,7 +24,7 @@ forbid() {
 }
 
 # Factory contract (2026-08-26+): loom ship-feature v4 is the engine for
-# github, forgejo, and lastgit. Legacy NS pipeline is loom-unavailable only.
+# github and forgejo. Legacy NS pipeline is loom-unavailable only.
 require 'loom run ship-feature --key <key>' "$skill"
 require 'design-approval --payload' "$skill"
 require 'Never signal an approval the user did not give' "$skill"
@@ -33,7 +33,7 @@ require 'proof_command' "$skill"
 require 'force_drift_until_rev' "$skill"
 require 'ship-<feature-kebab>-<yyyymmdd>' "$skill"
 require 'last-stack-design-pack' "$skill"
-require 'lastgit cr complete --once' "$skill"
+require 'gh pr merge <n> -R <repo> --auto --squash' "$skill"
 require 'Forge CI / ci-required' "$skill"
 require 'Venue is not a reason to skip the factory' "$skill"
 # Fallback pointers survive for loom-down only.
