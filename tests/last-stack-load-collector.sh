@@ -100,6 +100,16 @@ grep -q host_load_high "$T/mon/alerts.jsonl" || fail "host load alert should fir
 for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$T/ra.log" ] && break; sleep 0.2; done
 grep -q "LastDB load: host load1" "$T/ra.log" || fail "alert should reach ra notify"
 
+# 5d. Sentry: a fake curl records the envelope; the DSN comes from an override
+printf '#!/bin/sh\nfor a in "$@"; do case "$a" in @*) cp "${a#@}" "%s/curl.body";; esac; done\nprintf "%%s\\n" "$@" >"%s/curl.args"\n' "$T" "$T" >"$T/curl"; chmod +x "$T/curl"
+printf '{}' >"$T/mon/.state.json"
+LOAD_MON_SENTRY=1 LOAD_MON_CURL="$T/curl" LOAD_MON_SENTRY_DSN="https://abc123@o1.ingest.sentry.io/42" \
+  LOAD_MON_ALERT_LOAD1=0 LOAD_MON_ALERT_LOAD_CONSEC=1 "$BIN" sample
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$T/curl.body" ] && break; sleep 0.2; done
+grep -q "https://o1.ingest.sentry.io/api/42/envelope/" "$T/curl.args" || fail "sentry envelope URL wrong"
+grep -q "sentry_key=abc123" "$T/curl.args" || fail "sentry key missing"
+sed -n 3p "$T/curl.body" | jq -e '.tags.alert == "host_load_high"' >/dev/null || fail "sentry event should carry the alert name"
+
 # 6. report runs and counts the states
 OUT="$("$BIN" report --minutes 5 --json)"
 [ "$(printf '%s' "$OUT" | jq -r '.node_states.busy')" = "3" ] || fail "report should count 3 busy passes"
