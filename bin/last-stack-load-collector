@@ -299,6 +299,19 @@ def detach(argv):
         pass
 
 
+def detach_logged(channel, alert, argv):
+    """Like detach, but append one delivery.jsonl row with the exit code.
+
+    An alert that leaves no outcome cannot be told from an alert that arrived.
+    """
+    log = os.path.join(DIR, "delivery.jsonl")
+    detach(["/bin/sh", "-c",
+            'a="$1"; c="$2"; l="$3"; shift 3; s=$(date +%s); "$@" >/dev/null 2>&1; rc=$?; '
+            'printf \'{"ts":"%s","alert":"%s","channel":"%s","rc":%d,"secs":%d}\\n\' '
+            '"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$a" "$c" "$rc" "$(( $(date +%s) - s ))" >>"$l"',
+            "sh", alert, channel, log] + list(argv))
+
+
 def sentry_dsn(now):
     """Return the cached DSN. A stale or missing cache starts a detached refresh.
 
@@ -346,10 +359,11 @@ def sentry_event(name, msg, now):
             fh.write(body)
     except OSError:
         return
-    detach(["/bin/sh", "-c", '"$@"; rm -f "$0"', f, CURL, "-sS", "--max-time", "10", "-X", "POST", "--data-binary", "@" + f,
-            "-H", "Content-Type: application/x-sentry-envelope",
-            "-H", "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=%s, sentry_client=load-collector/1" % key,
-            "%s://%s/api/%s/envelope/" % (scheme, host, project)])
+    detach_logged("sentry", name, ["/bin/sh", "-c", '"$@"; rc=$?; rm -f "$0"; exit $rc', f, CURL, "-sS", "-f", "-o", "/dev/null",
+                  "--max-time", "10", "-X", "POST", "--data-binary", "@" + f,
+                  "-H", "Content-Type: application/x-sentry-envelope",
+                  "-H", "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=%s, sentry_client=load-collector/1" % key,
+                  "%s://%s/api/%s/envelope/" % (scheme, host, project)])
 
 
 def fire(name, msg, now):
@@ -357,8 +371,8 @@ def fire(name, msg, now):
     with open(os.path.join(DIR, "alerts.jsonl"), "a") as f:
         f.write(json.dumps(rec) + "\n")
     if PHONE and os.access(RA, os.X_OK):  # Telegram push; reads no LastDB state
-        detach(["/usr/bin/perl", "-e", "alarm 15; exec @ARGV", RA, "notify",
-                "LastDB load: " + msg, "--priority", "high"])
+        detach_logged("phone", name, ["/usr/bin/perl", "-e", "alarm 15; exec @ARGV", RA, "notify",
+                                      "LastDB load: " + msg, "--priority", "high"])
     if SENTRY:
         try:
             sentry_event(name, msg, now)
@@ -508,6 +522,27 @@ def read_window(minutes):
     return recs
 
 
+def read_delivery(minutes):
+    """Count alert delivery outcomes per channel in the window (rc 0 = delivered)."""
+    cutoff = time.time() - minutes * 60
+    res = {}
+    try:
+        with open(os.path.join(DIR, "delivery.jsonl")) as fh:
+            for line in fh:
+                try:
+                    r = json.loads(line)
+                    t = dt.datetime.strptime(r["ts"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc).timestamp()
+                except (ValueError, KeyError):
+                    continue
+                if t >= cutoff:
+                    c = res.setdefault(r["channel"], {"ok": 0, "failed": 0, "last_rc": None})
+                    c["ok" if r["rc"] == 0 else "failed"] += 1
+                    c["last_rc"] = r["rc"]
+    except OSError:
+        pass
+    return res
+
+
 def report(minutes, as_json):
     recs = read_window(minutes)
     out = {"minutes": minutes, "samples": len(recs)}
@@ -563,6 +598,7 @@ def report(minutes, as_json):
             "gov": sorted({str(x.get("gov")) for x in vs}),
             "sync": sync,
         }
+    out["delivery"] = read_delivery(minutes)
     if as_json:
         print(json.dumps(out, indent=1))
         return
@@ -572,6 +608,7 @@ def report(minutes, as_json):
     print("load1_max=%s swap_used_mb_max=%s lastdbd_cpu=%s" % (out["load1_max"], out["swap_used_mb_max"], out["lastdbd_cpu"]))
     if "vitals" in out:
         print("node vitals: %s" % json.dumps(out["vitals"], sort_keys=True))
+    print("alert delivery: %s" % (json.dumps(out["delivery"], sort_keys=True) if out["delivery"] else "none in window"))
     print("host CPU by process (avg%, max%):")
     for name, avg, mx in out["cpu_by_process"]:
         print("  %-28s %6.1f %6.1f" % (name, avg, mx))

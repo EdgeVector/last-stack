@@ -110,6 +110,17 @@ grep -q "https://o1.ingest.sentry.io/api/42/envelope/" "$T/curl.args" || fail "s
 grep -q "sentry_key=abc123" "$T/curl.args" || fail "sentry key missing"
 sed -n 3p "$T/curl.body" | jq -e '.tags.alert == "host_load_high"' >/dev/null || fail "sentry event should carry the alert name"
 
+# 5e. every push leaves a delivery row with its exit code; a failing channel is rc != 0
+for _ in $(seq 1 50); do [ "$(jq -s '[.[] | select(.channel=="phone" and .rc==0)] | length' "$T/mon/delivery.jsonl" 2>/dev/null)" -ge 1 ] && break; sleep 0.2; done
+jq -se 'any(.[]; .channel=="phone" and .rc==0 and .alert=="host_load_high")' "$T/mon/delivery.jsonl" >/dev/null || fail "phone delivery row missing"
+jq -se 'any(.[]; .channel=="sentry" and .rc==0)' "$T/mon/delivery.jsonl" >/dev/null || fail "sentry delivery row missing"
+printf '#!/bin/sh\nexit 7\n' >"$T/ra-bad"; chmod +x "$T/ra-bad"
+printf '{}' >"$T/mon/.state.json"
+LOAD_MON_PHONE=1 LOAD_MON_RA="$T/ra-bad" LOAD_MON_ALERT_LOAD1=0 LOAD_MON_ALERT_LOAD_CONSEC=1 "$BIN" sample
+for _ in $(seq 1 50); do jq -se 'any(.[]; .rc==7)' "$T/mon/delivery.jsonl" >/dev/null 2>&1 && break; sleep 0.2; done
+jq -se 'any(.[]; .channel=="phone" and .rc==7)' "$T/mon/delivery.jsonl" >/dev/null || fail "failed push should record its rc"
+"$BIN" report --minutes 5 | grep -q "alert delivery: .*failed" || fail "report should show delivery failures"
+
 # 6. report runs and counts the states
 OUT="$("$BIN" report --minutes 5 --json)"
 [ "$(printf '%s' "$OUT" | jq -r '.node_states.busy')" = "3" ] || fail "report should count 3 busy passes"
