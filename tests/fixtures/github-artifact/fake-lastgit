@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Fixture `lastgit artifact publish|verify` with the real CAS layout.
+
+publish: copy blobs into <root>/blobs/sha256/<2>/<digest>, write
+manifests/<digest>.json and builds/<app>/<oid>/<platform>.json.
+verify: recompute the manifest digest and every blob.
+The digest algorithm here is the fixture's own (sha256 of sorted-key JSON).
+"""
+import hashlib
+import json
+import os
+import sys
+
+
+def sha(b):
+    return hashlib.sha256(b).hexdigest()
+
+
+def flag(args, name):
+    return args[args.index("--" + name) + 1] if "--" + name in args else None
+
+
+def body_digest(m):
+    body = {k: v for k, v in m.items() if k != "manifest_digest"}
+    body["files"] = sorted(body["files"], key=lambda f: f["path"])
+    return sha(json.dumps(body, sort_keys=True).encode())
+
+
+argv = sys.argv[1:]
+if argv[:1] != ["artifact"] or len(argv) < 2:
+    sys.exit(2)
+verb, args = argv[1], argv[2:]
+root = flag(args, "root")
+if verb == "publish":
+    inp = flag(args, "input")
+    files = []
+    seen = set()
+    for rel in flag(args, "paths").split(","):
+        src = os.path.join(inp, rel)
+        walk = [src] if os.path.isfile(src) else [os.path.join(d, f) for d, _s, fs in os.walk(src) for f in fs]  # walk-ok: fixture
+        for p in walk:
+            r = os.path.relpath(p, inp)
+            if r in seen:
+                continue
+            seen.add(r)
+            data = open(p, "rb").read()
+            d = sha(data)
+            blob = os.path.join(root, "blobs", "sha256", d[:2], d)
+            os.makedirs(os.path.dirname(blob), exist_ok=True)
+            open(blob, "wb").write(data)
+            files.append({"path": r, "sha256": d, "size": len(data), "mode": os.lstat(p).st_mode & 0o777})
+    m = {"schema_version": 1, "app": flag(args, "app"), "repo": flag(args, "repo"),
+         "source_oid": flag(args, "oid").lower(), "platform": flag(args, "platform") or "test-x64",
+         "created_at": "2026-09-30T00:00:00.000Z", "files": sorted(files, key=lambda f: f["path"])}
+    m["manifest_digest"] = body_digest(m)
+    enc = json.dumps(m, indent=2) + "\n"
+    for dst in (os.path.join(root, "manifests", m["manifest_digest"] + ".json"),
+                os.path.join(root, "builds", m["app"], m["source_oid"], m["platform"] + ".json")):
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        open(dst, "w").write(enc)
+    print(json.dumps(m, indent=2))
+elif verb == "verify":
+    dg = flag(args, "manifest")
+    m = json.load(open(os.path.join(root, "manifests", dg + ".json")))
+    if body_digest(m) != dg or m["manifest_digest"] != dg:
+        sys.stderr.write("manifest digest mismatch: %s\n" % dg)
+        sys.exit(1)
+    for f in m["files"]:
+        blob = os.path.join(root, "blobs", "sha256", f["sha256"][:2], f["sha256"])
+        if not os.path.exists(blob) or sha(open(blob, "rb").read()) != f["sha256"]:
+            sys.stderr.write("artifact blob mismatch: %s\n" % f["path"])
+            sys.exit(1)
+    print(json.dumps(m))
+else:
+    sys.exit(2)

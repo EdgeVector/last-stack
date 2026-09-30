@@ -444,6 +444,10 @@ ci_test tests/last-stack-board-closeout-escalation.sh
 ci_test tests/last-stack-legacy-residue-closeout.sh
 ci_test tests/last-stack-why-shipping-stopped.sh
 ci_test tests/host-track-artifacts.sh
+# GitHub artifact publish path (retire LastGit): builder + puller + host-track GitHub gate.
+# Fixture-only (fake gh, fake lastgit); the CAS must stay untouched on every refusal.
+ci_test tests/last-stack-github-artifact-pull.sh
+ci_test tests/host-track-github-gate.sh
 ci_test tests/host-track-requires.sh
 ci_test tests/last-stack-brew-app-publish.sh
 ci_test tests/host-track-on-channel-unpublished-main.sh
