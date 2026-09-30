@@ -344,6 +344,22 @@ runs `host-track refresh <app>` so PATH tracks main without stuffing that into
 CI. The GitHub `ci-required` and publish workflow builds the artifact;
 `host-track refresh` pulls it with `last-stack-github-artifact-pull`.
 
+### Re-sign on pull (routines, TCC identity)
+
+A GitHub runner has no Developer ID identity, so the runner build of `routines`
+is ad-hoc signed. macOS TCC would see a new code identity at each install and
+block the routine command with a privacy prompt. `last-stack-github-artifact-pull`
+therefore signs `dist/routines` on the Mac, before the file enters the CAS:
+
+- Identifier `com.edgevector.routines`, identity `Developer ID Application`
+  (override: `--sign-identity` or `LAST_STACK_SIGN_IDENTITY`; exactly one match).
+- The designated requirement is `identifier` + Apple anchor + team OU. It does
+  not change between builds, so TCC grants stay.
+- The manifest holds the signed bytes. The result records the pre-sign sha256.
+- No identity, a locked keychain, or a failed verify is a failure. The tool
+  never promotes an ad-hoc `routines` binary.
+- Other apps: `--sign PATH=IDENTIFIER`. Test: `tests/last-stack-github-artifact-pull.sh`.
+
 - **Script:** `last-stack-post-merge-safe-upgrade --all`
 - **Supervisor:** none by default. LastGit's forge supervisor (retired
   2026-09-30) used to start it. Run it by hand or from a LaunchAgent you own.

@@ -15,6 +15,14 @@ publish` + `lastgit artifact promote` did after a green LastGit gate:
   4. Provenance matches: app, repo, commit, git tree oid, tar sha256.
   5. Every file in the tar matches the provenance sha256/size/mode; no extra or
      missing file; no link, device, or escaping path.
+  5b. Re-sign (macOS only, apps in SIGN_DEFAULTS or with --sign): the runner
+     binary is ad-hoc signed, so macOS TCC sees a new identity after every
+     install. The tool signs the listed files with the local Developer ID
+     identity and a fixed identifier (designated requirement stays the same
+     across builds), verifies, and takes the manifest digests from the signed
+     bytes. The pre-sign digest stays checked against provenance (step 5) and
+     is recorded in the result. No identity or a failed sign is a Fail: the
+     tool never promotes an ad-hoc binary for a signed app.
   6. `lastgit artifact publish` into a STAGING CAS, then the manifest files must
      equal the provenance files and `lastgit artifact verify` must pass.
   7. Only then blobs, manifest, and builds/ row are copied into the real CAS and
@@ -39,6 +47,10 @@ import tempfile
 import zipfile
 
 EXIT_OK, EXIT_FAIL, EXIT_HOLD = 0, 1, 3
+
+# app -> [(bundle path, code-signing identifier)]. Keep the identifier equal to the
+# one the TCC grants were made for: com.edgevector.routines (Tom, 2026-09-30).
+SIGN_DEFAULTS = {"routines": [("dist/routines", "com.edgevector.routines")]}
 
 
 class Hold(Exception):
@@ -174,6 +186,43 @@ def extract_bundle(tar_bytes, dest, prov):
         raise Fail("bundle is missing provenance files: %s" % ", ".join(missing[:5]))
 
 
+def resolve_identity(name, security):
+    """One SHA-1 for a keychain code-signing identity whose label contains `name`."""
+    r = subprocess.run([security, "find-identity", "-v", "-p", "codesigning"], capture_output=True, text=True)
+    hashes = set()
+    for line in r.stdout.splitlines():
+        parts = line.split()
+        if len(parts) > 2 and len(parts[1]) == 40 and name in line:
+            hashes.add(parts[1])
+    if len(hashes) != 1:
+        raise Fail("need exactly one keychain code-signing identity matching %r, found %d "
+                   "(set --sign-identity / LAST_STACK_SIGN_IDENTITY)" % (name, len(hashes)))
+    return hashes.pop()
+
+
+def sign_files(src, specs, identity, codesign, security):
+    """Sign each (rel, identifier) under src. Returns {rel: pre-sign sha256}."""
+    if not specs:
+        return {}
+    ident = resolve_identity(identity, security)
+    pre = {}
+    for rel, ident_id in specs:
+        path = os.path.join(src, safe_rel(rel))
+        if not os.path.isfile(path):
+            raise Fail("sign target is not in the bundle: %s" % rel)
+        pre[rel] = sha256_file(path)
+        for argv in ([codesign, "--force", "--identifier", ident_id, "--sign", ident, path],
+                     [codesign, "--verify", "--strict", path]):
+            r = subprocess.run(argv, capture_output=True, text=True)
+            if r.returncode != 0:
+                raise Fail("codesign %s failed for %s (keychain locked?): %s" % (argv[1], rel, (r.stderr or r.stdout).strip()[:300]))
+        r = subprocess.run([codesign, "-d", "-r-", path], capture_output=True, text=True)
+        req = r.stdout + r.stderr
+        if 'identifier "%s"' % ident_id not in req or "anchor apple generic" not in req:
+            raise Fail("signed %s has an unexpected designated requirement: %s" % (rel, req.strip()[:300]))
+    return pre
+
+
 def merge_cas(staging, root, app, oid, plat, digest):
     """Copy blobs, then the manifest, then the builds row. Content-addressed, atomic renames."""
     def put(src, dst, keep_existing):
@@ -282,6 +331,20 @@ def pull(args):
         os.makedirs(src)
         extract_bundle(tar_bytes, src, prov)
 
+        specs = list(SIGN_DEFAULTS.get(args.app, [])) if not args.no_sign else []
+        for item in args.sign or []:
+            if "=" not in item:
+                raise Fail("--sign wants PATH=IDENTIFIER, got %r" % item)
+            specs.append(tuple(item.split("=", 1)))
+        if plat.split("-")[0] != "darwin":
+            specs = []
+        pre_sign = sign_files(src, specs, args.sign_identity, args.codesign, args.security)
+        exp_files = [dict(f) for f in prov["files"]]
+        for f in exp_files:
+            if f["path"] in pre_sign:
+                p = os.path.join(src, f["path"])
+                f["sha256"], f["size"] = sha256_file(p), os.path.getsize(p)
+
         out = lastgit(lg, "publish", "--app", args.app, "--repo", name, "--oid", oid, "--input", src,
                       "--paths", ",".join(prov["paths"]), "--platform", plat, "--root", stage, "--json")
         manifest = first_json(out)
@@ -289,13 +352,15 @@ def pull(args):
             raise Fail("lastgit artifact publish printed no manifest")
         mdigest = manifest["manifest_digest"]
         got = sorted((f["path"], f["sha256"], f["size"], f["mode"]) for f in manifest["files"])
-        exp = sorted((f["path"], f["sha256"], f["size"], f["mode"]) for f in prov["files"])
+        exp = sorted((f["path"], f["sha256"], f["size"], f["mode"]) for f in exp_files)
         if got != exp or manifest.get("source_oid") != oid or manifest.get("app") != args.app:
             raise Fail("CAS manifest does not equal the GitHub provenance")
         lastgit(lg, "verify", "--manifest", mdigest, "--root", stage, "--json")
 
         result = {"status": "verified", "oid": oid, "tree_oid": tree, "manifest_digest": mdigest,
                   "platform": plat, "channel": args.channel, "artifact_id": art["id"], "run_id": run.get("id")}
+        if pre_sign:
+            result["signed"] = {rel: {"pre_sign_sha256": d} for rel, d in sorted(pre_sign.items())}
         if args.dry_run:
             result["status"] = "dry-run-verified"
             return result
@@ -330,6 +395,13 @@ def main():
     ap.add_argument("--allow-non-tip", action="store_true", help="rollback: pull an --oid that is not the tip")
     ap.add_argument("--allow-missing-digest", action="store_true", help="accept an artifact GitHub gave no digest for")
     ap.add_argument("--dry-run", action="store_true", help="verify in a staging CAS; write nothing to --root")
+    ap.add_argument("--sign", action="append", metavar="PATH=IDENTIFIER",
+                    help="also re-sign this bundle file with a fixed identifier (repeatable)")
+    ap.add_argument("--no-sign", action="store_true", help="skip the built-in re-sign for this app (hand use only)")
+    ap.add_argument("--sign-identity", default=os.environ.get("LAST_STACK_SIGN_IDENTITY") or "Developer ID Application",
+                    help="keychain identity label substring (default $LAST_STACK_SIGN_IDENTITY or 'Developer ID Application')")
+    ap.add_argument("--codesign", default=os.environ.get("LAST_STACK_CODESIGN", "codesign"))
+    ap.add_argument("--security", default=os.environ.get("LAST_STACK_SECURITY", "security"))
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--gh", default=os.environ.get("LAST_STACK_GH", "gh"))
     ap.add_argument("--lastgit", default=os.environ.get("LAST_STACK_LASTGIT", "lastgit"))

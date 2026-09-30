@@ -1,0 +1,6 @@
+#!/bin/sh
+# Fixture `security find-identity -v -p codesigning`: FAKE_SECURITY_IDS lines, default one identity.
+if [ -n "${FAKE_SECURITY_NONE:-}" ]; then echo "     0 valid identities found"; exit 0; fi
+echo '  1) AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA "Developer ID Application: Test (TEAM123456)"'
+[ -n "${FAKE_SECURITY_TWO:-}" ] && echo '  2) BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB "Developer ID Application: Other (TEAM654321)"'
+echo "     1 valid identities found"
