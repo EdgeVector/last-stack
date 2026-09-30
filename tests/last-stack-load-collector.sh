@@ -27,7 +27,8 @@ printf '#!/bin/sh\nprintf "  1. app=kanban verb=query count=90 avg=44ms p95=- ma
 chmod +x "$T/lastdb-hang" "$T/lastdb-ok"
 
 export LOAD_MON_ALERT_SWAP_MB=999999999 LOAD_MON_ALERT_LOAD1=999999 LOAD_MON_ALERT_HOG_PCT=999999
-export LOAD_MON_NOTIFY=0LOAD_MON_DEADLINE_SEC=1 LOAD_MON_DIR="$T/mon" LOAD_MON_SOCKET="$S/n.sock"
+export LOAD_MON_NOTIFY=0 LOAD_MON_DEADLINE_SEC=1 LOAD_MON_DIR="$T/mon" LOAD_MON_SOCKET="$S/n.sock"
+[ "$LOAD_MON_NOTIFY" = "0" ] && [ "$LOAD_MON_DEADLINE_SEC" = "1" ] || { echo "test env must keep NOTIFY=0 (a fixture must never post to live Situations)" >&2; exit 1; }
 
 last_field() { tail -n 1 "$T/mon"/load-*.jsonl | jq -r "$1"; }
 
