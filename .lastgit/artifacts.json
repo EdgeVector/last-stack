@@ -2,9 +2,8 @@
   "artifacts": [
     {
       "app": "last-stack",
-      "context": "artifact-release",
+      "platform": "darwin-arm64",
       "paths": [
-        ".forgejo",
         ".lastgit/artifacts.json",
         "VERSION",
         "setup",

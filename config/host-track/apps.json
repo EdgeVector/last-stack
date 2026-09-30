@@ -51,9 +51,10 @@
       "install_mode": "artifact",
       "kind": "artifact skill-pack",
       "command": "host-track",
-      "gate": "lastgit",
-      "gate_main": "lastdb:///last-stack#main",
-      "track_gate_main": false,
+      "gate": "github",
+      "gate_main": "https://github.com/EdgeVector/last-stack.git#main",
+      "gate_remote": "https://github.com/EdgeVector/last-stack.git",
+      "gate_ref": "refs/heads/main",
       "artifact_app": "last-stack",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -333,7 +334,7 @@
           "target": "$HOME/.local/bin/last-stack-safe-upgrade-cli"
         }
       ],
-      "notes": "Gate of record is LastGit. The artifact-release watcher publishes each green main payload and promotes stable after ci-required passes. track_gate_main stays false because the producer owns stable promotion. Host Track reports LastGit main through gate_main and installs the stable channel with the existing soak policy. Runtime is an immutable artifact. ~/.last-stack/{bin,skills,...} → artifacts/current. PATH links Class A, pickup bootstrap, and closeout tools to live artifact paths. Never develop in the install; use a worktree.",
+      "notes": "Gate of record is GitHub EdgeVector/last-stack since 2026-09-30 (brain decision-2026-09-29-retire-lastgit-all-repos-to-github, sop-github-artifact-app-migration). The push-to-main `publish` job of ci-required.yml calls the same-repo reusable workflow host-track-artifact.yml and uploads ht-artifact-<sha>; `host-track refresh last-stack` runs last-stack-github-artifact-pull, which checks the ci-required check run, the digests and the provenance, then promotes the stable channel in artifact_root. The LastGit artifact-release watcher is retired; lastdb:///last-stack is disabled and the Forgejo copy is archived. Host Track installs the stable channel with the existing soak policy. Runtime is an immutable artifact. ~/.last-stack/{bin,skills,...} → artifacts/current. PATH links Class A, pickup bootstrap, and closeout tools to live artifact paths. Never develop in the install; use a worktree.",
       "safe_upgrade": {
         "post_install_phase": "after-cutover",
         "probes": [

@@ -1,9 +1,12 @@
 # last-stack LaunchAgents
 
-Most units are last-stack host jobs. The artifact-release unit is the one
-LastGit CI exception. It publishes and promotes merged `last-stack` main.
+Most units are last-stack host jobs. Since 2026-09-30 `last-stack` itself is
+gated on GitHub (`.github/workflows/ci-required.yml`). The LastGit
+`artifact-release` unit is retired: the `publish` job uploads the Actions
+artifact and `host-track refresh last-stack` pulls it.
 
-Last-stack `ci-required` is served by the LastGit fleet supervisor:
+The text below describes the LastGit fleet supervisor that still serves the
+repos that remain on LastGit or Forgejo:
 
 ```
 com.edgevector.lastgit-forge-primary
@@ -19,6 +22,3 @@ Check coverage with `bin/last-stack-lastgit-ci-coverage --repo last-stack`
 (add `--head <oid>` to ask about one commit). The sibling
 `ci watch` processes on this host are deploy/artifact contexts
 (`deploy-prod`, `deploy-pipeline`, `artifact-release`), not `ci-required`.
-
-Install `com.edgevector.lastgit-artifact-release-last-stack.plist` in the user
-LaunchAgents directory. Its watcher runs `.lastgit/artifact-release.sh`.

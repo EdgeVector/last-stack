@@ -93,6 +93,14 @@ if [ -z "$CI_SHARD_INDEX" ]; then
 
   bin/last-stack-lint-prompts --access-sweep .
 
+  # GitHub Actions runs these global passes in the `lint` job and each test
+  # shard in its own `shard` job (LAST_STACK_CI_SHARD_INDEX set), so the
+  # workflow needs a mode that stops here.
+  if [ "${LAST_STACK_CI_LINT_ONLY:-0}" = "1" ]; then
+    echo "ok last-stack CI lint passes"
+    exit 0
+  fi
+
   CI_SHARD_COUNT="${LAST_STACK_CI_JOBS:-4}"
   case "$CI_SHARD_COUNT" in
     ''|*[!0-9]*) echo "LAST_STACK_CI_JOBS must be an integer from 1 through 8" >&2; exit 2 ;;
@@ -497,8 +505,6 @@ ci_test tests/host-track-soak-wall-clock.sh
 ci_test tests/last-stack-fleet-channel-freshness-gate.sh
 ci_test tests/last-stack-artifact-host-track-proof.sh
 ci_test tests/last-stack-artifact-layout.sh
-ci_test tests/last-stack-lastgit-artifact-release.sh
-ci_test tests/last-stack-lastgit-artifact-release-integration.sh
 ci_test tests/last-stack-artifact-layout-mirror-clean.sh
 ci_test tests/last-stack-artifact-routine-freshness.sh
 ci_test tests/last-stack-artifact-one-rule.sh
