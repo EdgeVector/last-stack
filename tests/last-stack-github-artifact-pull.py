@@ -307,5 +307,62 @@ class PullTests(Base):
         self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
 
 
+class SignTests(Base):
+    def sign_pull(self, *extra, env=None):
+        for k in ("FAKE_CODESIGN_FAIL", "FAKE_SECURITY_NONE", "FAKE_SECURITY_TWO"):
+            os.environ.pop(k, None)
+        os.environ.update(env or {})
+        self.addCleanup(lambda: [os.environ.pop(k, None) for k in (env or {})])
+        return self.pull("--sign", "bin/ra=com.test.ra", "--codesign", os.path.join(FIX, "fake-codesign"),
+                         "--security", os.path.join(FIX, "fake-security"), *extra)
+
+    def test_signs_and_manifest_uses_signed_bytes(self):
+        rc, res, err = self.sign_pull()
+        self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
+        with open(os.path.join(self.out, "remote", "provenance.json")) as fh:
+            prov = {f["path"]: f for f in json.load(fh)["files"]}
+        self.assertEqual(res["signed"]["bin/ra"]["pre_sign_sha256"], prov["bin/ra"]["sha256"])
+        chan = json.load(open(os.path.join(self.cas, "channels", "remote", "stable.json")))
+        got = {f["path"]: f for f in chan["files"]}
+        self.assertNotEqual(got["bin/ra"]["sha256"], prov["bin/ra"]["sha256"])
+        self.assertEqual(got["bin/ra"]["mode"], 0o755)
+        self.assertEqual(got["README.md"]["sha256"], prov["README.md"]["sha256"])
+        blob = os.path.join(self.cas, "blobs", "sha256", got["bin/ra"]["sha256"][:2], got["bin/ra"]["sha256"])
+        self.assertIn(b"SIGNED:com.test.ra:AAAA", open(blob, "rb").read())
+
+    def test_no_identity_fails_closed(self):
+        rc, res, _ = self.sign_pull(env={"FAKE_SECURITY_NONE": "1"})
+        self.assertEqual(rc, 1)
+        self.assertIn("identity", res["reason"])
+        self.assertCasUntouched()
+
+    def test_ambiguous_identity_fails(self):
+        rc, res, _ = self.sign_pull(env={"FAKE_SECURITY_TWO": "1"})
+        self.assertEqual(rc, 1)
+        self.assertIn("exactly one", res["reason"])
+        self.assertCasUntouched()
+
+    def test_codesign_failure_fails_closed(self):
+        rc, res, _ = self.sign_pull(env={"FAKE_CODESIGN_FAIL": "1"})
+        self.assertEqual(rc, 1)
+        self.assertIn("codesign", res["reason"])
+        self.assertCasUntouched()
+
+    def test_missing_sign_target_fails(self):
+        rc, res, _ = self.pull("--sign", "bin/none=x", "--security", os.path.join(FIX, "fake-security"),
+                               "--codesign", os.path.join(FIX, "fake-codesign"))
+        self.assertEqual(rc, 1)
+        self.assertIn("not in the bundle", res["reason"])
+        self.assertCasUntouched()
+
+    def test_routines_default_sign_table(self):
+        sys.path.insert(0, os.path.join(ROOT, "bin"))
+        import importlib.machinery, importlib.util
+        loader = importlib.machinery.SourceFileLoader("pull_mod", PULL)
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("pull_mod", loader))
+        loader.exec_module(mod)
+        self.assertEqual(mod.SIGN_DEFAULTS["routines"], [("dist/routines", "com.edgevector.routines")])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
