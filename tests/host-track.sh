@@ -18,9 +18,9 @@ printf '%s\n' "$kanban_registry" | jq -e '
   .install_mode == "artifact" and
   .kind == "artifact cli" and
   .command == "kanban" and
-  .gate == "forgejo" and
-  .gate_main == "http://localhost:3300/EdgeVector/fkanban.git#main" and
-  .track_gate_main == false and
+  .gate == "github" and
+  .gate_main == "https://github.com/EdgeVector/fkanban.git#main" and
+  (has("track_gate_main") | not) and
   (.refresh | not) and
   .artifact_app == "fkanban" and
   .artifact_channel == "stable" and
