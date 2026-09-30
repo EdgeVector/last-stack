@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# Refuse the one CLOSE that silently destroys work: a green auto-merge CR whose
+# Refuse the one CLOSE that silently destroys work: a green auto-merge PR whose
 # head never reached its base branch.
+#
+# 2026-09-30: LastGit is retired. The old `--venue lastgit --cr <id>` path (the
+# `lastgit cr view` / `lastgit ci status` / `lastgit ref` reads) is gone. A PR
+# is judged through GitHub (`gh api`) for every EdgeVector repo except `lastgit`,
+# which stays on Forgejo. `--cr` and `--venue lastgit` are now usage errors.
 #
 # Symptom this exists for (papercut-lastgit-pr-reaper-closes-green-unmerged-cr,
 # p0, three recorded instances on 2026-09-02): routines/pr-reaper.md STEP 2 is a
@@ -40,12 +45,12 @@
 #     That case is `indeterminate base-gate-red` (exit 3): leave it open, it is
 #     judged again once the base is green.
 #
-# 2026-09-30: `--venue github --pr <n>` judges a GitHub PR with the same ladder
+# 2026-09-30 (earlier): `--venue github --pr <n>` judges a GitHub PR with the same ladder
 # (LastGit is retired and every EdgeVector repo but `lastgit` is on GitHub).
 # The PR row, the `ci-required` check run of the head and of the base, and the
 # head-vs-base compare come from `gh api`. `--venue auto` (also the default when
 # only --pr is given) asks `last-stack-pr-venue EdgeVector/<repo>` and routes to
-# github or forgejo. `--cr` alone still means lastgit.
+# github or forgejo.
 #
 # Every input can come from a file so the suite runs with no node and no forge.
 set -euo pipefail
@@ -62,34 +67,25 @@ pr_venue_bin="${LAST_STACK_PR_VENUE_BIN:-}"
 pr_json_path=""
 head_status_json_path=""
 base_status_json_path=""
-base_ci_json_path=""
 forge_api="${LAST_STACK_FORGE_API:-$HOME/.last-stack/bin/last-stack-forge-api}"
 json=0
-cr_json_path=""
-ci_json_path=""
 base_oid=""
 git_dir=""
 no_fetch=0
-lastgit_bin="${LASTGIT_BIN:-lastgit}"
 
 usage() {
   cat >&2 <<'EOF'
-usage: last-stack-pr-reaper-close-guard --repo <slug> --cr <cr-id> [--json]
-                                        [--cr-json PATH] [--ci-json PATH]
-                                        [--base-ci-json PATH]
-                                        [--base-oid OID] [--git-dir PATH]
-                                        [--no-fetch]
+usage: last-stack-pr-reaper-close-guard --venue auto|github --repo <slug> --pr <n> [--json]
+                                        [--pr-json PATH] [--head-check-json PATH]
+                                        [--base-check-json PATH] [--compare-json PATH]
+                                        [--base-oid OID] [--git-dir PATH] [--no-fetch]
        last-stack-pr-reaper-close-guard --venue forgejo --repo <slug> --pr <n> [--json]
                                         [--pr-json PATH] [--head-status-json PATH]
                                         [--base-status-json PATH]
                                         [--base-oid OID] [--git-dir PATH] [--no-fetch]
-       last-stack-pr-reaper-close-guard --venue github|auto --repo <slug> --pr <n> [--json]
-                                        [--pr-json PATH] [--head-check-json PATH]
-                                        [--base-check-json PATH] [--compare-json PATH]
-                                        [--base-oid OID] [--git-dir PATH] [--no-fetch]
 
-Decide whether pr-reaper may CLOSE a LastGit change request. Reads only; never
-closes, merges, or writes.
+Decide whether pr-reaper may CLOSE a pull request. Reads only; never
+closes, merges, or writes. `--venue` defaults to auto.
 
 Verdicts:
   close-ok       already terminal / head already in base / not auto-merge /
@@ -103,14 +99,11 @@ Verdicts:
                  outage is not a verdict on this head)
 
 Flags:
-  --cr-json PATH   use this `cr view --json` object instead of calling lastgit
-  --ci-json PATH   use this `ci status --json` object instead of calling lastgit
-  --base-oid OID   use this base-branch tip instead of `lastgit ref`
-  --git-dir PATH   ancestry repository (default: the portal cache, then the
-                   LastGit mirror, for --venue forgejo; the reverse for lastgit)
+  --base-oid OID   use this base-branch tip instead of reading it from the venue
+  --git-dir PATH   ancestry repository (default: the portal cache at
+                   ~/.cache/edgevector-git/<repo>.git)
   --no-fetch       never fetch; an object that is missing stays missing
-  --venue V        lastgit (needs --cr), forgejo, github, or auto. auto (the default
-                   with --pr) asks last-stack-pr-venue, which answers github for
+  --venue V        github, forgejo, or auto. auto (the default) asks last-stack-pr-venue, which answers github for
                    every EdgeVector repo except lastgit.
   --head-check-json PATH / --base-check-json PATH
                    github: the `commits/<sha>/check-runs` object of the head / base
@@ -123,10 +116,8 @@ EOF
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --repo) repo="${2:-}"; shift 2 ;;
-    --cr) cr_id="${2:-}"; shift 2 ;;
+    --cr) echo "--cr is retired: LastGit change requests no longer exist; use --pr <n>" >&2; exit 2 ;;
     --json) json=1; shift ;;
-    --cr-json) cr_json_path="${2:-}"; shift 2 ;;
-    --ci-json) ci_json_path="${2:-}"; shift 2 ;;
     --base-oid) base_oid="${2:-}"; shift 2 ;;
     --git-dir) git_dir="${2:-}"; shift 2 ;;
     --no-fetch) no_fetch=1; shift ;;
@@ -135,7 +126,6 @@ while [ "$#" -gt 0 ]; do
     --pr-json) pr_json_path="${2:-}"; shift 2 ;;
     --head-status-json) head_status_json_path="${2:-}"; shift 2 ;;
     --base-status-json) base_status_json_path="${2:-}"; shift 2 ;;
-    --base-ci-json) base_ci_json_path="${2:-}"; shift 2 ;;
     --compare-json) compare_json_path="${2:-}"; shift 2 ;;
     --head-check-json) head_check_json_path="${2:-}"; shift 2 ;;
     --base-check-json) base_check_json_path="${2:-}"; shift 2 ;;
@@ -154,7 +144,7 @@ case "$repo" in
   */*) echo "--repo must be <name> or EdgeVector/<name>: $repo" >&2; exit 2 ;;
 esac
 if [ -z "$venue" ]; then
-  if [ -n "$pr_number" ]; then venue="auto"; else venue="lastgit"; fi
+  venue="auto"
 fi
 if [ "$venue" = "auto" ]; then
   [ -n "$pr_number" ] || { echo "--pr is required with --venue auto" >&2; usage; exit 2; }
@@ -168,14 +158,13 @@ if [ "$venue" = "auto" ]; then
   fi
   case "$venue" in
     github|forgejo) : ;;
-    lastgit) echo "last-stack-pr-venue says lastgit for $repo; pass --venue lastgit --cr <id>" >&2; exit 2 ;;
+    lastgit) echo "last-stack-pr-venue says lastgit for $repo; LastGit is retired" >&2; exit 2 ;;
     *) echo "could not route $repo through last-stack-pr-venue" >&2; exit 2 ;;
   esac
 fi
 case "$venue" in
-  lastgit) [ -n "$cr_id" ] || { echo "--cr is required" >&2; usage; exit 2; } ;;
   forgejo|github) [ -n "$pr_number" ] || { echo "--pr is required with --venue $venue" >&2; usage; exit 2; }; cr_id="#$pr_number" ;;
-  *) echo "--venue must be lastgit, forgejo, github or auto" >&2; usage; exit 2 ;;
+  *) echo "--venue must be github, forgejo or auto" >&2; usage; exit 2 ;;
 esac
 command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 2; }
 
@@ -227,13 +216,6 @@ elif [ "$venue" = "github" ]; then
       base_oid_hint: (.base.sha // ""),
       require_status: "ci-required"
     }')"
-  fi
-else
-  if [ -n "$cr_json_path" ]; then
-    [ -f "$cr_json_path" ] || { echo "no such --cr-json file: $cr_json_path" >&2; exit 2; }
-    cr_json="$(cat "$cr_json_path")"
-  else
-    cr_json="$("$lastgit_bin" cr view "$repo" "$cr_id" --json 2>/dev/null || true)"
   fi
 fi
 
@@ -303,7 +285,7 @@ esac
 [ -n "$head_oid" ] || emit indeterminate no-head-oid 3
 
 # ── base tip ────────────────────────────────────────────────────────────────
-# From lastgit, not from a mirror: a mirror can be many merges behind (the
+# From the venue API, not from a mirror: a mirror can be many merges behind (the
 # last-stack mirror read 177a0d3b while main was ab84c2b8 on 2026-09-05), and a
 # stale base tip answers "not in base" for work that already landed.
 if [ -z "$base_oid" ]; then
@@ -312,8 +294,6 @@ if [ -z "$base_oid" ]; then
     base_oid="$("$forge_api" GET "/repos/EdgeVector/$repo/branches/$base_name" 2>/dev/null | jq -r '.commit.id // ""' 2>/dev/null || true)"
   elif [ "$venue" = "github" ]; then
     base_oid="$("$gh_bin" api "repos/EdgeVector/$repo/branches/$base_name" 2>/dev/null | jq -r '.commit.sha // ""' 2>/dev/null || true)"
-  else
-    base_oid="$("$lastgit_bin" ref "$repo" "$base_name" 2>/dev/null | awk 'NF{print $1; exit}')"
   fi
 fi
 case "$base_oid" in
@@ -322,11 +302,9 @@ esac
 
 # ── ancestry ────────────────────────────────────────────────────────────────
 # Forgejo PRs read the portal cache FIRST. Its `origin` is the forge (every
-# portal mirror since last-stack PR 6, 2026-09-05). `~/.lastgit/mirrors/<repo>`
-# is a LastGit relic whose `origin` is the read-only GitHub mirror: a fetch
-# there exits 0 and never brings a Forgejo PR head, so every Forgejo PR read
-# `ancestry-object-missing` and the reaper could terminalize nothing
-# (papercut-pr-reaper-forgejo-ancestry-object-missing, 2026-09-22).
+# portal mirror since last-stack PR 6, 2026-09-05). The retired LastGit mirror
+# under ~/.lastgit/mirrors is never read: its `origin` is a read-only copy that
+# never brings a PR head (papercut-pr-reaper-forgejo-ancestry-object-missing).
 # GitHub without --git-dir: the compare API answers ancestry, so no local clone
 # is needed. `identical` and `behind` mean the head is already in the base.
 if [ "$venue" = "github" ] && [ -z "$git_dir" ]; then
@@ -351,17 +329,10 @@ if [ "$venue" = "github" ] && [ -z "$git_dir" ]; then
   esac
 else
 if [ -z "$git_dir" ]; then
-  if [ "$venue" = "forgejo" ] || [ "$venue" = "github" ]; then
-    set -- "$HOME/.cache/edgevector-git/$repo.git" "$HOME/.lastgit/mirrors/$repo"
-  else
-    set -- "$HOME/.lastgit/mirrors/$repo" "$HOME/.cache/edgevector-git/$repo.git"
+  candidate="$HOME/.cache/edgevector-git/$repo.git"
+  if [ -d "$candidate" ] && "$git_bin" -C "$candidate" rev-parse --git-dir >/dev/null 2>&1; then
+    git_dir="$candidate"
   fi
-  for candidate in "$@"; do
-    if [ -d "$candidate" ] && "$git_bin" -C "$candidate" rev-parse --git-dir >/dev/null 2>&1; then
-      git_dir="$candidate"
-      break
-    fi
-  done
 fi
 [ -n "$git_dir" ] || emit indeterminate no-ancestry-repo 3
 
@@ -390,9 +361,6 @@ if ! have_object "$head_oid" || ! have_object "$base_oid"; then
         GIT_TERMINAL_PROMPT=0 "$git_bin" -C "$git_dir" fetch --quiet --no-write-fetch-head origin \
           "refs/pull/$pr_number/head" "refs/heads/${base_ref#refs/heads/}" >/dev/null 2>&1 || true
       fi
-    else
-      "$git_bin" -C "$git_dir" fetch --quiet --prune origin >/dev/null 2>&1 \
-        || "$git_bin" -C "$git_dir" fetch --quiet --prune lastgit >/dev/null 2>&1 || true
     fi
   fi
 fi
@@ -439,7 +407,6 @@ github_required_state() {
       end' 2>/dev/null | awk 'NF{print;exit}'
 }
 
-ci_json=""
 ci_state=""
 ci_event_id=""
 base_ci_state=""
@@ -493,47 +460,6 @@ elif [ "$venue" = "forgejo" ]; then
       base_ci_state="$(forge_required_state "$base_status_json" "$stem")"
     fi
   fi
-else
-  if [ -n "$ci_json_path" ]; then
-    [ -f "$ci_json_path" ] || { echo "no such --ci-json file: $ci_json_path" >&2; exit 2; }
-    ci_json="$(cat "$ci_json_path")"
-  else
-    ci_json="$("$lastgit_bin" ci status "$head_oid" --repo "$repo" --json 2>/dev/null || true)"
-  fi
-fi
-
-if [ "$venue" = "lastgit" ] && [ -n "$ci_json" ] && printf '%s' "$ci_json" | jq -e . >/dev/null 2>&1; then
-  want="${require_status:-ci-required}"
-  ci_state="$(printf '%s' "$ci_json" | jq -r --arg want "$want" '
-    if (.checks? | type) == "array" then
-      ((.checks[] | select((.context // "") == $want) | .state) // "")
-    else (.state // "") end | ascii_downcase' 2>/dev/null | awk 'NF{print;exit}')"
-  ci_event_id="$(printf '%s' "$ci_json" | jq -r --arg want "$want" '
-    if (.checks? | type) == "array" then
-      ((.checks[] | select((.context // "") == $want) | .event_id) // "")
-    else (.event_id // "") end' 2>/dev/null | awk 'NF{print;exit}')"
-fi
-
-# The base branch's own run of the required context. Read only when the head
-# is red: a green head needs no excuse, and the base read costs a call.
-if [ "$venue" = "lastgit" ]; then
-  case "$ci_state" in
-    failure|error)
-      base_ci_json=""
-      if [ -n "$base_ci_json_path" ]; then
-        [ -f "$base_ci_json_path" ] || { echo "no such --base-ci-json file: $base_ci_json_path" >&2; exit 2; }
-        base_ci_json="$(cat "$base_ci_json_path")"
-      else
-        base_ci_json="$("$lastgit_bin" ci status "$base_oid" --repo "$repo" --json 2>/dev/null || true)"
-      fi
-      if [ -n "$base_ci_json" ] && printf '%s' "$base_ci_json" | jq -e . >/dev/null 2>&1; then
-        base_ci_state="$(printf '%s' "$base_ci_json" | jq -r --arg want "$want" '
-          if (.checks? | type) == "array" then
-            ((.checks[] | select((.context // "") == $want) | .state) // "")
-          else (.state // "") end | ascii_downcase' 2>/dev/null | awk 'NF{print;exit}')"
-      fi
-      ;;
-  esac
 fi
 
 case "$ci_state" in

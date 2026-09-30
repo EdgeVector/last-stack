@@ -29,16 +29,18 @@ if name == "kanban":
         print("kanban: No card with slug.", file=sys.stderr)
         sys.exit(1)
     print(json.dumps(card))
-elif "/pulls/" in sys.argv[1]:
-    calls = (root / "calls.jsonl").read_text().count('"repos/EdgeVector/fold/pulls/7"')
+elif "/pulls/" in sys.argv[-1]:
+    calls = (root / "calls.jsonl").read_text().count('repos/EdgeVector/fold/pulls/7"')
     print(json.dumps(data.get("pr_final", data["pr"]) if calls > 1 else data["pr"]))
-elif "/status" in sys.argv[1]:
+elif "/check-runs" in sys.argv[-1]:
+    print(json.dumps(data["check_runs"]))
+elif "/status" in sys.argv[-1]:
     print(json.dumps(data["status"]))
-elif "/actions/tasks?" in sys.argv[1]:
+elif "/actions/tasks?" in sys.argv[-1]:
     if data.get("task_error"):
         print("HTTP 400 private-response-must-stay-secret", file=sys.stderr)
         sys.exit(1)
-    state = sys.argv[1].split("status=")[1].split("&")[0]
+    state = sys.argv[-1].split("status=")[1].split("&")[0]
     rows = [r for r in data["tasks"] if r.get("status") == state]
     print(json.dumps(data.get("task_response", {"workflow_runs": rows, "total_count": len(rows)})))
 else:
@@ -54,7 +56,7 @@ class GuardTest(unittest.TestCase):
         self.bin = self.home / "bin"
         self.bin.mkdir()
         shutil.copy2(ROOT / "bin/last-stack-pipeline-pr-guard", self.bin)
-        for name in ("last-stack-forge-api", "kanban", "mutate"):
+        for name in ("last-stack-forge-api", "gh", "kanban", "mutate"):
             path = self.bin / name
             path.write_text(MOCK)
             path.chmod(0o755)
@@ -67,13 +69,16 @@ class GuardTest(unittest.TestCase):
             "status": {"state": "failure", "total_count": 1,
                        "statuses": [{"status": "failure", "context": "ci-required"}]},
             "tasks": [{"id": 1, "head_sha": SHA, "status": "failure"}],
+            "check_runs": {"total_count": 1, "check_runs": [
+                {"name": "ci-required", "status": "completed", "conclusion": "failure"}]},
         }
+        self.venue = "forgejo"
 
     def run_guard(self, reason=None, probe=False):
         (self.home / "fixture.json").write_text(json.dumps(self.data))
         env = dict(os.environ, GUARD_FIXTURE=str(self.home), PATH=f"{self.bin}:{os.environ['PATH']}")
         command = [str(self.bin / "last-stack-pipeline-pr-guard"), "--repo", "EdgeVector/fold",
-                   "--pr", "7", "--expected-head", SHA]
+                   "--pr", "7", "--expected-head", SHA, "--venue", self.venue]
         if not probe:
             command += ["--", str(self.bin / "mutate")]
         # Each guard run spawns ~10 mock python processes. On the shared macOS
@@ -150,7 +155,8 @@ class GuardTest(unittest.TestCase):
         (self.home / "fixture.json").write_text(json.dumps(self.data))
         env = dict(os.environ, GUARD_FIXTURE=str(self.home), PATH=f"{self.bin}:{os.environ['PATH']}")
         result = subprocess.run([str(self.bin / "last-stack-pipeline-pr-guard"), "--repo", "EdgeVector/fold",
-                                 "--pr", "7", "--expected-head", SHA, "--", str(self.bin / "mutate")],
+                                 "--pr", "7", "--expected-head", SHA, "--venue", "forgejo",
+                                 "--", str(self.bin / "mutate")],
                                 capture_output=True, text=True, env=env, timeout=90)
         answer = json.loads(result.stdout)
         self.assertEqual((result.returncode, answer["verdict"], answer["reason"]), (3, "deny", "unbound-card"))
@@ -173,6 +179,62 @@ class GuardTest(unittest.TestCase):
 
     def test_probe_never_mutates(self):
         self.run_guard(probe=True)
+
+    # ── GitHub venue: every read goes through `gh api`, never last-stack-forge-api ──
+    def github(self):
+        self.venue = "github"
+        self.data["card"]["pr_url"] = "https://github.com/EdgeVector/fold/pull/7"
+
+    def test_github_terminal_failure_executes_once_after_fresh_reads(self):
+        self.github()
+        calls = self.run_guard()
+        self.assertEqual(calls[-1], ["mutate"])
+        self.assertTrue(all(row[0] in ("gh", "kanban", "mutate") for row in calls))
+        self.assertTrue(all(row[1] == "api" for row in calls if row[0] == "gh"))
+        self.assertEqual(sum(row[-1].endswith("/pulls/7") for row in calls), 2)
+        self.assertEqual(sum("/check-runs" in row[-1] for row in calls), 2)
+        self.assertFalse(any("/actions/tasks" in row[-1] for row in calls))
+
+    def test_github_queued_check_run_never_mutates(self):
+        self.github()
+        self.data["check_runs"] = {"total_count": 1, "check_runs": [{"name": "ci-required", "status": "queued"}]}
+        self.run_guard("active-head-task")
+
+    def test_github_in_progress_check_run_never_mutates(self):
+        self.github()
+        self.data["check_runs"] = {"total_count": 2, "check_runs": [
+            {"name": "lint", "status": "completed"}, {"name": "ci-required", "status": "in_progress"}]}
+        self.run_guard("active-head-task")
+
+    def test_github_truncated_check_runs_never_mutate(self):
+        self.github()
+        self.data["check_runs"] = {"total_count": 3, "check_runs": [{"name": "ci-required", "status": "completed"}]}
+        self.run_guard("incomplete-status")
+
+    def test_github_assigned_pr_never_mutates(self):
+        self.github()
+        self.data["card"]["assignee"] = "codex:owner"
+        self.run_guard("owned-pr")
+
+    def test_github_card_with_forgejo_pr_url_is_unbound(self):
+        self.github()
+        self.data["card"]["pr_url"] = "http://forge.test/EdgeVector/fold/pulls/7"
+        self.run_guard("unbound-card")
+
+    def test_auto_venue_routes_through_pr_venue(self):
+        # last-stack-pr-venue answers forgejo -> the forge reads; default -> github.
+        venue = self.bin / "last-stack-pr-venue"
+        for answer, marker in (("forgejo", "/actions/tasks?"), ("github", "/check-runs")):
+            venue.write_text(f"#!/bin/sh\necho {answer}\n")
+            venue.chmod(0o755)
+            self.venue = "auto"
+            if answer == "github":
+                self.github()
+                self.venue = "auto"
+            for f in ("calls.jsonl", "mutated"):
+                (self.home / f).unlink(missing_ok=True)
+            calls = self.run_guard()
+            self.assertTrue(any(marker in row[-1] for row in calls), answer)
 
     def test_prompt_requires_guard_and_forbids_empty_retries(self):
         prompt = " ".join((ROOT / "routines/pipeline-health.md").read_text().split())

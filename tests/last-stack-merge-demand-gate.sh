@@ -133,7 +133,7 @@ run_case lastgit-unreadable-disabled 0 'ROUTINE_RESULT outcome=noop'
 reset_modes
 export LAST_STACK_LASTGIT_NATIVE_REPOS="EdgeVector/fold"
 export STUB_LASTGIT_MODE=old
-run_case lastgit-old-enabled 10 'reason=lastgit-stuck-1'
+run_case lastgit-old-enabled-retired 0 'ROUTINE_RESULT outcome=noop'
 
 reset_modes
 export LAST_STACK_LASTGIT_NATIVE_REPOS="EdgeVector/fold"
@@ -143,7 +143,7 @@ run_case lastgit-ghost 0 'ROUTINE_RESULT outcome=noop'
 reset_modes
 export LAST_STACK_LASTGIT_NATIVE_REPOS="EdgeVector/fold"
 export STUB_LASTGIT_MODE=unreadable
-run_case lastgit-unreadable-enabled 10 'reason=lastgit-unreadable-1'
+run_case lastgit-unreadable-enabled-retired 0 'ROUTINE_RESULT outcome=noop'
 
 reset_modes
 export STUB_FORGE_MODE=old

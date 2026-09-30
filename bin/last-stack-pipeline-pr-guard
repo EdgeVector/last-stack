@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Fail closed before a pipeline-health PR mutation; never cache an allow result."""
+"""Fail closed before a pipeline-health PR mutation; never cache an allow result.
+
+Venue (2026-09-30): every EdgeVector repo except `lastgit` is on GitHub, read
+through `gh api` (PR row, `ci-required` check runs; a queued or in-progress
+check run is an active task). Only the `lastgit` repo stays on Forgejo (combined
+status + actions/tasks through last-stack-forge-api). `--venue auto` (default)
+asks last-stack-pr-venue and falls back to github.
+"""
 import argparse
 import json
 import os
@@ -30,6 +37,7 @@ RECOVERY = {
         "(repo, kanban/<slug> branch, pr_url). This guard protects an active owner and "
         "will always deny an unbound PR: do not retry it. If the PR is an intentionally "
         "unbound green fix (for example a papercut-resolver branch), its producer merges it: "
+        "`gh pr merge <n> -R <owner/repo> --auto --squash` (GitHub), or for the lastgit repo on Forgejo "
         "last-stack-pipeline-forge-pr-ledger merge-green --repo <owner/repo> --pr <n> --arm --apply "
         "(it runs its own Situations merge-pr preflight). Otherwise bind the card to the PR, or leave "
         "the PR and record the deny in the papercut."
@@ -42,8 +50,21 @@ class Guard:
     def __init__(self, args):
         self.args = args
         self.deadline = time.monotonic() + BUDGET_SECONDS
-        self.api = str(Path(__file__).resolve().with_name("last-stack-forge-api"))
+        here = Path(__file__).resolve()
+        self.venue = args.venue if args.venue != "auto" else self.route(here)
+        if self.venue == "github":
+            self.api = [os.environ.get("LAST_STACK_GH_BIN", "gh"), "api"]
+        else:
+            self.api = [str(here.with_name("last-stack-forge-api"))]
         self.prefix = f"repos/{args.repo}"
+
+    def route(self, here):
+        binary = os.environ.get("LAST_STACK_PR_VENUE_BIN") or str(here.with_name("last-stack-pr-venue"))
+        try:
+            out = subprocess.run([binary, self.args.repo], capture_output=True, text=True, timeout=10).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            out = ""
+        return "forgejo" if out == "forgejo" else "github"
 
     def read(self, command):
         remaining = self.deadline - time.monotonic()
@@ -78,7 +99,7 @@ class Guard:
         raise Denied("unreadable-evidence")
 
     def pr(self):
-        pr = self.read([self.api, f"{self.prefix}/pulls/{self.args.pr}"])
+        pr = self.read([*self.api, f"{self.prefix}/pulls/{self.args.pr}"])
         if not isinstance(pr, dict) or pr.get("number") != self.args.pr:
             raise Denied("invalid-pr")
         if pr.get("state") != "open" or pr.get("merged") is not False or pr.get("draft") is not False:
@@ -106,7 +127,8 @@ class Guard:
             path = urlparse(link).path.rstrip("/")
         except ValueError:
             raise Denied("unbound-card") from None
-        if path != f"/{self.args.repo}/pulls/{self.args.pr}":
+        want = f"/{self.args.repo}/pull/{self.args.pr}" if self.venue == "github" else f"/{self.args.repo}/pulls/{self.args.pr}"
+        if path != want:
             raise Denied("unbound-card")
         if not isinstance(card.get("assignee"), str) or not isinstance(card.get("column"), str):
             raise Denied("unreadable-owner")
@@ -117,7 +139,9 @@ class Guard:
             raise Denied("card-not-active")
 
     def statuses(self):
-        data = self.read([self.api, f"{self.prefix}/commits/{self.args.expected_head}/status"])
+        if self.venue == "github":
+            return self.check_runs()
+        data = self.read([*self.api, f"{self.prefix}/commits/{self.args.expected_head}/status"])
         if not isinstance(data, dict) or not isinstance(data.get("statuses"), list):
             raise Denied("unreadable-status")
         rows = data["statuses"]
@@ -129,14 +153,31 @@ class Guard:
             if not isinstance(row, dict) or row.get("status") not in TERMINAL:
                 raise Denied("active-or-unknown-status")
 
+    def check_runs(self):
+        # GitHub: one read answers both "terminal status" and "active task". A
+        # check run that has not completed is an active run on this exact head.
+        data = self.read([*self.api, f"{self.prefix}/commits/{self.args.expected_head}/check-runs?per_page=100"])
+        if not isinstance(data, dict) or not isinstance(data.get("check_runs"), list):
+            raise Denied("unreadable-status")
+        rows = data["check_runs"]
+        if type(data.get("total_count")) is not int or data["total_count"] != len(rows):
+            raise Denied("incomplete-status")
+        for row in rows:
+            if not isinstance(row, dict):
+                raise Denied("unreadable-status")
+            if row.get("status") != "completed":
+                raise Denied("active-head-task")
+
     def tasks(self):
+        if self.venue == "github":
+            return
         # Forgejo's finite nonterminal status set. Filtering avoids walking task history.
         # Every response must honor its filter and complete within the page/read budgets.
         for state in ACTIVE:
             seen = set()
             total = None
             for page in range(1, MAX_PAGES + 1):
-                data = self.read([self.api, f"{self.prefix}/actions/tasks?status={state}&page={page}&limit={PAGE_SIZE}"])
+                data = self.read([*self.api, f"{self.prefix}/actions/tasks?status={state}&page={page}&limit={PAGE_SIZE}"])
                 if not isinstance(data, dict) or not isinstance(data.get("workflow_runs"), list):
                     raise Denied("unreadable-tasks")
                 rows = data["workflow_runs"]
@@ -183,6 +224,7 @@ def main():
     parser.add_argument("--repo", required=True)
     parser.add_argument("--pr", required=True, type=int)
     parser.add_argument("--expected-head", required=True)
+    parser.add_argument("--venue", choices=("auto", "github", "forgejo"), default="auto")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="-- COMMAND [ARG ...]; omit for a read-only probe")
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repo) or args.pr <= 0:

@@ -4,7 +4,8 @@
 # Direct Kind:pr todo cards filed for transient stuck CR/PR symptoms without a
 # milestone/North Star (or with empty bodies) cause pickup write-guard no-claims
 # that block unrelated valid work. This helper:
-#   1) closes cards whose underlying CR is point-read closed/merged
+#   1) closes cards whose underlying PR is point-read closed/merged (GitHub via
+#      `gh api`; the lastgit repo via Forgejo; LastGit CRs are retired)
 #   2) parks remaining poison-shaped cards to backlog (never needs_human)
 #
 # Intentionally narrow: only todo, only stuck-merge/pipeline-stuck shapes, never
@@ -25,8 +26,10 @@ usage: last-stack-park-stuck-merge-poison-cards [--board-cli kanban]
 
 Reads only the default board's todo column. Parks or closes stuck-merge /
 pipeline-stuck Kind:pr cards that cannot enter doing (missing milestone /
-North Star / cold-start body). Optional LastGit point-read: when a card embeds
-a lastgit CR id and `lastgit cr view` reports closed/merged, move to done.
+North Star / cold-start body). Optional PR point-read: when a card embeds a PR
+(slug `stuck-<venue>-<repo>-pr-<n>`, a github.com/EdgeVector/<repo>/pull/<n> URL,
+or a `PR: <n>` / `Repo:` pair) and the PR is closed or merged, move to done.
+Old `stuck-lastgit-*` cards are still parked by shape; they are never point-read.
 EOF
 }
 
@@ -150,12 +153,13 @@ slug_re = re.compile(
     r"pipeline-stuck-|stuck-pipeline-)"
 )
 cr_from_slug = re.compile(
-    r"(?i)(?:stuck-lastgit-|lastgit-stuck-)(?P<repo>[a-z0-9._-]+)-cr-(?P<cr>.+)$"
+    r"(?i)(?:stuck-forge-|stuck-github-|stuck-merge-)(?P<repo>[a-z0-9._-]+)-pr-(?P<cr>[0-9]+)$"
 )
 cr_from_body = re.compile(
-    r"(?i)lastgit://(?P<repo>[a-z0-9._-]+)/cr/(?P<cr>[A-Za-z0-9._-]+)"
+    r"(?i)github\.com/EdgeVector/(?P<repo>[a-z0-9._-]+)/pull/(?P<cr>[0-9]+)"
 )
-cr_id_line = re.compile(r"(?im)^\s*(?:CR|cr_id|CR-ID):\s*(?P<cr>\S+)\s*$")
+cr_id_line = re.compile(r"(?im)^\s*(?:PR|pr_number):\s*#?(?P<cr>[0-9]+)\s*$")
+repo_line = re.compile(r"(?im)^\s*Repo:\s*(?:EdgeVector/)?(?P<repo>[A-Za-z0-9._-]+)\s*$")
 kind_re = re.compile(r"(?im)^\s*Kind:\s*([A-Za-z_-]+)\s*$")
 goal_re = re.compile(r"(?im)^\s*##\s*GOAL\b")
 annotation_only = re.compile(
@@ -255,6 +259,9 @@ for card in cards:
         m = cr_id_line.search(body)
         if m:
             cr_id = m.group("cr")
+            r = repo_line.search(body)
+            if r:
+                repo = r.group("repo")
 
     out.append({
         "slug": slug,
@@ -281,7 +288,7 @@ reasons_parked=()
 reasons_closed=()
 
 point_read_cr_state() {
-  # prints closed|open|unknown
+  # prints closed|open|unknown (a PR number in $2; the name is historical)
   local repo="$1" cr_id="$2"
   if [ "$skip_point_read" -eq 1 ]; then
     echo "unknown"
@@ -291,12 +298,14 @@ point_read_cr_state() {
     echo "unknown"
     return 0
   fi
-  if ! command -v lastgit >/dev/null 2>&1; then
-    echo "unknown"
-    return 0
-  fi
+  case "$cr_id" in ''|*[!0-9]*) echo "unknown"; return 0 ;; esac
   local view
-  view="$(lastgit cr view "$repo" "$cr_id" --json 2>/dev/null || true)"
+  if [ "$repo" = "lastgit" ]; then
+    # The one repo still on Forgejo.
+    view="$("${LAST_STACK_FORGE_API:-$self_dir/last-stack-forge-api}" "repos/EdgeVector/$repo/pulls/$cr_id" 2>/dev/null || true)"
+  else
+    view="$("${LAST_STACK_GH_BIN:-gh}" api "repos/EdgeVector/$repo/pulls/$cr_id" 2>/dev/null || true)"
+  fi
   if [ -z "$view" ]; then
     echo "unknown"
     return 0
@@ -307,11 +316,10 @@ try:
     d=json.load(sys.stdin)
 except Exception:
     print("unknown"); raise SystemExit(0)
-state=str(d.get("state") or d.get("status") or "").lower()
-merge_oid=str(d.get("merge_oid") or d.get("merged_oid") or "").strip()
-if state in {"closed","merged"} or merge_oid:
+state=str(d.get("state") or "").lower()
+if state == "closed" or d.get("merged") is True or d.get("merged_at"):
     print("closed")
-elif state in {"open","draft"}:
+elif state == "open":
     print("open")
 else:
     print("unknown")
