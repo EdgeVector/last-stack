@@ -32,6 +32,9 @@ Env (defaults):
   LOAD_MON_ALERT_NODE_CONSEC   3
   LOAD_MON_ALERT_CPU_PCT       100   lastdbd %CPU (100 = one core)
   LOAD_MON_ALERT_CPU_CONSEC    5
+  LOAD_MON_ALERT_FOOTPRINT_MB  13107  lastdbd phys_footprint (guard ceiling 16384)
+  LOAD_MON_ALERT_FOOTPRINT_CONSEC 3
+  LOAD_MON_ALERT_SYNC_CONSEC   10      passes with sync degraded_reasons set
   LOAD_MON_ALERT_COOLDOWN_SEC  1800
   LOAD_MON_NOTIFY         1      0 = no osascript notification, no Situations
   LOAD_MON_LASTDB         lastdb  CLI used for `ops --by-app`
@@ -69,6 +72,9 @@ MAX_MB = envf("LOAD_MON_MAX_MB", 300)
 NODE_CONSEC = int(envf("LOAD_MON_ALERT_NODE_CONSEC", 3))
 CPU_PCT = envf("LOAD_MON_ALERT_CPU_PCT", 100)
 CPU_CONSEC = int(envf("LOAD_MON_ALERT_CPU_CONSEC", 5))
+FP_MB = envf("LOAD_MON_ALERT_FOOTPRINT_MB", 13107)  # 80% of the 16 GiB guard
+FP_CONSEC = int(envf("LOAD_MON_ALERT_FOOTPRINT_CONSEC", 3))
+SYNC_CONSEC = int(envf("LOAD_MON_ALERT_SYNC_CONSEC", 10))
 COOLDOWN = envf("LOAD_MON_ALERT_COOLDOWN_SEC", 1800)
 NOTIFY = os.environ.get("LOAD_MON_NOTIFY", "1") != "0"
 
@@ -141,7 +147,8 @@ def status_vitals(buf):
     try:
         body = buf.split(b"\r\n\r\n", 1)[-1]
         st = json.loads(body.decode("utf-8", "replace"))
-        st = st.get("status", st)
+        if isinstance(st.get("status"), dict):
+            st = st["status"]
         mb = st.get("memory_budget") or {}
         qos = st.get("qos") or {}
         uds = st.get("uds") or {}
@@ -290,8 +297,15 @@ def evaluate_alerts(rec, now):
     lastdbd = rec["host"].get("lastdbd")
     hot = bool(lastdbd) and lastdbd["cpu"] >= CPU_PCT
     st["cpu_hot"] = st.get("cpu_hot", 0) + 1 if hot else 0
+    v = rec["node"]["status"].get("vitals") or {}
+    st["fp_hot"] = st.get("fp_hot", 0) + 1 if (v.get("fp_mb") or 0) >= FP_MB else 0
+    st["sync_bad"] = st.get("sync_bad", 0) + 1 if v.get("sync_why") else 0
     last = st.setdefault("last_alert", {})
     checks = [
+        ("lastdbd_footprint_high", st["fp_hot"] >= FP_CONSEC,
+         "lastdbd footprint %s MB >= %d MB for %d passes (gov=%s)" % (v.get("fp_mb"), FP_MB, st["fp_hot"], v.get("gov"))),
+        ("lastdb_sync_degraded", st["sync_bad"] >= SYNC_CONSEC,
+         "LastDB sync degraded for %d passes: %s" % (st["sync_bad"], v.get("sync_why"))),
         ("node_unresponsive", st["node_bad"] >= NODE_CONSEC,
          "LastDB node %s (%s) for %d passes"
          % (rec["node"]["status"]["state"], rec["node"]["status"].get("reason", ""), st["node_bad"])),
@@ -433,6 +447,22 @@ def report(minutes, as_json):
         deltas.append([key[0], key[1], row[2] - c0, row[3], row[4], row[5]])
     deltas.sort(key=lambda x: x[2], reverse=True)
     out["ops_by_count_delta"] = deltas[:8]
+    vs = [r["node"]["status"]["vitals"] for r in recs if isinstance(r["node"]["status"].get("vitals"), dict) and "error" not in r["node"]["status"]["vitals"]]
+    if vs:
+        ev = [x["evict"] for x in vs if x.get("evict") is not None]
+        sync = {}
+        for x in vs:
+            k = "%s%s" % (x.get("sync"), " (%s)" % x["sync_why"] if x.get("sync_why") else "")
+            sync[k] = sync.get(k, 0) + 1
+        out["vitals"] = {
+            "fp_mb_max": max((x.get("fp_mb") or 0) for x in vs),
+            "evictions": (ev[-1] - ev[0]) if ev and ev[-1] >= ev[0] else None,
+            "sheds": (vs[-1].get("sheds") or 0) - (vs[0].get("sheds") or 0),
+            "slow_ms_max": max((x.get("slow_ms") or 0) for x in vs),
+            "uds_rej_max": max((x.get("uds_rej") or 0) for x in vs),
+            "gov": sorted({str(x.get("gov")) for x in vs}),
+            "sync": sync,
+        }
     if as_json:
         print(json.dumps(out, indent=1))
         return
@@ -440,6 +470,8 @@ def report(minutes, as_json):
     if "status_ms" in out:
         print("status_ms p50=%(p50)s p95=%(p95)s max=%(max)s" % out["status_ms"])
     print("load1_max=%s swap_used_mb_max=%s lastdbd_cpu=%s" % (out["load1_max"], out["swap_used_mb_max"], out["lastdbd_cpu"]))
+    if "vitals" in out:
+        print("node vitals: %s" % json.dumps(out["vitals"], sort_keys=True))
     print("host CPU by process (avg%, max%):")
     for name, avg, mx in out["cpu_by_process"]:
         print("  %-28s %6.1f %6.1f" % (name, avg, mx))

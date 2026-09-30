@@ -78,6 +78,18 @@ ELAPSED=$((SECONDS - START))
 [ "$(wc -l <"$T/mon/alerts.jsonl" | tr -d ' ')" = "1" ] || fail "cooldown should suppress a repeat alert"
 kill "$FAKE_PID"; wait "$FAKE_PID" 2>/dev/null || true; FAKE_PID=""
 
+# 5b. vitals: footprint and sync-degraded alerts fire from /api/status vitals
+python3 "$FAKE" "$S/n.sock" ok & FAKE_PID=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -S "$S/n.sock" ] && break; sleep 0.2; done
+export LOAD_MON_LASTDB="$T/lastdb-ok" LOAD_MON_ALERT_FOOTPRINT_CONSEC=2 LOAD_MON_ALERT_SYNC_CONSEC=2
+printf '{}' >"$T/mon/.state.json"
+"$BIN" sample; "$BIN" sample
+[ "$(last_field .node.status.vitals.fp_mb)" = "14336" ] || fail "vitals fp_mb missing"
+grep -q lastdbd_footprint_high "$T/mon/alerts.jsonl" || fail "footprint alert should fire"
+grep -q lastdb_sync_degraded "$T/mon/alerts.jsonl" || fail "sync degraded alert should fire"
+"$BIN" report --minutes 5 | grep -q "node vitals" || fail "report should print node vitals"
+kill "$FAKE_PID"; wait "$FAKE_PID" 2>/dev/null || true; FAKE_PID=""
+
 # 6. report runs and counts the states
 OUT="$("$BIN" report --minutes 5 --json)"
 [ "$(printf '%s' "$OUT" | jq -r '.node_states.busy')" = "3" ] || fail "report should count 3 busy passes"

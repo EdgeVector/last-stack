@@ -27,7 +27,7 @@ def handle(c):
             body = b'{"status":"busy","error":"uds_worker_queue_full"}'
             c.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: %d\r\n\r\n" % len(body) + body)
         else:
-            body = b'{"status":"ok"}'
+            body = b'{"status":"ok","phys_footprint_bytes":15032385536,"memory_budget":{"eviction_events":5,"governor_state":"under"},"sync":{"state":"degraded","degraded_reasons":["cloud_lag"]}}'
             c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(body) + body)
     finally:
         c.close()
