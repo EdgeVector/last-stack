@@ -93,6 +93,14 @@ if [ -z "$CI_SHARD_INDEX" ]; then
 
   bin/last-stack-lint-prompts --access-sweep .
 
+  # GitHub Actions runs these global passes in the `lint` job and each test
+  # shard in its own `shard` job (LAST_STACK_CI_SHARD_INDEX set), so the
+  # workflow needs a mode that stops here.
+  if [ "${LAST_STACK_CI_LINT_ONLY:-0}" = "1" ]; then
+    echo "ok last-stack CI lint passes"
+    exit 0
+  fi
+
   CI_SHARD_COUNT="${LAST_STACK_CI_JOBS:-4}"
   case "$CI_SHARD_COUNT" in
     ''|*[!0-9]*) echo "LAST_STACK_CI_JOBS must be an integer from 1 through 8" >&2; exit 2 ;;
@@ -232,7 +240,20 @@ ci_test() {
   local ci_test_started="$SECONDS" ci_test_rc=0
   bash "$@" || ci_test_rc=$?
   echo "ci_test done: $* rc=${ci_test_rc} secs=$((SECONDS - ci_test_started))"
+  # LAST_STACK_CI_KEEP_GOING=1 (the GitHub shard jobs) runs the rest of the shard
+  # after a red test and fails at the end with the full list, so one run names
+  # every red test instead of only the first. Default: stop at the first failure.
+  if [ "$ci_test_rc" -ne 0 ] && [ "${LAST_STACK_CI_KEEP_GOING:-0}" = "1" ]; then
+    ci_failed_tests="${ci_failed_tests:-} $1"
+    return 0
+  fi
   return "$ci_test_rc"
+}
+ci_failed_tests=""
+ci_report_failed_tests() {
+  [ -n "$ci_failed_tests" ] || return 0
+  echo "last-stack CI shard ${CI_SHARD_INDEX}: FAILED TESTS:${ci_failed_tests}" >&2
+  return 1
 }
 
 ci_test tests/last-stack-routine-read.sh
@@ -497,8 +518,6 @@ ci_test tests/host-track-soak-wall-clock.sh
 ci_test tests/last-stack-fleet-channel-freshness-gate.sh
 ci_test tests/last-stack-artifact-host-track-proof.sh
 ci_test tests/last-stack-artifact-layout.sh
-ci_test tests/last-stack-lastgit-artifact-release.sh
-ci_test tests/last-stack-lastgit-artifact-release-integration.sh
 ci_test tests/last-stack-artifact-layout-mirror-clean.sh
 ci_test tests/last-stack-artifact-routine-freshness.sh
 ci_test tests/last-stack-artifact-one-rule.sh
@@ -927,7 +946,9 @@ ci_test_discovered() {
   exempt="$(grep -vE '^(#|$)' "$ROOT/tests/.ci-exempt" | cut -f1)"
   for test_script in tests/*.sh; do
     [ -f "$test_script" ] || continue
-    if printf '%s\n' "$listed" "$exempt" | grep -Fxq -- "$test_script"; then continue; fi
+    # A pipe into `grep -q` can SIGPIPE the printf and, under pipefail, report a
+    # listed test as unlisted (so it ran twice). Match without a pipe.
+    case $'\n'"$listed"$'\n'"$exempt"$'\n' in *$'\n'"$test_script"$'\n'*) continue ;; esac
     test_slot=$(( $(printf '%s' "$test_script" | cksum | awk '{print $1}') % CI_SHARD_COUNT ))
     [ "$test_slot" -eq "$CI_SHARD_INDEX" ] || continue
     echo "ci_test start: $test_script (auto-discovered)"
@@ -935,7 +956,12 @@ ci_test_discovered() {
     ci_test_rc=0
     bash "$test_script" || ci_test_rc=$?
     echo "ci_test done: $test_script rc=${ci_test_rc} secs=$((SECONDS - ci_test_started))"
+    if [ "$ci_test_rc" -ne 0 ] && [ "${LAST_STACK_CI_KEEP_GOING:-0}" = "1" ]; then
+      ci_failed_tests="${ci_failed_tests:-} $test_script"
+      continue
+    fi
     [ "$ci_test_rc" -eq 0 ] || return "$ci_test_rc"
   done
 }
 ci_test_discovered
+ci_report_failed_tests

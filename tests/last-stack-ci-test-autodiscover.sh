@@ -25,7 +25,7 @@ for name in listed exempt new-a new-b new-c; do
 done
 
 run_shard() {
-  ( cd "$work" && ROOT="$work" CI_SHARD_COUNT="$1" CI_SHARD_INDEX="$2" bash -c '. ./fn.sh; ci_test_discovered' ) >/dev/null
+  ( cd "$work" && ROOT="$work" LAST_STACK_CI_KEEP_GOING=0 CI_SHARD_COUNT="$1" CI_SHARD_INDEX="$2" bash -c '. ./fn.sh; ci_test_discovered' ) >/dev/null
 }
 
 count=3

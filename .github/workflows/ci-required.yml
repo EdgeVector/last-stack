@@ -1,0 +1,99 @@
+# Gate of record for EdgeVector/last-stack (GitHub, since 2026-09-30).
+# Brain: decision-2026-09-29-retire-lastgit-all-repos-to-github,
+# sop-migrate-repo-to-github, sop-github-artifact-app-migration.
+#
+# The old gate was one macOS host job that ran .lastgit/ci.sh with four local
+# shards. Here the same script runs as `shard` matrix jobs (one per
+# LAST_STACK_CI_SHARD_INDEX) next to one `lint` job (global lint passes), and the
+# final job `ci-required` (the required check name) fails unless all of them pass.
+# Runner: macos-latest. The suite drives launchd, plutil, PlistBuddy and BSD
+# tools, so it stays on macOS like the former Forge lane.
+name: ci-required
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A main push must never cancel an earlier main run: its publish job is the only
+# thing that makes a merged commit installable (host-track pulls the artifact of
+# the exact commit). PR runs cancel their superseded runs.
+concurrency:
+  group: ci-required-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  NO_COLOR: "1"
+  FORCE_COLOR: "0"
+  LAST_STACK_CI_SHARD_COUNT: "8"
+
+jobs:
+  lint:
+    name: lint
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+      - name: Test toolchain
+        run: bash .github/scripts/ci-toolchain.sh
+      - name: bash -n and global lint passes
+        env:
+          LAST_STACK_CI_LINT_ONLY: "1"
+        run: bash .lastgit/ci.sh
+
+  shard:
+    name: shard ${{ matrix.index }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        index: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+      - name: Test toolchain
+        run: bash .github/scripts/ci-toolchain.sh
+      - name: Test scripts of this shard (.lastgit/ci.sh)
+        env:
+          LAST_STACK_CI_SHARD_INDEX: ${{ matrix.index }}
+          LAST_STACK_CI_KEEP_GOING: "1"
+        run: bash .lastgit/ci.sh
+
+  ci-required:
+    name: ci-required
+    needs: [lint, shard]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every needed job must succeed
+        env:
+          LINT: ${{ needs.lint.result }}
+          SHARD: ${{ needs.shard.result }}
+        run: |
+          echo "lint=$LINT shard=$SHARD"
+          [ "$LINT" = "success" ] && [ "$SHARD" = "success" ]
+
+  publish:
+    name: publish
+    needs: [ci-required]
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+    # Same-repo reusable workflow. Other repos call the same file by
+    # EdgeVector/last-stack/.github/workflows/host-track-artifact.yml@main.
+    uses: ./.github/workflows/host-track-artifact.yml
+    with:
+      tools-ref: ${{ github.sha }}
+      config: .lastgit/artifacts.json
