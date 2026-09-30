@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Compound regression: review-ref extraction must never feed punctuated,
-# invented, or prose-scraped tokens into a live `lastgit cr view` / forge API
-# call. Ground truth: papercut-lifecycle-close-misparses-review-refs (six
+# invented, or prose-scraped tokens into a live forge API call, and a
+# (retired) lastgit:// CR ref must never reach any venue. Ground truth: papercut-lifecycle-close-misparses-review-refs (six
 # reconciler passes, 2026-08-26 .. 2026-08-30, ~13-16 errors every run).
 set -euo pipefail
 
@@ -97,23 +97,11 @@ export FORGE_CALL_LOG="$tmp/forge-calls.log"
 : >"$LASTGIT_CALL_LOG"
 : >"$FORGE_CALL_LOG"
 
-# Only real, unpunctuated CR ids resolve. Everything else fails the way the
-# live `lastgit cr view` fails today, so a regression is red, not silent.
+# LastGit is retired: any call is a regression.
 cat >"$bin_dir/lastgit" <<'SH'
 #!/usr/bin/env bash
-set -euo pipefail
-repo="$3"
-cr_id="$4"
-printf '%s %s\n' "$repo" "$cr_id" >>"$LASTGIT_CALL_LOG"
-case "$repo/$cr_id" in
-  last-stack/cr-mt1t6wpi-33a6|last-stack/cr-mt33r3h2-5b5b|fold/cr-mrxxzsay-bbf3|last-stack/cr-msc85npn-c483|last-stack/cr-msh21rhh-c064)
-    printf '{"cr_id":"%s","repo":"%s","state":"merged","merge_oid":"deadbee"}\n' "$cr_id" "$repo"
-    ;;
-  *)
-    echo "cr not found: $repo/$cr_id" >&2
-    exit 1
-    ;;
-esac
+printf '%s\n' "$*" >>"$LASTGIT_CALL_LOG"
+exit 1
 SH
 chmod +x "$bin_dir/lastgit"
 
@@ -146,7 +134,6 @@ chmod +x "$bin_dir/brain"
 
 PATH="$bin_dir:$PATH" "$ROOT/bin/last-stack-papercut-lifecycle-close" \
   --records-json "$tmp/records.json" \
-  --lastgit-bin "$bin_dir/lastgit" \
   --forge-api-bin "$bin_dir/forge-api" \
   --brain-bin "$bin_dir/brain" \
   --dry-run \
@@ -163,23 +150,25 @@ assert data["checked"] == 12, data["checked"]
 
 fixed = {item["slug"]: item["ref"] for item in data["fixed"]}
 assert fixed == {
-    "papercut-lifecycle-ref-punctuation-semicolon": "lastgit://last-stack/cr/cr-mt1t6wpi-33a6",
-    "papercut-lifecycle-ref-punctuation-period": "lastgit://last-stack/cr/cr-mt33r3h2-5b5b",
-    "papercut-lifecycle-ref-punctuation-backtick": "lastgit://fold/cr/cr-mrxxzsay-bbf3",
     "papercut-pipeline-stuck-forge-lastgit-pr-90": "EdgeVector/lastgit/pulls/90",
     # `-pr1018`, not `-pr-1018`: the spelling `pipeline-health` actually writes
     # 21 times in the ledger, and the one no fixture covered until 2026-09-04.
     "papercut-pipeline-stuck-forge-fold-pr1018": "EdgeVector/fold/pulls/1018",
-    # A CR id keeps its `-<disambiguator>` suffix.
-    "papercut-pipeline-stuck-cr-last-stack-cr-msc85npn-c483": "lastgit://last-stack/cr/cr-msc85npn-c483",
     # A forge PR filed under the `-cr-` prefix resolves at the forge, not LastGit.
     "papercut-pipeline-stuck-cr-fold-1709": "EdgeVector/fold/pulls/1709",
-    # A CR short id with no `-cr-` separator, taken only because the body
-    # carries the matching full id.
-    "papercut-pipeline-stuck-cr-last-stack-msh21rhh": "lastgit://last-stack/cr/cr-msh21rhh-c064",
 }, fixed
 
 skipped = {item["slug"]: item for item in data["skipped"]}
+# A lastgit:// CR ref is still parsed (punctuation stripped) but LastGit is
+# retired: it never closes a record and it is never sent to a venue.
+for cr_slug in (
+    "papercut-lifecycle-ref-punctuation-semicolon",
+    "papercut-lifecycle-ref-punctuation-period",
+    "papercut-lifecycle-ref-punctuation-backtick",
+    "papercut-pipeline-stuck-cr-last-stack-cr-msc85npn-c483",
+    "papercut-pipeline-stuck-cr-last-stack-msh21rhh",
+):
+    assert cr_slug in skipped and cr_slug not in fixed, (cr_slug, skipped.get(cr_slug))
 # fold#826 is still OPEN, so the row stays open and the reason says which of the
 # two non-merged states it is. `review-not-merged` used to conflate "still open"
 # with "closed and never coming back"; only the second is terminal.
@@ -202,12 +191,11 @@ assert uncorroborated["details"] == [
 PY
 
 # No punctuated, invented, or prose-scraped token may ever reach a live venue.
-for forbidden in 'cr-mt1t6wpi-33a6;' 'cr-mt33r3h2-5b5b.' 'cr-mrxxzsay-bbf3`' 'cr-ms7sdfqg-16b8' 'cr-notacrid' 'cr-1709'; do
-  if grep -qF -- "$forbidden" "$LASTGIT_CALL_LOG"; then
-    echo "lastgit was called with a misparsed ref: $forbidden" >&2
-    exit 1
-  fi
-done
+if [ -s "$LASTGIT_CALL_LOG" ]; then
+  echo "lastgit was called although it is retired:" >&2
+  cat "$LASTGIT_CALL_LOG" >&2
+  exit 1
+fi
 for forbidden in 'fold-pr' 'lastgit-pr' 'mystery-service-pr'; do
   if grep -qF -- "$forbidden" "$FORGE_CALL_LOG"; then
     echo "forge API was called with an invented repo: $forbidden" >&2

@@ -108,4 +108,39 @@ printf '%s\n' "$second" | grep -q '"reopened": \[\]' || fail "second run was not
 after_second="$(wc -l <"$tmp/board.log")"
 [ "$before_second" = "$after_second" ] || fail "second run wrote to the board"
 
+# The recorded commit of a GitHub PR URL comes from `gh api` (not forge-api);
+# an explicit Forgejo URL still asks forge-api; a retired lastgit:// URL asks no one.
+cat >"$tmp/bin/gh" <<SH
+#!/usr/bin/env bash
+[ "\$1 \$2" = "api repos/EdgeVector/last-stack/pulls/7" ] || exit 1
+printf '{"merge_commit_sha":"$recorded"}\n'
+SH
+cat >"$tmp/bin/forge-api" <<'SH'
+#!/usr/bin/env bash
+printf '{"merge_commit_sha":"%s"}\n' "1111111111111111111111111111111111111111"
+SH
+cat >"$tmp/bin/lastgit" <<'SH'
+#!/usr/bin/env bash
+echo "lastgit must not run" >&2
+exit 1
+SH
+chmod +x "$tmp/bin/gh" "$tmp/bin/forge-api" "$tmp/bin/lastgit"
+cat >"$tmp/check.py" <<'PY'
+import importlib.machinery, importlib.util, sys
+from pathlib import Path
+root, bindir, recorded = sys.argv[1], sys.argv[2], sys.argv[3]
+loader = importlib.machinery.SourceFileLoader("rd", root + "/bin/last-stack-kanban-reopen-deferred")
+spec = importlib.util.spec_from_loader("rd", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+def commit(url):
+    card = {"repo": "EdgeVector/last-stack", "pr_url": url, "body": ""}
+    return mod.recorded_commit(card, Path("/nonexistent"), bindir + "/forge-api", bindir + "/gh")
+assert commit("https://github.com/EdgeVector/last-stack/pull/7") == recorded
+assert commit("http://localhost:3300/EdgeVector/last-stack/pulls/7") == "1" * 40
+assert commit("lastgit://last-stack/cr/cr-abc-1234") == ""
+print("ok")
+PY
+[ "$(python3 "$tmp/check.py" "$ROOT" "$tmp/bin" "$recorded")" = ok ] || fail "recorded_commit venue routing"
+
 printf 'ok: deferred cards reopen only after their recorded commit is live\n'

@@ -245,8 +245,15 @@ class Checker:
         return column == "done", f"column={column or 'empty'}"
 
     def _check_pr(self, cond: dict[str, str]) -> tuple[bool, str]:
-        if "github.com" in cond["ref"]:
-            return False, "unsupported-venue-github"
+        ref = cond["ref"]
+        # GitHub is the default venue. Forgejo stays for the `lastgit` repo and
+        # for an explicit non-GitHub URL (a card that recorded an old Forgejo PR).
+        forge = (
+            cond["repo"] == "lastgit"
+            or (re.match(r"https?://", ref) is not None and "github.com" not in ref)
+        )
+        if not forge:
+            return self._check_github_pr(cond)
         path = f"repos/{cond['owner']}/{cond['repo']}/pulls/{cond['number']}"
         result = run([self.args.forge_api, path], timeout=45)
         if result.returncode != 0:
@@ -260,6 +267,25 @@ class Checker:
         if data.get("merged") is True:
             return True, f"merged={str(data.get('merge_commit_sha') or '')[:12] or 'yes'}"
         return False, f"state={data.get('state') or 'unknown'} merged=false"
+
+    def _check_github_pr(self, cond: dict[str, str]) -> tuple[bool, str]:
+        result = run(
+            [self.args.gh, "pr", "view", cond["number"], "-R", f"{cond['owner']}/{cond['repo']}",
+             "--json", "state,mergedAt,mergeCommit"],
+            timeout=45,
+        )
+        if result.returncode != 0:
+            return False, "pr-unreadable"
+        try:
+            data = parse_json(result.stdout)
+        except json.JSONDecodeError:
+            return False, "pr-json-unparsed"
+        if not isinstance(data, dict):
+            return False, "pr-json-unparsed"
+        if data.get("mergedAt") or str(data.get("state") or "").upper() == "MERGED":
+            oid = str((data.get("mergeCommit") or {}).get("oid") or "") if isinstance(data.get("mergeCommit"), dict) else ""
+            return True, f"merged={oid[:12] or 'yes'}"
+        return False, f"state={str(data.get('state') or 'unknown').lower()} merged=false"
 
     def _check_after(self, cond: dict[str, str]) -> tuple[bool, str]:
         when = parse_when(cond["ref"])
@@ -439,6 +465,7 @@ def main(argv: list[str]) -> int:
         "--forge-api",
         default=os.environ.get("FORGE_API_BIN", str(Path.home() / ".last-stack" / "bin" / "last-stack-forge-api")),
     )
+    parser.add_argument("--gh", default=os.environ.get("GH_BIN", "gh"), help="GitHub CLI (default gh)")
     parser.add_argument("--columns", default="backlog,todo", help="comma list (default backlog,todo)")
     parser.add_argument("--limit", type=int, default=300, help="per-column list cap (default 300)")
     parser.add_argument("--max-cards", type=int, default=120, help="point-read cap per run (default 120)")

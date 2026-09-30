@@ -76,7 +76,7 @@ case "\${1:-}" in
     "position": "1",
     "assignee": "",
     "tags": [],
-    "pr_url": "lastgit://brain/cr/cr-ms8mz1xt-981a",
+    "pr_url": "https://github.com/EdgeVector/brain/pull/981",
     "branch": "kanban/stuck-card",
     "repo": "EdgeVector/brain",
     "updated_at": "2020-01-01T00:00:00.000Z",
@@ -113,18 +113,18 @@ EOF
   chmod +x "$path"
 }
 
-# `stuck-card` carries a MERGED CR, so the sweep tries to close it every pass.
+# `stuck-card` carries a MERGED GitHub PR, so the sweep tries to close it every pass.
 binwrap="$tmp/bin"
 mkdir -p "$binwrap"
-cat >"$binwrap/lastgit" <<'EOF'
+cat >"$binwrap/gh" <<'EOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "cr" ] && [ "${2:-}" = "view" ]; then
-  echo '{"cr":{"state":"merged","id":"cr-ms8mz1xt-981a","merge_oid":"abc123"}}'
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
+  echo '{"state":"MERGED","mergedAt":"2026-09-30T00:00:00Z","headRefName":"kanban/stuck-card"}'
   exit 0
 fi
 exit 1
 EOF
-chmod +x "$binwrap/lastgit"
+chmod +x "$binwrap/gh"
 
 node_free_path="$(dirname "$(command -v python3)"):/usr/bin:/bin:/usr/sbin:/sbin"
 

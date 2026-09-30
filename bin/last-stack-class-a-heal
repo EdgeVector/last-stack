@@ -113,9 +113,9 @@ fi
 # Keep in sync with config/host-track/apps.json last-stack links.
 # Note: host-track is included so a GC'd versions/* pin is re-pointed; we never
 # replace a working non-versions symlink or a real file.
-# Forge helpers are Class A: board-closeout resolves last_stack from $0's parent
-# when invoked via ~/.local/bin, so forge-api must live in that same bin dir or
-# closeout flags forge-api-missing and leaves merged Forge PRs stuck in doing.
+# Forge helpers stay Class A: board-closeout resolves last_stack from $0's parent
+# when invoked via ~/.local/bin, so forge-api must live in that same bin dir for
+# the `lastgit` repo and old Forgejo PR URLs (GitHub PRs go through gh).
 PATH_SHIM_NAMES=(
   host-track
   last-stack-class-a-heal

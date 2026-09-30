@@ -6,7 +6,7 @@
 # sits for hours.
 #
 # Actions (CHEAP, uncapped within --max-actions):
-#   1. doing + pr_url (field or body PR:/CR:/lastgit://) whose PR/CR is MERGED
+#   1. doing + pr_url (field or body PR:/CR:) whose GitHub PR is MERGED (a retired lastgit:// CR is flagged lastgit-retired, never read)
 #      → last-stack-card-closeout (done; honors Requires-Deploy)
 #   2. doing + pr_url whose PR/CR is CLOSED (not merged), or body has a
 #      STALE-PR REAP / reaper closed annotation → todo (flag closed-pr),
@@ -250,15 +250,6 @@ const worktreeRoots = [
   path.join(home, ".fkanban", "worktrees"),
 ];
 const forgeApi = path.join(lastStack, "bin", "last-stack-forge-api");
-// Resolve LastGit the way the forge API is resolved: an absolute path under
-// this install's bin when one exists, and only then the bare PATH name. This
-// script sources last-stack-shell-prelude, which prepends last_stack/bin, so a
-// PATH-only lookup cannot be overridden by a caller — a fixture that stubs
-// `lastgit` on PATH loses to ~/.local/bin/lastgit and silently asks the live
-// primary node instead
-// (papercut-board-closeout-sweep-logic-fixture-used-live-lastgit-cr).
-const lastgitStackBin = path.join(lastStack, "bin", "lastgit");
-const lastgitBin = fs.existsSync(lastgitStackBin) ? lastgitStackBin : "lastgit";
 const closeoutBin = path.join(lastStack, "bin", "last-stack-card-closeout");
 const forgeJsonJq = path.join(lastStack, "bin", "last-stack-forge-json-jq");
 
@@ -817,27 +808,14 @@ function isMerged(pr) {
     };
   }
   if (pr.kind === "lastgit") {
-    const out = run(lastgitBin, ["cr", "view", pr.repo, pr.id, "--json"], { timeout: 45000 });
-    if (!out.ok) {
-      res.flagged.push(`lastgit-fetch-failed:${pr.repo}/${pr.id}`);
-      return { merged: false, closed: false, detail: "lastgit-fetch-failed" };
-    }
-    const d = parseJsonLoose(out.stdout);
-    if (!d) return { merged: false, closed: false, detail: "lastgit-parse-failed" };
-    const cr = d.cr || d.change_request || d;
-    const state = String(cr.state || cr.status || d.state || "").toLowerCase();
-    const mergeOid = cr.merge_oid || cr.mergeOid || d.merge_oid || "";
-    const merged = state === "merged" || Boolean(mergeOid);
-    const closed =
-      !merged && (state === "closed" || state === "abandoned" || state === "rejected");
-    return {
-      merged,
-      closed,
-      detail: merged ? `lastgit:${pr.id}` : `lastgit:${pr.id}:${state || "open"}`,
-    };
+    // LastGit is retired (decision-2026-09-29-retire-lastgit-all-repos-to-github):
+    // a CR cannot be read any more. Not merged and not closed, so the card stays
+    // protected in doing and the flag tells an operator to re-point it at a PR.
+    res.flagged.push(`lastgit-retired:${pr.repo}/${pr.id}`);
+    return { merged: false, closed: false, detail: "lastgit-retired" };
   }
   if (pr.kind === "github") {
-    const out = run("gh", ["pr", "view", pr.number, "-R", `${pr.owner}/${pr.repo}`, "--json", "state,mergedAt"], { timeout: 45000 });
+    const out = run("gh", ["pr", "view", pr.number, "-R", `${pr.owner}/${pr.repo}`, "--json", "state,mergedAt,headRefName"], { timeout: 45000 });
     if (!out.ok) {
       res.flagged.push(`gh-fetch-failed:${pr.owner}/${pr.repo}#${pr.number}`);
       return { merged: false, closed: false, detail: "gh-fetch-failed" };
@@ -847,9 +825,13 @@ function isMerged(pr) {
     const state = String(d.state || "").toUpperCase();
     const merged = Boolean(d.mergedAt) || state === "MERGED";
     const closed = !merged && state === "CLOSED";
+    // CLOSED with no mergedAt is the final record: a definitive "did not merge".
+    const headRef = typeof d.headRefName === "string" ? d.headRefName : "";
     return {
       merged,
       closed,
+      definitive: closed,
+      headRef,
       detail: merged ? `gh#${pr.number}` : `gh#${pr.number}:${state || "OPEN"}`,
     };
   }
@@ -1004,7 +986,26 @@ function newerHandoffReview(card, structuredUrl) {
 // closed, PR 137 opened from kanban/<slug>). Progress lines name the new PR,
 // but only HANDOFF lines were read, so the sweep rolled live work back to todo.
 // Ask Forge once, bounded to one page of open PRs, for an open PR on the head.
+function openGithubPrOnBranch(pr, headRef) {
+  if (pr.kind !== "github" || !headRef) return null;
+  const out = run(
+    "gh",
+    ["pr", "list", "-R", `${pr.owner}/${pr.repo}`, "--head", headRef, "--state", "open", "--json", "number,url", "--limit", "20"],
+    { timeout: 45000 },
+  );
+  if (!out.ok) return null;
+  const rows = parseJsonLoose(out.stdout);
+  if (!Array.isArray(rows)) return null;
+  for (const row of rows) {
+    if (!row || !row.number || !row.url) continue;
+    if (String(row.number) === String(pr.number)) continue;
+    return { number: row.number, url: normalizePrUrl(row.url) };
+  }
+  return null;
+}
+
 function openForgePrOnBranch(pr, headRef, closedUrl) {
+  if (pr.kind === "github") return openGithubPrOnBranch(pr, headRef);
   if (pr.kind !== "forge" || !headRef || !fs.existsSync(forgeApi)) return null;
   const out = run(forgeApi, [`repos/${pr.owner}/${pr.repo}/pulls?state=open&limit=50`], { timeout: 45000 });
   if (!out.ok) return null;
@@ -1278,7 +1279,7 @@ for (const card of cards) {
       }
       const sameBranch = openForgePrOnBranch(pr, m.headRef || branch, url);
       if (sameBranch && sameBranch.url) {
-        res.flagged.push(`open-branch-pr-preserved:${slug}:forge#${sameBranch.number}`);
+        res.flagged.push(`open-branch-pr-preserved:${slug}:${pr.kind === "github" ? "gh" : "forge"}#${sameBranch.number}`);
         restoreStructured(slug, sameBranch.url, branch || m.headRef);
         res.skipped.push(`${slug}:open-branch-newer-pr`);
         continue;
@@ -1464,8 +1465,6 @@ home = Path.home()
 worktree_roots = [home / ".kanban" / "worktrees", home / ".fkanban" / "worktrees"]
 forge_api = last_stack / "bin" / "last-stack-forge-api"
 # Same rule as the JS arm above: prefer this install's bin, fall back to PATH.
-_lastgit_stack_bin = last_stack / "bin" / "lastgit"
-lastgit_bin = str(_lastgit_stack_bin) if _lastgit_stack_bin.exists() else "lastgit"
 closeout_bin = last_stack / "bin" / "last-stack-card-closeout"
 
 res = {"status": "ok", "closed": [], "rolled_back": [], "demoted": [], "skipped": [], "flagged": [], "close_failed": []}
@@ -1890,22 +1889,11 @@ def is_merged(url):
         return False, False, "no-pr"
     m = re.match(r"lastgit://([^/]+)/cr/([^/\s?#]+)", url)
     if m:
-        repo, cid = m.group(1), m.group(2)
-        ok, out, _ = run([lastgit_bin, "cr", "view", repo, cid, "--json"], timeout=45)
-        if not ok:
-            res["flagged"].append(f"lastgit-fetch-failed:{repo}/{cid}")
-            return False, False, "lastgit-fetch-failed"
-        try:
-            d = json.loads(strip(out))
-        except Exception:
-            return False, False, "lastgit-parse-failed"
-        cr = d.get("cr") or d.get("change_request") or d
-        state = str(cr.get("state") or cr.get("status") or d.get("state") or "").lower()
-        merge_oid = cr.get("merge_oid") or cr.get("mergeOid") or d.get("merge_oid") or ""
-        merged = state == "merged" or bool(merge_oid)
-        closed = (not merged) and state in ("closed", "abandoned", "rejected")
-        detail = f"lastgit:{cid}" if merged else f"lastgit:{cid}:{state or 'open'}"
-        return merged, closed, detail
+        # LastGit is retired (decision-2026-09-29-retire-lastgit-all-repos-to-github):
+        # a CR cannot be read any more. Not merged and not closed, so the card
+        # stays protected in doing and the flag tells an operator to re-point it.
+        res["flagged"].append(f"lastgit-retired:{m.group(1)}/{m.group(2)}")
+        return False, False, "lastgit-retired"
     m = re.search(r"/([^/]+)/([^/]+)/pulls?/(\d+)", url)
     if m and "github.com" not in url:
         owner, repo, num = m.group(1), m.group(2), m.group(3)
@@ -1937,7 +1925,7 @@ def is_merged(url):
     m = re.search(r"github\.com/([^/]+)/([^/]+)/pull/(\d+)", url)
     if m:
         owner, repo, num = m.group(1), m.group(2), m.group(3)
-        ok, out, _ = run(["gh", "pr", "view", num, "-R", f"{owner}/{repo}", "--json", "state,mergedAt"], timeout=45)
+        ok, out, _ = run(["gh", "pr", "view", num, "-R", f"{owner}/{repo}", "--json", "state,mergedAt,headRefName"], timeout=45)
         if not ok:
             res["flagged"].append(f"gh-fetch-failed:{owner}/{repo}#{num}")
             return False, False, "gh-fetch-failed"
@@ -1948,6 +1936,15 @@ def is_merged(url):
         state = str(d.get("state") or "").upper()
         merged = bool(d.get("mergedAt")) or state == "MERGED"
         closed = (not merged) and state == "CLOSED"
+        # CLOSED with no mergedAt is the final record: a definitive "did not merge".
+        forge_final[url] = {
+            "kind": "github",
+            "definitive": closed,
+            "head_ref": d.get("headRefName") if isinstance(d.get("headRefName"), str) else "",
+            "owner": owner,
+            "repo": repo,
+            "num": num,
+        }
         detail = f"gh#{num}" if merged else f"gh#{num}:{state or 'OPEN'}"
         return merged, closed, detail
     res["flagged"].append("pr-url-unparsed")
@@ -2122,6 +2119,22 @@ def newer_handoff_review(card, structured_url):
 def open_forge_pr_on_branch(closed_url, head_ref):
     """One bounded read: an open Forge PR on the same head branch, or None."""
     facts = forge_final.get(normalize_pr_url(closed_url)) or {}
+    if facts.get("kind") == "github" and head_ref:
+        ok, out, _ = run(["gh", "pr", "list", "-R", f"{facts['owner']}/{facts['repo']}", "--head", head_ref,
+                          "--state", "open", "--json", "number,url", "--limit", "20"], timeout=45)
+        if not ok:
+            return None
+        try:
+            rows = json.loads(strip(out))
+        except Exception:
+            return None
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict) or not row.get("number") or not row.get("url"):
+                continue
+            if str(row.get("number")) == str(facts["num"]):
+                continue
+            return {"number": row.get("number"), "url": normalize_pr_url(row["url"])}
+        return None
     if not facts or not head_ref or not forge_api.exists():
         return None
     ok, out, _ = run([str(forge_api), f"repos/{facts['owner']}/{facts['repo']}/pulls?state=open&limit=50"], timeout=45)
@@ -2383,7 +2396,7 @@ for card in cards:
             facts = forge_final.get(normalize_pr_url(url)) or {}
             same_branch = open_forge_pr_on_branch(url, facts.get("head_ref") or branch)
             if same_branch and same_branch["url"]:
-                res["flagged"].append(f"open-branch-pr-preserved:{slug}:forge#{same_branch['number']}")
+                res["flagged"].append(f"open-branch-pr-preserved:{slug}:{'gh' if facts.get('kind') == 'github' else 'forge'}#{same_branch['number']}")
                 restore_structured(slug, same_branch["url"], branch or facts.get("head_ref"))
                 res["skipped"].append(f"{slug}:open-branch-newer-pr")
                 continue

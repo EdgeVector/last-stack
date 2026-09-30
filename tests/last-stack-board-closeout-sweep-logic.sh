@@ -127,55 +127,46 @@ esac
 EOF
 chmod +x "$board"
 
-# Intercept lastgit / closeout so merged classification fails open as open-or-unknown
+# Intercept gh / closeout so merged classification fails open as open-or-unknown
 # and we never hit real network. PATH wrapper:
 binwrap="$tmp/bin"
 mkdir -p "$binwrap"
-cat >"$binwrap/lastgit" <<'EOF'
+cat >"$binwrap/gh" <<'EOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "cr" ] && [ "${2:-}" = "view" ]; then
-  if [ "${3:-}" = "brain" ] && [ "${4:-}" = "cr-ms8mz1xt-981a" ]; then
-    cat <<'JSON'
-{"cr":{"state":"merged","id":"cr-ms8mz1xt-981a","merge_oid":"abc123"}}
-JSON
-    exit 0
-  fi
-  if [[ "${4:-}" == *'`'* ]]; then
-    echo "unsanitized cr id: ${4:-}" >&2
+# gh pr view <N> -R <owner/repo> --json ...
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
+  if [[ "${3:-}" == *'`'* ]]; then
+    echo "unsanitized pr number: ${3:-}" >&2
     exit 1
   fi
-  # Pretend other CRs are still open so we exercise heal + skip path.
-  cat <<'JSON'
-{"cr":{"state":"open","id":"cr-mrw0frwz-ea84"}}
-JSON
+  if [ "${3:-}" = "981" ] && [ "${5:-}" = "EdgeVector/brain" ]; then
+    echo '{"state":"MERGED","mergedAt":"2026-09-30T00:00:00Z","headRefName":"kanban/x"}'
+    exit 0
+  fi
+  # Pretend other PRs are still open so we exercise heal + skip path.
+  echo '{"state":"OPEN","mergedAt":null,"headRefName":"kanban/x"}'
   exit 0
 fi
 exit 1
 EOF
-chmod +x "$binwrap/lastgit"
+chmod +x "$binwrap/gh"
 
-# The sweep sources last-stack-shell-prelude, which prepends its own install
-# bin to PATH, so a PATH-only stub loses to ~/.local/bin/lastgit and the
-# fixture asks the live primary node instead. Every invocation below therefore
-# runs a COPY of the sweep out of a temp stack whose bin/ also holds the stub,
-# which is where the sweep resolves it from
-# (papercut-board-closeout-sweep-logic-fixture-used-live-lastgit-cr).
+# Every invocation below runs a COPY of the sweep out of a temp stack, so the
+# helpers it resolves from lastStack/bin (closeout, forge-api) are stubs. gh
+# comes from the PATH stub above.
 stub_stack() {
   local dir="$1"
   mkdir -p "$dir/bin"
   cp "$sweep" "$dir/bin/last-stack-board-closeout-sweep"
-  cp "$binwrap/lastgit" "$dir/bin/lastgit"
-  chmod +x "$dir/bin/last-stack-board-closeout-sweep" "$dir/bin/lastgit"
+  chmod +x "$dir/bin/last-stack-board-closeout-sweep"
   printf '%s\n' "$dir/bin/last-stack-board-closeout-sweep"
 }
 
 # Forge API is resolved from lastStack/bin (not PATH). Stub an open PR so the
-# in-flight CI card cannot be confused with a live merged CR.
+# in-flight CI card cannot be confused with a live merged PR.
 first_stack="$tmp/first-stack"
 mkdir -p "$first_stack/bin"
 cp "$sweep" "$first_stack/bin/last-stack-board-closeout-sweep"
-cp "$binwrap/lastgit" "$first_stack/bin/lastgit"
-chmod +x "$first_stack/bin/lastgit"
 chmod +x "$first_stack/bin/last-stack-board-closeout-sweep"
 cat >"$first_stack/bin/last-stack-forge-api" <<'EOF'
 #!/usr/bin/env bash
@@ -196,7 +187,7 @@ echo "$out"
 
 # Ordinary in-flight CI must stay in doing.
 if grep -q 'open-pr-in-flight ' "$moves" 2>/dev/null; then
-  echo "FAIL: in-flight CR card was moved:" >&2
+  echo "FAIL: in-flight PR card was moved:" >&2
   cat "$moves" >&2
   exit 1
 fi
@@ -256,12 +247,12 @@ case "${1:-}" in
 [
   {
     "slug": "malformed-structured-pr-url",
-    "title": "merged CR with copied markdown punctuation",
+    "title": "merged PR with copied markdown punctuation",
     "column": "doing",
     "position": "9999999999999",
     "assignee": "",
     "tags": [],
-    "pr_url": "lastgit://brain/cr/cr-ms8mz1xt-981a`",
+    "pr_url": "https://github.com/EdgeVector/brain/pull/981`",
     "branch": "kanban/malformed-structured-pr-url",
     "repo": "EdgeVector/brain",
     "updated_at": "2020-01-01T00:00:00.000Z",
@@ -297,8 +288,8 @@ echo "$malformed_out" | grep -q 'closed_slugs=malformed-structured-pr-url' || {
   echo "$malformed_out" >&2
   exit 1
 }
-if echo "$malformed_out" | grep -q 'lastgit-fetch-failed:brain/cr-ms8mz1xt-981a`'; then
-  echo "FAIL: trailing markdown punctuation leaked into LastGit lookup:" >&2
+if echo "$malformed_out" | grep -q 'gh-fetch-failed:EdgeVector/brain#981`'; then
+  echo "FAIL: trailing markdown punctuation leaked into the gh lookup:" >&2
   echo "$malformed_out" >&2
   exit 1
 fi
@@ -316,12 +307,12 @@ case "${1:-}" in
 [
   {
     "slug": "dirty-nonempty-pr-url",
-    "title": "open CR with trailing markdown backtick in pr_url",
+    "title": "open PR with trailing markdown backtick in pr_url",
     "column": "doing",
     "position": "1",
     "assignee": "",
     "tags": [],
-    "pr_url": "lastgit://last-stack/cr/cr-mskqwa3y-78c9`",
+    "pr_url": "https://github.com/EdgeVector/last-stack/pull/782`",
     "branch": "kanban/dirty-nonempty-pr-url",
     "repo": "EdgeVector/last-stack",
     "updated_at": "2020-01-01T00:00:00.000Z",
@@ -357,13 +348,13 @@ export BOARD_HEALS="$dirty_heals"
 dirty_sweep="$(stub_stack "$tmp/dirty-stack")"
 dirty_out="$("$dirty_sweep" --board-cli "$dirty_board" --grace-min 1 --max-actions 20 2>&1 || true)"
 echo "$dirty_out"
-if ! grep -q 'lastgit://last-stack/cr/cr-mskqwa3y-78c9' "$dirty_heals"; then
-  echo "FAIL: expected dirty-nonempty pr_url heal to the sanitized lastgit URL:" >&2
+if ! grep -q 'https://github.com/EdgeVector/last-stack/pull/782' "$dirty_heals"; then
+  echo "FAIL: expected dirty-nonempty pr_url heal to the sanitized GitHub URL:" >&2
   cat "$dirty_heals" >&2
   echo "out=$dirty_out" >&2
   exit 1
 fi
-if grep -q 'cr-mskqwa3y-78c9`' "$dirty_heals"; then
+if grep -q 'pull/782`' "$dirty_heals"; then
   echo "FAIL: heal restamped the dirty backtick URL:" >&2
   cat "$dirty_heals" >&2
   exit 1
@@ -376,8 +367,6 @@ echo "$dirty_out" | grep -q 'pr-url-healed:dirty-nonempty-pr-url' || {
 transient_stack="$tmp/transient-stack"
 mkdir -p "$transient_stack/bin"
 cp "$sweep" "$transient_stack/bin/last-stack-board-closeout-sweep"
-cp "$binwrap/lastgit" "$transient_stack/bin/lastgit"
-chmod +x "$transient_stack/bin/lastgit"
 cat >"$transient_stack/bin/last-stack-card-closeout" <<'EOF'
 #!/usr/bin/env bash
 echo "service_timeout: board point read failed" >&2
@@ -400,7 +389,7 @@ case "${1:-}" in
     "position": "1",
     "assignee": "",
     "tags": [],
-    "pr_url": "lastgit://brain/cr/cr-ms8mz1xt-981a",
+    "pr_url": "https://github.com/EdgeVector/brain/pull/981",
     "branch": "kanban/merged-transient-closeout",
     "repo": "EdgeVector/brain",
     "updated_at": "2020-01-01T00:00:00.000Z",
@@ -538,8 +527,6 @@ chmod +x "$binwrap/last-stack-forge-api"
 closed_stack="$tmp/closed-stack"
 mkdir -p "$closed_stack/bin"
 cp "$sweep" "$closed_stack/bin/last-stack-board-closeout-sweep"
-cp "$binwrap/lastgit" "$closed_stack/bin/lastgit"
-chmod +x "$closed_stack/bin/lastgit"
 cp "$binwrap/last-stack-forge-api" "$closed_stack/bin/last-stack-forge-api"
 chmod +x "$closed_stack/bin/last-stack-board-closeout-sweep" "$closed_stack/bin/last-stack-forge-api"
 
@@ -661,12 +648,10 @@ if ! echo "$reap_out" | grep -q 'closed-pr:body-reap-annotation'; then
   exit 1
 fi
 
-# Merged CR + deploy-parked + closeout refused → backlog, not left in doing.
+# Merged PR + deploy-parked + closeout refused → backlog, not left in doing.
 merged_park_stack="$tmp/merged-park-stack"
 mkdir -p "$merged_park_stack/bin"
 cp "$sweep" "$merged_park_stack/bin/last-stack-board-closeout-sweep"
-cp "$binwrap/lastgit" "$merged_park_stack/bin/lastgit"
-chmod +x "$merged_park_stack/bin/lastgit"
 cat >"$merged_park_stack/bin/last-stack-card-closeout" <<'EOF'
 #!/usr/bin/env bash
 echo "last-stack-card-closeout: deploy gate pending slug=merged-deploy-park repo=fold requires=deploy-pipeline status=missing" >&2
@@ -687,12 +672,12 @@ case "${1:-}" in
 [
   {
     "slug": "merged-deploy-park",
-    "title": "merged CR still waiting on deploy",
+    "title": "merged PR still waiting on deploy",
     "column": "doing",
     "position": "1",
     "assignee": "worker",
     "tags": ["awaiting-deploy"],
-    "pr_url": "lastgit://brain/cr/cr-ms8mz1xt-981a",
+    "pr_url": "https://github.com/EdgeVector/brain/pull/981",
     "branch": "kanban/merged-deploy-park",
     "repo": "EdgeVector/brain",
     "updated_at": "2020-01-01T00:00:00.000Z",

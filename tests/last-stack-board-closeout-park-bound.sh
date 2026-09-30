@@ -191,7 +191,7 @@ case "${1:-}" in
     "position": "1",
     "assignee": "",
     "tags": [],
-    "pr_url": "lastgit://brain/cr/cr-ms8mz1xt-981a",
+    "pr_url": "https://github.com/EdgeVector/brain/pull/981",
     "branch": "kanban/merged-but-board-sick",
     "repo": "EdgeVector/brain",
     "updated_at": "2020-01-01T00:00:00.000Z",
@@ -226,17 +226,15 @@ chmod +x "$transient_board"
 
 binwrap="$tmp/bin"
 mkdir -p "$binwrap"
-cat >"$binwrap/lastgit" <<'EOF'
+cat >"$binwrap/gh" <<'EOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "cr" ] && [ "${2:-}" = "view" ]; then
-  cat <<'JSON'
-{"cr":{"state":"merged","id":"cr-ms8mz1xt-981a","merge_oid":"abc123"}}
-JSON
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
+  echo '{"state":"MERGED","mergedAt":"2026-09-30T00:00:00Z","headRefName":"kanban/x"}'
   exit 0
 fi
 exit 1
 EOF
-chmod +x "$binwrap/lastgit"
+chmod +x "$binwrap/gh"
 
 moves="$tmp/moves.transient"
 : >"$moves"

@@ -41,7 +41,9 @@ card held-none backlog deferred pr '[]' \
 card body-mixed todo needs_human pr '[]' \
   'see body' "${brief}\\nRELEASE-WHEN: card:done-card, http://localhost:3300/EdgeVector/fold/pulls/12, after 2026-01-01\\n"
 card pr-open backlog deferred pr '[]' \
-  'see body' "${brief}\\nRELEASE-WHEN: EdgeVector/fold#13\\n"
+  'see body' "${brief}\\nRELEASE-WHEN: EdgeVector/fold#13, https://github.com/EdgeVector/fold/pull/14\\n"
+card gh-merged backlog deferred pr '[]' \
+  'see body' "${brief}\\nRELEASE-WHEN: https://github.com/EdgeVector/fold/pull/14\\n"
 card deploy-park backlog deferred pr '["awaiting-deploy"]' \
   'awaiting papercut-fixed-one' "$brief"
 card bad-token backlog deferred pr '[]' \
@@ -97,11 +99,21 @@ case "$1" in
   *) exit 1 ;;
 esac
 SH
-chmod +x "$tmp/bin/kanban" "$tmp/bin/brain" "$tmp/bin/forge-api"
+# GitHub is the default venue: `owner/repo#N` and github.com URLs read through gh.
+cat >"$tmp/bin/gh" <<'SH'
+#!/usr/bin/env bash
+[ "$1 $2" = "pr view" ] && [ "$4" = "-R" ] || exit 2
+case "$3 $5" in
+  "14 EdgeVector/fold") echo '{"state":"MERGED","mergedAt":"2026-09-30T00:00:00Z","mergeCommit":{"oid":"0123456789abcdef"}}' ;;
+  "13 EdgeVector/fold") echo '{"state":"OPEN","mergedAt":null,"mergeCommit":null}' ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$tmp/bin/kanban" "$tmp/bin/brain" "$tmp/bin/forge-api" "$tmp/bin/gh"
 
 tool=("$ROOT/bin/last-stack-kanban-deferral-release"
   --board-cli "$tmp/bin/kanban" --brain-cli "$tmp/bin/brain"
-  --forge-api "$tmp/bin/forge-api" --now 2026-09-26T12:00:00Z)
+  --forge-api "$tmp/bin/forge-api" --gh "$tmp/bin/gh" --now 2026-09-26T12:00:00Z)
 
 # ── dry-run: classify, write nothing ───────────────────────────────────────
 "${tool[@]}" --json >"$tmp/dry.json" 2>"$tmp/dry.err"
@@ -109,7 +121,7 @@ tool=("$ROOT/bin/last-stack-kanban-deferral-release"
 grep -q 'mode=dry-run' "$tmp/dry.err" || fail "dry-run summary line missing: $(cat "$tmp/dry.err")"
 
 slugs() { jq -r --arg k "$1" '[.[$k][].slug] | sort | join(",")' "$tmp/dry.json"; }
-[ "$(slugs released)" = "blocked-on,body-mixed,rel-papercut" ] || fail "released=$(slugs released)"
+[ "$(slugs released)" = "blocked-on,body-mixed,gh-merged,rel-papercut" ] || fail "released=$(slugs released)"
 [ "$(slugs kept)" = "keep-two,pr-open" ] || fail "kept=$(slugs kept)"
 [ "$(slugs unconditioned)" = "incidental,uncond" ] || fail "unconditioned=$(slugs unconditioned)"
 [ "$(slugs held)" = "held-none" ] || fail "held=$(slugs held)"
@@ -122,7 +134,7 @@ jq -e '.kept[] | select(.slug=="keep-two") | .met | join(" ") | test("papercut-f
 
 # ── apply: release only the two, move the backlog Kind:pr card to todo ────
 "${tool[@]}" --apply >"$tmp/apply.out" 2>"$tmp/apply.err"
-grep -q 'released=3 kept=2 unconditioned=2' "$tmp/apply.out" || fail "apply summary: $(cat "$tmp/apply.out")"
+grep -q 'released=4 kept=2 unconditioned=2' "$tmp/apply.out" || fail "apply summary: $(cat "$tmp/apply.out")"
 grep -qx 'set rel-papercut --block-status none' "$tmp/board.log" || fail "rel-papercut not cleared"
 grep -qx 'set body-mixed --block-status none' "$tmp/board.log" || fail "body-mixed not cleared"
 grep -q '^mark rel-papercut RELEASED .*papercut-fixed-one status=fixed' "$tmp/board.log" || fail "rel-papercut evidence mark missing"

@@ -200,21 +200,28 @@ deploy_pipeline_ok=0
 
 # host_track_gate <repo-name>: is the PR's merge commit installed?
 # Prints `installed host_head=<sha> app=<app>` or a pending reason.
-# Reads: the PR merge commit (Forgejo API), `host-track status --json` for
+# Reads: the PR merge commit (`gh api`; Forgejo API for a Forgejo PR URL), `host-track status --json` for
 # the app whose gate_main is this repo, and the repo's bare mirror for the
 # ancestry check. Any read that fails is a pending reason, never a pass.
 host_track_gate() {
   local repo="$1" pr card_pr number merge_sha status_json app host_head mirror
   card_pr="$(printf '%s' "$card_json" | jq -r '(.card // .).pr_url // ""' 2>/dev/null || true)"
   pr="${pr_url:-$card_pr}"
-  number="$(printf '%s' "$pr" | sed -n 's#.*/pulls/\([0-9][0-9]*\).*#\1#p')"
-  if [ -z "$number" ]; then
-    echo "no-forgejo-pr-url"
-    return 0
+  # GitHub is the default venue (.../pull/N); Forgejo (.../pulls/N) stays for
+  # the `lastgit` repo and for cards that recorded an old Forgejo URL.
+  number="$(printf '%s' "$pr" | sed -n 's#.*/pull/\([0-9][0-9]*\).*#\1#p')"
+  if [ -n "$number" ]; then
+    merge_sha="$(with_timeout gh api "repos/EdgeVector/$repo/pulls/$number" --jq '.merge_commit_sha // ""' 2>/dev/null | tr -d '"' || true)"
+  else
+    number="$(printf '%s' "$pr" | sed -n 's#.*/pulls/\([0-9][0-9]*\).*#\1#p')"
+    if [ -z "$number" ]; then
+      echo "no-pr-url"
+      return 0
+    fi
+    local forge_api="${LAST_STACK_FORGE_API:-$self_dir/last-stack-forge-api}"
+    [ -x "$forge_api" ] || forge_api="last-stack-forge-api"
+    merge_sha="$(with_timeout "$forge_api" "repos/EdgeVector/$repo/pulls/$number" --jq '.merge_commit_sha // ""' 2>/dev/null | tr -d '"' || true)"
   fi
-  local forge_api="${LAST_STACK_FORGE_API:-$self_dir/last-stack-forge-api}"
-  [ -x "$forge_api" ] || forge_api="last-stack-forge-api"
-  merge_sha="$(with_timeout "$forge_api" "repos/EdgeVector/$repo/pulls/$number" --jq '.merge_commit_sha // ""' 2>/dev/null | tr -d '"' || true)"
   if [ -z "$merge_sha" ] || [ "$merge_sha" = null ]; then
     echo "merge-commit-unknown pr=$number"
     return 0

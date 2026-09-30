@@ -66,29 +66,12 @@ export FORGE_CALL_LOG="$tmp/forge-calls.log"
 : >"$LASTGIT_CALL_LOG"
 : >"$FORGE_CALL_LOG"
 
-# `lastgit cr view` on another repo's CR id exits 0 and streams `cr_not_found`.
-# The stub reproduces that exactly, because "the venue does not have this
-# review" is what tells the closer a prose token is somebody else's CR.
+# LastGit is retired: any call is a regression. A CR id named in prose is still
+# parsed, but it resolves to no venue, so it never closes and never blocks.
 cat >"$bin_dir/lastgit" <<'SH'
 #!/usr/bin/env bash
-set -euo pipefail
-repo="$3"
-cr_id="$4"
-printf '%s %s\n' "$repo" "$cr_id" >>"$LASTGIT_CALL_LOG"
-case "$repo/$cr_id" in
-  loom/cr-mtj3svjt-c8ef|fkanban/cr-mtkam5ht-752c|last-stack/cr-mtmmb1wa-aeda)
-    printf '{"cr_id":"%s","repo":"%s","state":"merged","merge_oid":"deadbee"}\n' "$cr_id" "$repo"
-    ;;
-  loom/cr-mtjezzzy-0e8d)
-    printf '{"cr_id":"%s","repo":"%s","state":"closed","merge_oid":""}\n' "$cr_id" "$repo"
-    ;;
-  last-stack/cr-mtmn3fqi-1624)
-    printf '{"cr_id":"%s","repo":"%s","state":"open","merge_oid":""}\n' "$cr_id" "$repo"
-    ;;
-  *)
-    printf '{"ts":"2026-09-04T09:28:49.070Z","error":"cr_not_found: %s does not exist on %s.","event":"verb_timing","verb":"cr.view","duration_ms":1,"ok":false}\n' "$cr_id" "$repo"
-    ;;
-esac
+printf '%s\n' "$*" >>"$LASTGIT_CALL_LOG"
+exit 1
 SH
 chmod +x "$bin_dir/lastgit"
 
@@ -121,7 +104,6 @@ chmod +x "$bin_dir/brain"
 
 PATH="$bin_dir:$PATH" "$ROOT/bin/last-stack-papercut-lifecycle-close" \
   --records-json "$tmp/records.json" \
-  --lastgit-bin "$bin_dir/lastgit" \
   --forge-api-bin "$bin_dir/forge-api" \
   --brain-bin "$bin_dir/brain" \
   --dry-run \
@@ -139,20 +121,15 @@ fixed = {item["slug"]: item for item in data["fixed"]}
 unmerged = {item["slug"]: item for item in data["closed_unmerged"]}
 skipped = {item["slug"]: item for item in data["skipped"]}
 
-# Every named review merged -> `fixed`, and the payload names the whole set.
-# The last-stack CR quoted in this fkanban row is not fkanban's, so the venue's
-# `cr_not_found` drops it instead of blocking the close forever.
-fkanban = fixed["papercut-pipeline-stuck-merges-fkanban-20260830t0916z"]
-assert fkanban["aggregate_refs"] == ["lastgit:fkanban/cr-mtkam5ht-752c=merged"], fkanban
-
-# One review merged and one closed without merging: the set is terminal, so the
-# stuck claim is resolved, but no fix can be cited. `wontfix`, not `fixed`.
-loom = unmerged["papercut-pipeline-stuck-merges-loom-20260901t2104z"]
-assert loom["review_state"] == "closed", loom
-assert sorted(loom["aggregate_refs"]) == [
-    "lastgit:loom/cr-mtj3svjt-c8ef=merged",
-    "lastgit:loom/cr-mtjezzzy-0e8d=closed",
-], loom
+# Rows whose reviews are only LastGit CRs have no readable review left: they
+# stay open with `no-review-ref`, never fixed and never wontfix.
+for retired in (
+    "papercut-pipeline-stuck-merges-fkanban-20260830t0916z",
+    "papercut-pipeline-stuck-merges-loom-20260901t2104z",
+    "papercut-pipeline-stuck-merges-last-stack-20260904t03",
+):
+    assert retired not in fixed and retired not in unmerged, retired
+    assert skipped[retired]["reason"] == "no-review-ref", skipped[retired]
 
 fold = unmerged["papercut-pipeline-stuck-merges-fold"]
 assert sorted(fold["aggregate_refs"]) == [
@@ -161,11 +138,6 @@ assert sorted(fold["aggregate_refs"]) == [
     "forge:EdgeVector/fold#1870=closed",
 ], fold
 
-# ONE live review keeps the whole row open. main closed a 49-ref row on the
-# first terminal ref it happened to reach.
-live = skipped["papercut-pipeline-stuck-merges-last-stack-20260904t03"]
-assert live["reason"] == "aggregate-review-open", live
-
 # The slug tail is not this record's repo, so the row is not a stuck-review
 # roll-up at all. It claims a brain record grows unboundedly; the PR numbers in
 # its prose belong to the record it is complaining about.
@@ -173,13 +145,12 @@ growth = skipped["papercut-pipeline-stuck-merges-canonical-record-unbounded-grow
 assert growth["reason"] == "no-review-ref", growth
 PY
 
-# A `[[wikilink]]` and a `papercut-…` slug carry another record's review ids.
-for forbidden in 'cr-mszzzzzz-9999' 'cr-msyyyyyy-8888'; do
-  if grep -qF -- "$forbidden" "$LASTGIT_CALL_LOG"; then
-    echo "a review id belonging to another record reached lastgit: $forbidden" >&2
-    exit 1
-  fi
-done
+# LastGit is retired: no CR id, in prose, a wikilink or a slug, may reach it.
+if [ -s "$LASTGIT_CALL_LOG" ]; then
+  echo "lastgit was called although it is retired:" >&2
+  cat "$LASTGIT_CALL_LOG" >&2
+  exit 1
+fi
 
 # `lastgit#507` inside a fold row is lastgit's PR 507, not fold's.
 if grep -qF -- 'pulls/507' "$FORGE_CALL_LOG"; then

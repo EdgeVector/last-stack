@@ -2,13 +2,13 @@
 # Proof: board-closeout-sweep must not roll a card back to `todo` when the card
 # branch is already merged into its base ref.
 #
-# `lastgit cr close` can race the auto-merger and rewrite a merged CR to
-# state=closed with an empty merge_oid. That corrupt record is durable, so the
+# A PR record can read CLOSED with no mergedAt although the work landed on the
+# base ref (a manual close racing the auto-merge). The git ref outranks it, so the
 # sweep used to roll shipped work back into `todo`, where pickup re-claimed it
 # and burned a whole worker budget re-proving code already on main.
 #
-# Fixture 1 (merged):     closed CR + branch IS an ancestor of base -> done.
-# Fixture 2 (not merged): closed CR + branch is NOT an ancestor     -> todo.
+# Fixture 1 (merged):     closed PR + branch IS an ancestor of base -> done.
+# Fixture 2 (not merged): closed PR + branch is NOT an ancestor     -> todo.
 # Both fixtures run on both engines (node and python3).
 set -euo pipefail
 
@@ -65,7 +65,7 @@ case "${1:-}" in
     "position": "1",
     "assignee": "",
     "tags": [],
-    "pr_url": "lastgit://last-stack/cr/cr-corrupt-0001",
+    "pr_url": "https://github.com/EdgeVector/last-stack/pull/9001",
     "branch": "kanban/merged-card",
     "base": "main",
     "repo": "EdgeVector/last-stack",
@@ -79,7 +79,7 @@ case "${1:-}" in
     "position": "2",
     "assignee": "",
     "tags": [],
-    "pr_url": "lastgit://last-stack/cr/cr-corrupt-0002",
+    "pr_url": "https://github.com/EdgeVector/last-stack/pull/9002",
     "branch": "kanban/unmerged-card",
     "base": "main",
     "repo": "EdgeVector/last-stack",
@@ -116,20 +116,22 @@ esac
 EOF
 chmod +x "$board"
 
-# --- stub lastgit: both CRs read closed with no merge_oid (the corrupt shape)
+# --- stub gh: both PRs read CLOSED with no mergedAt (the closed-not-merged shape)
 binwrap="$tmp/bin"
 mkdir -p "$binwrap"
-cat >"$binwrap/lastgit" <<'EOF'
+cat >"$binwrap/gh" <<'EOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "cr" ] && [ "${2:-}" = "view" ]; then
-  cat <<'JSON'
-{"cr":{"state":"closed","id":"cr-corrupt-0001","merge_oid":""}}
-JSON
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
+  echo '{"state":"CLOSED","mergedAt":null,"headRefName":""}'
+  exit 0
+fi
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "list" ]; then
+  echo '[]'
   exit 0
 fi
 exit 1
 EOF
-chmod +x "$binwrap/lastgit"
+chmod +x "$binwrap/gh"
 
 # The sweep resolves closeout/reclaim helpers from lastStack/bin, not PATH.
 fake_stack="$tmp/fake-stack"
@@ -204,8 +206,8 @@ for engine in node python3; do
     fail=1
   fi
 
-  # The corrupt CR URL must not be restamped on a merge-proof close.
-  if grep -E '^add merged-card --pr-url lastgit' "$tmp/adds.$engine" >/dev/null 2>&1; then
+  # The closed PR URL must not be restamped on a merge-proof close.
+  if grep -E '^add merged-card --pr-url https://github.com' "$tmp/adds.$engine" >/dev/null 2>&1; then
     echo "FAIL[$engine]: corrupt pr_url was restamped on merge-proof close" >&2
     cat "$tmp/adds.$engine" >&2
     fail=1

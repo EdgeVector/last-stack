@@ -247,4 +247,27 @@ grep -q 'reopen-validate failed, walk left parked' <<<"$out" || fail "failed reo
 sleep 1
 grep -q '^loom signal lx-merged' "$CALLS" && fail "failed reopen must not drop the walk"
 
+# A GitHub pr_url reads its merged state through `gh api`, never forge-api.
+cat >"$stub/gh" <<'EOF'
+#!/usr/bin/env bash
+[ "$1 $2" = "api repos/EdgeVector/fold/pulls/9" ] && echo true || echo false
+EOF
+cat >"$stub/forge-api" <<'EOF'
+#!/usr/bin/env bash
+echo "forge-api must not run for a GitHub URL" >&2
+exit 2
+EOF
+chmod +x "$stub/gh" "$stub/forge-api"
+cat >"$stub/check.py" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("lpt", sys.argv[1])
+spec = importlib.util.spec_from_loader("lpt", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+assert mod.pr_merged({"pr_url": "https://github.com/EdgeVector/fold/pull/9"}) is True
+assert mod.pr_merged({"pr_url": "https://github.com/EdgeVector/fold/pull/10"}) is False
+print("ok")
+PY
+[ "$(GH_BIN="$stub/gh" python3 "$stub/check.py" "$bin")" = ok ] || fail "GitHub pr_url must use gh api"
+
 echo "ok: loom parked triage escalates once, resumes merged and unfenced, hands a re-parked merge to validate, leaves the rest"

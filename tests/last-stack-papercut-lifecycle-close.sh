@@ -12,18 +12,18 @@ cat >"$tmp/records.json" <<'JSON'
 [
   {
     "slug": "papercut-pipeline-stuck-cr-last-stack-merged",
-    "title": "Merged stuck CR",
-    "body": "Status: OPEN\nEvidence: lastgit://last-stack/cr/cr-merged"
+    "title": "Merged stuck PR",
+    "body": "Status: OPEN\nEvidence: https://github.com/EdgeVector/last-stack/pull/101"
   },
   {
     "slug": "papercut-pipeline-stuck-cr-last-stack-open",
-    "title": "Open stuck CR",
-    "body": "Status: OPEN\nEvidence: lastgit://last-stack/cr/cr-open"
+    "title": "Open stuck PR",
+    "body": "Status: OPEN\nEvidence: https://github.com/EdgeVector/last-stack/pull/102"
   },
   {
     "slug": "papercut-pipeline-stuck-cr-last-stack-fixed",
     "title": "Already fixed",
-    "body": "Status: OPEN\nStatus: FIXED (2026-08-01T00:00:00Z)\nEvidence: lastgit://last-stack/cr/cr-merged"
+    "body": "Status: OPEN\nStatus: FIXED (2026-08-01T00:00:00Z)\nEvidence: https://github.com/EdgeVector/last-stack/pull/101"
   }
 ]
 JSON
@@ -52,40 +52,25 @@ exit 2
 SH
 chmod +x "$bin_dir/brain"
 
-cat >"$bin_dir/lastgit" <<'SH'
+cat >"$bin_dir/gh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-cr_id="$4"
-printf '{"event":"verb_timing","verb":"schema.ensure","duration_ms":1}\n'
-case "$cr_id" in
-  cr-merged)
-    cat <<'JSON'
-{
-  "cr_id": "cr-merged",
-  "repo": "last-stack",
-  "state": "merged",
-  "merge_oid": "abc123"
-}
-JSON
+# gh pr view <n> -R <owner/repo> --json state,mergedAt
+[ "${1:-}" = pr ] && [ "${2:-}" = view ] || { echo "unexpected gh args: $*" >&2; exit 2; }
+case "$3" in
+  101)
+    printf '%s\n' '{"state":"MERGED","mergedAt":"2026-09-30T00:00:00Z"}'
     ;;
-  cr-open)
-    cat <<'JSON'
-{
-  "cr_id": "cr-open",
-  "repo": "last-stack",
-  "state": "open",
-  "merge_oid": ""
-}
-JSON
+  102)
+    printf '%s\n' '{"state":"OPEN","mergedAt":null}'
     ;;
   *)
-    echo "unknown cr $cr_id" >&2
+    echo "unknown pr $3" >&2
     exit 1
     ;;
 esac
-printf '{"event":"verb_timing","verb":"cr.view","duration_ms":2}\n'
 SH
-chmod +x "$bin_dir/lastgit"
+chmod +x "$bin_dir/gh"
 
 export BRAIN_APPEND_LOG="$tmp/appends.log"
 : >"$BRAIN_APPEND_LOG"
@@ -116,9 +101,9 @@ if grep -q '^Status: FIXED' "$BRAIN_APPEND_LOG"; then
   echo "untyped records-json path appended Status: FIXED" >&2
   exit 1
 fi
-grep -q 'papercut-pipeline-stuck-cr-last-stack-merged -> card:none | pattern:lifecycle-auto-close | skip:fixed:lastgit:last-stack/cr-merged' "$BRAIN_APPEND_LOG"
+grep -q 'papercut-pipeline-stuck-cr-last-stack-merged -> card:none | pattern:lifecycle-auto-close | skip:fixed:github:EdgeVector/last-stack#101' "$BRAIN_APPEND_LOG"
 if grep -q 'papercut-pipeline-stuck-cr-last-stack-open -> card:none' "$BRAIN_APPEND_LOG"; then
-  echo "open CR was marked fixed" >&2
+  echo "open PR was marked fixed" >&2
   exit 1
 fi
 
@@ -129,7 +114,7 @@ cat >"$bin_dir/typed-brain" <<'SH'
 set -euo pipefail
 case "$*" in
   "get papercut-pipeline-stuck-cr-last-stack-typed --type papercut --json")
-    printf '%s\n' '{"slug":"papercut-pipeline-stuck-cr-last-stack-typed","title":"Typed merged CR","body":"Evidence: lastgit://last-stack/cr/cr-merged","status":"open"}'
+    printf '%s\n' '{"slug":"papercut-pipeline-stuck-cr-last-stack-typed","title":"Typed merged PR","body":"Evidence: https://github.com/EdgeVector/last-stack/pull/101","status":"open"}'
     ;;
   papercut\ close\ papercut-pipeline-stuck-cr-last-stack-typed*)
     printf 'CLOSE %s\n' "$*" >>"$BRAIN_TYPED_LOG"
@@ -159,16 +144,16 @@ if grep -q '^Status: FIXED' "$BRAIN_TYPED_LOG"; then
   exit 1
 fi
 
-# Slug-derived LastGit ref: pipeline-stuck bodies often name cr-<id> without a
-# lastgit:// URL. The closer must still point-get the CR from the slug.
+# Slug-derived GitHub ref: pipeline-stuck bodies often name no URL. The closer
+# must still read the PR from the slug (`stuck-pr-<repo>-<n>`).
 cat >"$bin_dir/slug-brain" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$*" in
-  "get papercut-pipeline-stuck-cr-last-stack-cr-msfkhqbn --type papercut --json")
-    printf '%s\n' '{"slug":"papercut-pipeline-stuck-cr-last-stack-cr-msfkhqbn","title":"Merged canary CR","body":"Repo: EdgeVector/last-stack\nLastGit CR cr-msfkhqbn-e1a2 merged.","status":"open"}'
+  "get papercut-pipeline-stuck-pr-last-stack-201 --type papercut --json")
+    printf '%s\n' '{"slug":"papercut-pipeline-stuck-pr-last-stack-201","title":"Merged canary PR","body":"Repo: EdgeVector/last-stack\nPR 201 merged.","status":"open"}'
     ;;
-  papercut\ close\ papercut-pipeline-stuck-cr-last-stack-cr-msfkhqbn*)
+  papercut\ close\ papercut-pipeline-stuck-pr-last-stack-201*)
     printf 'CLOSE %s\n' "$*" >>"$BRAIN_SLUG_LOG"
     ;;
   "get papercut-reconciler-ledger --type reference --json")
@@ -184,31 +169,31 @@ case "$*" in
 esac
 SH
 chmod +x "$bin_dir/slug-brain"
-cat >"$bin_dir/slug-lastgit" <<'SH'
+cat >"$bin_dir/slug-gh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-cr_id="$4"
-printf '{"event":"verb_timing","verb":"schema.ensure","duration_ms":1}\n'
-case "$cr_id" in
-  cr-msfkhqbn-e1a2)
-    printf '%s\n' '{"cr_id":"cr-msfkhqbn-e1a2","repo":"last-stack","state":"merged","merge_oid":"1c6e688"}'
+# gh pr view <n> -R <owner/repo> --json state,mergedAt
+[ "${1:-}" = pr ] && [ "${2:-}" = view ] || { echo "unexpected gh args: $*" >&2; exit 2; }
+case "$3" in
+  201)
+    printf '%s\n' '{"state":"MERGED","mergedAt":"2026-09-30T00:00:00Z"}'
     ;;
   *)
-    echo "unexpected cr $cr_id" >&2
+    echo "unknown pr $3" >&2
     exit 1
     ;;
 esac
 SH
-chmod +x "$bin_dir/slug-lastgit"
+chmod +x "$bin_dir/slug-gh"
 export BRAIN_SLUG_LOG="$tmp/slug.log"
 : >"$BRAIN_SLUG_LOG"
 PATH="$bin_dir:$PATH" "$ROOT/bin/last-stack-papercut-lifecycle-close" \
-  papercut-pipeline-stuck-cr-last-stack-cr-msfkhqbn \
+  papercut-pipeline-stuck-pr-last-stack-201 \
   --brain-bin "$bin_dir/slug-brain" \
-  --lastgit-bin "$bin_dir/slug-lastgit" \
+  --gh-bin "$bin_dir/slug-gh" \
   --json >"$tmp/slug.json"
 jq -e '.checked == 1 and (.fixed | length) == 1 and (.errors | length) == 0' "$tmp/slug.json" >/dev/null
-grep -q '^CLOSE papercut close papercut-pipeline-stuck-cr-last-stack-cr-msfkhqbn --status fixed ' "$BRAIN_SLUG_LOG"
+grep -q '^CLOSE papercut close papercut-pipeline-stuck-pr-last-stack-201 --status fixed ' "$BRAIN_SLUG_LOG"
 
 # Default path must NOT return after the prevention registry. A COVERED
 # registry of 3 unreadable cards used to report scanned=3 and skip the
@@ -231,15 +216,15 @@ case "$*" in
 EOF
     ;;
   "papercut list --status open --index-only --json"|"papercut list --status open --json")
-    printf '%s\n' '{"rows":[{"slug":"papercut-unrelated-open","status":"open"},{"slug":"papercut-pipeline-stuck-cr-last-stack-cr-msfkhqbn","status":"open"}],"total":2,"method":"method: status-keyed papercut index (canary)"}'
+    printf '%s\n' '{"rows":[{"slug":"papercut-unrelated-open","status":"open"},{"slug":"papercut-pipeline-stuck-pr-last-stack-201","status":"open"}],"total":2,"method":"method: status-keyed papercut index (canary)"}'
     ;;
-  "get papercut-pipeline-stuck-cr-last-stack-cr-msfkhqbn --type papercut --json")
-    printf '%s\n' '{"slug":"papercut-pipeline-stuck-cr-last-stack-cr-msfkhqbn","title":"Merged canary CR","body":"Repo: EdgeVector/last-stack\nLastGit CR cr-msfkhqbn-e1a2 merged.","status":"open"}'
+  "get papercut-pipeline-stuck-pr-last-stack-201 --type papercut --json")
+    printf '%s\n' '{"slug":"papercut-pipeline-stuck-pr-last-stack-201","title":"Merged canary PR","body":"Repo: EdgeVector/last-stack\nPR 201 merged.","status":"open"}'
     ;;
   "get papercut-unrelated-open --type papercut --json")
     printf '%s\n' '{"slug":"papercut-unrelated-open","title":"No review ref","body":"Status: OPEN","status":"open"}'
     ;;
-  papercut\ close\ papercut-pipeline-stuck-cr-last-stack-cr-msfkhqbn*)
+  papercut\ close\ papercut-pipeline-stuck-pr-last-stack-201*)
     printf 'CLOSE %s\n' "$*" >>"$BRAIN_DEFAULT_LOG"
     ;;
   "get papercut-reconciler-ledger --type reference --json")
@@ -267,7 +252,7 @@ export BRAIN_DEFAULT_LOG="$tmp/default.log"
 PATH="$bin_dir:$PATH" "$ROOT/bin/last-stack-papercut-lifecycle-close" \
   --limit 200 --json \
   --brain-bin "$bin_dir/default-brain" \
-  --lastgit-bin "$bin_dir/slug-lastgit" \
+  --gh-bin "$bin_dir/slug-gh" \
   >"$tmp/default.json"
 python3 - "$tmp/default.json" <<'PY'
 import json
@@ -282,9 +267,9 @@ assert data["scanned"] == 5
 assert data["fixed"] == 1
 assert data["scanned"] != 3
 refs = data.get("fixed_refs") or []
-assert refs and refs[0]["slug"] == "papercut-pipeline-stuck-cr-last-stack-cr-msfkhqbn"
+assert refs and refs[0]["slug"] == "papercut-pipeline-stuck-pr-last-stack-201"
 PY
-grep -q '^CLOSE papercut close papercut-pipeline-stuck-cr-last-stack-cr-msfkhqbn --status fixed ' "$BRAIN_DEFAULT_LOG"
+grep -q '^CLOSE papercut close papercut-pipeline-stuck-pr-last-stack-201 --status fixed ' "$BRAIN_DEFAULT_LOG"
 
 
 # A CLOSED review is TERMINAL. A `pipeline-stuck` papercut claims "this review
@@ -297,11 +282,11 @@ cat >"$bin_dir/terminal-brain" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$*" in
-  "get papercut-pipeline-stuck-cr-last-stack-cr-abandoned --type papercut --json")
-    printf '%s\n' '{"slug":"papercut-pipeline-stuck-cr-last-stack-cr-abandoned","title":"Abandoned stuck CR","body":"Evidence: lastgit://last-stack/cr/cr-closed","status":"open"}'
+  "get papercut-pipeline-stuck-pr-last-stack-301 --type papercut --json")
+    printf '%s\n' '{"slug":"papercut-pipeline-stuck-pr-last-stack-301","title":"Abandoned stuck PR","body":"Evidence: https://github.com/EdgeVector/last-stack/pull/301","status":"open"}'
     ;;
   "get papercut-last-stack-some-other-defect --type papercut --json")
-    printf '%s\n' '{"slug":"papercut-last-stack-some-other-defect","title":"Fix cited an abandoned CR","body":"Fixed-by: lastgit://last-stack/cr/cr-closed","status":"open"}'
+    printf '%s\n' '{"slug":"papercut-last-stack-some-other-defect","title":"Fix cited an abandoned PR","body":"Fixed-by: https://github.com/EdgeVector/last-stack/pull/301","status":"open"}'
     ;;
   papercut\ close\ *)
     printf 'CLOSE %s\n' "$*" >>"$BRAIN_TERMINAL_LOG"
@@ -319,28 +304,29 @@ case "$*" in
 esac
 SH
 chmod +x "$bin_dir/terminal-brain"
-cat >"$bin_dir/terminal-lastgit" <<'SH'
+cat >"$bin_dir/terminal-gh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-cr_id="$4"
-case "$cr_id" in
-  cr-closed)
-    printf '%s\n' '{"cr_id":"cr-closed","repo":"last-stack","state":"closed","merge_oid":""}'
+# gh pr view <n> -R <owner/repo> --json state,mergedAt
+[ "${1:-}" = pr ] && [ "${2:-}" = view ] || { echo "unexpected gh args: $*" >&2; exit 2; }
+case "$3" in
+  301)
+    printf '%s\n' '{"state":"CLOSED","mergedAt":null}'
     ;;
   *)
-    echo "unexpected cr $cr_id" >&2
+    echo "unknown pr $3" >&2
     exit 1
     ;;
 esac
 SH
-chmod +x "$bin_dir/terminal-lastgit"
+chmod +x "$bin_dir/terminal-gh"
 export BRAIN_TERMINAL_LOG="$tmp/terminal.log"
 : >"$BRAIN_TERMINAL_LOG"
 PATH="$bin_dir:$PATH" "$ROOT/bin/last-stack-papercut-lifecycle-close" \
-  papercut-pipeline-stuck-cr-last-stack-cr-abandoned \
+  papercut-pipeline-stuck-pr-last-stack-301 \
   papercut-last-stack-some-other-defect \
   --brain-bin "$bin_dir/terminal-brain" \
-  --lastgit-bin "$bin_dir/terminal-lastgit" \
+  --gh-bin "$bin_dir/terminal-gh" \
   --json >"$tmp/terminal.json"
 python3 - "$tmp/terminal.json" <<'TERMPY'
 import json
@@ -353,7 +339,7 @@ assert data["errors"] == [], data
 assert [item["slug"] for item in data["fixed"]] == [], data
 closed = data.get("closed_unmerged") or []
 assert [item["slug"] for item in closed] == [
-    "papercut-pipeline-stuck-cr-last-stack-cr-abandoned"
+    "papercut-pipeline-stuck-pr-last-stack-301"
 ], data
 assert closed[0]["review_state"] == "closed", data
 # The non-stuck row stayed open, with a reason that names WHY.
@@ -362,7 +348,7 @@ reasons = {
 }
 assert reasons.get("papercut-last-stack-some-other-defect") == "review-closed-not-merged", data
 TERMPY
-grep -q '^CLOSE papercut close papercut-pipeline-stuck-cr-last-stack-cr-abandoned --status wontfix ' "$BRAIN_TERMINAL_LOG"
+grep -q '^CLOSE papercut close papercut-pipeline-stuck-pr-last-stack-301 --status wontfix ' "$BRAIN_TERMINAL_LOG"
 if grep -q 'papercut-last-stack-some-other-defect' "$BRAIN_TERMINAL_LOG"; then
   echo "a non-pipeline-stuck papercut was closed on an ABANDONED review" >&2
   exit 1
@@ -371,5 +357,21 @@ if grep -q -- '--fixed-by' "$BRAIN_TERMINAL_LOG"; then
   echo "a wontfix close cited a fix that does not exist" >&2
   exit 1
 fi
+
+# A retired lastgit:// CR is unreadable: never fixed, never wontfix.
+cat >"$tmp/retired.json" <<'JSON'
+[{"slug":"papercut-pipeline-stuck-cr-last-stack-retired","title":"Old CR","body":"Status: OPEN\nEvidence: lastgit://last-stack/cr/cr-merged"}]
+JSON
+: >"$BRAIN_APPEND_LOG"
+cat >"$bin_dir/lastgit" <<'SH'
+#!/usr/bin/env bash
+echo "lastgit must not be called" >&2
+exit 1
+SH
+chmod +x "$bin_dir/lastgit"
+PATH="$bin_dir:$PATH" "$ROOT/bin/last-stack-papercut-lifecycle-close" \
+  --records-json "$tmp/retired.json" --json >"$tmp/retired-out.json"
+jq -e '(.fixed | length) == 0 and ((.closed_unmerged // []) | length) == 0' "$tmp/retired-out.json" >/dev/null
+[ ! -s "$BRAIN_APPEND_LOG" ] || { echo "a retired lastgit CR closed a papercut" >&2; cat "$BRAIN_APPEND_LOG" >&2; exit 1; }
 
 printf 'ok last-stack-papercut-lifecycle-close\n'
