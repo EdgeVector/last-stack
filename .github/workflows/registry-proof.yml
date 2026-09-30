@@ -274,6 +274,8 @@ jobs:
         if: ${{ !inputs.probe_only }}
         env:
           FOLD_OID: ${{ inputs.fold_oid }}
+          # Built-in job token: reads the public app repos' check runs and artifacts.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           t0=$SECONDS; rc=0
@@ -288,6 +290,7 @@ jobs:
             --lastdbd "$SCRATCH/bin/lastdbd" \
             "${oid_args[@]}" \
             --source-venue github \
+            --sha-source github-ci \
             --out "$SCRATCH/candidate-set.json" || rc=$?
           printf 'candidate-set\t%s\t%s\n' "$((SECONDS - t0))" "$rc" >> "$BUNDLE/timings.tsv"
           [ "$rc" -eq 0 ] || exit "$rc"
@@ -339,6 +342,7 @@ jobs:
           SMOKE_CANDIDATE_SET="$SCRATCH/candidate-set.json" \
           SMOKE_TOTAL_BUDGET_SECS=1800 \
           SMOKE_NO_FORGE_AUTH=1 \
+          SMOKE_BREW_PLIST_NAME=sh.brew.lastdb.plist \
             bash skills/llms-txt-install-smoke/run.sh --json --keep \
               > "$SCRATCH/proof.stdout" 2> "$BUNDLE/smoke.stderr.log"
           rc=$?
