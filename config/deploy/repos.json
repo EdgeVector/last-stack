@@ -32,7 +32,7 @@
       "enabled": false,
       "context": "deploy-pipeline",
       "deploy_script": ".lastgit/deploy-pipeline.sh",
-      "env": { "AWS_PROFILE": "default", "SCHEMA_BUILD_REMOTE_HOST": "pc" },
+      "env": { "AWS_PROFILE": "default", "SCHEMA_BUILD_REMOTE_HOST": "" },
       "notes": "Schema service pipeline, builds on the PC. This repo's gate of record moved back to LastGit on 2026-09-27 (era-3 cutover); deploy-watch is Forgejo-only by construction and cannot serve it. The LastGit-native launchd watcher com.edgevector.lastgit-deploy-schema-infra was restored and proven live 2026-09-28; it is the deployer of record."
     },
     {
