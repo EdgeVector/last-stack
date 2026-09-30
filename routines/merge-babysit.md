@@ -201,25 +201,18 @@ files + `BLOCKED:`, and **never** leave it as a milestone-less `Kind: pr` in
 
 ### 3. Escalate the rest as Brain papercuts (never bare todo Kind:pr)
 
-For a stuck **Forgejo PR**, file nothing here: pipeline-health's ledger
-(`last-stack-pipeline-forge-pr-ledger`) owns one row per PR.
-
-For every stuck GitHub PR you did not fix: **file or update a Brain papercut**
-(same policy as `pipeline-health` and
-`preference-always-file-papercuts-in-brain`). Do **not** create
-`stuck-*` / pipeline P0 `Kind: pr` cards in default `todo` without a
-real milestone + North Star + cold-start body - those cards cause pickup
-`write-guard` no-claims that block unrelated valid work.
-
-```bash
-# Same door as pipeline-health. Never mint papercut-pipeline-stuck-cr-<repo>-<pr-number>
-# and never `brain put` a type:reference stand-in.
-last-stack-pipeline-stuck-papercut-file \
-  --repo "<repo>" --cr-id "<pr-number>" \
-  --root-cause-slug "papercut-pipeline-stuck-merges-<repo>" \
-  --evidence "head_sha=<sha> reason=<reason> Checked-at=<ISO> <detail>" \
-  --json
-```
+For every stuck GitHub PR you did not fix: pipeline-health's ledger
+(`last-stack-pipeline-forge-pr-ledger sync --apply`) files one Brain papercut
+row per PR, so file nothing per PR here and record the PR in the heartbeat
+(`stuck=<n>`). Do not call `last-stack-pipeline-stuck-papercut-file`: it is a
+retired no-op that writes nothing. Do **not** create
+`stuck-*` / pipeline P0 `Kind: pr` cards in default `todo` without a real
+milestone + North Star + cold-start body - those cards cause pickup
+`write-guard` no-claims that block unrelated valid work. For a problem that no
+PR row covers, file a Brain papercut yourself (`brain papercut file`, same
+policy as `preference-always-file-papercuts-in-brain`; search first). Never mint
+`papercut-pipeline-stuck-cr-<repo>-<pr-number>` and never `brain put` a
+type:reference stand-in.
 
 Count these as `filed=<n>` in the heartbeat (`filed` means Brain papercuts
 and/or backlog human-gate cards — **not** bare todo Kind:pr).

@@ -49,7 +49,7 @@ Step 0 comes first and never stops the gate:
    build-subject line event in the ledger.
 5. **cutover** — the bounded safe-upgrade probe + primary cutover.
 6. **rows** — `last-stack-registry-publish-next` writes one compat row per
-   app to registry `next` and opens an auto-merging LastGit CR on the tap repo.
+   app to registry `next` and opens an auto-merging GitHub PR on the tap repo (`gh pr merge --auto --squash`, check `ci-required`).
 
 Cargo release builds take 20–40 minutes; the smoke 6–9. Stay on this turn
 until the gate exits. Do not background it.

@@ -16,9 +16,6 @@ An explicit answer for one repo comes from, in this order:
   git config laststack.pr-venue <venue>
   git config laststack.prVenue <venue>
   .last-stack/pr-venue, first line <venue>
-  LAST_STACK_LASTGIT_NATIVE_REPOS containing owner/repo, only when
-    LAST_STACK_LASTGIT_ENABLED=1 (an ambient list from a routine shell is
-    ignored, or it would bring a retired venue back)
   LAST_STACK_FORGEJO_REPOS containing owner/repo
 
 Repo-local config may also set:
@@ -156,11 +153,10 @@ list_contains_repo() {
   return 1
 }
 
-if [ -z "$venue" ] && [ "${LAST_STACK_LASTGIT_ENABLED:-0}" = "1" ] \
-   && list_contains_repo "${LAST_STACK_LASTGIT_NATIVE_REPOS:-}"; then
-  venue="lastgit"
-  reason="env:LAST_STACK_LASTGIT_NATIVE_REPOS"
-fi
+# LAST_STACK_LASTGIT_NATIVE_REPOS is ignored: LastGit is retired
+# (decision-2026-09-29-retire-lastgit-all-repos-to-github), so no env list can
+# bring it back. An explicit `lastgit` marker or git config still answers
+# `lastgit` so a stale marker stays visible to callers.
 
 if [ -z "$venue" ] && list_contains_repo "${LAST_STACK_FORGEJO_REPOS:-}"; then
   venue="forgejo"

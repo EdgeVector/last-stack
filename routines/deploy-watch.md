@@ -22,10 +22,10 @@ export PATH="$last_stack/bin:$HOME/.local/bin:$PATH"
 "$last_stack/bin/last-stack-deploy-watch-gate"
 ```
 
-For each enabled repo in `config/deploy/repos.json` the gate reads the forge
-`main` tip (the deploy-watch gate is Forgejo-only; every repo in that file moved
-to GitHub on 2026-09-29/30, so all are disabled here and their deployers are
-per-repo GitHub pollers). When the tip moved and its Forge CI status is `success`, it runs
+For each enabled repo in `config/deploy/repos.json` the gate reads the `main`
+tip (GitHub through `gh` by default; Forgejo only for an entry whose venue is
+`forgejo`, which today is only the `lastgit` repo). When the tip moved and its
+required check is `success` (the `ci-required` check run on GitHub), it runs
 `last-stack-deploy-loom --repo <name> --oid <tip>`: the `deploy-main` Loom
 graph stages that exact commit, runs the repo's own deploy script (a checked
 effect — a resumed execution does not deploy twice), runs the repo's verify
