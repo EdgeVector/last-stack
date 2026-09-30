@@ -192,6 +192,10 @@ def status_vitals(buf):
             # mutation_log_lag is nanoseconds; store seconds so the trend reads as an RPO
             "mlog_lag_s": int(sy["mutation_log_lag"] / 1e9) if isinstance(sy.get("mutation_log_lag"), (int, float)) else None,
             "rp_age_s": sy.get("mutation_log_recovery_point_age_secs"),
+            # the cause of a sync lag: the cloud error text, its age, and the download backlog
+            "sync_err": (sy.get("last_error") or "")[:160] or None,
+            "sync_err_at": sy.get("last_error_at"),
+            "dl_deferred": (sy.get("last_download") or {}).get("entries_deferred"),
         }
     except Exception as e:  # a parse failure must not cost the sample
         return {"error": type(e).__name__}
@@ -393,6 +397,19 @@ def fire(name, msg, now):
              "--summary", msg])
 
 
+def sync_cause(v, now):
+    """Alert suffix naming why sync lags: cloud error (if recent), recovery-point age, backlog."""
+    parts = []
+    err_at = v.get("sync_err_at")
+    if v.get("sync_err") and isinstance(err_at, (int, float)) and now - err_at < 900:
+        parts.append("last error %ds ago: %s" % (now - err_at, v["sync_err"]))
+    if v.get("rp_age_s") is not None:
+        parts.append("recovery point %ss old" % v["rp_age_s"])
+    if v.get("dl_deferred"):
+        parts.append("%s download entries deferred" % v["dl_deferred"])
+    return " (%s)" % "; ".join(parts) if parts else ""
+
+
 def evaluate_alerts(rec, now):
     st = load_state()
     st["node_bad"] = st.get("node_bad", 0) + 1 if rec["node"]["status"]["state"] != "ok" else 0
@@ -422,7 +439,7 @@ def evaluate_alerts(rec, now):
         ("lastdbd_footprint_high", st["fp_hot"] >= FP_CONSEC,
          "lastdbd footprint %s MB >= %d MB for %d passes (gov=%s)" % (v.get("fp_mb"), FP_MB, st["fp_hot"], v.get("gov"))),
         ("lastdb_sync_degraded", st["sync_bad"] >= SYNC_CONSEC,
-         "LastDB sync degraded for %d passes: %s" % (st["sync_bad"], v.get("sync_why"))),
+         "LastDB sync degraded for %d passes: %s%s" % (st["sync_bad"], v.get("sync_why"), sync_cause(v, now))),
         ("node_unresponsive", st["node_bad"] >= NODE_CONSEC,
          "LastDB node %s (%s) for %d passes"
          % (rec["node"]["status"]["state"], rec["node"]["status"].get("reason", ""), st["node_bad"])),
