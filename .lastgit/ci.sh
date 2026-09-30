@@ -325,14 +325,12 @@ ci_test tests/last-stack-kanban-pickup-gate.sh
 # last-stack ci-required is forge run --all, not a per-repo ci watch.
 # Pickup kept filing last-stack watcher cards because pgrep missed the fleet
 # supervisor. Pin the classifier in the required gate.
-ci_test tests/last-stack-lastgit-ci-coverage.sh
 # Poison park must hydrate bodies via keyed show; list projections have none.
 ci_test tests/last-stack-park-stuck-merge-poison-cards.sh
 ci_test tests/last-stack-pickup-work-policy.sh
 ci_test tests/last-stack-routines-kanban-pickup.sh
 ci_test tests/last-stack-kanban-validate-routine.sh
 ci_test tests/last-stack-kanban-validate-failure-routing.sh
-ci_test tests/last-stack-pr-reaper-stale-open-heal.sh
 # The close guard holds the one reap that destroys work: a green auto-merge
 # CR whose head never reached main. Required, not FULL-only — the defect it
 # covers removed CRs from the open inventory, so nothing downstream noticed.
@@ -762,7 +760,6 @@ ci_test tests/last-stack-lastdb-current.sh
 ci_test tests/last-stack-lastdb-dev.sh
 ci_test tests/last-stack-lastdb-safe-upgrade-binary-pair.sh
 ci_test tests/last-stack-lastdb-safe-upgrade-deadline.sh
-ci_test tests/last-stack-lastgit-stuck-merge-heal.sh
 ci_test tests/last-stack-loom-exec-latest.sh
 ci_test tests/last-stack-mask-secrets.sh
 ci_test tests/last-stack-migrate-repo-local-worktrees.sh

@@ -262,14 +262,9 @@ error. That failure is not a pipeline block and not a papercut.
 - Do not file or append `papercut-pipeline-stuck-merges-<repo>` rows for
   Forgejo PRs. `last-stack-pipeline-stuck-papercut-file` is the LastGit-only
   filer; it names "LastGit CRs" in its title and must not carry Forgejo data.
-- Only when `LAST_STACK_LASTGIT_NATIVE_REPOS` names a repo: use the native
-  LastGit review contract and the primary socket
-  (`LASTGIT_SOCKET="${LASTGIT_PRIMARY_SOCKET:-$HOME/.lastdb/data/folddb.sock}"`),
-  check CI coverage with `last-stack-lastgit-ci-coverage --repo <slug> --json`
-  (the supervisor is `lastgit forge run --all --context ci-required`), heal a
-  torn verdict with `last-stack-lastgit-stuck-merge-heal --repos <repo>`, and
-  escalate a stuck CR with `last-stack-pipeline-stuck-papercut-file`, for that
-  repo only.
+- LastGit is retired (2026-09-30). Do not run LastGit CI-coverage or
+  stuck-merge heal helpers; they were removed. Escalate a stuck merge with
+  `last-stack-pipeline-stuck-papercut-file`.
 
 ## Open PRs — one helper, one row per PR
 
