@@ -9,12 +9,20 @@ for tool in jq python3 git gh curl; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done
 missing=()
+# The Forge host lane ran the scripts under Homebrew bash 5 (/opt/homebrew/bin
+# first on PATH). /bin/bash 3.2 breaks empty-array expansion under set -u.
+[ -x /opt/homebrew/bin/bash ] || missing+=(bash)
 command -v rg >/dev/null || missing+=(ripgrep)
 command -v gdate >/dev/null || missing+=(coreutils)
 command -v shellcheck >/dev/null || missing+=(shellcheck)
 if [ "${#missing[@]}" -gt 0 ]; then
   HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install "${missing[@]}"
 fi
+export PATH="/opt/homebrew/bin:$PATH"
+[ -z "${GITHUB_PATH:-}" ] || echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+# A cold python start on a fresh runner VM took longer than the 2.5 s the mock
+# server tests wait for; warm the import cache first.
+python3 -c "import http.server, json, sqlite3" >/dev/null
 bash --version | head -1
 jq --version
 python3 --version

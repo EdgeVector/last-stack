@@ -240,7 +240,24 @@ ci_test() {
   local ci_test_started="$SECONDS" ci_test_rc=0
   bash "$@" || ci_test_rc=$?
   echo "ci_test done: $* rc=${ci_test_rc} secs=$((SECONDS - ci_test_started))"
-  return "$ci_test_rc"
+  ci_test_finish "$ci_test_rc" "$1"
+}
+# LAST_STACK_CI_KEEP_GOING=1 (the GitHub shard jobs) runs the rest of the shard
+# after a red test and fails at the end with the full list, so one run names
+# every red test instead of only the first. Default: stop at the first failure.
+ci_failed_tests=""
+ci_test_finish() {
+  [ "$1" -eq 0 ] && return 0
+  if [ "${LAST_STACK_CI_KEEP_GOING:-0}" = "1" ]; then
+    ci_failed_tests="${ci_failed_tests} $2"
+    return 0
+  fi
+  return "$1"
+}
+ci_report_failed_tests() {
+  [ -n "$ci_failed_tests" ] || return 0
+  echo "last-stack CI shard ${CI_SHARD_INDEX}: FAILED TESTS:${ci_failed_tests}" >&2
+  return 1
 }
 
 ci_test tests/last-stack-routine-read.sh
@@ -941,7 +958,8 @@ ci_test_discovered() {
     ci_test_rc=0
     bash "$test_script" || ci_test_rc=$?
     echo "ci_test done: $test_script rc=${ci_test_rc} secs=$((SECONDS - ci_test_started))"
-    [ "$ci_test_rc" -eq 0 ] || return "$ci_test_rc"
+    ci_test_finish "$ci_test_rc" "$test_script" || return "$ci_test_rc"
   done
 }
 ci_test_discovered
+ci_report_failed_tests

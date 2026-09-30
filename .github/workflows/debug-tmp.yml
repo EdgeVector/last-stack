@@ -1,0 +1,24 @@
+name: debug-tmp
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  dbg:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+      - run: bash .github/scripts/ci-toolchain.sh
+      - name: dogfood isolate
+        continue-on-error: true
+        run: |
+          LAST_STACK_DOGFOOD_MIN_FREE_MIB=0 LAST_STACK_DOGFOOD_SKIP_PRIMARY_CHECK=1 LAST_STACK_DOGFOOD_MAX_LOAD_PER_CPU=999 LAST_STACK_DOGFOOD_OFFHOST_CMD=true bash -x bin/last-stack-dogfood-resource-isolate --preflight-only 2>&1 | tail -40
+      - name: hooks guards
+        continue-on-error: true
+        run: bash tests/last-stack-hooks-guards.sh 2>&1 | tail -30
+      - name: env
+        run: |
+          echo "SHELL=$SHELL"; which bash python3; bash --version | head -1; python3 --version; sw_vers

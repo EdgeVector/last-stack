@@ -67,6 +67,7 @@ jobs:
       - name: Test scripts of this shard (.lastgit/ci.sh)
         env:
           LAST_STACK_CI_SHARD_INDEX: ${{ matrix.index }}
+          LAST_STACK_CI_KEEP_GOING: "1"
         run: bash .lastgit/ci.sh
 
   ci-required:
