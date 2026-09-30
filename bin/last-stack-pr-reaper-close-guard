@@ -40,13 +40,25 @@
 #     That case is `indeterminate base-gate-red` (exit 3): leave it open, it is
 #     judged again once the base is green.
 #
+# 2026-09-30: `--venue github --pr <n>` judges a GitHub PR with the same ladder
+# (LastGit is retired and every EdgeVector repo but `lastgit` is on GitHub).
+# The PR row, the `ci-required` check run of the head and of the base, and the
+# head-vs-base compare come from `gh api`. `--venue auto` (also the default when
+# only --pr is given) asks `last-stack-pr-venue EdgeVector/<repo>` and routes to
+# github or forgejo. `--cr` alone still means lastgit.
+#
 # Every input can come from a file so the suite runs with no node and no forge.
 set -euo pipefail
 
 repo=""
 cr_id=""
-venue="lastgit"
+venue=""
 pr_number=""
+compare_json_path=""
+head_check_json_path=""
+base_check_json_path=""
+gh_bin="${LAST_STACK_GH_BIN:-gh}"
+pr_venue_bin="${LAST_STACK_PR_VENUE_BIN:-}"
 pr_json_path=""
 head_status_json_path=""
 base_status_json_path=""
@@ -71,6 +83,10 @@ usage: last-stack-pr-reaper-close-guard --repo <slug> --cr <cr-id> [--json]
                                         [--pr-json PATH] [--head-status-json PATH]
                                         [--base-status-json PATH]
                                         [--base-oid OID] [--git-dir PATH] [--no-fetch]
+       last-stack-pr-reaper-close-guard --venue github|auto --repo <slug> --pr <n> [--json]
+                                        [--pr-json PATH] [--head-check-json PATH]
+                                        [--base-check-json PATH] [--compare-json PATH]
+                                        [--base-oid OID] [--git-dir PATH] [--no-fetch]
 
 Decide whether pr-reaper may CLOSE a LastGit change request. Reads only; never
 closes, merges, or writes.
@@ -93,6 +109,14 @@ Flags:
   --git-dir PATH   ancestry repository (default: the portal cache, then the
                    LastGit mirror, for --venue forgejo; the reverse for lastgit)
   --no-fetch       never fetch; an object that is missing stays missing
+  --venue V        lastgit (needs --cr), forgejo, github, or auto. auto (the default
+                   with --pr) asks last-stack-pr-venue, which answers github for
+                   every EdgeVector repo except lastgit.
+  --head-check-json PATH / --base-check-json PATH
+                   github: the `commits/<sha>/check-runs` object of the head / base
+  --compare-json PATH
+                   github: the `compare/<base>...<head>` object (its `status` says
+                   whether the head is already in the base)
 EOF
 }
 
@@ -112,6 +136,9 @@ while [ "$#" -gt 0 ]; do
     --head-status-json) head_status_json_path="${2:-}"; shift 2 ;;
     --base-status-json) base_status_json_path="${2:-}"; shift 2 ;;
     --base-ci-json) base_ci_json_path="${2:-}"; shift 2 ;;
+    --compare-json) compare_json_path="${2:-}"; shift 2 ;;
+    --head-check-json) head_check_json_path="${2:-}"; shift 2 ;;
+    --base-check-json) base_check_json_path="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
   esac
@@ -126,10 +153,29 @@ case "$repo" in
   EdgeVector/*) repo="${repo#EdgeVector/}" ;;
   */*) echo "--repo must be <name> or EdgeVector/<name>: $repo" >&2; exit 2 ;;
 esac
+if [ -z "$venue" ]; then
+  if [ -n "$pr_number" ]; then venue="auto"; else venue="lastgit"; fi
+fi
+if [ "$venue" = "auto" ]; then
+  [ -n "$pr_number" ] || { echo "--pr is required with --venue auto" >&2; usage; exit 2; }
+  if [ -z "$pr_venue_bin" ]; then
+    pr_venue_bin="$(dirname "$0")/last-stack-pr-venue"
+    [ -x "$pr_venue_bin" ] || pr_venue_bin="$(command -v last-stack-pr-venue 2>/dev/null || true)"
+  fi
+  venue=""
+  if [ -n "$pr_venue_bin" ] && [ -x "$pr_venue_bin" ]; then
+    venue="$("$pr_venue_bin" "EdgeVector/$repo" 2>/dev/null || true)"
+  fi
+  case "$venue" in
+    github|forgejo) : ;;
+    lastgit) echo "last-stack-pr-venue says lastgit for $repo; pass --venue lastgit --cr <id>" >&2; exit 2 ;;
+    *) echo "could not route $repo through last-stack-pr-venue" >&2; exit 2 ;;
+  esac
+fi
 case "$venue" in
   lastgit) [ -n "$cr_id" ] || { echo "--cr is required" >&2; usage; exit 2; } ;;
-  forgejo) [ -n "$pr_number" ] || { echo "--pr is required with --venue forgejo" >&2; usage; exit 2; }; cr_id="#$pr_number" ;;
-  *) echo "--venue must be lastgit or forgejo" >&2; usage; exit 2 ;;
+  forgejo|github) [ -n "$pr_number" ] || { echo "--pr is required with --venue $venue" >&2; usage; exit 2; }; cr_id="#$pr_number" ;;
+  *) echo "--venue must be lastgit, forgejo, github or auto" >&2; usage; exit 2 ;;
 esac
 command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 2; }
 
@@ -154,6 +200,27 @@ if [ "$venue" = "forgejo" ]; then
   if [ -n "$pr_json" ] && printf '%s' "$pr_json" | jq -e . >/dev/null 2>&1; then
     cr_json="$(printf '%s' "$pr_json" | jq -c '{
       state: (if (.merged // false) == true then "merged" else (.state // "") end),
+      auto_merge: "true",
+      head_oid: (.head.sha // ""),
+      base_ref: ("refs/heads/" + (.base.ref // "main")),
+      base_oid_hint: (.base.sha // ""),
+      require_status: "ci-required"
+    }')"
+  fi
+elif [ "$venue" = "github" ]; then
+  # GitHub PR row mapped onto the same shape. Like a Forgejo PR, an open GitHub
+  # PR is "driving": the reaper's ladder merges a green mergeable PR before it
+  # ever closes one, so auto_merge reads true and the green-unmerged refusal applies.
+  pr_json=""
+  if [ -n "$pr_json_path" ]; then
+    [ -f "$pr_json_path" ] || { echo "no such --pr-json file: $pr_json_path" >&2; exit 2; }
+    pr_json="$(cat "$pr_json_path")"
+  else
+    pr_json="$("$gh_bin" api "repos/EdgeVector/$repo/pulls/$pr_number" 2>/dev/null || true)"
+  fi
+  if [ -n "$pr_json" ] && printf '%s' "$pr_json" | jq -e . >/dev/null 2>&1; then
+    cr_json="$(printf '%s' "$pr_json" | jq -c '{
+      state: (if (.merged // false) == true or ((.merged_at // null) != null) then "merged" else (.state // "") end),
       auto_merge: "true",
       head_oid: (.head.sha // ""),
       base_ref: ("refs/heads/" + (.base.ref // "main")),
@@ -243,6 +310,8 @@ if [ -z "$base_oid" ]; then
   base_name="${base_ref#refs/heads/}"
   if [ "$venue" = "forgejo" ]; then
     base_oid="$("$forge_api" GET "/repos/EdgeVector/$repo/branches/$base_name" 2>/dev/null | jq -r '.commit.id // ""' 2>/dev/null || true)"
+  elif [ "$venue" = "github" ]; then
+    base_oid="$("$gh_bin" api "repos/EdgeVector/$repo/branches/$base_name" 2>/dev/null | jq -r '.commit.sha // ""' 2>/dev/null || true)"
   else
     base_oid="$("$lastgit_bin" ref "$repo" "$base_name" 2>/dev/null | awk 'NF{print $1; exit}')"
   fi
@@ -258,8 +327,31 @@ esac
 # there exits 0 and never brings a Forgejo PR head, so every Forgejo PR read
 # `ancestry-object-missing` and the reaper could terminalize nothing
 # (papercut-pr-reaper-forgejo-ancestry-object-missing, 2026-09-22).
+# GitHub without --git-dir: the compare API answers ancestry, so no local clone
+# is needed. `identical` and `behind` mean the head is already in the base.
+if [ "$venue" = "github" ] && [ -z "$git_dir" ]; then
+  compare_json=""
+  if [ -n "$compare_json_path" ]; then
+    [ -f "$compare_json_path" ] || { echo "no such --compare-json file: $compare_json_path" >&2; exit 2; }
+    compare_json="$(cat "$compare_json_path")"
+  else
+    compare_json="$("$gh_bin" api "repos/EdgeVector/$repo/compare/${base_oid}...${head_oid}" 2>/dev/null || true)"
+  fi
+  compare_status=""
+  if [ -n "$compare_json" ] && printf '%s' "$compare_json" | jq -e . >/dev/null 2>&1; then
+    compare_status="$(printf '%s' "$compare_json" | jq -r '(.status // "") | ascii_downcase')"
+  fi
+  case "$compare_status" in
+    identical|behind)
+      ancestry="true"
+      emit close-ok head-already-in-base 0
+      ;;
+    ahead|diverged) ancestry="false" ;;
+    *) emit indeterminate ancestry-unreadable 3 ;;
+  esac
+else
 if [ -z "$git_dir" ]; then
-  if [ "$venue" = "forgejo" ]; then
+  if [ "$venue" = "forgejo" ] || [ "$venue" = "github" ]; then
     set -- "$HOME/.cache/edgevector-git/$repo.git" "$HOME/.lastgit/mirrors/$repo"
   else
     set -- "$HOME/.lastgit/mirrors/$repo" "$HOME/.cache/edgevector-git/$repo.git"
@@ -277,7 +369,11 @@ have_object() { "$git_bin" -C "$git_dir" cat-file -e "${1}^{commit}" 2>/dev/null
 
 if ! have_object "$head_oid" || ! have_object "$base_oid"; then
   if [ "$no_fetch" = "0" ]; then
-    if [ "$venue" = "forgejo" ]; then
+    if [ "$venue" = "github" ]; then
+      # A GitHub PR head is always served as refs/pull/<n>/head. Objects only.
+      GIT_TERMINAL_PROMPT=0 "$git_bin" -C "$git_dir" fetch --quiet --no-write-fetch-head origin \
+        "refs/pull/$pr_number/head" "refs/heads/${base_ref#refs/heads/}" >/dev/null 2>&1 || true
+    elif [ "$venue" = "forgejo" ]; then
       # Name the PR head explicitly: a PR from a deleted or fork branch has no
       # refs/heads entry, but Forgejo always serves refs/pull/<n>/head. No
       # destination refspec, so no local ref moves; only objects arrive.
@@ -311,6 +407,7 @@ if "$git_bin" -C "$git_dir" merge-base --is-ancestor "$head_oid" "$base_oid" 2>/
   emit close-ok head-already-in-base 0
 fi
 ancestry="false"
+fi
 
 # 2. Nothing is driving this CR to land, so the reaper's own judgment stands.
 [ "$cr_auto_merge" = "true" ] || emit close-ok not-auto-merge 0
@@ -325,12 +422,53 @@ forge_required_state() {
     | sort_by(.created_at // "") | last | (.status // "") | ascii_downcase' 2>/dev/null | awk 'NF{print;exit}'
 }
 
+# github_required_state <check-runs-json> <context>
+# The newest check run named <context>: pending while it has not completed,
+# otherwise its conclusion mapped onto the words the ladder below reads.
+github_required_state() {
+  printf '%s' "$1" | jq -r --arg want "$2" '
+    [ (.check_runs // [])[] | select((.name // "") == $want) ]
+    | sort_by(.started_at // "") | last
+    | if . == null then ""
+      elif (.status // "") != "completed" then "pending"
+      else ((.conclusion // "") | ascii_downcase
+            | if . == "success" then "success"
+              elif . == "failure" or . == "timed_out" or . == "startup_failure" or . == "action_required" then "failure"
+              elif . == "cancelled" then "cancelled"
+              else "" end)
+      end' 2>/dev/null | awk 'NF{print;exit}'
+}
+
 ci_json=""
 ci_state=""
 ci_event_id=""
 base_ci_state=""
 want="${require_status:-ci-required}"
-if [ "$venue" = "forgejo" ]; then
+if [ "$venue" = "github" ]; then
+  head_check_json=""
+  if [ -n "$head_check_json_path" ]; then
+    [ -f "$head_check_json_path" ] || { echo "no such --head-check-json file: $head_check_json_path" >&2; exit 2; }
+    head_check_json="$(cat "$head_check_json_path")"
+  else
+    head_check_json="$("$gh_bin" api "repos/EdgeVector/$repo/commits/$head_oid/check-runs?per_page=100" 2>/dev/null || true)"
+  fi
+  if [ -n "$head_check_json" ] && printf '%s' "$head_check_json" | jq -e . >/dev/null 2>&1; then
+    ci_state="$(github_required_state "$head_check_json" "$want")"
+    ci_event_id="ci-lease:github"
+  fi
+  if [ "$ci_state" = "failure" ] || [ "$ci_state" = "error" ]; then
+    base_check_json=""
+    if [ -n "$base_check_json_path" ]; then
+      [ -f "$base_check_json_path" ] || { echo "no such --base-check-json file: $base_check_json_path" >&2; exit 2; }
+      base_check_json="$(cat "$base_check_json_path")"
+    else
+      base_check_json="$("$gh_bin" api "repos/EdgeVector/$repo/commits/$base_oid/check-runs?per_page=100" 2>/dev/null || true)"
+    fi
+    if [ -n "$base_check_json" ] && printf '%s' "$base_check_json" | jq -e . >/dev/null 2>&1; then
+      base_ci_state="$(github_required_state "$base_check_json" "$want")"
+    fi
+  fi
+elif [ "$venue" = "forgejo" ]; then
   stem="Forge CI / $want"
   head_status_json=""
   if [ -n "$head_status_json_path" ]; then
