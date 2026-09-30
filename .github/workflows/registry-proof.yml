@@ -209,7 +209,9 @@ jobs:
             # stamp is the same string for the same commit.
             git config core.abbrev 9
             [ -z "$(git status --porcelain)" ] || { echo "fold checkout is dirty" >&2; exit 1; }
+            # build.rs stamps `git describe` with the leading v of the tag stripped.
             want="$(git describe --tags --long --abbrev=9)"
+            want="${want#v}"
             echo "git describe: $want"
             if [ -n "$EXPECT_BUILD" ] && [ "$want" != "$EXPECT_BUILD" ]; then
               echo "git describe $want does not equal the expected build $EXPECT_BUILD" >&2
@@ -427,8 +429,8 @@ jobs:
 
           verdict="$(jq -r '.verdict // "UNKNOWN"' "$BUNDLE/proof.json")"
           build="$(jq -r '.lastdb_build // "-"' "$BUNDLE/proof.json")"
-          peak_used="$(awk -F'\t' 'NR>1 && $2+0>m {m=$2+0} END {print m+0}' "$BUNDLE/memory-samples.tsv" 2>/dev/null)"
-          peak_rss="$(awk -F'\t' 'NR>1 && $3+0>m {m=$3+0} END {print m+0}' "$BUNDLE/memory-samples.tsv" 2>/dev/null)"
+          peak_used="$(awk -F'\t' 'NR>1 && $2+0>m {m=$2+0} END {print m+0}' "$BUNDLE/memory-samples.tsv" 2>/dev/null || true)"
+          peak_rss="$(awk -F'\t' 'NR>1 && $3+0>m {m=$3+0} END {print m+0}' "$BUNDLE/memory-samples.tsv" 2>/dev/null || true)"
           {
             echo "verdict=$verdict"
             echo "lastdb_tag=$LASTDB_TAG"
