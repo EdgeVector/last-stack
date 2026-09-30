@@ -40,7 +40,7 @@ jq -e '
   and (app("kanban") | .install_mode == "artifact" and .gate == "forgejo" and .track_gate_main == false and .install_root == "$HOME/.host-track/apps/fkanban" and (.links | length) == 1 and any(.links[]; .source == "dist/kanban" and .target == "$HOME/.local/bin/kanban") and (any(.links[]; .target == "$HOME/.local/bin/fkanban") | not) and any(.retired_links[]?; .target == "$HOME/.local/bin/fkanban"))
   and (any(.apps[]; .app == "fkanban") | not)
   and (app("routines") | .install_mode == "artifact" and .gate == "forgejo" and .track_gate_main == false)
-  and (app("lastsecrets") | .install_mode == "artifact" and .gate == "forgejo" and .track_gate_main == false)
+  and (app("lastsecrets") | .install_mode == "artifact" and .gate == "github" and (has("track_gate_main") | not))
   and (app("configurations") | .install_mode == "artifact" and .gate == "github" and (has("track_gate_main") | not))
   and (app("lastseek") | .install_mode == "artifact" and .gate == "forgejo" and .track_gate_main == false and (.post_install|length) > 0)
   and (app("search") | .install_mode == "artifact" and .gate == "github" and (has("track_gate_main") | not) and (.post_install|length) > 0)
