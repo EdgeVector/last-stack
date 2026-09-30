@@ -40,7 +40,7 @@ app_defaults() {
   INSTALL_APP="$app"
   case "$app" in
     brain)
-      DEFAULT_REMOTE="lastdb:///brain"
+      DEFAULT_REMOTE="https://github.com/EdgeVector/brain.git"
       DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/brain.git"
       DEFAULT_LINKS="bin/brain:$HOME/.local/bin/brain"
       DEFAULT_BUILD="bun_install"
@@ -48,7 +48,7 @@ app_defaults() {
       DEFAULT_WRAPPERS="brain"
       ;;
     situations)
-      DEFAULT_REMOTE="lastdb:///situations"
+      DEFAULT_REMOTE="https://github.com/EdgeVector/situations.git"
       DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/situations.git"
       DEFAULT_LINKS="bin/situations:$HOME/.local/bin/situations bin/fsituations:$HOME/.local/bin/fsituations"
       DEFAULT_BUILD="bun_install"
@@ -60,7 +60,7 @@ app_defaults() {
       # are `kanban`. INSTALL_APP is the host-track APP name, not the repo —
       # `fkanban` here would name a registration that no longer exists.
       INSTALL_APP="kanban"
-      DEFAULT_REMOTE="http://localhost:3300/EdgeVector/fkanban.git"  # Forgejo gate of record since 2026-09-05; lastdb:///fkanban is disabled
+      DEFAULT_REMOTE="https://github.com/EdgeVector/fkanban.git"  # GitHub gate of record since 2026-09-30
       DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/fkanban.git"
       DEFAULT_LINKS="bin/kanban:$HOME/.local/bin/kanban"
       DEFAULT_BUILD="bun_install"
@@ -68,7 +68,7 @@ app_defaults() {
       DEFAULT_WRAPPERS="kanban"
       ;;
     routines)
-      DEFAULT_REMOTE="http://localhost:3300/EdgeVector/routines.git"  # Forgejo gate of record since 2026-09-05; lastdb:///routines is disabled
+      DEFAULT_REMOTE="https://github.com/EdgeVector/routines.git"  # GitHub gate of record since 2026-09-30
       DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/routines.git"
       DEFAULT_LINKS="bin/routines:$HOME/.local/bin/routines"
       DEFAULT_BUILD="bun_install"
@@ -76,7 +76,7 @@ app_defaults() {
       DEFAULT_WRAPPERS="routines"
       ;;
     lastsecrets)
-      DEFAULT_REMOTE="lastdb:///lastsecrets"
+      DEFAULT_REMOTE="https://github.com/EdgeVector/lastsecrets.git"
       DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/lastsecrets.git"
       DEFAULT_LINKS="bin/lastsecrets:$HOME/.local/bin/lastsecrets"
       DEFAULT_BUILD="bun_install"
@@ -84,7 +84,7 @@ app_defaults() {
       DEFAULT_WRAPPERS="lastsecrets"
       ;;
     configurations)
-      DEFAULT_REMOTE="lastdb:///configurations"
+      DEFAULT_REMOTE="https://github.com/EdgeVector/configurations.git"
       DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/configurations.git"
       DEFAULT_LINKS="bin/configurations:$HOME/.local/bin/configurations"
       DEFAULT_BUILD="bun_install"
@@ -92,7 +92,7 @@ app_defaults() {
       DEFAULT_WRAPPERS="configurations"
       ;;
     search)
-      DEFAULT_REMOTE="lastdb:///search"
+      DEFAULT_REMOTE="https://github.com/EdgeVector/search.git"
       DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/search.git"
       DEFAULT_LINKS="bin/search:$HOME/.local/bin/search"
       DEFAULT_BUILD="bun_install"
@@ -100,7 +100,8 @@ app_defaults() {
       DEFAULT_WRAPPERS="search"
       ;;
     *)
-      DEFAULT_REMOTE="lastdb:///$app"
+      # Every EdgeVector repo is on GitHub (2026-09-30; LastGit retired).
+      DEFAULT_REMOTE="https://github.com/EdgeVector/$app.git"
       DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/${app}.git"
       DEFAULT_LINKS="bin/$app:$HOME/.local/bin/$app"
       DEFAULT_BUILD="bun_install"
@@ -286,7 +287,7 @@ Usage:
 
 Options:
   --source-dir DIR     Build from local tree (e.g. CI checkout / worktree)
-  --remote URL         Git remote (default: lastdb:///<app>)
+  --remote URL         Git remote (default: https://github.com/EdgeVector/<app>.git)
   --ref REF            Branch/ref (default: main)
   --bare PATH          Bare cache git dir to archive from
   --link REL:ABS       PATH link (repeatable). Default depends on app.
