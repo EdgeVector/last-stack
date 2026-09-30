@@ -43,7 +43,7 @@ jq -e '
   and (app("lastsecrets") | .install_mode == "artifact" and .gate == "github" and (has("track_gate_main") | not))
   and (app("configurations") | .install_mode == "artifact" and .gate == "github" and (has("track_gate_main") | not))
   and (app("state-machine") | .install_mode == "artifact" and .gate == "github" and (has("track_gate_main") | not))
-  and (app("lastseek") | .install_mode == "artifact" and .gate == "forgejo" and .track_gate_main == false and (.post_install|length) > 0)
+  and (app("lastseek") | .install_mode == "artifact" and .gate == "github" and (has("track_gate_main") | not) and (.post_install|length) > 0)
   and (app("lastdb-browser") | .install_mode == "artifact" and .gate == "github" and (has("track_gate_main") | not) and (.post_install|length) > 0)
   and (app("search") | .install_mode == "artifact" and .gate == "github" and (has("track_gate_main") | not) and (.post_install|length) > 0)
   and (app("loom") | .install_mode == "artifact" and .gate == "forgejo" and .track_gate_main == false and any(.links[]; .source == "dist/loom" and .target == "$HOME/.local/bin/loom"))
