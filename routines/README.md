@@ -86,7 +86,7 @@ stripped out.
                      milestone-driver card; at three or more, take no action.
    kanban-watch  ─▶ RECONCILE: advance merged PRs, re-arm/un-stick the stragglers
    kanban-validate ─▶ VALIDATE/PROOF: DONE-WHEN + post-merge END STATE or backlog validation proof → done or fix PR
-   pipeline-health ─▶ every ~10m: LastGit CRs + forge PRs unblocked (stuck >10m → fix or Brain papercut)
+   pipeline-health ─▶ every ~10m: open PRs (GitHub; Forgejo for lastgit) unblocked (stuck >10m → fix or Brain papercut)
    drain-open-prs ─▶ daily backstop: drive every open PR across all repos toward zero
 
                  ┌──────────────────── the brain (brain) ──────────────────┐
@@ -174,8 +174,8 @@ ls ~/.routines/registry/last-stack-fkanban-validate*.toml
 | [`worktree-cleanup`](worktree-cleanup.md) | daily (off-hours) | Prune stale worktrees/branches; bring repos to latest default branch. |
 | [`disk-reclaim`](disk-reclaim.md) | hourly | Reclaim disk, prune merged/clean worktrees, sweep orphan processes. |
 | [`self-upgrade`](self-upgrade.md) | every 1–2 hours (Codex) + launchd every 30m | Clean-only fast-forward of the install checkout + `./setup` so other routines do not stall on `LAST_STACK_ROUTINE_STALE`. Prefer the zero-LLM LaunchAgent (`last-stack-self-upgrade-install`); Codex routine registry entry defaults to paused (dirty-repair only if resumed). |
-| [`pipeline-health`](pipeline-health.md) | every ~10 min | Keep LastGit CRs and forge (fold / forge-hot) PRs unblocked; fix mechanical issues or file Brain papercuts (`papercut-pipeline-*`) — never board P0 monopoly. |
-| [`merge-babysit`](merge-babysit.md) | every ~15 min | Self-heal stuck LastGit CRs, completing green laggards or filing P0 merge cards without turning transient backend outages into fleet-red runs. |
+| [`pipeline-health`](pipeline-health.md) | every ~10 min | Keep open PRs (GitHub for every repo except lastgit, Forgejo for lastgit) unblocked; fix mechanical issues or file Brain papercuts (`papercut-pipeline-*`) — never board P0 monopoly. |
+| [`merge-babysit`](merge-babysit.md) | every ~15 min | Self-heal stuck PRs (GitHub; the LastGit CR path is legacy), re-arming auto-merge, updating BEHIND branches or filing P0 merge cards without turning transient backend outages into fleet-red runs. |
 | [`drain-open-prs`](drain-open-prs.md) | daily | Drive every open PR across all repos toward zero (merge or close). |
 | [`deploy-watch`](deploy-watch.md) | every 5 min | Deploy each enabled repo whose forge main moved to a green commit through the durable `deploy-main` Loom graph. Replaces the launchd `lastgit-deploy-*` watchers. |
 | [`lastdb-canary-soak-watch`](lastdb-canary-soak-watch.md) | hourly | Recompute a v2 verdict from bounded boot and observation evidence. On green it writes `PROMOTE.md` (node build + proved `next` rows + the one publish command) and notifies. Stable stays human. |
@@ -513,11 +513,11 @@ self-driving fleet and a runaway one:
   only idempotent slug upserts in a bounded way.
 - **Dev, not prod, when a design is in flight.** Do reversible work; leave the
   prod cutover for a human.
-- **`gh` only speaks github.com.** A repo whose `origin` points at a self-hosted
-  forge (Forgejo/Gitea/GitLab, often on localhost) must be driven through that
-  forge's API for all PR work — check the workspace brain/AGENTS.md for the
-  repo's forge SOP, and never read or act on a read-only GitHub mirror of a
-  forge-hosted repo.
+- **Every repo is on GitHub except `lastgit`.** Since 2026-09-30 use `gh` for PR
+  work (`gh -R <repo> pr create`, `gh -R <repo> pr merge <n> --auto --squash`, the
+  `ci-required` check run). Only the `lastgit` repo is on the local Forgejo forge: drive it through
+  the Forgejo API (`last-stack-forge-api`). Route with `last-stack-pr-venue`; LastGit
+  is retired.
 - **File, don't ship — unless you're the executor.** The generators and triage
   routines FILE cards; only `kanban-pickup` (via `kanban-agent`) and the
   reconcilers actually open/merge PRs. Keep the lanes separate.

@@ -10,9 +10,10 @@ whether it's still wanted, then take it to a terminal state: MERGE it
 (rebasing/resolving conflicts and fixing mechanical CI as needed), or CLOSE it
 (stale / superseded / abandoned / irrelevant) with a one-line comment saying why.
 
-Scheduled runs use `last-stack-merge-demand-gate`. Skip when Forge and deploy
-are quiet. Ghost LastGit does not count. The default Forge list is
-`config/merge-demand-forge-repos`.
+Scheduled runs use `last-stack-merge-demand-gate`. Skip when open PRs and deploy
+are quiet. Ghost LastGit does not count. The default lists are
+`config/merge-demand-github-repos` (every moved repo) and
+`config/merge-demand-forge-repos` (only `lastgit`, on Forgejo).
 Run ONE full sweep, emit a fresh `ROUTINE_RESULT` line, then exit with a
 report. Do not keep inspecting old memory, waiting on CI, or re-enumerating once
 the report and result line are written.
@@ -26,23 +27,25 @@ advances carded PRs). You are the broader once-a-day backstop that drains the
 long tail across every repo and actually closes dead PRs.
 
 ## Repos to sweep
-List them explicitly: `<owner>/<repo-1>`, `<owner>/<repo-2>`, … **Forge-hosted
-repos:** `gh` only works for github.com remotes — a repo whose `origin` points at
-a self-hosted forge (Forgejo/Gitea/GitLab, often on localhost) must be swept via
-THAT forge's API instead; check the workspace brain/AGENTS.md for the repo's
-forge SOP before assuming GitHub, and never act on a read-only GitHub mirror of
-a forge-hosted repo. For forge API JSON reads, pipe curl through
-`"$last_stack/bin/last-stack-forge-json-jq"` so raw control characters in PR
-bodies cannot make `jq` abort.
+List them explicitly: `<owner>/<repo-1>`, `<owner>/<repo-2>`, … Every EdgeVector
+repo except `lastgit` is on GitHub (2026-09-30; LastGit and the gaming PC are
+retired). The only repo on a self-hosted forge is `lastgit` (Forgejo): sweep it
+through the Forgejo API (`last-stack-forge-api`), not `gh`. For forge API JSON
+reads, pipe curl through `"$last_stack/bin/last-stack-forge-json-jq"` so raw
+control characters in PR bodies cannot make `jq` abort.
 
 Before enumerating a repo, resolve its concrete checkout and run
 `"$last_stack/bin/last-stack-pr-venue" --json <owner/repo> "$target_repo"`.
-LastGit is opt-in only; if `.venue == "lastgit"`, use the native LastGit review
-contract and drain `lastgit cr` change
-requests instead of Forgejo/GitHub PRs. Use `lastgit cr list/view`, `lastgit ci
-status`, `lastgit cr complete --once`, `lastgit cr merge --require-status`, and
-`lastgit cr close`; never run LastGit CI watchers against the primary brain
-socket and never put raw CI secrets in records/logs. Enumerate each GitHub repo:
+The answer is `github` for every repo except `lastgit` (`forgejo`). A
+`.venue == "lastgit"` answer is legacy: use the native LastGit review contract and
+drain `lastgit cr` change requests (`lastgit cr list/view`, `lastgit ci status`,
+`lastgit cr complete --once`, `lastgit cr merge --require-status`, `lastgit cr
+close`); never run LastGit CI watchers against the primary brain socket and never
+put raw CI secrets in records/logs. For a GitHub repo a green PR merges with
+`gh -R <owner>/<repo> pr merge <n> --auto --squash --delete-branch` (the required
+check is the `ci-required` check run; on a GraphQL 502 read the state first, then
+`gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f merge_method=squash`).
+Enumerate each GitHub repo:
 ```bash
 gh -R <owner>/<repo> pr list --state open \
   --json number,title,headRefName,isDraft,mergeable,mergeStateStatus,reviewDecision,autoMergeRequest,updatedAt,statusCheckRollup,author
@@ -124,8 +127,9 @@ continue — do not fail the whole run.
    merge per your merge strategy; approve first if a *review* gate — not a CI
    gate — blocks and you're authorized to).
 5. **Relevant + CONFLICTING/DIRTY/BEHIND** → (BEHIND only, no conflict:
-   skip while a CI run on the head is pending — a push cancels it; Forgejo
-   probe `last-stack-forge-pr-update-branch --repo <r> --pr <n>`, exit 3 =
+   skip while a CI run on the head is pending — a push cancels it; GitHub
+   `gh -R <r> pr checks <n>` shows the `ci-required` run; Forgejo (the `lastgit`
+   repo) probe `last-stack-forge-pr-update-branch --repo <r> --pr <n>`, exit 3 =
    in flight)
    `git worktree add <fresh-path> <headRef>`, fetch the base, rebase, resolve,
    re-run the PR's verify, force-push with lease, then merge. Remove the worktree
