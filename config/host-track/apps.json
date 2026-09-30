@@ -422,8 +422,8 @@
       "install_mode": "artifact",
       "kind": "artifact cli",
       "command": "reconciler",
-      "gate": "forgejo",
-      "gate_main": "http://localhost:3300/EdgeVector/reconciler.git#main",
+      "gate": "github",
+      "gate_main": "https://github.com/EdgeVector/reconciler.git#main",
       "artifact_app": "reconciler",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -434,7 +434,7 @@
           "target": "$HOME/.local/bin/reconciler"
         }
       ],
-      "notes": "Reconciler uses the immutable LastGit artifact. Host Track follows the green published main source OID, installs locked production dependencies, and links only the artifact CLI.",
+      "notes": "Reconciler artifact install of the source pack. Gate of record is GitHub (EdgeVector/reconciler, private, since 2026-09-30). The ci-required workflow publish job uploads the darwin-arm64 source pack; host-track refresh runs last-stack-github-artifact-pull, which re-checks the ci-required check run, the run provenance and every digest before it promotes stable. Host Track installs locked production dependencies through post_install and links only the artifact CLI. track_gate_main is on (the default for a GitHub gate_main). Brain: design-github-artifact-publish-path, sop-github-artifact-app-migration.",
       "post_install": "$HOME/.host-track/apps/reconciler/current/bin/reconciler-host-track-post-install",
       "safe_upgrade": {
         "soak_hours": 1,
@@ -457,11 +457,12 @@
           }
         ]
       },
-      "track_gate_main": false,
       "requires": [
         "lastdbd",
         "lastsecrets"
-      ]
+      ],
+      "gate_remote": "https://github.com/EdgeVector/reconciler.git",
+      "gate_ref": "refs/heads/main"
     },
     {
       "app": "situations",
