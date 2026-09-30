@@ -459,6 +459,8 @@ ci_test tests/host-track-search-github-gate.sh
 ci_test tests/host-track-lastsecrets-github-gate.sh
 ci_test tests/host-track-brain-github-gate.sh
 ci_test tests/host-track-reconciler-github-gate.sh
+# lastseek gates on GitHub (retire LastGit): registry entry + validate-registry.
+ci_test tests/host-track-lastseek-github-gate.sh
 # lastdb-browser gates on GitHub (retire LastGit): registry entry + validate-registry.
 ci_test tests/host-track-lastdb-browser-github-gate.sh
 ci_test tests/host-track-requires.sh
