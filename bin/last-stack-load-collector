@@ -35,8 +35,16 @@ Env (defaults):
   LOAD_MON_ALERT_FOOTPRINT_MB  13107  lastdbd phys_footprint (guard ceiling 16384)
   LOAD_MON_ALERT_FOOTPRINT_CONSEC 3
   LOAD_MON_ALERT_SYNC_CONSEC   10      passes with sync degraded_reasons set
+  LOAD_MON_ALERT_SWAP_MB       20480  host swap used (MB)
+  LOAD_MON_ALERT_SWAP_CONSEC   3
+  LOAD_MON_ALERT_LOAD1         32     host 1-min load average
+  LOAD_MON_ALERT_LOAD_CONSEC   5
+  LOAD_MON_ALERT_HOG_PCT       90     one non-lastdbd process, %CPU
+  LOAD_MON_ALERT_HOG_CONSEC    15
   LOAD_MON_ALERT_COOLDOWN_SEC  1800
   LOAD_MON_NOTIFY         1      0 = no osascript notification, no Situations
+  LOAD_MON_PHONE          =NOTIFY  1 = push to Tom's phone with `ra notify` (Telegram, no LastDB)
+  LOAD_MON_RA             ~/.local/bin/ra
   LOAD_MON_LASTDB         lastdb  CLI used for `ops --by-app`
 """
 
@@ -75,8 +83,16 @@ CPU_CONSEC = int(envf("LOAD_MON_ALERT_CPU_CONSEC", 5))
 FP_MB = envf("LOAD_MON_ALERT_FOOTPRINT_MB", 13107)  # 80% of the 16 GiB guard
 FP_CONSEC = int(envf("LOAD_MON_ALERT_FOOTPRINT_CONSEC", 3))
 SYNC_CONSEC = int(envf("LOAD_MON_ALERT_SYNC_CONSEC", 10))
+SWAP_MB = envf("LOAD_MON_ALERT_SWAP_MB", 20480)
+SWAP_CONSEC = int(envf("LOAD_MON_ALERT_SWAP_CONSEC", 3))
+LOAD1 = envf("LOAD_MON_ALERT_LOAD1", 32)
+LOAD_CONSEC = int(envf("LOAD_MON_ALERT_LOAD_CONSEC", 5))
+HOG_PCT = envf("LOAD_MON_ALERT_HOG_PCT", 90)
+HOG_CONSEC = int(envf("LOAD_MON_ALERT_HOG_CONSEC", 15))
 COOLDOWN = envf("LOAD_MON_ALERT_COOLDOWN_SEC", 1800)
 NOTIFY = os.environ.get("LOAD_MON_NOTIFY", "1") != "0"
+PHONE = os.environ.get("LOAD_MON_PHONE", "1" if NOTIFY else "0") != "0"
+RA = os.environ.get("LOAD_MON_RA", os.path.join(HOME, ".local/bin/ra"))
 
 OPS_RE = re.compile(
     r"app=(\S+) verb=(\S+) count=(\d+) avg=(\d+)ms .*?max=(\d+)ms err=(\d+)"
@@ -279,6 +295,9 @@ def fire(name, msg, now):
     rec = {"ts": iso(now), "alert": name, "message": msg}
     with open(os.path.join(DIR, "alerts.jsonl"), "a") as f:
         f.write(json.dumps(rec) + "\n")
+    if PHONE and os.access(RA, os.X_OK):  # Telegram push; reads no LastDB state
+        detach(["/usr/bin/perl", "-e", "alarm 15; exec @ARGV", RA, "notify",
+                "LastDB load: " + msg, "--priority", "high"])
     if not NOTIFY:
         return
     script = 'display notification %s with title "LastDB load" sound name "Basso"' % json.dumps(msg)
@@ -300,8 +319,23 @@ def evaluate_alerts(rec, now):
     v = rec["node"]["status"].get("vitals") or {}
     st["fp_hot"] = st.get("fp_hot", 0) + 1 if (v.get("fp_mb") or 0) >= FP_MB else 0
     st["sync_bad"] = st.get("sync_bad", 0) + 1 if v.get("sync_why") else 0
+    swap = rec["host"].get("swap_used_mb")
+    st["swap_hot"] = st.get("swap_hot", 0) + 1 if swap is not None and swap >= SWAP_MB else 0
+    load = rec["host"].get("load") or [0]
+    st["load_hot"] = st.get("load_hot", 0) + 1 if load[0] >= LOAD1 else 0
+    hog = next(((t[3], t[1]) for t in rec["host"].get("top") or [] if t[3] != "lastdbd"), None)
+    hog_name = hog[0] if hog and hog[1] >= HOG_PCT else None
+    st["hog_hot"] = st.get("hog_hot", 0) + 1 if hog_name and hog_name == st.get("hog_name") else (1 if hog_name else 0)
+    st["hog_name"] = hog_name
     last = st.setdefault("last_alert", {})
     checks = [
+        ("host_swap_high", st["swap_hot"] >= SWAP_CONSEC,
+         "host swap %s MB >= %d MB for %d passes" % (swap, SWAP_MB, st["swap_hot"])),
+        ("host_load_high", st["load_hot"] >= LOAD_CONSEC,
+         "host load1 %.1f >= %g for %d passes (top: %s)"
+         % (load[0], LOAD1, st["load_hot"], hog[0] if hog else "-")),
+        ("host_process_hog", st["hog_hot"] >= HOG_CONSEC,
+         "%s at >= %d%% CPU for %d passes" % (hog_name, HOG_PCT, st["hog_hot"])),
         ("lastdbd_footprint_high", st["fp_hot"] >= FP_CONSEC,
          "lastdbd footprint %s MB >= %d MB for %d passes (gov=%s)" % (v.get("fp_mb"), FP_MB, st["fp_hot"], v.get("gov"))),
         ("lastdb_sync_degraded", st["sync_bad"] >= SYNC_CONSEC,
