@@ -56,11 +56,15 @@ pauses their live registry entries.
    adds one compat row per app to `registry/next.json` on the tap repo, writes
    `registry/proofs/<proof_run>.json`, signs with
    `~/.lastdb/registry-index-signing.key` through `lastdb app index sign`, and
-   opens an auto-merging LastGit CR on `lastdb:///homebrew-lastdb`
-   (`--require-status ci-required`). Since LastGit era 3 (2026-09-27) the tap's
-   GitHub mirror, which `lastdb app resolve` reads, follows LastGit. A row
-   merged on the frozen Forgejo copy never reaches a reader.
-   `LAST_STACK_REGISTRY_TAP_VENUE=forgejo` keeps the old Forgejo PR path.
+   opens an auto-merging GitHub PR on `EdgeVector/homebrew-lastdb`
+   (`gh pr merge --squash --auto`; branch protection requires `ci-required`
+   and blocks a direct push to `main`). Since 2026-09-30 GitHub is the tap's
+   gate of record, and `lastdb app resolve` reads it. The LastGit and Forgejo
+   copies are frozen: a row merged there never reaches a reader.
+   `LAST_STACK_REGISTRY_TAP_VENUE=lastgit|forgejo` keep the frozen paths for
+   tests only. The brew formula bump goes through the same PR path
+   (`last-stack-brew-app-publish`, and fold's promote script with
+   `--formula-venue github`).
 
 ## Promote material and the automatic publish
 

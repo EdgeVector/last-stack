@@ -8,12 +8,13 @@
 # index, and arms auto-merge. The tap's CI checks the digest and the proof
 # record, then merges; the GitHub mirror serves the file to `lastdb app resolve`.
 #
-# Venue: since LastGit era 3 (2026-09-27) the tap's gate of record is LastGit
-# (lastdb:///homebrew-lastdb), and its GitHub mirror follows LastGit. The
-# Forgejo copy is frozen: a row merged there never reaches GitHub, so
-# `lastdb app resolve` never sees it. The default venue is therefore `lastgit`
-# (push + `lastgit cr create --auto-merge --require-status ci-required`);
-# LAST_STACK_REGISTRY_TAP_VENUE=forgejo keeps the old Forgejo PR path.
+# Venue: since 2026-09-30 the tap's gate of record is GitHub
+# (EdgeVector/homebrew-lastdb, decision-2026-09-29-retire-lastgit-all-repos-to-github).
+# The LastGit and Forgejo copies are frozen: a row merged there never reaches
+# `lastdb app resolve`. The default venue is therefore `github` (push the row
+# branch, `gh pr create`, `gh pr merge --squash --auto`; branch protection on
+# main requires `ci-required`, and enforce_admins blocks a direct push to main).
+# LAST_STACK_REGISTRY_TAP_VENUE=lastgit|forgejo keep the frozen paths for tests.
 #
 # Nothing here touches the primary node.
 #
@@ -41,14 +42,16 @@ export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 
 FORGE_ROOT_URL="${FORGE_ROOT_URL:-http://localhost:3300}"
 TAP_REPO="${LAST_STACK_REGISTRY_TAP_REPO:-EdgeVector/homebrew-lastdb}"
-TAP_VENUE="${LAST_STACK_REGISTRY_TAP_VENUE:-lastgit}"   # lastgit | forgejo
+TAP_VENUE="${LAST_STACK_REGISTRY_TAP_VENUE:-github}"   # github | lastgit | forgejo
+GH_BIN="${GH_BIN:-gh}"
 TAP_LASTGIT_SLUG="${LAST_STACK_REGISTRY_TAP_LASTGIT_SLUG:-${TAP_REPO#*/}}"
 TAP_CI_CONTEXT="${LAST_STACK_REGISTRY_TAP_CI_CONTEXT:-ci-required}"
 LASTGIT_BIN="${LASTGIT_BIN:-lastgit}"
 case "$TAP_VENUE" in
+  github) TAP_URL="${LAST_STACK_REGISTRY_TAP_URL:-https://github.com/$TAP_REPO.git}" ;;
   lastgit) TAP_URL="${LAST_STACK_REGISTRY_TAP_URL:-lastdb:///$TAP_LASTGIT_SLUG}" ;;
   forgejo) TAP_URL="${LAST_STACK_REGISTRY_TAP_URL:-$FORGE_ROOT_URL/$TAP_REPO.git}" ;;
-  *) printf 'last-stack-registry-publish-next: LAST_STACK_REGISTRY_TAP_VENUE must be lastgit or forgejo, not %s\n' "$TAP_VENUE" >&2; exit 2 ;;
+  *) printf 'last-stack-registry-publish-next: LAST_STACK_REGISTRY_TAP_VENUE must be github, lastgit or forgejo, not %s\n' "$TAP_VENUE" >&2; exit 2 ;;
 esac
 TAP_DIR="${LAST_STACK_REGISTRY_TAP_DIR:-$HOME/.local/state/last-stack/registry-tap}"
 SIGNING_KEY="${LASTDB_REGISTRY_SIGNING_KEY:-$HOME/.lastdb/registry-index-signing.key}"
@@ -71,8 +74,9 @@ usage() {
 last-stack-registry-publish-next --candidate-set FILE --proof FILE [--proof-run ID] [--dry-run]
 
 Adds one compat row per app in the candidate set to registry/next.json on the
-tap repo, records the proof, signs, and opens an auto-merging change: a LastGit
-CR (default, the tap's gate of record since era 3) or a Forgejo PR.
+tap repo, records the proof, signs, and opens an auto-merging change: a GitHub
+PR (default, the tap's gate of record since 2026-09-30), a LastGit CR, or a
+Forgejo PR.
 
   --candidate-set FILE  output of last-stack-canary-candidate-set
   --proof FILE          the smoke's JSON verdict. GREEN proves every app in
@@ -87,7 +91,8 @@ CR (default, the tap's gate of record since era 3) or a Forgejo PR.
   --strict-green        require verdict GREEN, exactly like before per-app
                          attribution existed; a RED proof of any shape dies
 
-Env: LAST_STACK_REGISTRY_TAP_VENUE (lastgit|forgejo, default lastgit),
+Env: LAST_STACK_REGISTRY_TAP_VENUE (github|lastgit|forgejo, default github),
+     GH_BIN,
      LAST_STACK_REGISTRY_TAP_URL, LAST_STACK_REGISTRY_TAP_DIR,
      LAST_STACK_REGISTRY_TAP_LASTGIT_SLUG, LAST_STACK_REGISTRY_TAP_CI_CONTEXT,
      LASTGIT_BIN, LASTDB_REGISTRY_SIGNING_KEY (default
@@ -276,6 +281,28 @@ fi
 if [ "$DRY_RUN" -eq 1 ]; then
   printf 'REGISTRY_NEXT status=dry-run build=%s apps=%s proof_run=%s dir=%s\n' "$build" "$count" "$PROOF_RUN" "$TAP_DIR"
   git -C "$TAP_DIR" show --stat HEAD | head -20
+  exit 0
+fi
+
+if [ "$TAP_VENUE" = github ]; then
+  command -v "$GH_BIN" >/dev/null 2>&1 || die "gh CLI not found ($GH_BIN); set GH_BIN"
+  git -C "$TAP_DIR" push --quiet origin "$branch:$branch"
+  if [ "$PARTIAL" -eq 1 ]; then
+    body_text="$(jq -rn --arg build "$build" --arg run "$PROOF_RUN" --arg n "$count" --arg passed "$PASSED_APPS" \
+      '"## What\n\n`registry/next.json`: " + $n + " compat rows proved with lastdb `" + $build + "` by `" + $run + "` (partial: the smoke was RED, but every fail attributed to a named app, and these apps had none). Apps proved: `" + $passed + "`. Proof record: `registry/proofs/" + $run + ".json`.\n\nWritten by the canary lane. `stable` is untouched.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"')"
+  else
+    body_text="$(jq -rn --arg build "$build" --arg run "$PROOF_RUN" --arg n "$count" \
+      '"## What\n\n`registry/next.json`: " + $n + " compat rows proved with lastdb `" + $build + "` by `" + $run + "`. Proof record: `registry/proofs/" + $run + ".json`.\n\nWritten by the canary lane after the isolated llms-txt install smoke passed on this candidate set. `stable` is untouched.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"')"
+  fi
+  body_file="$(mktemp "${TMPDIR:-/tmp}/registry-next-body.XXXXXX")"
+  printf '%s\n' "$body_text" >"$body_file"
+  pr_url="$("$GH_BIN" pr create --repo "$TAP_REPO" --base main --head "$branch" \
+    --title "$commit_subject" --body-file "$body_file")" || die "gh pr create failed for $TAP_REPO $branch"
+  pr_number="${pr_url##*/}"
+  case "$pr_number" in ''|*[!0-9]*) die "gh pr create returned no PR number: $pr_url" ;; esac
+  "$GH_BIN" pr merge "$pr_number" --repo "$TAP_REPO" --squash --auto --delete-branch >/dev/null \
+    || printf 'last-stack-registry-publish-next: PR %s opened; auto-merge not armed\n' "$pr_number" >&2
+  printf 'REGISTRY_NEXT status=pr build=%s apps=%s proof_run=%s pr=%s/%s\n' "$build" "$count" "$PROOF_RUN" "$TAP_REPO" "$pr_number"
   exit 0
 fi
 

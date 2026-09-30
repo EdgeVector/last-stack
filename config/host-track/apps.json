@@ -9,7 +9,7 @@
       "post_flip_ticks": 2
     },
     "registry_channel": "next",
-    "registry_index": "http://localhost:3300/EdgeVector/homebrew-lastdb/raw/branch/main/registry",
+    "registry_index": "https://raw.githubusercontent.com/EdgeVector/homebrew-lastdb/main/registry",
     "_registry_note": "Apps on the LastDB app registry follow the `next` channel: host-track installs the artifact whose source_oid the signed index proves with the running LastDB build (lastdb app resolve). No proved row -> hold current. Apps not on the index keep following their artifact channel head. Per app: registry_follow=false opts out; registry_app maps the name. north-star-lastdb-app-registry-release-loop slice 7."
   },
   "apps": [
