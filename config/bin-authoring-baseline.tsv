@@ -6,6 +6,5 @@ bin/last-stack-card-closeout
 bin/last-stack-dogfood-resource-isolate
 bin/last-stack-forge-runner-lanes
 bin/last-stack-lastdb-ops-offenders
-bin/last-stack-lastgit-ci-coverage
 bin/last-stack-park-stuck-merge-poison-cards
 bin/last-stack-worktree-reclaim

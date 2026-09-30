@@ -41,16 +41,12 @@ LastGit is retired for every EdgeVector repo
 (`decision-2026-09-29-retire-lastgit-all-repos-to-github`). Every repo except
 `lastgit` is on GitHub; `lastgit` is on Forgejo. Its
 registry schemas are not on the primary node, so `lastgit cr list --all-open`,
-`lastgit stuck`, and `last-stack-pr-reaper-stale-open-heal` fail with a
+and `lastgit stuck` fail with a
 missing-schema error on every pass. That error is not a reaper failure and not
 a papercut. When `LAST_STACK_LASTGIT_NATIVE_REPOS` is empty (the default), run
 no `lastgit` command and no stale-open heal. Heartbeat `healed_stale_open=disabled`.
 
-Only when `LAST_STACK_LASTGIT_NATIVE_REPOS` names a repo, run the zero-LLM
-healer for that repo before any merge/close
-(`"$last_stack/bin/last-stack-pr-reaper-stale-open-heal" --json`), count its
-`healed_stale_open` as reaped, and treat projection lag as fail-soft (never a
-pass-level `error`).
+The `last-stack-pr-reaper-stale-open-heal` helper was removed with LastGit.
 
 ## STEP 1 — One command builds the whole reap plan
 

@@ -832,8 +832,7 @@ grep -q 'Do not wait for a long child process to finish unwinding after the time
 grep -q 'Do not start any new validation or PR/CR publish sequence when remaining time' "$pickup"
 grep -q 'is under \*\*20 minutes\*\*' "$pickup"
 grep -q 'TIMEOUT_MIN:-180' "$pickup"
-grep -q 'LastGit missing-CI is a handoff condition' "$pickup"
-grep -q 'hand-build or manually publish the status from pickup' "$pickup"
+grep -q 'In-flight-CI handoff' "$pickup"
 grep -q 'result=in-flight-ci-pending' "$pickup"
 grep -q 'Live operational proof watches are bounded too' "$pickup"
 grep -q 'reason=watch-budget-reserved' "$pickup"
@@ -920,7 +919,6 @@ grep -q 'any referrer is listed, KEEP the record' "$consolidate"
 grep -q 'silently delete or archive a still-referenced record' "$consolidate"
 
 pipeline="$ROOT/routines/pipeline-health.md"
-grep -q 'LASTGIT_PRIMARY_SOCKET' "$pipeline"
 if rg -n 'lastgit/code|code node|both forge nodes|LASTGIT_CODE_SOCKET' "$pipeline" >/dev/null; then
   echo "pipeline-health should not reference the retired LastGit code socket" >&2
   exit 1
@@ -929,8 +927,6 @@ fi
 grep -q 'papercut-pipeline-deploy-' "$pipeline"
 grep -q 'papercut-reconciler' "$pipeline"
 grep -q 'last-stack-pipeline-stuck-papercut-file' "$pipeline"
-grep -q 'last-stack-lastgit-ci-coverage' "$pipeline"
-grep -q 'forge run --all --context ci-required' "$pipeline"
 # 2026-09-22: Forgejo PR rows come from the ledger, one per PR; LastGit is not probed.
 grep -Fq 'last-stack-pipeline-forge-pr-ledger" sync --apply' "$pipeline"
 grep -q 'decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default' "$pipeline"

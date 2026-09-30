@@ -215,22 +215,8 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   the PR is recorded on the card, run **one** `gh -R <repo> pr checks <n>`
   read. If `ci-required` is still absent, do not re-run it by hand and do not
   keep polling: heartbeat `in-flight-ci-pending` as below and EXIT.
-- LastGit missing-CI is a handoff condition, not pickup work (legacy: LastGit is
-  retired since 2026-09-30, and `last-stack-pr-venue` answers `lastgit` for no
-  repo unless a marker or git config says so). After a LastGit CR
-  is recorded on the card, you may run **one** bounded `lastgit cr complete
-  --once` / `lastgit ci status` check. If that still shows no `ci-required`
-  status, do **not** hand-build or manually publish the status from pickup, do
-  **not** start another watcher, and do **not** keep polling. Ensure a P0
-  `pipeline` / `missing-ci` card exists for the affected CR if one is not already
-  present. Before filing a last-stack `ci-required` *watcher* card, run
-  `last-stack-lastgit-ci-coverage --repo <card repo slug> --head <CR head oid>
-  --json`. Always pass `--repo`: the helper has no fixed default and exits 2
-  without one (a bare run once reported `last-stack` coverage for a
-  `laststore` CR). `--head` scopes the verdict to that oid. If it reports
-  `covered=true`, the fleet supervisor already publishes `ci-required`; append
-  a lastgit papercut for the missed head instead of a new last-stack watcher
-  unit. Then heartbeat
+- In-flight-CI handoff: when `ci-required` is missing or pending after the one
+  read, heartbeat
   `ok cards=1 worked=<slug> result=in-flight-ci-pending pr=<url>
   final_column=doing`, print the `ROUTINE_RESULT` token followed by
   `outcome=ok detail=worked=<slug> result=in-flight-ci-pending pr=<url>`, and
