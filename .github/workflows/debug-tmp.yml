@@ -23,6 +23,27 @@ jobs:
         continue-on-error: true
         run: |
           hostname; time python3 -c "import socket; print(socket.getfqdn('127.0.0.1'))"
+      - name: mock timing
+        continue-on-error: true
+        run: |
+          cd "$RUNNER_TEMP"
+          cat > m.py <<'PY'
+          import sys, time
+          t0=time.time()
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+          print("import", time.time()-t0, file=sys.stderr)
+          httpd = HTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+          print("bind", time.time()-t0, file=sys.stderr)
+          open(sys.argv[1], "w").write(str(httpd.server_address[1]))
+          print("wrote", time.time()-t0, file=sys.stderr)
+          httpd.serve_forever()
+          PY
+          sed -i '' 's/^          //' m.py
+          ( time python3 m.py port.txt ) 2>&1 &
+          for i in $(seq 1 100); do [ -s port.txt ] && break; sleep 0.1; done; echo waited=$i; cat port.txt; kill %1 || true
+      - name: superseded -x
+        continue-on-error: true
+        run: bash -x tests/last-stack-ci-superseded.sh 2>&1 | tail -60
       - name: env
         run: |
           echo "SHELL=$SHELL"; which bash python3; bash --version | head -1; python3 --version; sw_vers

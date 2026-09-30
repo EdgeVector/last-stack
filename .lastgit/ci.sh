@@ -946,7 +946,9 @@ ci_test_discovered() {
   exempt="$(grep -vE '^(#|$)' "$ROOT/tests/.ci-exempt" | cut -f1)"
   for test_script in tests/*.sh; do
     [ -f "$test_script" ] || continue
-    if printf '%s\n' "$listed" "$exempt" | grep -Fxq -- "$test_script"; then continue; fi
+    # A pipe into `grep -q` can SIGPIPE the printf and, under pipefail, report a
+    # listed test as unlisted (so it ran twice). Match without a pipe.
+    case $'\n'"$listed"$'\n'"$exempt"$'\n' in *$'\n'"$test_script"$'\n'*) continue ;; esac
     test_slot=$(( $(printf '%s' "$test_script" | cksum | awk '{print $1}') % CI_SHARD_COUNT ))
     [ "$test_slot" -eq "$CI_SHARD_INDEX" ] || continue
     echo "ci_test start: $test_script (auto-discovered)"
