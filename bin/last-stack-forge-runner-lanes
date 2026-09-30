@@ -8,6 +8,8 @@
 # Default: local discovery from config + runner homes under $HOME.
 # --check  exit 0 only when a dedicated heavy lane is present and separated
 #          from the merge-gate homes (no `heavy` label on merge-gate homes).
+#          A policy with heavy.retired=true needs no heavy lane (the repos it
+#          served moved to GitHub) and is judged on the separation alone.
 # --live   also poll Forgejo API (admin + repo runners) when reachable.
 # --json   machine-readable report.
 #
@@ -282,6 +284,13 @@ heavy_ok_local = any(
     for r in heavy_local
 )
 
+# A retired heavy lane (policy heavy.retired = true) needs no runner: the repos it
+# served moved to GitHub. --check then judges only that no merge-gate home
+# advertises a heavy label.
+heavy_retired = bool(policy.get("heavy", {}).get("retired", False))
+if heavy_retired:
+    heavy_ok_local = True
+
 
 def forge_token() -> str:
     """Same resolution order as lib/forge-token.sh: env > keychain > lastsecrets.
@@ -480,6 +489,8 @@ if live and live_report.get("ok"):
         if row is not None and runner_down(row):
             merge_gate_expected_offline.append(name)
 live_report["merge_gate_expected_offline"] = merge_gate_expected_offline
+if heavy_retired:
+    heavy_ok_live = True
 
 # Final verdict
 if live:
@@ -501,6 +512,7 @@ report = {
     "heavy_capacity": heavy_capacity,
     "heavy_ok_local": heavy_ok_local,
     "heavy_ok_live": heavy_ok_live if live else None,
+    "heavy_retired": heavy_retired,
     "merge_gate_has_heavy": merge_gate_has_heavy,
     "separated_from_merge_gate": separated,
     "heavy_ok": heavy_ok,

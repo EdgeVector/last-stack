@@ -199,9 +199,11 @@ if command -v last-stack-lastdb-pressure >/dev/null 2>&1; then
   fi
 fi
 
-# --- Class C: fold CI / forge runners ---
+# --- Class C: forge runners ---
+# Only the merge-gate runner is checked: the repo-scoped host runner served fold,
+# which is on GitHub since 2026-09-29. Only the lastgit repo still gates on Forgejo.
 fold_ci_down=0
-for agent in com.edgevector.forgejo-runner com.edgevector.forgejo-runner-host; do
+for agent in com.edgevector.forgejo-runner; do
   if ! launchctl print "gui/$(id -u)/$agent" >/dev/null 2>&1; then
     fold_ci_down=1
     detail+=("launchd missing $agent")

@@ -1,8 +1,8 @@
 {
-  "version": 3,
-  "description": "Forgejo Actions runner lane policy for the EdgeVector local forge. Every runner is a Mac host-mode runner. The gaming PC runners (pc-forge-runner, pc-heavy-runner) were retired on 2026-09-29 when Tom moved every EdgeVector dependency off the PC. Merge-blocking ci-required runs on the macos-arm64 host lane; release/deploy jobs use the Mac host lane via the macos label.",
+  "version": 4,
+  "description": "Forgejo Actions runner lane policy for the EdgeVector local forge. Since 2026-09-30 only the `lastgit` repo stays on Forgejo; every other EdgeVector repo is on GitHub. Only the merge-gate lane is live. The heavy lane is retired: its repo-scoped runners served fold and exemem-infra, both on GitHub now. The gaming PC runners (pc-forge-runner, pc-heavy-runner) were retired on 2026-09-29. Merge-blocking ci-required runs on the macos-arm64 host lane.",
   "merge_gate": {
-    "purpose": "Pre-merge ci-required only. Keep capacity free for fold/lastgit PR gates.",
+    "purpose": "Pre-merge ci-required only, for the lastgit repo (the one repo left on Forgejo).",
     "labels": [
       "macos-arm64"
     ],
@@ -18,7 +18,7 @@
     "notes": "Mac merge runner is host-only macos-arm64 (docker label dropped 2026-07-13). No docker lane exists: the PC pc-forge-runner that served docker/* was retired 2026-09-29. Do not attach long release/deploy workflows to these labels."
   },
   "heavy": {
-    "purpose": "Long-running non-gating work on Mac host runners. Release/deploy jobs (fold tags, exemem-infra deploys) use the macos label. The dedicated heavy label had no runner after pc-heavy-runner (PC docker) was retired on 2026-09-29; re-adding heavy:host to a Mac host runner is a deliberate decision. Never a required pre-merge status.",
+    "purpose": "RETIRED 2026-09-30. Long-running non-gating work on Mac host runners for fold tags and exemem-infra deploys. Both repos are on GitHub now (GitHub Actions), so no Forgejo heavy runner is expected. Re-adding a heavy lane is a deliberate decision. Never a required pre-merge status.",
     "labels": [
       "heavy",
       "macos"
@@ -26,29 +26,8 @@
     "required_labels_any": [
       "heavy"
     ],
-    "local_homes": [
-      "~/.forgejo-runner-host",
-      "~/.forgejo-runner-host-exemem-infra"
-    ],
-    "expected_runners": [
-      {
-        "name": "mac-forge-runner-host",
-        "scope": "repo",
-        "repo": "EdgeVector/fold",
-        "labels": [
-          "macos:host"
-        ],
-        "capacity": 1,
-        "timeout": "6h"
-      },
-      {
-        "name": "mac-forge-runner-host-exemem-infra",
-        "scope": "repo",
-        "repo": "EdgeVector/exemem-infra",
-        "capacity": 1,
-        "timeout": "6h"
-      }
-    ],
+    "local_homes": [],
+    "expected_runners": [],
     "workflow_routing": {
       "runs_on": [
         "heavy",
@@ -59,11 +38,12 @@
       ],
       "example": "release.yml / deploy jobs: runs-on: macos (Mac host). Leave ci-required needs: limited to merge-gate jobs only."
     },
-    "notes": "pc-heavy-runner (PC docker, label heavy) was retired 2026-09-29. Until a Mac host runner re-adds heavy:host, `heavy` jobs queue (the lane is non-gating). Host-mode Mac runners stay capacity 1 so a release does not stack with another long job."
+    "notes": "pc-heavy-runner (PC docker, label heavy) was retired 2026-09-29. The Mac host runners for fold and exemem-infra (com.edgevector.forgejo-runner-host, -host-exemem-infra) are not expected or watched any more; Tom may leave them loaded or bootout them.",
+    "retired": true
   },
   "proof": {
     "command": "bin/last-stack-forge-runner-lanes --check",
     "live_command": "bin/last-stack-forge-runner-lanes --check --live",
-    "expected": "Local discovery only: no PC runner is expected. heavy_ok=true needs a Mac host home that advertises heavy:host again."
+    "expected": "Local discovery only. The heavy lane is retired (heavy.retired), so heavy_ok is true without a heavy runner; the check fails only when a merge-gate home advertises the heavy label or a merge-gate runner is offline."
   }
 }
