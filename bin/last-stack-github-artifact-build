@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""Build host-track artifact bundles on a GitHub Actions runner.
+
+Reads the repo's artifact declaration (default .lastgit/artifacts.json, the same
+file `lastgit artifact publish` used) and writes, per app:
+
+    <out>/<app>/bundle.tar        the declared paths, modes kept, mtime 0
+    <out>/<app>/provenance.json   app, repo, source_oid, tree_oid, platform,
+                                  paths, per-file sha256/size/mode, tar sha256
+    <out>/index.json              the apps in this build
+
+The workflow uploads <out> as the GitHub Actions artifact `ht-artifact-<oid>`.
+The Mac side (`last-stack-github-artifact-pull`) downloads it, re-checks every
+digest, and only then writes the artifact CAS and the stable channel.
+
+This tool never touches the CAS or any channel. It only reads the checkout.
+Brain: design-github-artifact-publish-path
+"""
+import argparse
+import hashlib
+import json
+import os
+import platform as pyplatform
+import subprocess
+import sys
+import tarfile
+
+SCHEMA = 1
+
+
+def die(msg):
+    print("last-stack-github-artifact-build: %s" % msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def runner_platform():
+    system = pyplatform.system()
+    machine = pyplatform.machine().lower()
+    table = {
+        ("Darwin", "arm64"): "darwin-arm64",
+        ("Darwin", "x86_64"): "darwin-x64",
+        ("Linux", "x86_64"): "linux-x64",
+        ("Linux", "amd64"): "linux-x64",
+        ("Linux", "aarch64"): "linux-arm64",
+        ("Linux", "arm64"): "linux-arm64",
+    }
+    return table.get((system, machine), "%s-%s" % (system.lower(), machine))
+
+
+def safe_rel(rel):
+    parts = rel.replace("\\", "/").split("/")
+    if not rel or rel.startswith("/") or ".." in parts:
+        die("artifact path must be relative and contained: %r" % rel)
+    return "/".join(p for p in parts if p not in ("", "."))
+
+
+def collect(root, paths):
+    """Sorted regular files under the declared paths. Symlinks are refused."""
+    files = set()
+
+    def visit(rel):
+        rel = safe_rel(rel)
+        src = os.path.join(root, rel)
+        if not os.path.lexists(src):
+            die("artifact input missing: %s" % rel)
+        if os.path.islink(src):
+            die("artifact input must not be a symlink: %s" % rel)
+        if os.path.isfile(src):
+            files.add(rel)
+            return
+        if not os.path.isdir(src):
+            die("artifact input must be a regular file or directory: %s" % rel)
+        for child in sorted(os.listdir(src)):
+            visit(rel + "/" + child)
+
+    for rel in sorted(set(paths)):
+        visit(rel)
+    if not files:
+        die("artifact requires at least one regular file")
+    return sorted(files)
+
+
+def git_out(root, *args):
+    try:
+        return subprocess.check_output(["git", "-C", root] + list(args), text=True).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        die("git %s failed: %s" % (" ".join(args), exc))
+
+
+def build_entry(root, out, entry, repo, oid, tree, default_platform):
+    app = entry.get("app")
+    paths = entry.get("paths")
+    if not app or not isinstance(paths, list) or not paths:
+        die("artifact entry needs app and a non-empty paths list: %r" % (entry,))
+    if not all(c.isalnum() or c in "._-" for c in app):
+        die("invalid app name: %r" % app)
+    plat = entry.get("platform") or default_platform
+    rels = collect(root, paths)
+    app_dir = os.path.join(out, app)
+    os.makedirs(app_dir, exist_ok=True)
+    listing = []
+    tar_path = os.path.join(app_dir, "bundle.tar")
+    with tarfile.open(tar_path, "w", format=tarfile.GNU_FORMAT) as tar:
+        for rel in rels:
+            src = os.path.join(root, rel)
+            st = os.lstat(src)
+            mode = st.st_mode & 0o777
+            info = tarfile.TarInfo(rel)
+            info.size = st.st_size
+            info.mode = mode
+            info.mtime = 0
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            with open(src, "rb") as fh:
+                tar.addfile(info, fh)
+            listing.append({"path": rel, "sha256": sha256_file(src), "size": st.st_size, "mode": mode})
+    prov = {
+        "schema_version": SCHEMA,
+        "app": app,
+        "repo": repo,
+        "source_oid": oid,
+        "tree_oid": tree,
+        "platform": plat,
+        "paths": sorted(set(paths)),
+        "files": listing,
+        "tar_sha256": sha256_file(tar_path),
+        "run": {
+            "repository": os.environ.get("GITHUB_REPOSITORY", ""),
+            "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+            "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+            "workflow": os.environ.get("GITHUB_WORKFLOW", ""),
+            "ref": os.environ.get("GITHUB_REF", ""),
+        },
+    }
+    with open(os.path.join(app_dir, "provenance.json"), "w") as fh:
+        json.dump(prov, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    return {"app": app, "platform": plat, "files": len(listing), "tar_sha256": prov["tar_sha256"]}
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--repo", required=True, help="OWNER/NAME of the source repo")
+    ap.add_argument("--root", default=".", help="checkout root (default .)")
+    ap.add_argument("--config", default=".lastgit/artifacts.json", help="artifact declaration, relative to --root")
+    ap.add_argument("--out", required=True, help="output directory")
+    ap.add_argument("--oid", help="commit oid (default: HEAD of --root)")
+    ap.add_argument("--context", default="ci-required", help="build entries whose context is unset or equals this")
+    ap.add_argument("--platform", help="default platform label (default: this runner)")
+    ap.add_argument("--app", action="append", help="build only this app (repeatable)")
+    args = ap.parse_args()
+
+    root = os.path.abspath(args.root)
+    cfg_path = os.path.join(root, args.config)
+    if not os.path.isfile(cfg_path):
+        die("artifact declaration not found: %s" % cfg_path)
+    with open(cfg_path) as fh:
+        entries = json.load(fh).get("artifacts")
+    if not isinstance(entries, list) or not entries:
+        die("%s: artifacts must be a non-empty array" % args.config)
+    entries = [e for e in entries if e.get("context") in (None, args.context)]
+    if args.app:
+        entries = [e for e in entries if e.get("app") in args.app]
+    if not entries:
+        die("no artifact entry matches context=%s app=%s" % (args.context, args.app))
+
+    oid = (args.oid or git_out(root, "rev-parse", "HEAD")).lower()
+    if len(oid) not in (40, 64) or any(c not in "0123456789abcdef" for c in oid):
+        die("invalid commit oid: %r" % oid)
+    tree = git_out(root, "rev-parse", oid + "^{tree}")
+    out = os.path.abspath(args.out)
+    os.makedirs(out, exist_ok=True)
+    default_platform = args.platform or runner_platform()
+    built = [build_entry(root, out, e, args.repo, oid, tree, default_platform) for e in entries]
+    with open(os.path.join(out, "index.json"), "w") as fh:
+        json.dump({"schema_version": SCHEMA, "repo": args.repo, "source_oid": oid, "tree_oid": tree, "apps": built},
+                  fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    for b in built:
+        print("built app=%s platform=%s files=%d tar_sha256=%s oid=%s tree=%s"
+              % (b["app"], b["platform"], b["files"], b["tar_sha256"], oid, tree))
+
+
+if __name__ == "__main__":
+    main()

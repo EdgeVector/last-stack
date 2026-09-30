@@ -650,6 +650,42 @@ parse_lastdb_gate_main() {
   esac
 }
 
+# Parse https://github.com/<owner>/<name>[.git]#<ref> into OWNER/NAME + ref name.
+# A GitHub gate has no `lastgit ref` point read; the tip comes from `gh api`.
+parse_github_gate_main() {
+  local gate_main="$1" rest slug ref
+  case "$gate_main" in
+    https://github.com/*/*)
+      rest="${gate_main#https://github.com/}"
+      slug="${rest%%#*}"
+      slug="${slug%.git}"
+      if [ "$rest" = "${rest%%#*}" ]; then
+        ref="main"
+      else
+        ref="${rest#*#}"
+        ref="${ref#refs/heads/}"
+        [ -n "$ref" ] || ref="main"
+      fi
+      case "$slug" in */*/*|""|*/) return 1 ;; esac
+      printf '%s\t%s\n' "$slug" "$ref"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# Branch tip of a GitHub gate_main. `gh api` first (works for private repos with
+# the keyring login and needs no URL rewrite), then a plain ls-remote.
+github_main_tip() {
+  local slug="$1" ref="${2:-main}" gh_bin oid
+  gh_bin="${HOST_TRACK_GH:-${LAST_STACK_GH:-gh}}"
+  oid="$("$gh_bin" api "repos/$slug/git/ref/heads/$ref" --jq .object.sha 2>/dev/null || true)"
+  if [[ ! "$oid" =~ ^[0-9a-f]{40}$ ]]; then
+    oid="$(git ls-remote "https://github.com/$slug.git" "refs/heads/$ref" 2>/dev/null | awk 'NR==1{print $1}' || true)"
+  fi
+  [[ "$oid" =~ ^[0-9a-f]{40}$ ]] || return 1
+  printf '%s\n' "$oid"
+}
+
 # OWNER/NAME for Situations out of an app's registry gate_main, or "" when the
 # entry carries none this can read.
 #
@@ -783,6 +819,9 @@ artifact_tracks_gate_main() {
   [ "$(field "$json" install_mode)" = "artifact" ] || return 1
   gate_main="$(field "$json" gate_main)"
   case "$gate_main" in lastdb:///*#main|lastdb:///*#refs/heads/main) return 0 ;; esac
+  # A GitHub gate: the repo's publish job builds the artifact on GitHub and
+  # last-stack-github-artifact-pull moves it into the CAS. Same default as above.
+  parse_github_gate_main "$gate_main" >/dev/null 2>&1 && return 0
   return 1
 }
 
@@ -878,6 +917,31 @@ artifact_deployable_main_oid() {
   return 1
 }
 
+# GitHub gate: pull the GitHub-built artifact for the branch tip into the CAS and
+# promote the channel. The puller re-checks the ci-required check run, the run
+# provenance, every digest, and Situations before it writes anything. Best
+# effort like the LastGit path: a hold or failure leaves the channel unchanged
+# and the install can still use the last good one.
+artifact_pull_from_github() {
+  local app="$1" slug="$2" ref="$3" artifact_app="$4" channel="$5" artifact_root="$6" puller rc
+  puller="${HOST_TRACK_GITHUB_PULL:-$ROOT/bin/last-stack-github-artifact-pull}"
+  [ -x "$puller" ] || {
+    printf 'host-track: %s github pull tool missing (%s); keeping channel=%s\n' "$app" "$puller" "$channel" >&2
+    return 0
+  }
+  set +e
+  "$puller" --app "$artifact_app" --repo "$slug" --branch "$ref" --channel "$channel" \
+    --root "$artifact_root" --platform "$(artifact_platform_name)" >&2
+  rc=$?
+  set -e
+  case "$rc" in
+    0) ;;
+    3) printf 'host-track: %s github main not yet green+published; keeping channel=%s\n' "$app" "$channel" >&2 ;;
+    *) printf 'host-track: %s github artifact pull failed (rc=%s); keeping channel=%s\n' "$app" "$rc" "$channel" >&2 ;;
+  esac
+  return 0
+}
+
 # Promote stable (or channel) to deployable main oid when it is ahead of channel.
 # Best-effort: failures leave channel unchanged so install can still use last good.
 artifact_promote_channel_to_main() {
@@ -888,6 +952,10 @@ artifact_promote_channel_to_main() {
   IFS=$'\t' read -r artifact_app channel artifact_root install_root < <(artifact_paths "$app" "$json")
   [ -z "$channel_override" ] || channel="$channel_override"
   gate_main="$(field "$json" gate_main)"
+  if IFS=$'\t' read -r repo ref < <(parse_github_gate_main "$gate_main" || true) && [ -n "$repo" ]; then
+    artifact_pull_from_github "$app" "$repo" "$ref" "$artifact_app" "$channel" "$artifact_root"
+    return 0
+  fi
   IFS=$'\t' read -r repo ref < <(parse_lastdb_gate_main "$gate_main" || true)
   [ -n "$repo" ] || return 0
   main_tip="$(artifact_main_tip "$repo" "$ref" || true)"
@@ -1136,6 +1204,11 @@ status_json_for() {
     # still requires track_gate_main; pickup must not wait on that opt-in.
     if [ -n "$gate_main" ] && IFS=$'\t' read -r track_repo track_ref < <(parse_lastdb_gate_main "$gate_main" || true); then
       main_tip="$(artifact_main_tip "$track_repo" "$track_ref" || true)"
+      if [ -n "$main_tip" ] && [ -n "$channel_oid" ] && [ "$main_tip" != "$channel_oid" ]; then
+        main_unpublished="true"
+      fi
+    elif [ -n "$gate_main" ] && IFS=$'\t' read -r track_repo track_ref < <(parse_github_gate_main "$gate_main" || true); then
+      main_tip="$(github_main_tip "$track_repo" "$track_ref" || true)"
       if [ -n "$main_tip" ] && [ -n "$channel_oid" ] && [ "$main_tip" != "$channel_oid" ]; then
         main_unpublished="true"
       fi

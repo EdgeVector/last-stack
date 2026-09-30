@@ -1,0 +1,353 @@
+#!/usr/bin/env python3
+"""Pull a GitHub-built host-track artifact into the artifact CAS and promote a channel.
+
+Mac-side half of the GitHub artifact publish path. The GitHub workflow
+(.github/workflows/host-track-artifact.yml) uploads the Actions artifact
+`ht-artifact-<commit oid>`. This tool, run by `host-track refresh` for an app
+whose gate_main is a GitHub URL (or by hand), does the work `lastgit artifact
+publish` + `lastgit artifact promote` did after a green LastGit gate:
+
+  1. Situations preflight (`artifact-promote`), before any network read.
+  2. Gate: the `ci-required` check run for the commit is success.
+  3. The Actions artifact belongs to a completed, successful `push` run of the
+     repo on the branch, for exactly that commit. Its zip sha256 equals the
+     digest GitHub reports for it.
+  4. Provenance matches: app, repo, commit, git tree oid, tar sha256.
+  5. Every file in the tar matches the provenance sha256/size/mode; no extra or
+     missing file; no link, device, or escaping path.
+  6. `lastgit artifact publish` into a STAGING CAS, then the manifest files must
+     equal the provenance files and `lastgit artifact verify` must pass.
+  7. Only then blobs, manifest, and builds/ row are copied into the real CAS and
+     the channel pointer is written, atomically, like promoteArtifact does.
+
+Nothing is written to the real CAS before every check has passed. The tool never
+touches an install root; activation stays host-track's soak-gated flow.
+
+Exit: 0 promoted or already current, 3 hold (nothing to promote yet), 1 failure.
+Brain: design-github-artifact-publish-path
+"""
+import argparse
+import hashlib
+import io
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import zipfile
+
+EXIT_OK, EXIT_FAIL, EXIT_HOLD = 0, 1, 3
+
+
+class Hold(Exception):
+    pass
+
+
+class Fail(Exception):
+    pass
+
+
+def log(msg):
+    print("last-stack-github-artifact-pull: %s" % msg, file=sys.stderr)
+
+
+def sha256_bytes(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def safe_rel(rel):
+    parts = rel.split("/")
+    if not rel or rel.startswith("/") or "\\" in rel or ".." in parts or "" in parts or "." in parts:
+        raise Fail("unsafe path in bundle: %r" % rel)
+    return rel
+
+
+class Gh:
+    def __init__(self, exe):
+        self.exe = exe
+
+    def api_json(self, path):
+        r = subprocess.run([self.exe, "api", path], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise Fail("gh api %s failed: %s" % (path.split("?")[0], (r.stderr or r.stdout).strip()[:300]))
+        try:
+            return json.loads(r.stdout)
+        except ValueError:
+            raise Fail("gh api %s returned non-JSON" % path.split("?")[0])
+
+    def api_bytes(self, path):
+        r = subprocess.run([self.exe, "api", path], capture_output=True)
+        if r.returncode != 0:
+            raise Fail("gh api %s failed: %s" % (path.split("?")[0], r.stderr.decode("utf8", "replace").strip()[:300]))
+        return r.stdout
+
+
+def situations_preflight(repo):
+    exe = os.environ.get("LAST_STACK_SITUATIONS_BIN", "")
+    if not exe:
+        exe = shutil.which("situations") or ""
+    if not exe and os.path.exists(os.path.expanduser("~/.local/bin/situations")):
+        exe = os.path.expanduser("~/.local/bin/situations")
+    if not exe:
+        log("no situations binary on this host; policy unchecked")
+        return
+    try:
+        r = subprocess.run([exe, "preflight", "--action", "artifact-promote", "--repo", repo,
+                            "--field", "slug,reason"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Fail("situations preflight unreadable (%s); refusing" % exc)
+    if r.returncode != 0:
+        raise Fail("situations blocks artifact-promote for %s: %s" % (repo, (r.stdout + r.stderr).strip()[:300]))
+
+
+def channel_oid(root, app, channel):
+    path = os.path.join(root, "channels", app, channel + ".json")
+    try:
+        with open(path) as fh:
+            return json.load(fh).get("source_oid", "")
+    except (OSError, ValueError):
+        return ""
+
+
+def first_json(text):
+    dec = json.JSONDecoder()
+    i = 0
+    while i < len(text):
+        if text[i] == "{":
+            try:
+                obj, end = dec.raw_decode(text, i)
+                if isinstance(obj, dict) and obj.get("manifest_digest"):
+                    return obj
+                i = end
+                continue
+            except ValueError:
+                pass
+        i += 1
+    return None
+
+
+def lastgit(exe, *argv):
+    r = subprocess.run([exe, "artifact"] + list(argv), capture_output=True, text=True)
+    if r.returncode != 0:
+        raise Fail("lastgit artifact %s failed: %s" % (argv[0], (r.stderr or r.stdout).strip()[:300]))
+    return r.stdout
+
+
+def extract_bundle(tar_bytes, dest, prov):
+    want = {f["path"]: f for f in prov["files"]}
+    if len(want) != len(prov["files"]):
+        raise Fail("provenance lists a path twice")
+    seen = set()
+    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:") as tar:
+        for m in tar.getmembers():
+            if not m.isreg():
+                raise Fail("bundle member is not a regular file: %r" % m.name)
+            rel = safe_rel(m.name)
+            if rel in seen:
+                raise Fail("bundle repeats a path: %s" % rel)
+            seen.add(rel)
+            exp = want.get(rel)
+            if exp is None:
+                raise Fail("bundle has a file provenance does not list: %s" % rel)
+            data = tar.extractfile(m).read()
+            if len(data) != exp["size"] or sha256_bytes(data) != exp["sha256"]:
+                raise Fail("bundle file digest mismatch: %s" % rel)
+            if (m.mode & 0o777) != exp["mode"]:
+                raise Fail("bundle file mode mismatch: %s" % rel)
+            target = os.path.join(dest, rel)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "wb") as fh:
+                fh.write(data)
+            os.chmod(target, exp["mode"])
+    missing = sorted(set(want) - seen)
+    if missing:
+        raise Fail("bundle is missing provenance files: %s" % ", ".join(missing[:5]))
+
+
+def merge_cas(staging, root, app, oid, plat, digest):
+    """Copy blobs, then the manifest, then the builds row. Content-addressed, atomic renames."""
+    def put(src, dst, keep_existing):
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if keep_existing and os.path.exists(dst):
+            return  # content-addressed; the verify after the merge catches a bad old copy
+        tmp = "%s.tmp-%d" % (dst, os.getpid())
+        shutil.copyfile(src, tmp)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, dst)
+
+    blobs = os.path.join(staging, "blobs", "sha256")
+    for d, _dirs, files in os.walk(blobs):  # walk-ok: staging CAS, one bundle
+        for f in files:
+            src = os.path.join(d, f)
+            put(src, os.path.join(root, "blobs", "sha256", f[:2], f), True)
+    put(os.path.join(staging, "manifests", digest + ".json"), os.path.join(root, "manifests", digest + ".json"), True)
+    put(os.path.join(staging, "builds", app, oid, plat + ".json"), os.path.join(root, "builds", app, oid, plat + ".json"), False)
+
+
+def pull(args):
+    repo = args.repo
+    if repo.count("/") != 1:
+        raise Fail("--repo must be OWNER/NAME")
+    name = repo.split("/")[1]
+    root = os.path.abspath(os.path.expanduser(args.root))
+    gh = Gh(args.gh)
+    lg = args.lastgit
+
+    if not args.dry_run:
+        situations_preflight(repo)
+
+    tip = gh.api_json("repos/%s/git/ref/heads/%s" % (repo, args.branch))["object"]["sha"].lower()
+    oid = (args.oid or tip).lower()
+    if not args.allow_non_tip and oid != tip:
+        raise Fail("--oid %s is not the %s tip %s (rollback needs --allow-non-tip)" % (oid[:12], args.branch, tip[:12]))
+    head = channel_oid(root, args.app, args.channel)
+    if head == oid:
+        return {"status": "current", "oid": oid, "channel": args.channel}
+
+    checks = gh.api_json("repos/%s/commits/%s/check-runs?per_page=100&check_name=%s" % (repo, oid, args.context))
+    runs = [c for c in checks.get("check_runs", []) if c.get("name") == args.context]
+    if not runs:
+        raise Hold("no %s check run for %s yet" % (args.context, oid[:12]))
+    if any(c.get("status") != "completed" for c in runs):
+        raise Hold("%s for %s is still running" % (args.context, oid[:12]))
+    if any(c.get("conclusion") != "success" for c in runs):
+        raise Fail("%s for %s is not green: %s" % (args.context, oid[:12], [c.get("conclusion") for c in runs]))
+
+    art_name = "ht-artifact-%s" % oid
+    listing = gh.api_json("repos/%s/actions/artifacts?name=%s&per_page=30" % (repo, art_name))
+    cands = []
+    for a in listing.get("artifacts", []):
+        wr = a.get("workflow_run") or {}
+        if a.get("name") != art_name or a.get("expired"):
+            continue
+        if wr.get("head_sha", "").lower() != oid or wr.get("head_branch") != args.branch:
+            continue
+        cands.append(a)
+    if not cands:
+        raise Hold("no live %s artifact for %s on %s yet" % (art_name, oid[:12], args.branch))
+    art = sorted(cands, key=lambda a: a.get("created_at", ""), reverse=True)[0]
+
+    run = gh.api_json("repos/%s/actions/runs/%s" % (repo, art["workflow_run"]["id"]))
+    if run.get("status") != "completed":
+        raise Hold("workflow run %s is not complete" % run.get("id"))
+    if (run.get("conclusion") != "success" or run.get("event") != "push"
+            or run.get("head_branch") != args.branch or (run.get("head_sha") or "").lower() != oid
+            or (run.get("repository") or {}).get("full_name", "").lower() != repo.lower()
+            or (run.get("head_repository") or {}).get("full_name", "").lower() != repo.lower()):
+        raise Fail("workflow run %s is not a successful push run of %s@%s on %s" % (run.get("id"), repo, oid[:12], args.branch))
+
+    zip_bytes = gh.api_bytes("repos/%s/actions/artifacts/%s/zip" % (repo, art["id"]))
+    digest = (art.get("digest") or "")
+    if digest.startswith("sha256:"):
+        if sha256_bytes(zip_bytes) != digest[7:]:
+            raise Fail("artifact zip sha256 does not match the digest GitHub reports")
+    elif not args.allow_missing_digest:
+        raise Fail("GitHub reported no digest for artifact %s; refusing (--allow-missing-digest to override)" % art["id"])
+
+    tree = gh.api_json("repos/%s/git/commits/%s" % (repo, oid))["tree"]["sha"].lower()
+
+    with tempfile.TemporaryDirectory(prefix="ht-gh-pull.") as tmp:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            for n in zf.namelist():
+                if n.startswith("/") or ".." in n.split("/"):
+                    raise Fail("unsafe path in artifact zip: %r" % n)
+            try:
+                prov = json.loads(zf.read("%s/provenance.json" % args.app))
+                tar_bytes = zf.read("%s/bundle.tar" % args.app)
+            except KeyError:
+                raise Fail("artifact has no %s/provenance.json + bundle.tar" % args.app)
+        if (prov.get("schema_version") != 1 or prov.get("app") != args.app or prov.get("repo") != repo
+                or (prov.get("source_oid") or "").lower() != oid or (prov.get("tree_oid") or "").lower() != tree):
+            raise Fail("provenance does not match app/repo/commit/tree for %s@%s" % (repo, oid[:12]))
+        if sha256_bytes(tar_bytes) != prov.get("tar_sha256"):
+            raise Fail("bundle.tar sha256 does not match provenance")
+        plat = prov.get("platform") or ""
+        if not plat or not all(c.isalnum() or c in "._-" for c in plat):
+            raise Fail("bad platform in provenance: %r" % plat)
+        if args.platform and plat != args.platform:
+            raise Hold("artifact platform %s is not this host's %s" % (plat, args.platform))
+
+        src = os.path.join(tmp, "src")
+        stage = os.path.join(tmp, "cas")
+        os.makedirs(src)
+        extract_bundle(tar_bytes, src, prov)
+
+        out = lastgit(lg, "publish", "--app", args.app, "--repo", name, "--oid", oid, "--input", src,
+                      "--paths", ",".join(prov["paths"]), "--platform", plat, "--root", stage, "--json")
+        manifest = first_json(out)
+        if not manifest:
+            raise Fail("lastgit artifact publish printed no manifest")
+        mdigest = manifest["manifest_digest"]
+        got = sorted((f["path"], f["sha256"], f["size"], f["mode"]) for f in manifest["files"])
+        exp = sorted((f["path"], f["sha256"], f["size"], f["mode"]) for f in prov["files"])
+        if got != exp or manifest.get("source_oid") != oid or manifest.get("app") != args.app:
+            raise Fail("CAS manifest does not equal the GitHub provenance")
+        lastgit(lg, "verify", "--manifest", mdigest, "--root", stage, "--json")
+
+        result = {"status": "verified", "oid": oid, "tree_oid": tree, "manifest_digest": mdigest,
+                  "platform": plat, "channel": args.channel, "artifact_id": art["id"], "run_id": run.get("id")}
+        if args.dry_run:
+            result["status"] = "dry-run-verified"
+            return result
+
+        if not args.allow_non_tip:
+            now = gh.api_json("repos/%s/git/ref/heads/%s" % (repo, args.branch))["object"]["sha"].lower()
+            if now != oid:
+                raise Hold("%s moved to %s while pulling %s; rerun" % (args.branch, now[:12], oid[:12]))
+        merge_cas(stage, root, args.app, oid, plat, mdigest)
+        lastgit(lg, "verify", "--manifest", mdigest, "--root", root, "--json")
+        dst = os.path.join(root, "channels", args.app, args.channel + ".json")
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        tmpf = "%s.tmp-%d" % (dst, os.getpid())
+        shutil.copyfile(os.path.join(root, "manifests", mdigest + ".json"), tmpf)
+        os.chmod(tmpf, 0o600)
+        os.replace(tmpf, dst)
+        result["status"] = "promoted"
+        return result
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--app", required=True, help="artifact app name (artifact_app in the registry)")
+    ap.add_argument("--repo", required=True, help="OWNER/NAME on GitHub")
+    ap.add_argument("--channel", default="stable", choices=["candidate", "canary", "stable"])
+    ap.add_argument("--root", default=os.environ.get("HOST_TRACK_ARTIFACT_ROOT") or "~/.lastgit/artifacts",
+                    help="artifact CAS root (default $HOST_TRACK_ARTIFACT_ROOT or ~/.lastgit/artifacts)")
+    ap.add_argument("--branch", default="main")
+    ap.add_argument("--oid", help="commit to pull (default: branch tip)")
+    ap.add_argument("--context", default="ci-required", help="required check run name")
+    ap.add_argument("--platform", help="hold unless the artifact has this platform (host-track passes its own)")
+    ap.add_argument("--allow-non-tip", action="store_true", help="rollback: pull an --oid that is not the tip")
+    ap.add_argument("--allow-missing-digest", action="store_true", help="accept an artifact GitHub gave no digest for")
+    ap.add_argument("--dry-run", action="store_true", help="verify in a staging CAS; write nothing to --root")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--gh", default=os.environ.get("LAST_STACK_GH", "gh"))
+    ap.add_argument("--lastgit", default=os.environ.get("LAST_STACK_LASTGIT", "lastgit"))
+    args = ap.parse_args()
+    try:
+        res = pull(args)
+        code = EXIT_OK
+    except Hold as exc:
+        res, code = {"status": "hold", "reason": str(exc)}, EXIT_HOLD
+    except Fail as exc:
+        res, code = {"status": "failed", "reason": str(exc)}, EXIT_FAIL
+    if args.json:
+        print(json.dumps(res, sort_keys=True))
+    else:
+        print("%s app=%s repo=%s %s" % (res["status"], args.app, args.repo,
+                                       " ".join("%s=%s" % (k, v) for k, v in sorted(res.items()) if k != "status")))
+    sys.exit(code)
+
+
+if __name__ == "__main__":
+    main()
