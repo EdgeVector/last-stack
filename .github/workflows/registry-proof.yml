@@ -1,0 +1,296 @@
+# Registry proof, phase 1: manual, publish-free smoke on a GitHub-hosted macOS
+# arm64 runner. Brain: design-registry-proof-in-github-ci-20260930,
+# decision-2026-09-30-registry-proof-ci-sign-on-mac-gh-pat-build-in-last-stack.
+#
+# This workflow writes no registry row, opens no PR, reads no secret and touches
+# no host-track or primary node. It installs a RELEASED lastdb build, runs the
+# isolated llms.txt install smoke against it with the candidate app set, and
+# uploads one proof bundle (verdicts, run ids, timings, uname, memory). It never
+# uploads a lastdb or lastdbd binary: this repo is public, so its artifacts are
+# public.
+name: registry-proof
+
+on:
+  workflow_dispatch:
+    inputs:
+      lastdb_release:
+        description: "EdgeVector/homebrew-lastdb release tag (empty = latest release)"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: registry-proof
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  NO_COLOR: "1"
+  FORCE_COLOR: "0"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_ANALYTICS: "1"
+
+jobs:
+  proof:
+    name: proof
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Prepare proof bundle directory
+        run: |
+          set -euo pipefail
+          BUNDLE="$RUNNER_TEMP/registry-proof-bundle"
+          SCRATCH="$RUNNER_TEMP/registry-proof-scratch"
+          mkdir -p "$BUNDLE" "$SCRATCH"
+          {
+            echo "BUNDLE=$BUNDLE"
+            echo "SCRATCH=$SCRATCH"
+          } >> "$GITHUB_ENV"
+          printf 'step\tseconds\trc\n' > "$BUNDLE/timings.tsv"
+          {
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "sha=$GITHUB_SHA"
+            echo "ref=$GITHUB_REF"
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$RUNNER_ARCH"
+            echo "runner_image=${ImageOS:-unknown} ${ImageVersion:-unknown}"
+            echo "uname=$(uname -a)"
+            echo "sw_vers=$(sw_vers | tr '\n' ' ')"
+            echo "cpus=$(sysctl -n hw.ncpu)"
+            echo "mem_bytes=$(sysctl -n hw.memsize)"
+            echo "disk_free_kb=$(df -k / | awk 'NR==2 {print $4}')"
+            echo "started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > "$BUNDLE/runner.env"
+          cat "$BUNDLE/runner.env"
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Resolve the lastdb release tag
+        env:
+          INPUT_TAG: ${{ inputs.lastdb_release }}
+        run: |
+          set -euo pipefail
+          tag="$INPUT_TAG"
+          if [ -z "$tag" ]; then
+            loc="$(curl -sS -o /dev/null -w '%{redirect_url}' https://github.com/EdgeVector/homebrew-lastdb/releases/latest)"
+            tag="${loc##*/}"
+          fi
+          case "$tag" in
+            v[0-9]*) ;;
+            *) echo "bad release tag: '$tag'" >&2; exit 1 ;;
+          esac
+          echo "LASTDB_TAG=$tag" >> "$GITHUB_ENV"
+          echo "release tag: $tag"
+
+      - name: brew install edgevector/lastdb/lastdb
+        run: |
+          set -euo pipefail
+          t0=$SECONDS; rc=0
+          { brew install edgevector/lastdb/lastdb; } || rc=$?
+          printf 'brew-install\t%s\t%s\n' "$((SECONDS - t0))" "$rc" >> "$BUNDLE/timings.tsv"
+          exit "$rc"
+
+      - name: Download the release binaries into the scratch dir
+        run: |
+          set -euo pipefail
+          t0=$SECONDS; rc=0
+          (
+            set -euo pipefail
+            base="https://github.com/EdgeVector/homebrew-lastdb/releases/download/$LASTDB_TAG"
+            dl="$SCRATCH/dl"
+            mkdir -p "$dl" "$SCRATCH/bin"
+            curl -fsSL -o "$dl/lastdb-aarch64-apple-darwin.tar.gz" "$base/lastdb-aarch64-apple-darwin.tar.gz"
+            curl -fsSL -o "$dl/manifest.json" "$base/lastdb-aarch64-apple-darwin.manifest.json"
+            want="$(jq -r '.artifact.sha256' "$dl/manifest.json")"
+            got="$(shasum -a 256 "$dl/lastdb-aarch64-apple-darwin.tar.gz" | awk '{print $1}')"
+            [ "$want" = "$got" ] || { echo "tarball sha256 mismatch" >&2; exit 1; }
+            tar -xzf "$dl/lastdb-aarch64-apple-darwin.tar.gz" -C "$dl"
+            for b in lastdb lastdbd; do
+              src="$(find "$dl" -maxdepth 3 -type f -name "$b" | head -1)"
+              [ -n "$src" ] || { echo "missing $b in tarball" >&2; exit 1; }
+              cp "$src" "$SCRATCH/bin/$b"
+              chmod +x "$SCRATCH/bin/$b"
+            done
+            "$SCRATCH/bin/lastdbd" --version
+            "$SCRATCH/bin/lastdb" --version
+            cp "$dl/manifest.json" "$BUNDLE/release-manifest.json"
+          ) || rc=$?
+          printf 'download-binaries\t%s\t%s\n' "$((SECONDS - t0))" "$rc" >> "$BUNDLE/timings.tsv"
+          exit "$rc"
+
+      - name: Candidate set
+        run: |
+          set -euo pipefail
+          t0=$SECONDS; rc=0
+          bin/last-stack-canary-candidate-set \
+            --lastdbd "$SCRATCH/bin/lastdbd" \
+            --source-venue github \
+            --out "$SCRATCH/candidate-set.json" || rc=$?
+          printf 'candidate-set\t%s\t%s\n' "$((SECONDS - t0))" "$rc" >> "$BUNDLE/timings.tsv"
+          [ "$rc" -eq 0 ] || exit "$rc"
+          cp "$SCRATCH/candidate-set.json" "$BUNDLE/candidate-set.json"
+          jq -r '.apps | to_entries[]? | [.key, (.value.sha // "-")[0:9], (.value.sha_source // "-"), (.value.source_reachable // "-" | tostring)] | @tsv' \
+            "$SCRATCH/candidate-set.json" || true
+
+      - name: Runner probes (Schema Service, launchctl)
+        run: |
+          set -u
+          t0=$SECONDS
+          p="$BUNDLE/probes.txt"
+          {
+            echo "== launchctl gui domain"
+            launchctl print "gui/$(id -u)" >/dev/null 2>&1 && echo "gui_domain=ok" || echo "gui_domain=fail rc=$?"
+            echo "== launchctl user domain"
+            launchctl print "user/$(id -u)" >/dev/null 2>&1 && echo "user_domain=ok" || echo "user_domain=fail rc=$?"
+            echo "== LaunchAgents dir"
+            ls -ld "$HOME/Library/LaunchAgents" 2>&1 || true
+            echo "== egress IP class (no address recorded)"
+            curl -sS -m 10 -o /dev/null -w 'github_api_http=%{http_code}\n' https://api.github.com/ || echo "github_api_http=fail"
+          } > "$p" 2>&1
+          cat "$p"
+          printf 'probes\t%s\t0\n' "$((SECONDS - t0))" >> "$BUNDLE/timings.tsv"
+
+      - name: Isolated llms.txt install smoke
+        run: |
+          set -u
+          t0=$SECONDS
+          # Memory sampler: system used memory and the sum of all process RSS,
+          # every 5 s, for the whole smoke.
+          mem="$BUNDLE/memory-samples.tsv"
+          printf 'epoch\tused_mb\trss_sum_mb\tswap_used\n' > "$mem"
+          (
+            while :; do
+              ps_kb="$(vm_stat | awk '/page size of/ {gsub(/[^0-9]/,"",$8); ps=$8} /Pages active/ {a=$3} /Pages wired down/ {w=$4} /occupied by compressor/ {c=$5} END {gsub(/\./,"",a); gsub(/\./,"",w); gsub(/\./,"",c); printf "%d", (a+w+c)*ps/1048576}')"
+              rss="$(ps -axo rss= | awk '{s+=$1} END {printf "%d", s/1024}')"
+              swap="$(sysctl -n vm.swapusage | awk '{print $6}')"
+              printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$ps_kb" "$rss" "$swap" >> "$mem"
+              sleep 5
+            done
+          ) &
+          sampler=$!
+
+          SMOKE_LASTDBD_BIN="$SCRATCH/bin/lastdbd" \
+          SMOKE_CANDIDATE_SET="$SCRATCH/candidate-set.json" \
+          SMOKE_TOTAL_BUDGET_SECS=1800 \
+          SMOKE_NO_FORGE_AUTH=1 \
+            bash skills/llms-txt-install-smoke/run.sh --json --keep \
+              > "$SCRATCH/proof.stdout" 2> "$BUNDLE/smoke.stderr.log"
+          rc=$?
+          kill "$sampler" 2>/dev/null || true
+          wait "$sampler" 2>/dev/null || true
+          printf 'smoke\t%s\t%s\n' "$((SECONDS - t0))" "$rc" >> "$BUNDLE/timings.tsv"
+          echo "SMOKE_RC=$rc" >> "$GITHUB_ENV"
+          # The JSON verdict is the last stdout line that starts with '{'.
+          grep '^{' "$SCRATCH/proof.stdout" | tail -1 > "$BUNDLE/proof.json" || true
+          [ -s "$BUNDLE/proof.json" ] || echo '{"verdict":"RED","fails":["no-json-from-smoke"]}' > "$BUNDLE/proof.json"
+          cat "$BUNDLE/proof.json"
+          exit 0
+
+      - name: Collect smoke log, step times and search-init size
+        if: ${{ always() }}
+        run: |
+          set -u
+          sandbox="$(jq -r '.sandbox // empty' "$BUNDLE/proof.json" 2>/dev/null || true)"
+          {
+            echo "sandbox_present=$([ -n "$sandbox" ] && [ -d "$sandbox" ] && echo yes || echo no)"
+          } > "$BUNDLE/sandbox.txt"
+          if [ -n "$sandbox" ] && [ -d "$sandbox" ]; then
+            # Log: scrub anything that looks like a token before it is uploaded.
+            if [ -f "$sandbox/run.log" ]; then
+              sed -E 's/(gh[pousr]_[A-Za-z0-9]{20,})/[scrubbed]/g; s/(Authorization:[[:space:]]*[A-Za-z]+[[:space:]]+)[^[:space:]]+/\1[scrubbed]/g' \
+                "$sandbox/run.log" > "$BUNDLE/smoke.run.log"
+              grep '>>>' "$sandbox/run.log" > "$BUNDLE/smoke-steps.txt" || true
+              grep -i -E 'launchctl|LaunchAgents' "$sandbox/run.log" | head -40 > "$BUNDLE/smoke-launchctl-lines.txt" || true
+              grep -i -E 'model|download|huggingface|onnx|embedding' "$sandbox/run.log" | head -40 > "$BUNDLE/smoke-model-lines.txt" || true
+            fi
+            {
+              echo "== sandbox total (KB)"
+              du -sk "$sandbox" 2>/dev/null | awk '{print $1}'
+              echo "== largest directories, depth 5 (KB path)"
+              du -k -d 5 "$sandbox" 2>/dev/null | sort -rn | head -25 | sed "s#$sandbox#<sandbox>#"
+              echo "== dirs whose name looks like a model or cache"
+              find "$sandbox" -maxdepth 7 -type d \( -iname '*model*' -o -iname '*onnx*' -o -iname '*huggingface*' -o -iname '.cache' \) 2>/dev/null | head -20 | while read -r d; do
+                printf '%s\t%s\n' "$(du -sk "$d" 2>/dev/null | awk '{print $1}')" "${d#"$sandbox"}"
+              done
+            } >> "$BUNDLE/sandbox.txt"
+          fi
+          cat "$BUNDLE/sandbox.txt"
+
+      - name: Attribution and job summary
+        if: ${{ always() }}
+        run: |
+          set -u
+          bin/last-stack-registry-red-attribution --proof "$BUNDLE/proof.json" > "$BUNDLE/attribution.txt" 2> "$BUNDLE/attribution.err"
+          echo "attribution rc=$?"
+          cat "$BUNDLE/attribution.txt"
+
+          verdict="$(jq -r '.verdict // "UNKNOWN"' "$BUNDLE/proof.json")"
+          build="$(jq -r '.lastdb_build // "-"' "$BUNDLE/proof.json")"
+          peak_used="$(awk -F'\t' 'NR>1 && $2+0>m {m=$2+0} END {print m+0}' "$BUNDLE/memory-samples.tsv" 2>/dev/null)"
+          peak_rss="$(awk -F'\t' 'NR>1 && $3+0>m {m=$3+0} END {print m+0}' "$BUNDLE/memory-samples.tsv" 2>/dev/null)"
+          {
+            echo "verdict=$verdict"
+            echo "lastdb_tag=$LASTDB_TAG"
+            echo "lastdb_build=$build"
+            echo "peak_used_mb=$peak_used"
+            echo "peak_rss_sum_mb=$peak_rss"
+            echo "finished_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > "$BUNDLE/summary.env"
+
+          {
+            echo "## registry-proof phase 1"
+            echo
+            echo "- verdict: **$verdict**"
+            echo "- release tag: \`$LASTDB_TAG\`, lastdb build: \`$build\`"
+            echo "- peak memory: used ${peak_used} MB, process RSS sum ${peak_rss} MB"
+            echo
+            echo "### Wall time per step"
+            echo
+            echo '| step | seconds | rc |'
+            echo '|---|---|---|'
+            awk -F'\t' 'NR>1 {printf "| %s | %s | %s |\n", $1, $2, $3}' "$BUNDLE/timings.tsv"
+            echo
+            echo "### Fails"
+            echo
+            fails="$(jq -r '(.fails // [])[]' "$BUNDLE/proof.json" 2>/dev/null || true)"
+            if [ -n "$fails" ]; then
+              echo '```'
+              printf '%s\n' "$fails"
+              echo '```'
+            else
+              echo "none"
+            fi
+            echo
+            echo "### Attribution"
+            echo '```'
+            cat "$BUNDLE/attribution.txt"
+            echo '```'
+            echo
+            echo "### Runner probes"
+            echo '```'
+            cat "$BUNDLE/probes.txt" 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload proof bundle
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: registry-proof-bundle-${{ github.run_id }}
+          path: ${{ env.BUNDLE }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Fail the job when the smoke is RED
+        if: ${{ always() }}
+        run: |
+          verdict="$(jq -r '.verdict // "UNKNOWN"' "$BUNDLE/proof.json" 2>/dev/null || echo UNKNOWN)"
+          echo "verdict=$verdict smoke_rc=${SMOKE_RC:-unset}"
+          [ "$verdict" = "GREEN" ]
