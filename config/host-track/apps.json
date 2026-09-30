@@ -889,8 +889,8 @@
       "aliases": [
         "state-machine"
       ],
-      "gate": "forgejo",
-      "gate_main": "http://localhost:3300/EdgeVector/state-machine-app.git#main",
+      "gate": "github",
+      "gate_main": "https://github.com/EdgeVector/state-machine.git#main",
       "artifact_app": "state-machine",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -905,7 +905,7 @@
           "target": "$HOME/.local/bin/state-machine"
         }
       ],
-      "notes": "State Machine LastGit artifact install from CI-published dist/* binaries; track_gate_main promotes stable to green+published main. sm is the runner for lastdb-canary-release and lastdb-safe-upgrade, so it upgrades the primary and publishes to public brew — before this entry ~/.local/bin/sm symlinked into the workspace DEV checkout and had no freshness gate at all.",
+      "notes": "State Machine artifact install from the GitHub gate (EdgeVector/state-machine): the publish job builds dist/sm and dist/state-machine on a macOS runner and host-track pulls the ci-required-green push commit. sm is the runner for lastdb-canary-release and lastdb-safe-upgrade, so it upgrades the primary and publishes to public brew.",
       "safe_upgrade": {
         "soak_hours": 1,
         "probes": [
@@ -927,7 +927,6 @@
           }
         ]
       },
-      "track_gate_main": false,
       "requires": [
         "lastdbd"
       ],
@@ -936,7 +935,9 @@
         "brain",
         "kanban",
         "last-stack"
-      ]
+      ],
+      "gate_remote": "https://github.com/EdgeVector/state-machine.git",
+      "gate_ref": "refs/heads/main"
     },
     {
       "app": "loom",
