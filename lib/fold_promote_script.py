@@ -1,6 +1,6 @@
 """Resolve fold's forge-promote-homebrew-stable.sh for a stable publish.
 
-The promote script is fold code, so it comes from fold's Forgejo main, read
+The promote script is fold code, so it comes from fold's GitHub main, read
 through the portal's bare mirror (~/.cache/edgevector-git/fold.git) after a
 fresh fetch. It is exported with `git archive` into a scratch directory, so
 the script's sibling files (bump-homebrew-formula.rb) come from the same
@@ -52,7 +52,7 @@ def check_script(path: Path) -> Path:
         raise PromoteScriptError(
             f"refusing {path}: ~/.lastgit/mirrors is a frozen LastGit-era checkout "
             "(decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default); "
-            "the promote script comes from fold's Forgejo main"
+            "the promote script comes from fold's GitHub main"
         )
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -62,7 +62,7 @@ def check_script(path: Path) -> Path:
         raise PromoteScriptError(
             f"refusing {path}: it names a lastdb:/// remote, and LastGit repos are disabled "
             "(decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default). "
-            "Use fold's Forgejo main, which targets the Forgejo homebrew-lastdb tap"
+            "Use fold's GitHub main, which targets the GitHub homebrew-lastdb tap"
         )
     return path
 
@@ -107,7 +107,7 @@ def resolve_from_mirror(mirror: Path, dest: Path, auth_header: list[str] | None 
 
 def resolve(explicit: str | None, auth_header: list[str] | None = None,
             dest: Path | None = None) -> tuple[Path, str]:
-    """Explicit path (flag or $LAST_STACK_CANARY_FORGE_PROMOTE), else fold's Forgejo main.
+    """Explicit path (flag or $LAST_STACK_CANARY_FORGE_PROMOTE), else fold's GitHub main.
 
     Returns (script path, source description)."""
     for candidate in (explicit, os.environ.get("LAST_STACK_CANARY_FORGE_PROMOTE", "")):

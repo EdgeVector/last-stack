@@ -400,6 +400,7 @@ ci_test tests/last-stack-papercut-lifecycle-helper-run-install.sh
 ci_test tests/last-stack-pipeline-stuck-papercut-file.sh
 ci_test tests/last-stack-canary-pipeline.sh
 ci_test tests/last-stack-soak-heal-loom.sh
+ci_test tests/last-stack-soak-check-fix-github.sh
 ci_test tests/last-stack-ship-soak-loom.sh
 ci_test tests/last-stack-ship-soak-host-track-install.sh
 ci_test tests/last-stack-command-modes.sh

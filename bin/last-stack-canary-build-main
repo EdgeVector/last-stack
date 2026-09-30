@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build LastDB Mini from local Forgejo fold `main` tip and stage it for canary dogfood.
+# Build LastDB Mini from fold `main` tip (GitHub) and stage it for canary dogfood.
 #
 # Completes the auto-release loop:
 #   build-main (this) → dogfood cutover → 24h soak → brew promote

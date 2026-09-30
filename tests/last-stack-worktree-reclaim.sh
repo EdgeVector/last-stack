@@ -233,6 +233,36 @@ printf '%s\n' "$out" | grep -q 'open-pr index UNREADABLE' \
   || { echo "FAIL: an unreadable index must be logged as such" >&2; exit 1; }
 echo "ok   unreadable open-pr index disables the finished-work path"
 
+# GitHub venue: the open-PR index comes from `gh` (PATH stub), not LastGit.
+mk_wt finished-wt kanban/nothing-open
+mk_wt gh-open-wt kanban/gh-open
+stubbin="$prfix/stubbin"; mkdir -p "$stubbin"
+cat >"$stubbin/gh" <<'SH'
+#!/usr/bin/env bash
+echo "gh $*" >>"${GH_STUB_LOG:?}"
+case "$1 $2" in
+  "search prs") echo '[{"repository":{"name":"gh-open-wt","nameWithOwner":"EdgeVector/gh-open-wt"}}]' ;;
+  "pr list") echo '[{"headRefName":"kanban/gh-open"}]' ;;
+  *) exit 1 ;;
+esac
+SH
+cat >"$stubbin/forge" <<'SH'
+#!/usr/bin/env bash
+echo '[]'
+SH
+chmod +x "$stubbin/gh" "$stubbin/forge"
+export GH_STUB_LOG="$prfix/gh.log"; : >"$GH_STUB_LOG"
+unset LAST_STACK_RECLAIM_OPEN_HEADS_FILE
+out="$(PATH="$stubbin:$PATH" LAST_STACK_FORGE_API="$stubbin/forge" LAST_STACK_RECLAIM_OPEN_PR_LIVE=1 \
+  "$bin" --sweep-stale --force-live --min-age-minutes 0 --max-age-hours 99999 2>&1 || true)"
+[ -d "$WORKTREES_DIR/gh-open-wt" ] || { echo "FAIL: worktree with an open GitHub PR was reclaimed: $out" >&2; exit 1; }
+[ ! -d "$WORKTREES_DIR/finished-wt" ] || { echo "FAIL: finished worktree must go when GitHub reports no open PR" >&2; exit 1; }
+grep -q 'gh search prs --owner EdgeVector --state open' "$GH_STUB_LOG" || { echo "FAIL: gh search prs not called" >&2; exit 1; }
+grep -q 'gh pr list -R EdgeVector/gh-open-wt' "$GH_STUB_LOG" || { echo "FAIL: gh pr list not called" >&2; exit 1; }
+if grep -q '^gh ' "$GH_STUB_LOG" && grep -qi 'lastgit cr' "$GH_STUB_LOG"; then echo "FAIL: lastgit called" >&2; exit 1; fi
+printf '%s\n' "$out" | grep -q 'open_pr_index_ok=1' || { echo "FAIL: index must be readable via gh: $out" >&2; exit 1; }
+echo "ok   GitHub open PR keeps its worktree (gh index)"
+
 # The sweep must consult the index before the finished-work reclaim.
 keep_line="$(grep -n 'log "keep open-pr' "$bin" | head -1 | cut -d: -f1)"
 fin_line="$(grep -n 'log "reclaim finished' "$bin" | head -1 | cut -d: -f1)"

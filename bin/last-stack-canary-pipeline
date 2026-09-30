@@ -2446,7 +2446,7 @@ def download_canary_assets(version: str, dest: Path, *, preferred_oid: str = "")
 
 
 def find_fold_promote_script() -> Path | None:
-    """fold's promote script from fold's Forgejo main (lib/fold_promote_script.py).
+    """fold's promote script from fold's GitHub main (lib/fold_promote_script.py).
 
     Not the fold portal (it has no checkout) and never ~/.lastgit/mirrors/fold
     (papercut-release-publish-uses-stale-lastgit-fold-mirror-20260923)."""

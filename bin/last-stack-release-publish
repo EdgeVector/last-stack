@@ -8,7 +8,7 @@ not proved with the node brew ships:
 
   1. node  → brew stable: fold's forge-promote-homebrew-stable.sh publishes
      the staged canary package under the next stable tag and opens the
-     formula PR on the Forgejo tap.
+     formula PR on the GitHub tap.
   2. rows  → registry stable: the `next` rows proved with this build are
      copied to registry/stable.json with each app's PUBLIC source, every
      commit is checked to be fetchable from that public source (mirror lag
@@ -129,7 +129,7 @@ def find_staged_build(build: str) -> tuple[Path, str]:
 
 
 def find_promote_script(explicit: str | None) -> Path:
-    """fold's promote script from fold's Forgejo main (lib/fold_promote_script.py).
+    """fold's promote script from fold's GitHub main (lib/fold_promote_script.py).
 
     Never ~/.lastgit/mirrors/fold: frozen at fold 06965ddf, it cloned
     lastdb:///homebrew-lastdb and exited 128
@@ -275,7 +275,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--if-needed", action="store_true",
                         help="unattended mode: refuse a build with no `next` rows; skip each half that is already published; exit 0 when nothing is left to do")
     parser.add_argument("--resolve-promote-script", action="store_true",
-                        help="fetch fold's Forgejo main, resolve and check the promote script, print its path, and exit")
+                        help="fetch fold's GitHub main, resolve and check the promote script, print its path, and exit")
     args = parser.parse_args(argv)
 
     if args.resolve_promote_script:

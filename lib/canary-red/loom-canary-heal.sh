@@ -293,8 +293,7 @@ Goal
 3. Print one HEAL_RESULT line when done.
 
 Venue
-- EdgeVector/fold is GitHub since 2026-09-29 (`gh pr create -R EdgeVector/fold`, then `gh pr merge --auto --squash`). The Forgejo copy is archived.
-- last-stack / loom / state-machine are LastGit (`lastgit cr`).
+- Every EdgeVector repo except `lastgit` is on GitHub (2026-09-30). Open the change with `gh pr create -R EdgeVector/<repo>`, then `gh pr merge <n> -R EdgeVector/<repo> --auto --squash`. The required check is `ci-required`. LastGit is retired; do not use `lastgit cr`. Forgejo copies are frozen.
 - Prefer fold when the RED is a binary/latency/RSS/correctness bar.
 - Prefer last-stack when the RED is the probe harness itself.
 
