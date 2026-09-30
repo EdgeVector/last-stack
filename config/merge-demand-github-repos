@@ -1,3 +1,31 @@
 # Repos whose open PRs are read from GitHub (merge-class demand).
-# fold moved to GitHub on 2026-09-29 (decision-2026-09-29-fold-venue-back-to-github).
+# Every EdgeVector repo is on GitHub since 2026-09-30 (decision-2026-09-29-retire-lastgit-all-repos-to-github);
+# fold moved on 2026-09-29, last-stack was the last on 2026-09-30. Only EdgeVector/lastgit stays on
+# Forgejo: see merge-demand-forge-repos. Add a new repo here when it is created (new repos start on GitHub).
 EdgeVector/fold
+EdgeVector/last-stack
+EdgeVector/fkanban
+EdgeVector/routines
+EdgeVector/loom
+EdgeVector/brain
+EdgeVector/situations
+EdgeVector/configurations
+EdgeVector/lastsecrets
+EdgeVector/search
+EdgeVector/remote
+EdgeVector/state-machine
+EdgeVector/reconciler
+EdgeVector/lastdb-browser
+EdgeVector/lastseek
+EdgeVector/exemem-infra
+EdgeVector/exemem-workspace
+EdgeVector/schema-infra
+EdgeVector/fold_db_website
+EdgeVector/homebrew-lastdb
+EdgeVector/ops-terminal
+EdgeVector/kanban-factory
+EdgeVector/code-atlas
+EdgeVector/discovery
+EdgeVector/dogfood-graph
+EdgeVector/factory-graph
+EdgeVector/demo-repository

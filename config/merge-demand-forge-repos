@@ -1,8 +1,5 @@
-# Default Forgejo repos for merge-class demand (merge-babysit inventory). fold is on GitHub: see merge-demand-github-repos.
+# Default Forgejo repos for merge-class demand (merge-babysit inventory).
+# Only EdgeVector/lastgit stays on Forgejo (Tom, 2026-09-29). Every other repo is on GitHub: see
+# merge-demand-github-repos. LastGit and the gaming PC are retired.
 # One owner/name per line. LAST_STACK_MERGE_DEMAND_FORGE_REPOS overrides.
 EdgeVector/lastgit
-EdgeVector/exemem-infra
-EdgeVector/last-stack
-EdgeVector/fkanban
-EdgeVector/routines
-EdgeVector/loom
