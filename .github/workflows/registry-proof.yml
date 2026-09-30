@@ -1,13 +1,19 @@
-# Registry proof, phase 1: manual, publish-free smoke on a GitHub-hosted macOS
-# arm64 runner. Brain: design-registry-proof-in-github-ci-20260930,
+# Registry proof, phases 1 and 2: manual, publish-free smoke on a GitHub-hosted
+# macOS arm64 runner. Phase 2 adds a build of the exact lastdb source oid
+# (input fold_oid) inside this public repo, with the org GH_PAT used only to
+# check out the private fold repo. Brain: design-registry-proof-in-github-ci-20260930,
 # decision-2026-09-30-registry-proof-ci-sign-on-mac-gh-pat-build-in-last-stack.
 #
-# This workflow writes no registry row, opens no PR, reads no secret and touches
-# no host-track or primary node. It installs a RELEASED lastdb build, runs the
-# isolated llms.txt install smoke against it with the candidate app set, and
-# uploads one proof bundle (verdicts, run ids, timings, uname, memory). It never
-# uploads a lastdb or lastdbd binary: this repo is public, so its artifacts are
-# public.
+# This workflow writes no registry row, opens no PR and touches no host-track or
+# primary node. It gets a lastdb build (a RELEASED tarball, or a build of fold at
+# fold_oid), runs the isolated llms.txt install smoke against it with the
+# candidate app set, and uploads one proof bundle (verdicts, oids, versions,
+# timings, uname, memory). It never uploads a lastdb or lastdbd binary and never
+# caches a build directory: this repo is public, so its artifacts and caches are
+# readable by anyone, and the fold source is private (decision D5).
+# The only secret is the existing org secret GH_PAT, passed to actions/checkout
+# and to one presence probe via env. It is never echoed and never reaches the
+# build or the smoke.
 name: registry-proof
 
 on:
@@ -18,6 +24,21 @@ on:
         required: false
         default: ""
         type: string
+      fold_oid:
+        description: "Build lastdb/lastdbd from EdgeVector/fold at this full 40-hex oid (private; needs GH_PAT). Empty = use the release tarball."
+        required: false
+        default: ""
+        type: string
+      lastdb_build:
+        description: "Expected lastdbd --version build string for a fold_oid build (for example 0.23.3-2378-gbe41e547e). Empty = no extra check."
+        required: false
+        default: ""
+        type: string
+      probe_only:
+        description: "Only run the preflight probes (brew prefix, GH_PAT presence, fold access). No build, no smoke."
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: registry-proof
@@ -36,7 +57,7 @@ jobs:
   proof:
     name: proof
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 240
     steps:
       - name: Prepare proof bundle directory
         run: |
@@ -75,8 +96,16 @@ jobs:
       - name: Resolve the lastdb release tag
         env:
           INPUT_TAG: ${{ inputs.lastdb_release }}
+          INPUT_FOLD_OID: ${{ inputs.fold_oid }}
         run: |
           set -euo pipefail
+          if [ -n "$INPUT_FOLD_OID" ]; then
+            echo "LASTDB_TAG=-" >> "$GITHUB_ENV"
+            echo "LASTDB_SOURCE=built" >> "$GITHUB_ENV"
+            echo "build mode: fold oid $INPUT_FOLD_OID"
+            exit 0
+          fi
+          echo "LASTDB_SOURCE=release" >> "$GITHUB_ENV"
           tag="$INPUT_TAG"
           if [ -z "$tag" ]; then
             loc="$(curl -sS -o /dev/null -w '%{redirect_url}' https://github.com/EdgeVector/homebrew-lastdb/releases/latest)"
@@ -99,15 +128,128 @@ jobs:
           { brew tap edgevector/lastdb && brew trust --tap edgevector/lastdb \
               && brew install edgevector/lastdb/lastdb; } || rc=$?
           printf 'brew-install\t%s\t%s\n' "$((SECONDS - t0))" "$rc" >> "$BUNDLE/timings.tsv"
+          # Phase 1 listed the prefix WITHOUT a trailing slash and saw only the
+          # symlink. List the target, the Cellar dir and the service files.
+          bp="$(brew --prefix edgevector/lastdb/lastdb 2>/dev/null || true)"
           {
-            echo "brew_version=$(brew --version | head -1)"
-            echo "brew_prefix=$(brew --prefix edgevector/lastdb/lastdb 2>&1)"
-            ls -la "$(brew --prefix edgevector/lastdb/lastdb 2>/dev/null)" 2>&1 | sed 's#/Users/runner#~#g'
-          } > "$BUNDLE/brew-probe.txt" 2>&1
+            brew --version > "$SCRATCH/brew-version.txt" 2>&1 || true
+            echo "brew_version=$(head -1 "$SCRATCH/brew-version.txt")"
+            echo "brew_prefix=$bp"
+            echo "== ls -la <prefix>/"
+            ls -la "$bp/" 2>&1
+            echo "== find <prefix>/ maxdepth 2 (name, type)"
+            find "$bp/" -maxdepth 2 -print 2>&1 | head -60
+            echo "== service and plist files anywhere in the keg (maxdepth 4)"
+            find "$bp/" -maxdepth 4 \( -name '*.plist' -o -name '*.service' -o -name '*lastdbd-service*' \) 2>&1 | head -20
+            echo "== brew services list (read-only)"
+            brew services list 2>&1 | head -10
+            echo "== brew info --json=v2 service field"
+            brew info --json=v2 edgevector/lastdb/lastdb 2>/dev/null | jq -c '.formulae[0] | {version: .installed[0].version, service: .service, caveats: (.caveats // "" | .[0:300])}' 2>&1
+          } 2>&1 | sed 's#/Users/runner#~#g' > "$BUNDLE/brew-probe.txt"
           cat "$BUNDLE/brew-probe.txt"
           exit "$rc"
 
+      - name: Preflight (GH_PAT presence, fold access)
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          FOLD_OID: ${{ inputs.fold_oid }}
+          PROBE_ONLY: ${{ inputs.probe_only }}
+        run: |
+          set -u
+          # Presence only. The value is never printed, and GH_TOKEN below is the
+          # same masked value, used by gh for one read-only API call.
+          if [ -n "$GH_PAT" ]; then pat=present; else pat=absent; fi
+          {
+            echo "gh_pat=$pat"
+            if [ "$pat" = present ] && [ -n "$FOLD_OID" ]; then
+              private="$(GH_TOKEN="$GH_PAT" gh api repos/EdgeVector/fold --jq .private 2>&1 | head -c 200)"
+              echo "fold_private=$private"
+              found="$(GH_TOKEN="$GH_PAT" gh api "repos/EdgeVector/fold/commits/$FOLD_OID" --jq .sha 2>&1 | head -c 200)"
+              echo "fold_commit_visible=$([ "$found" = "$FOLD_OID" ] && echo yes || echo "no: $found")"
+            fi
+          } > "$BUNDLE/preflight.txt" 2>&1
+          cat "$BUNDLE/preflight.txt"
+          if [ -n "$FOLD_OID" ] && [ "$pat" != present ]; then
+            echo "::error::GH_PAT is not available to this workflow; cannot check out private fold"
+            exit 1
+          fi
+          if [ -n "$FOLD_OID" ] && [ "${PROBE_ONLY:-false}" != true ] && ! grep -q '^fold_commit_visible=yes' "$BUNDLE/preflight.txt"; then
+            echo "::error::fold commit $FOLD_OID is not on GitHub fold (a Forgejo-only oid cannot be built in CI)"
+            exit 1
+          fi
+
+      - name: Check out fold at the oid (private source)
+        if: ${{ inputs.fold_oid != '' && !inputs.probe_only }}
+        uses: actions/checkout@v4
+        with:
+          repository: EdgeVector/fold
+          ref: ${{ inputs.fold_oid }}
+          token: ${{ secrets.GH_PAT }}
+          path: fold-src
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Build lastdb and lastdbd from fold (no cache, no upload)
+        if: ${{ inputs.fold_oid != '' && !inputs.probe_only }}
+        env:
+          FOLD_OID: ${{ inputs.fold_oid }}
+          EXPECT_BUILD: ${{ inputs.lastdb_build }}
+          # Match the release workflow: no rustc wrapper; never stamp from a ref name.
+          RUSTC_WRAPPER: ""
+          GITHUB_REF_NAME: ""
+        run: |
+          set -euo pipefail
+          t0=$SECONDS; rc=0
+          (
+            set -euo pipefail
+            cd "$GITHUB_WORKSPACE/fold-src"
+            case "$FOLD_OID" in
+              [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+              *) echo "fold_oid must be lowercase hex" >&2; exit 1 ;;
+            esac
+            [ "${#FOLD_OID}" -eq 40 ] || { echo "fold_oid must be a full 40-hex oid" >&2; exit 1; }
+            head="$(git rev-parse HEAD)"
+            [ "$head" = "$FOLD_OID" ] || { echo "checkout HEAD $head is not $FOLD_OID" >&2; exit 1; }
+            # The Mac canary build used a 9-digit abbreviation; pin it so the
+            # stamp is the same string for the same commit.
+            git config core.abbrev 9
+            [ -z "$(git status --porcelain)" ] || { echo "fold checkout is dirty" >&2; exit 1; }
+            # build.rs stamps `git describe` with the leading v of the tag stripped.
+            want="$(git describe --tags --long --abbrev=9)"
+            want="${want#v}"
+            echo "git describe: $want"
+            if [ -n "$EXPECT_BUILD" ] && [ "$want" != "$EXPECT_BUILD" ]; then
+              echo "git describe $want does not equal the expected build $EXPECT_BUILD" >&2
+              exit 1
+            fi
+            echo "$want" > "$SCRATCH/expected-build.txt"
+            bt0=$SECONDS
+            cargo build --release -p lastdb_node --bin lastdb --bin lastdbd
+            echo "cargo_build_seconds=$((SECONDS - bt0))" > "$BUNDLE/build.env"
+            mkdir -p "$SCRATCH/bin"
+            cp target/release/lastdb target/release/lastdbd "$SCRATCH/bin/"
+            chmod +x "$SCRATCH/bin/lastdb" "$SCRATCH/bin/lastdbd"
+            got="$("$SCRATCH/bin/lastdbd" --version | sed -n 's/^lastdbd //p' | head -1)"
+            echo "lastdbd --version build: $got"
+            # The stamp is git describe with the leading v stripped.
+            [ "$got" = "$want" ] || { echo "lastdbd reports '$got', expected '$want'" >&2; exit 1; }
+            "$SCRATCH/bin/lastdb" --version
+            {
+              echo "fold_oid=$FOLD_OID"
+              echo "build=$got"
+              echo "rustc=$(rustc --version)"
+              echo "binary_sha256_lastdbd=$(shasum -a 256 "$SCRATCH/bin/lastdbd" | awk '{print $1}')"
+              echo "binary_bytes_lastdbd=$(stat -f %z "$SCRATCH/bin/lastdbd")"
+            } >> "$BUNDLE/build.env"
+          ) || rc=$?
+          printf 'fold-build\t%s\t%s\n' "$((SECONDS - t0))" "$rc" >> "$BUNDLE/timings.tsv"
+          # Drop the private source tree and the build dir before the smoke so
+          # the smoke runs with the memory and disk it had in phase 1.
+          rm -rf "$GITHUB_WORKSPACE/fold-src/target" "$GITHUB_WORKSPACE/fold-src"
+          exit "$rc"
+
       - name: Download the release binaries into the scratch dir
+        if: ${{ inputs.fold_oid == '' && !inputs.probe_only }}
         run: |
           set -euo pipefail
           t0=$SECONDS; rc=0
@@ -136,12 +278,26 @@ jobs:
           exit "$rc"
 
       - name: Candidate set
+        if: ${{ !inputs.probe_only }}
+        env:
+          FOLD_OID: ${{ inputs.fold_oid }}
+          # Built-in job token: reads the public app repos' check runs and artifacts.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           t0=$SECONDS; rc=0
+          # The real source oid of the lastdb build: the fold commit that was
+          # built, or the release manifest's source_git_oid.
+          if [ -n "$FOLD_OID" ]; then
+            oid_args=(--lastdb-oid "$FOLD_OID")
+          else
+            oid_args=(--lastdb-manifest "$SCRATCH/dl/manifest.json")
+          fi
           bin/last-stack-canary-candidate-set \
             --lastdbd "$SCRATCH/bin/lastdbd" \
+            "${oid_args[@]}" \
             --source-venue github \
+            --sha-source github-ci \
             --out "$SCRATCH/candidate-set.json" || rc=$?
           printf 'candidate-set\t%s\t%s\n' "$((SECONDS - t0))" "$rc" >> "$BUNDLE/timings.tsv"
           [ "$rc" -eq 0 ] || exit "$rc"
@@ -150,6 +306,7 @@ jobs:
             "$SCRATCH/candidate-set.json" || true
 
       - name: Runner probes (Schema Service, launchctl)
+        if: ${{ !inputs.probe_only }}
         run: |
           set -u
           t0=$SECONDS
@@ -168,6 +325,7 @@ jobs:
           printf 'probes\t%s\t0\n' "$((SECONDS - t0))" >> "$BUNDLE/timings.tsv"
 
       - name: Isolated llms.txt install smoke
+        if: ${{ !inputs.probe_only }}
         run: |
           set -u
           set +e   # a RED smoke exits 1; keep going so the bundle is written
@@ -191,6 +349,7 @@ jobs:
           SMOKE_CANDIDATE_SET="$SCRATCH/candidate-set.json" \
           SMOKE_TOTAL_BUDGET_SECS=1800 \
           SMOKE_NO_FORGE_AUTH=1 \
+          SMOKE_BREW_PLIST_NAME=sh.brew.lastdb.plist \
             bash skills/llms-txt-install-smoke/run.sh --json --keep \
               > "$SCRATCH/proof.stdout" 2> "$BUNDLE/smoke.stderr.log"
           rc=$?
@@ -205,7 +364,7 @@ jobs:
           exit 0
 
       - name: Collect smoke log, step times and search-init size
-        if: ${{ always() }}
+        if: ${{ always() && !inputs.probe_only }}
         run: |
           set -u
           sandbox="$(jq -r '.sandbox // empty' "$BUNDLE/proof.json" 2>/dev/null || true)"
@@ -238,23 +397,51 @@ jobs:
           cat "$BUNDLE/sandbox.txt"
 
       - name: Attribution and job summary
-        if: ${{ always() }}
+        if: ${{ always() && !inputs.probe_only }}
+        env:
+          INPUT_FOLD_OID: ${{ inputs.fold_oid }}
+          INPUT_LASTDB_BUILD: ${{ inputs.lastdb_build }}
         run: |
           set -u
           # An earlier step can fail before the smoke runs. Say so in the verdict
           # instead of failing this step on a missing proof file.
           if [ ! -s "$BUNDLE/proof.json" ]; then
             failed="$(awk -F'\t' 'NR>1 && $3!=0 {print $1; exit}' "$BUNDLE/timings.tsv")"
+            if [ -z "$failed" ] && grep -q '^fold_commit_visible=no' "$BUNDLE/preflight.txt" 2>/dev/null; then
+              failed="fold-oid-not-on-github"
+            elif [ -z "$failed" ] && grep -q '^gh_pat=absent' "$BUNDLE/preflight.txt" 2>/dev/null; then
+              failed="gh-pat-absent"
+            fi
             jq -n --arg s "${failed:-unknown-before-smoke}" '{verdict:"RED",fails:["runner-setup:"+$s]}' > "$BUNDLE/proof.json"
           fi
+          # Every verdict, RED as well as GREEN, names the build it judged: the
+          # build string the binary reports, the source oid, and where the
+          # binary came from. Verdicts, oids, versions and timings only.
+          rb=""
+          [ -x "$SCRATCH/bin/lastdbd" ] && rb="$("$SCRATCH/bin/lastdbd" --version 2>/dev/null | sed -n 's/^lastdbd //p' | head -1)"
+          co=""
+          [ -s "$SCRATCH/candidate-set.json" ] && co="$(jq -r '.lastdb.oid // ""' "$SCRATCH/candidate-set.json")"
+          cosrc=""
+          [ -s "$SCRATCH/candidate-set.json" ] && cosrc="$(jq -r '.lastdb.oid_source // ""' "$SCRATCH/candidate-set.json")"
+          cbuild="$(awk -F= '$1=="cargo_build_seconds" {print $2}' "$BUNDLE/build.env" 2>/dev/null || true)"
+          jq --arg b "$rb" --arg o "$co" --arg os "$cosrc" --arg src "${LASTDB_SOURCE:-unknown}" \
+             --arg tag "${LASTDB_TAG:--}" --arg fold "${INPUT_FOLD_OID:-}" \
+             --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+             --arg sha "$GITHUB_SHA" --arg cb "${cbuild:-}" --arg eb "${INPUT_LASTDB_BUILD:-}" \
+             '. + {lastdb_build: (if (.lastdb_build // "") != "" then .lastdb_build else $b end),
+                   lastdb_oid: (if (.lastdb_oid // "") != "" then .lastdb_oid else $o end),
+                   lastdb_oid_source: $os, lastdb_source: $src, lastdb_release_tag: $tag,
+                   fold_oid: $fold, lastdb_build_expected: $eb, workflow_run: $run, last_stack_sha: $sha,
+                   cargo_build_seconds: (if $cb == "" then null else ($cb | tonumber) end)}' \
+             "$BUNDLE/proof.json" > "$BUNDLE/proof.json.new" && mv "$BUNDLE/proof.json.new" "$BUNDLE/proof.json"
           bin/last-stack-registry-red-attribution --proof "$BUNDLE/proof.json" > "$BUNDLE/attribution.txt" 2> "$BUNDLE/attribution.err"
           echo "attribution rc=$?"
           cat "$BUNDLE/attribution.txt"
 
           verdict="$(jq -r '.verdict // "UNKNOWN"' "$BUNDLE/proof.json")"
           build="$(jq -r '.lastdb_build // "-"' "$BUNDLE/proof.json")"
-          peak_used="$(awk -F'\t' 'NR>1 && $2+0>m {m=$2+0} END {print m+0}' "$BUNDLE/memory-samples.tsv" 2>/dev/null)"
-          peak_rss="$(awk -F'\t' 'NR>1 && $3+0>m {m=$3+0} END {print m+0}' "$BUNDLE/memory-samples.tsv" 2>/dev/null)"
+          peak_used="$(awk -F'\t' 'NR>1 && $2+0>m {m=$2+0} END {print m+0}' "$BUNDLE/memory-samples.tsv" 2>/dev/null || true)"
+          peak_rss="$(awk -F'\t' 'NR>1 && $3+0>m {m=$3+0} END {print m+0}' "$BUNDLE/memory-samples.tsv" 2>/dev/null || true)"
           {
             echo "verdict=$verdict"
             echo "lastdb_tag=$LASTDB_TAG"
@@ -265,10 +452,12 @@ jobs:
           } > "$BUNDLE/summary.env"
 
           {
-            echo "## registry-proof phase 1"
+            echo "## registry-proof"
             echo
             echo "- verdict: **$verdict**"
-            echo "- release tag: \`$LASTDB_TAG\`, lastdb build: \`$build\`"
+            echo "- lastdb source: \`${LASTDB_SOURCE:-unknown}\`, release tag: \`$LASTDB_TAG\`, build: \`$build\`"
+            echo "- lastdb oid: \`$(jq -r '.lastdb_oid // "-"' "$BUNDLE/proof.json")\` (\`$(jq -r '.lastdb_oid_source // "-"' "$BUNDLE/proof.json")\`)"
+            [ -n "$INPUT_FOLD_OID" ] && echo "- fold oid built: \`$INPUT_FOLD_OID\`"
             echo "- peak memory: used ${peak_used} MB, process RSS sum ${peak_rss} MB"
             echo
             echo "### Wall time per step"
@@ -309,7 +498,7 @@ jobs:
           retention-days: 30
 
       - name: Fail the job when the smoke is RED
-        if: ${{ always() }}
+        if: ${{ always() && !inputs.probe_only }}
         run: |
           verdict="$(jq -r '.verdict // "UNKNOWN"' "$BUNDLE/proof.json" 2>/dev/null || echo UNKNOWN)"
           echo "verdict=$verdict smoke_rc=${SMOKE_RC:-unset}"

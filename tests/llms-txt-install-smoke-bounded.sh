@@ -57,6 +57,17 @@ for mode in auto fallback; do
   # stdout still reaches the caller through command substitution
   out="$(run_bounded 10 printf 'first note\n')"
   [ "$out" = "first note" ] || fail "[$mode] output not captured; got '$out'"
+
+  # A finished command must not make the substitution wait out the bound: the
+  # watchdog's `sleep` child used to keep the pipe open (runner run 36767170845:
+  # brain get 200 s, brain ask 401 s = the scaled bound, not the work).
+  started="$(date +%s)"
+  out="$(run_bounded 25 sh -c 'sleep 1; echo done' 2>&1)"
+  elapsed=$(( $(date +%s) - started ))
+  [ "$out" = "done" ] || fail "[$mode] slow-command output not captured; got '$out'"
+  # wallclock-bound-ok: 12s ceiling over a 1s command with a 25s bound; the
+  # failing side waits the full 25s, so the windows cannot overlap.
+  [ "$elapsed" -lt 12 ] || fail "[$mode] substitution waited out the bound: ${elapsed}s elapsed"
 done
 unset SMOKE_TIMEOUT_BIN || true
 

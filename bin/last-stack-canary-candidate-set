@@ -12,6 +12,15 @@ Per app the commit comes from, in order:
      (the app's released head: built and green-published)
   3. `git ls-remote <source> refs/heads/main`
 
+`--sha-source github-ci` replaces steps 2 and 3 for a host with no artifact CAS
+(a GitHub Actions runner): per app, the newest of the last 20 commits on GitHub
+`main` whose `ci-required` check run is `success` AND, for an app that publishes
+an artifact (`artifact_app` set), whose Actions artifact `ht-artifact-<sha>`
+exists and has not expired. That is the same "released head" the Mac reads from
+the CAS. An app with no `artifact_app` needs only the green check. No such
+commit in the window is an error (exit 3): the set never pairs a build with an
+unreleased head. The GitHub reads go through `gh` (override: LAST_STACK_GH_BIN).
+
 The source is the app's gate of record: `github` (the GitHub repo) in
 config/registry/apps.json. Every EdgeVector repo except `lastgit` is on GitHub
 (2026-09-30, decision-2026-09-29-retire-lastgit-all-repos-to-github); LastGit is
@@ -126,8 +135,32 @@ def lastdbd_build(bin_path: Path) -> str:
     return ""
 
 
-def lastdb_oid_from_manifest(bin_path: Path) -> str:
-    for candidate in (bin_path.parent / "manifest.json", bin_path.parent.parent / "manifest.json"):
+def build_abbrev(build: str) -> str:
+    """The `g<hex>` tail of a `git describe --long` build string, hex only.
+
+    `0.23.3-2378-gbe41e547e` -> `be41e547e`. Empty for a build with no tail."""
+    tail = build.rsplit("-g", 1)
+    if len(tail) == 2 and tail[1] and all(c in "0123456789abcdef" for c in tail[1]):
+        return tail[1]
+    return ""
+
+
+def check_oid_matches_build(oid: str, build: str) -> None:
+    """A recorded oid must be a full 40-hex id that the build string names.
+
+    `git describe --abbrev=9` puts the first nine hex digits of the source oid
+    in the build, so an oid that does not start with them names another commit.
+    Exits 2 on a mismatch so a row never pairs a build with the wrong source."""
+    if len(oid) != 40 or any(c not in "0123456789abcdef" for c in oid):
+        die(f"lastdb oid {oid!r} is not a 40-hex git oid", 2)
+    abbrev = build_abbrev(build)
+    if abbrev and not oid.startswith(abbrev):
+        die(f"lastdb oid {oid} does not match build {build} (build names {abbrev})", 2)
+
+
+def lastdb_oid_from_manifest(bin_path: Path, manifest: Path | None = None) -> str:
+    candidates = [manifest] if manifest else [bin_path.parent / "manifest.json", bin_path.parent.parent / "manifest.json"]
+    for candidate in candidates:
         if candidate.is_file():
             try:
                 data = json.loads(candidate.read_text(encoding="utf-8"))
@@ -162,6 +195,60 @@ def main_oid(url: str) -> str:
         if len(parts) == 2 and parts[1] == "refs/heads/main":
             return parts[0]
     return ""
+
+
+GH_CI_WINDOW = 20
+
+
+def gh_bin() -> str:
+    return os.environ.get("LAST_STACK_GH_BIN", "gh")
+
+
+def gh_json(path: str, jq: str) -> object:
+    """`gh api <path> --jq <jq>` parsed as JSON, or None on any failure."""
+    proc = subprocess.run([gh_bin(), "api", path, "--jq", jq], capture_output=True, text=True,
+                          timeout=60, check=False)
+    if proc.returncode != 0:
+        return None
+    try:
+        return json.loads(proc.stdout or "null")
+    except json.JSONDecodeError:
+        return None
+
+
+def repo_slug(url: str) -> str:
+    """`https://github.com/EdgeVector/brain.git` -> `EdgeVector/brain`; "" otherwise."""
+    prefix = "https://github.com/"
+    if not url.startswith(prefix):
+        return ""
+    slug = url[len(prefix):]
+    return slug[:-4] if slug.endswith(".git") else slug
+
+
+def github_ci_head(cfg: dict) -> tuple[str, str]:
+    """(sha, why) of the newest green, published `main` commit; ("", why) when none.
+
+    See the module docstring, `--sha-source github-ci`."""
+    slug = repo_slug(str(cfg.get("github") or ""))
+    if not slug:
+        return "", "no github repo"
+    needs_artifact = bool(cfg.get("artifact_app"))
+    commits = gh_json(f"repos/{slug}/commits?sha=main&per_page={GH_CI_WINDOW}", "[.[].sha]")
+    if not isinstance(commits, list) or not commits:
+        return "", f"could not list main commits of {slug}"
+    for sha in commits[:GH_CI_WINDOW]:
+        runs = gh_json(f"repos/{slug}/commits/{sha}/check-runs?per_page=100",
+                       '[.check_runs[] | select(.name == "ci-required" or (.name | endswith("/ ci-required"))) | .conclusion]')
+        if not isinstance(runs, list) or "success" not in runs:
+            continue
+        if needs_artifact:
+            arts = gh_json(f"repos/{slug}/actions/artifacts?name=ht-artifact-{sha}&per_page=10",
+                           "[.artifacts[] | select(.expired == false)] | length")
+            if not isinstance(arts, int) or arts < 1:
+                continue
+        return str(sha), "ok"
+    need = "a green ci-required and an ht-artifact" if needs_artifact else "a green ci-required"
+    return "", f"none of the last {GH_CI_WINDOW} main commits of {slug} has {need}"
 
 
 def source_candidates(app: str, cfg: dict, venue: str) -> list[tuple[str, str]]:
@@ -249,6 +336,15 @@ def main(argv: list[str]) -> int:
         help="where each app's source is read: auto (github when the app has one, then "
         "forge), github, or forge (the frozen copy)",
     )
+    parser.add_argument("--lastdb-oid", default="",
+                        help="full 40-hex source oid of the lastdb build (a built binary: the fold "
+                        "commit that was checked out). Checked against the build string.")
+    parser.add_argument("--lastdb-manifest", type=Path, default=None,
+                        help="release manifest.json whose source_git_oid names the build "
+                        "(a release tarball; default: manifest.json next to the binary)")
+    parser.add_argument("--sha-source", choices=("auto", "github-ci"), default="auto",
+                        help="auto: artifact channel, then main. github-ci: newest main commit with a "
+                        "green ci-required and (for an app with an artifact) an ht-artifact-<sha>")
     parser.add_argument("--cache-root", type=Path, default=DEFAULT_CACHE_ROOT)
     parser.add_argument("--no-version-lookup", action="store_true", help="skip the package.json fetch; versions read 0.0.0")
     parser.add_argument("--no-source-probe", action="store_true",
@@ -277,7 +373,14 @@ def main(argv: list[str]) -> int:
             die(f"--only names unknown app {wanted!r}", 2)
 
     build = lastdbd_build(args.lastdbd)
-    oid = lastdb_oid_from_manifest(args.lastdbd)
+    oid, oid_source = "", ""
+    if args.lastdb_oid:
+        oid, oid_source = args.lastdb_oid.strip().lower(), "flag"
+    else:
+        oid = lastdb_oid_from_manifest(args.lastdbd, args.lastdb_manifest)
+        oid_source = "manifest" if oid else ""
+    if oid:
+        check_oid_matches_build(oid, build)
     apps_out: dict[str, dict] = {}
     missing: list[str] = []
     unreachable: list[str] = []
@@ -289,6 +392,11 @@ def main(argv: list[str]) -> int:
             continue
         if app in pins:
             sha, sha_source = pins[app], "pin"
+        elif args.sha_source == "github-ci":
+            sha, why = github_ci_head(cfg)
+            sha_source = "github-ci-main"
+            if not sha:
+                print(f"last-stack-canary-candidate-set: {app}: {why}", file=sys.stderr)
         else:
             sha = artifact_channel_oid(args.artifact_root, cfg.get("artifact_app"), args.artifact_channel)
             sha_source = f"artifact-channel:{args.artifact_channel}"
@@ -348,7 +456,7 @@ def main(argv: list[str]) -> int:
 
     candidate_set = {
         "created_at": utc_now(),
-        "lastdb": {"build": build, "oid": oid, "bin": str(args.lastdbd)},
+        "lastdb": {"build": build, "oid": oid, "oid_source": oid_source, "bin": str(args.lastdbd)},
         "apps": apps_out,
     }
     out = args.out or (args.out_root / f"{build}.json")
