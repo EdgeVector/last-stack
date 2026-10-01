@@ -1,0 +1,348 @@
+#!/usr/bin/env python3
+"""Apply one GitHub CI registry proof on the Mac: verify the run, then sign and publish.
+
+The registry-proof workflow (EdgeVector/last-stack, .github/workflows/registry-proof.yml)
+proves an app set against an exact lastdb build in CI and uploads ONE proof
+bundle. It never signs and never opens a tap PR: the registry signing key stays
+on this Mac (decision-2026-09-30-registry-proof-ci-sign-on-mac-gh-pat-build-in-last-stack).
+This command is the Mac half. It
+
+  1. refuses while a previous tap row PR (registry/next-*) is still open (serial);
+  2. picks a run (--run-id, or --latest: the newest completed run on main);
+  3. VERIFIES the run through the GitHub API, not through the bundle's own claims:
+       repository EdgeVector/last-stack (no fork), branch main, workflow
+       .github/workflows/registry-proof.yml, event schedule or workflow_dispatch,
+       status completed, conclusion success (GREEN) or failure (attributed RED);
+  4. downloads the bundle with `gh` and cross-checks apply.json against the run
+     (run id, sha, ref, URL, file digests) and against proof.json and
+     candidate-set.json (one lastdb build everywhere, the proof record name);
+  5. refuses a GREEN that is not GREEN, a RED with a shared fail, a build that
+     differs from --expect-build, a run older than --max-age-hours, and a proof
+     that would move a pin BACKWARDS (a newer row for the same app and build is
+     already on the tap);
+  6. calls last-stack-registry-publish-next, which signs with the local registry
+     key (through `lastdb app index sign`), opens one auto-merging tap PR, and
+     names the CI run id in the row branch.
+
+--dry-run does steps 1 to 5 and runs publish-next in its own scratch clone with
+--dry-run: no push, no PR, nothing written under the real tap checkout.
+
+Exit codes: 0 applied, dry-run done, or nothing to apply; 3 refused (serial
+open PR or a failed verification); 1 any other error; 2 usage.
+
+One language, bounded: every path comes from a flag or a fresh temp dir; the
+only reads are `gh` calls and the files of one bundle.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+WORKFLOW_PATH = ".github/workflows/registry-proof.yml"
+WORKFLOW_FILE = "registry-proof.yml"
+EVENTS = ("schedule", "workflow_dispatch")
+SCAN_LIMIT = 10  # completed runs examined by --latest
+
+
+class Refused(Exception):
+    """A verification or serial rule said no. Exit 3."""
+
+
+def say(message: str) -> None:
+    print(f"last-stack-registry-apply-proof: {message}", file=sys.stderr)
+
+
+def gh_bin() -> str:
+    return os.environ.get("GH_BIN", "gh")
+
+
+def gh(*args: str, check: bool = True) -> str:
+    proc = subprocess.run([gh_bin(), *args], capture_output=True, text=True, timeout=300, check=False)
+    if proc.returncode != 0 and check:
+        raise SystemExit(f"last-stack-registry-apply-proof: `gh {args[0]} {args[1] if len(args) > 1 else ''}` failed: "
+                         f"{proc.stderr.strip()[:300]}")
+    return proc.stdout
+
+
+def gh_json(*args: str) -> object:
+    out = gh(*args)
+    try:
+        return json.loads(out or "null")
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"last-stack-registry-apply-proof: gh {args[0]}: not JSON ({exc})")
+
+
+def safe_build(build: str) -> str:
+    return "".join(c if c.isalnum() or c in ".-" else "_" for c in build)
+
+
+def sha256_of(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
+
+
+def parse_time(text: str) -> dt.datetime | None:
+    try:
+        return dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+# ── serial rule ──────────────────────────────────────────────────────────────
+
+def open_row_prs(tap: str) -> list[dict]:
+    prs = gh_json("pr", "list", "-R", tap, "--state", "open", "--limit", "50", "--json", "number,headRefName,url")
+    return [p for p in (prs or []) if str(p.get("headRefName", "")).startswith("registry/next-")]
+
+
+# ── run selection and verification ───────────────────────────────────────────
+
+def verify_run(run: dict, repo: str, run_id: str) -> str:
+    """Check the run metadata that GitHub reports. Returns the conclusion."""
+    def need(cond: bool, why: str) -> None:
+        if not cond:
+            raise Refused(f"run {run_id}: {why}")
+
+    need(str(run.get("id")) == run_id, f"the API answered run {run.get('id')}")
+    need((run.get("repository") or {}).get("full_name") == repo, f"repository is {(run.get('repository') or {}).get('full_name')}, not {repo}")
+    need((run.get("head_repository") or {}).get("full_name") == repo, f"head repository is {(run.get('head_repository') or {}).get('full_name')} (a fork?), not {repo}")
+    need(run.get("head_branch") == "main", f"branch is {run.get('head_branch')}, not main")
+    path = str(run.get("path") or "")
+    need(path.split("@", 1)[0] == WORKFLOW_PATH, f"workflow is {path or 'unknown'}, not {WORKFLOW_PATH}")
+    need(run.get("event") in EVENTS, f"event is {run.get('event')}, not one of {', '.join(EVENTS)}")
+    need(run.get("status") == "completed", f"status is {run.get('status')}, not completed")
+    conclusion = str(run.get("conclusion") or "")
+    need(conclusion in ("success", "failure"), f"conclusion is {conclusion or 'none'}")
+    return conclusion
+
+
+def load_json_file(path: Path, what: str) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise Refused(f"{what} {path.name}: {exc}")
+    if not isinstance(data, dict):
+        raise Refused(f"{what} {path.name} is not a JSON object")
+    return data
+
+
+def verify_bundle(bundle: Path, run: dict, repo: str, run_id: str, conclusion: str, expect_build: str) -> dict:
+    """Cross-check apply.json against the run and against the bundle's own files."""
+    def need(cond: bool, why: str) -> None:
+        if not cond:
+            raise Refused(f"bundle {run_id}: {why}")
+
+    manifest = load_json_file(bundle / "apply.json", "manifest")
+    proof = load_json_file(bundle / "proof.json", "proof")
+    cset = load_json_file(bundle / "candidate-set.json", "candidate set") if (bundle / "candidate-set.json").is_file() else {}
+
+    need(manifest.get("schema") == "registry-proof-bundle/1", f"unknown manifest schema {manifest.get('schema')}")
+    need(str(manifest.get("run_id")) == run_id, f"manifest run_id is {manifest.get('run_id')}")
+    need(manifest.get("repository") == repo, f"manifest repository is {manifest.get('repository')}")
+    need(manifest.get("workflow_path") == WORKFLOW_PATH, f"manifest workflow is {manifest.get('workflow_path')}")
+    need(manifest.get("ref") == "refs/heads/main", f"manifest ref is {manifest.get('ref')}")
+    need(manifest.get("last_stack_sha") == run.get("head_sha"), "manifest sha is not the run's head sha")
+    need(str(manifest.get("run_url", "")).rstrip("/").endswith(f"/actions/runs/{run_id}"), "manifest run_url does not name this run")
+    for name, digest in (manifest.get("files") or {}).items():
+        if digest or (bundle / name).is_file():
+            need(sha256_of(bundle / name) == digest, f"{name} does not match its recorded digest")
+
+    verdict = str(proof.get("verdict") or "")
+    need(manifest.get("verdict") == verdict, "manifest verdict differs from proof.json")
+    build = str((manifest.get("lastdb") or {}).get("build") or "")
+    need(bool(build), "no lastdb build in the manifest")
+    set_build = str((cset.get("lastdb") or {}).get("build") or "")
+    need(set_build == build, f"candidate set build {set_build or 'absent'} differs from the manifest build {build}")
+    proof_build = str(proof.get("lastdb_build") or "")
+    need(proof_build == build, f"proof build {proof_build or 'absent'} differs from the manifest build {build}")
+    need(manifest.get("proof_run") == f"ci-smoke-{run_id}-{safe_build(build)}", f"proof_run is {manifest.get('proof_run')}")
+    apps = manifest.get("apps") or {}
+    set_apps = {a: str(v.get("sha") or "") for a, v in (cset.get("apps") or {}).items()}
+    need(apps == set_apps and bool(apps), "manifest apps differ from the candidate set")
+    need(all(re.fullmatch(r"[0-9a-f]{40}", s or "") for s in apps.values()), "an app sha is not a 40-hex oid")
+    if expect_build:
+        need(build == expect_build, f"build {build} is not the expected {expect_build}")
+
+    if verdict == "GREEN":
+        need(conclusion == "success", f"verdict GREEN but the run concluded {conclusion}")
+    elif verdict == "RED":
+        need(conclusion == "failure", f"verdict RED but the run concluded {conclusion}")
+        need(manifest.get("shared_fail") is False, "RED with a shared fail proves no app")
+        need(bool(manifest.get("passed_apps")), "RED and no app passed its own checks")
+    else:
+        need(False, f"verdict is {verdict or 'absent'}")
+    return manifest
+
+
+def download_bundle(repo: str, run_id: str, dest: Path) -> Path:
+    proc = subprocess.run([gh_bin(), "run", "download", run_id, "-R", repo, "-n", f"registry-proof-bundle-{run_id}", "-D", str(dest)],
+                          capture_output=True, text=True, timeout=300, check=False)
+    if proc.returncode != 0:
+        raise Refused(f"run {run_id}: no proof bundle could be downloaded ({proc.stderr.strip()[:200]})")
+    return dest
+
+
+# ── the tap view ─────────────────────────────────────────────────────────────
+
+def tap_index(tap: str) -> dict:
+    out = gh("api", f"repos/{tap}/contents/registry/next.json", "-H", "Accept: application/vnd.github.raw")
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        raise SystemExit("last-stack-registry-apply-proof: the tap next.json is not JSON")
+
+
+def rows_to_write(manifest: dict) -> dict[str, str]:
+    apps = manifest["apps"]
+    if manifest["verdict"] == "GREEN":
+        return dict(apps)
+    passed = set(manifest["passed_apps"])
+    return {a: s for a, s in apps.items() if a in passed}
+
+
+def check_against_tap(index: dict, manifest: dict, proof: dict, rows: dict[str, str]) -> tuple[bool, list[str]]:
+    """(already_applied, stale reasons). A row is a pair <sha, build> per app."""
+    build = manifest["lastdb"]["build"]
+    proved_at = str(proof.get("proved_at") or "")
+    held: dict[str, list[tuple[str, str]]] = {}
+    for app in index.get("apps") or []:
+        for row in app.get("compat") or []:
+            if row.get("lastdb_version") == build:
+                held.setdefault(str(app.get("app_id")), []).append((str(row.get("proved_at") or ""), str(row.get("sha") or "")))
+    present = all(any(sha == s for _t, s in held.get(app, [])) for app, sha in rows.items())
+    stale: list[str] = []
+    for app, sha in rows.items():
+        newer = [(t, s) for t, s in held.get(app, []) if s != sha and t > proved_at]
+        if newer:
+            stale.append(f"{app}: the tap already holds {max(newer)[1][:12]} proved at {max(newer)[0]}, newer than this proof ({proved_at or 'no proved_at'})")
+    return present, stale
+
+
+# ── publish ──────────────────────────────────────────────────────────────────
+
+def publish(bundle: Path, manifest: dict, dry_run: bool, publish_bin: str) -> subprocess.CompletedProcess:
+    cmd = [publish_bin, "--candidate-set", str(bundle / "candidate-set.json"), "--proof", str(bundle / "proof.json"),
+           "--proof-run", manifest["proof_run"], "--run-id", str(manifest["run_id"])]
+    if dry_run:
+        cmd.append("--dry-run")
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=900, check=False)
+
+
+def wait_merged(tap: str, number: str, seconds: int) -> str:
+    deadline = time.time() + seconds
+    state = "UNKNOWN"
+    while True:
+        view = gh_json("pr", "view", number, "-R", tap, "--json", "state,mergeStateStatus,autoMergeRequest")
+        state = str((view or {}).get("state") or "UNKNOWN")
+        print(f"tap PR {number}: state={state} mergeStateStatus={(view or {}).get('mergeStateStatus')} "
+              f"auto_merge={'armed' if (view or {}).get('autoMergeRequest') else 'not armed'}")
+        if state != "OPEN" or time.time() >= deadline:
+            return state
+        time.sleep(20)
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="last-stack-registry-apply-proof", description=__doc__.split("\n\n")[0])
+    which = parser.add_mutually_exclusive_group(required=True)
+    which.add_argument("--run-id", help="the registry-proof run to apply")
+    which.add_argument("--latest", action="store_true", help="the newest completed registry-proof run on main that verifies")
+    parser.add_argument("--dry-run", action="store_true", help="verify and build the rows in a scratch clone; no push, no PR")
+    parser.add_argument("--repo", default=os.environ.get("LAST_STACK_REGISTRY_PROOF_REPO", "EdgeVector/last-stack"))
+    parser.add_argument("--tap", default=os.environ.get("LAST_STACK_REGISTRY_TAP_REPO", "EdgeVector/homebrew-lastdb"))
+    parser.add_argument("--expect-build", default="", help="refuse unless the proof names exactly this lastdb build")
+    parser.add_argument("--max-age-hours", type=float, default=48.0, help="refuse a run older than this (default 48)")
+    parser.add_argument("--wait-merge", type=int, default=0, metavar="SECS", help="after the tap PR opens, poll its state up to SECS seconds")
+    parser.add_argument("--publish-bin", default=os.environ.get("LAST_STACK_REGISTRY_PUBLISH_NEXT_BIN", str(ROOT / "bin" / "last-stack-registry-publish-next")))
+    args = parser.parse_args(argv)
+
+    # 1. serial: one row PR at a time. Two open PRs both rewrite next.json and its signature.
+    open_prs = open_row_prs(args.tap)
+    if open_prs:
+        listing = ", ".join(f"#{p['number']} {p['headRefName']}" for p in open_prs)
+        say(f"REFUSED: a tap row PR is still open ({listing}). Wait for it to merge or close it.")
+        print(f"APPLY_PROOF status=refused reason=open-row-pr open={','.join(str(p['number']) for p in open_prs)}")
+        return 3
+
+    # 2. candidates
+    if args.run_id:
+        if not re.fullmatch(r"[0-9]+", args.run_id):
+            parser.error("--run-id must be digits")
+        candidates = [args.run_id]
+    else:
+        runs = gh_json("api", f"repos/{args.repo}/actions/workflows/{WORKFLOW_FILE}/runs?branch=main&status=completed&per_page=20")
+        listed = (runs or {}).get("workflow_runs") or []
+        candidates = [str(r["id"]) for r in listed if r.get("conclusion") in ("success", "failure")][:SCAN_LIMIT]
+        if not candidates:
+            say("no completed registry-proof run on main")
+            print("APPLY_PROOF status=none reason=no-runs")
+            return 0
+
+    refusals: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="registry-apply-proof.") as tmp:
+        chosen: tuple[str, dict, Path, dict] | None = None
+        for run_id in candidates:
+            try:
+                run = gh_json("api", f"repos/{args.repo}/actions/runs/{run_id}")
+                conclusion = verify_run(run or {}, args.repo, run_id)
+                created = parse_time(str((run or {}).get("created_at") or ""))
+                if created is None or (dt.datetime.now(dt.timezone.utc) - created).total_seconds() > args.max_age_hours * 3600:
+                    raise Refused(f"run {run_id}: older than {args.max_age_hours:g} hours, or no creation time")
+                bundle = download_bundle(args.repo, run_id, Path(tmp) / run_id)
+                manifest = verify_bundle(bundle, run or {}, args.repo, run_id, conclusion, args.expect_build)
+                chosen = (run_id, run or {}, bundle, manifest)
+                break
+            except Refused as exc:
+                refusals.append(str(exc))
+                say(f"skip: {exc}")
+        if chosen is None:
+            say("REFUSED: no run passed verification")
+            print(f"APPLY_PROOF status=refused reason=verification detail={json.dumps(refusals[:3])}")
+            return 3
+        run_id, run, bundle, manifest = chosen
+        proof = load_json_file(bundle / "proof.json", "proof")
+        rows = rows_to_write(manifest)
+        build = manifest["lastdb"]["build"]
+
+        # 3. is there anything to write, and would it move a pin backwards?
+        already, stale = check_against_tap(tap_index(args.tap), manifest, proof, rows)
+        if stale:
+            say("REFUSED: " + "; ".join(stale))
+            print(f"APPLY_PROOF status=refused reason=stale-proof run={run_id}")
+            return 3
+        print(f"run {run_id} {run.get('html_url', '')}: verdict {manifest['verdict']}, build {build}, "
+              f"proof record {manifest['proof_run']}")
+        print("rows (app, sha, lastdb build):")
+        for app in sorted(rows):
+            print(f"  {app}\t{rows[app]}\t{build}")
+        if already:
+            print(f"APPLY_PROOF status=already-applied run={run_id} build={build}")
+            return 0
+
+        # 4. sign on this Mac and open the tap PR (or dry-run in a scratch clone)
+        done = publish(bundle, manifest, args.dry_run, args.publish_bin)
+        sys.stderr.write(done.stderr)
+        sys.stdout.write(done.stdout)
+        if done.returncode != 0:
+            say(f"publish-next failed (exit {done.returncode})")
+            return 1
+        result = next((line for line in done.stdout.splitlines() if line.startswith("REGISTRY_NEXT ")), "")
+        status = "dry-run" if args.dry_run else "pr"
+        print(f"APPLY_PROOF status={status} run={run_id} build={build} apps={len(rows)} {result}".rstrip())
+        match = re.search(r"pr=[^ ]*/(\d+)$", result)
+        if match and not args.dry_run and args.wait_merge > 0:
+            final = wait_merged(args.tap, match.group(1), args.wait_merge)
+            print(f"APPLY_PROOF tap_pr={match.group(1)} state={final}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

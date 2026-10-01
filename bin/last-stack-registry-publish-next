@@ -60,6 +60,7 @@ DRY_RUN=0
 CANDIDATE_SET=""
 PROOF_JSON=""
 PROOF_RUN=""
+RUN_ID=""
 LASTDB_BIN_OVERRIDE=""
 STRICT_GREEN=0
 # The 9 apps the candidate set and the smoke both know about. Overridable for
@@ -69,7 +70,7 @@ KNOWN_APPS="${LAST_STACK_REGISTRY_KNOWN_APPS:-brain kanban situations routines d
 
 usage() {
   cat <<'USAGE'
-last-stack-registry-publish-next --candidate-set FILE --proof FILE [--proof-run ID] [--dry-run]
+last-stack-registry-publish-next --candidate-set FILE --proof FILE [--proof-run ID] [--run-id ID] [--dry-run]
 
 Adds one compat row per app in the candidate set to registry/next.json on the
 tap repo, records the proof, signs, and opens an auto-merging change: a GitHub
@@ -84,6 +85,9 @@ Forgejo PR.
                          shared/cross-cutting fail proves nothing, same as
                          before.
   --proof-run ID        proof record name (default: llms-smoke-<UTC>-<build>)
+  --run-id ID           the CI run id behind the proof; it goes into the row
+                         branch name so two publishes never share a branch
+                         (default: none; the process id still separates them)
   --lastdb-bin PATH     lastdb used to sign (default: $LASTDB_BIN, then PATH)
   --dry-run             write the rows in a scratch clone; no push, no PR
   --strict-green        require verdict GREEN, exactly like before per-app
@@ -112,6 +116,7 @@ while [ "$#" -gt 0 ]; do
     --candidate-set) CANDIDATE_SET="$2"; shift 2 ;;
     --proof) PROOF_JSON="$2"; shift 2 ;;
     --proof-run) PROOF_RUN="$2"; shift 2 ;;
+    --run-id) RUN_ID="$2"; shift 2 ;;
     --lastdb-bin) LASTDB_BIN_OVERRIDE="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --strict-green) STRICT_GREEN=1; shift ;;
@@ -121,6 +126,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 die() { printf 'last-stack-registry-publish-next: %s\n' "$*" >&2; exit 1; }
+case "$RUN_ID" in *[!A-Za-z0-9._-]*) die "--run-id must be [A-Za-z0-9._-]: $RUN_ID" ;; esac
 [ -n "$CANDIDATE_SET" ] && [ -f "$CANDIDATE_SET" ] || die "--candidate-set FILE is required"
 [ -n "$PROOF_JSON" ] && [ -f "$PROOF_JSON" ] || die "--proof FILE is required"
 command -v jq >/dev/null 2>&1 || die "jq is required"
@@ -201,7 +207,10 @@ fi
 # The process id keeps two publishes of one build in the same second on distinct
 # branches (the second push was refused non-fast-forward; the venue and partial-rows
 # tests hit it on fast runners).
-branch="registry/next-$(printf '%s' "$build" | tr -c 'A-Za-z0-9.-' '_')-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+# A CI run id (--run-id) is unique across runners and hosts, so it goes in too:
+# a proof applied twice, or two builds applied in one second, never share a branch
+# (papercut-last-stack-registry-publish-next-row-branch-same-second-collision-20260930).
+branch="registry/next-$(printf '%s' "$build" | tr -c 'A-Za-z0-9.-' '_')-$(date -u +%Y%m%dT%H%M%SZ)${RUN_ID:+-$RUN_ID}-$$"
 git -C "$TAP_DIR" checkout --quiet -b "$branch"
 
 index="$TAP_DIR/registry/$CHANNEL.json"
