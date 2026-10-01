@@ -77,11 +77,27 @@ Mental model: the live stack tracks the **published** channel. `host-track
 refresh last-stack` promotes `stable` to the newest **green + published** main
 oid and installs it. Status `gate_head` is that published channel oid.
 `stale=true` means the live digest is not the channel, or the tree is
-unusable. `main_unpublished=true` means lastgit `main` is ahead of the
+unusable. `main_unpublished=true` means the gate's `main` is ahead of the
 channel (CI pending or the package is not published yet). Pickup, `check`,
 and `last-stack-update-check` use only the on-channel question. The
 LaunchAgent (not pickup) promotes when a deployable oid exists. Do **not**
 treat unpublished `main` as a stale install.
+
+`main_unpublished=true` is an inequality, so it is also true when the channel
+moved **backward**, and that case needs the opposite action: waiting never
+fixes it. `channel_order` answers which one you are looking at. The puller
+records it on the channel file at promote time, because commit order is known
+only there — host-track holds no git object store. Read it before acting on
+`main_unpublished`:
+
+| `channel_order` | means |
+|---|---|
+| `forward` | the last promote advanced the channel (the ordinary case) |
+| `backward` | the channel was moved to an ancestor of, or a line divergent from, its own previous head — only `--allow-rollback` permits this, and `channel_previous_oid` names the head it displaced |
+| `unordered` | GitHub could not order the two (the previous head was force-pushed away); nobody established the direction |
+| `resign` | the same oid was re-promoted to pick up new signatures; not a move |
+| `initial` | the first promote onto this channel |
+| `unknown` | the channel file records no order: written before the field existed, or by the retired LastGit promote arm. Not the same as `forward`. |
 
 | Role | Path | Mutable? |
 |------|------|----------|
@@ -143,7 +159,10 @@ Each status record reports:
 - `kind`
 - `install_mode`
 - `stale` (artifact: live digest ≠ published channel, or unusable tree)
-- `main_unpublished` (artifact: lastgit main tip ≠ published channel oid)
+- `main_unpublished` (artifact: gate main tip ≠ published channel oid — true for
+  publish lag AND for a backward channel; read `channel_order` to tell them apart)
+- `channel_order` (`forward` | `backward` | `unordered` | `resign` | `initial` |
+  `unknown`) and `channel_previous_oid`, the head the last promote displaced
 - `freshness` (`fresh` | `soft_stale` | `hard_broken`)
 - `behind_by` (commit distance when the installed and gate OIDs are available)
 - `binary_pair_match`, `paired_version`, `paired_head`, and

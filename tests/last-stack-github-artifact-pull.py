@@ -147,6 +147,43 @@ class Base(unittest.TestCase):
         self.set_routes()
 
 
+    # A plausible oid that is NEWER than the fixture commit, for seeding a channel
+    # the promote under test must be ordered against.
+    NEWER = "f" * 40
+
+    def seed_channel(self, head):
+        d = os.path.join(self.cas, "channels", "remote")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "stable.json"), "w") as fh:
+            json.dump({"source_oid": head, "manifest_digest": "d" * 64, "files": []}, fh)
+
+    def head_now(self):
+        with open(os.path.join(self.cas, "channels", "remote", "stable.json")) as fh:
+            return json.load(fh)["source_oid"]
+
+    def add_compare(self, base, head, status):
+        with open(self.routes_path) as fh:
+            routes = json.load(fh)
+        routes["repos/%s/compare/%s...%s" % (REPO, base, head)] = {"json": {"status": status}}
+        with open(self.routes_path, "w") as fh:
+            json.dump(routes, fh)
+
+    def chan(self):
+        return json.load(open(os.path.join(self.cas, "channels", "remote", "stable.json")))
+
+    def sign_pull(self, *extra, env=None):
+        for k in ("FAKE_CODESIGN_FAIL", "FAKE_SECURITY_NONE", "FAKE_SECURITY_TWO"):
+            os.environ.pop(k, None)
+        os.environ.update(env or {})
+        self.addCleanup(lambda: [os.environ.pop(k, None) for k in (env or {})])
+        return self.pull("--sign", "bin/ra=com.test.ra", "--codesign", os.path.join(FIX, "fake-codesign"),
+                         "--security", os.path.join(FIX, "fake-security"), *extra)
+
+    def unsigned_promote(self):
+        rc, res, err = self.pull()
+        self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
+        return res
+
 class BuilderTests(Base):
     def test_provenance_and_modes(self):
         with open(os.path.join(self.out, "remote", "provenance.json")) as fh:
@@ -308,14 +345,6 @@ class PullTests(Base):
 
 
 class SignTests(Base):
-    def sign_pull(self, *extra, env=None):
-        for k in ("FAKE_CODESIGN_FAIL", "FAKE_SECURITY_NONE", "FAKE_SECURITY_TWO"):
-            os.environ.pop(k, None)
-        os.environ.update(env or {})
-        self.addCleanup(lambda: [os.environ.pop(k, None) for k in (env or {})])
-        return self.pull("--sign", "bin/ra=com.test.ra", "--codesign", os.path.join(FIX, "fake-codesign"),
-                         "--security", os.path.join(FIX, "fake-security"), *extra)
-
     def test_signs_and_manifest_uses_signed_bytes(self):
         rc, res, err = self.sign_pull()
         self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
@@ -354,14 +383,6 @@ class SignTests(Base):
         self.assertEqual(rc, 1)
         self.assertIn("not in the bundle", res["reason"])
         self.assertCasUntouched()
-
-    def unsigned_promote(self):
-        rc, res, err = self.pull()
-        self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
-        return res
-
-    def chan(self):
-        return json.load(open(os.path.join(self.cas, "channels", "remote", "stable.json")))
 
     def test_current_but_unsigned_resigns_same_oid(self):
         old = self.unsigned_promote()
@@ -425,24 +446,6 @@ class ChannelOrderTests(Base):
     channel write installs an older build while every surface reports success.
     Brain: papercut-host-track-stages-a-canary-binary-that-is-not-the-artifact-it-promoted-20261001
     """
-    NEWER = "f" * 40
-
-    def seed_channel(self, head):
-        d = os.path.join(self.cas, "channels", "remote")
-        os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, "stable.json"), "w") as fh:
-            json.dump({"source_oid": head, "manifest_digest": "d" * 64, "files": []}, fh)
-
-    def head_now(self):
-        with open(os.path.join(self.cas, "channels", "remote", "stable.json")) as fh:
-            return json.load(fh)["source_oid"]
-
-    def add_compare(self, base, head, status):
-        with open(self.routes_path) as fh:
-            routes = json.load(fh)
-        routes["repos/%s/compare/%s...%s" % (REPO, base, head)] = {"json": {"status": status}}
-        with open(self.routes_path, "w") as fh:
-            json.dump(routes, fh)
 
     def test_refuses_backward_channel_move(self):
         self.seed_channel(self.NEWER)
@@ -493,6 +496,90 @@ class ChannelOrderTests(Base):
         self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
         self.assertEqual(self.head_now(), self.oid)
         self.assertIn("cannot order", err)
+
+
+class ChannelOrderRecordTests(Base):
+    """The channel file must RECORD the order verdict and the head it displaced.
+
+    `host-track status` holds no git object store, so the direction of a promote
+    is knowable only at the moment of the write. Without it a regression renders
+    as `main_unpublished=true` -- the same word as ordinary publish lag, and the
+    one reading under which an operator does nothing.
+    Brain: papercut-host-track-main-unpublished-cannot-tell-publish-lag-from-a-channel-regression-20261001
+    """
+
+    def test_initial_promote_records_initial_and_no_previous(self):
+        rc, res, err = self.pull()
+        self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
+        self.assertEqual(self.chan()["promote_order"], "initial")
+        self.assertIsNone(self.chan()["previous_source_oid"])
+        self.assertEqual(res["promote_order"], "initial")
+
+    def test_forward_promote_records_forward_and_the_displaced_head(self):
+        self.seed_channel(self.NEWER)
+        self.add_compare(self.NEWER, self.oid, "ahead")
+        rc, res, err = self.pull()
+        self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
+        self.assertEqual(self.chan()["promote_order"], "forward")
+        self.assertEqual(self.chan()["previous_source_oid"], self.NEWER)
+
+    def test_allowed_rollback_records_backward_not_forward(self):
+        """The case the whole field exists for.
+
+        `--allow-rollback` short-circuited the order check before this change, so
+        a deliberate backward promote wrote a channel file indistinguishable from
+        a forward one. The verdict must be computed even when the refusal is
+        bypassed -- a legal backward move is still a backward move.
+        """
+        self.seed_channel(self.NEWER)
+        self.add_compare(self.NEWER, self.oid, "behind")
+        rc, res, err = self.pull("--allow-rollback")
+        self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
+        self.assertEqual(self.chan()["promote_order"], "backward")
+        self.assertEqual(self.chan()["previous_source_oid"], self.NEWER)
+        self.assertEqual(res["promote_order"], "backward")
+
+    def test_diverged_rollback_records_backward(self):
+        self.seed_channel(self.NEWER)
+        self.add_compare(self.NEWER, self.oid, "diverged")
+        rc, res, err = self.pull("--allow-rollback")
+        self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
+        self.assertEqual(self.chan()["promote_order"], "backward")
+
+    def test_unorderable_promote_records_unordered_not_forward(self):
+        """`unordered` is not `forward`: nobody established the direction."""
+        self.seed_channel(self.NEWER)  # no compare route -> fake-gh answers HTTP 404
+        rc, res, err = self.pull()
+        self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
+        self.assertEqual(self.chan()["promote_order"], "unordered")
+        self.assertEqual(self.chan()["previous_source_oid"], self.NEWER)
+
+    def test_resign_of_the_same_oid_records_resign(self):
+        """A re-sign promotes the oid the channel already names; that is not a move."""
+        self.unsigned_promote()
+        rc, res, err = self.sign_pull()
+        self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
+        self.assertEqual(self.chan()["promote_order"], "resign")
+        self.assertEqual(self.chan()["previous_source_oid"], self.oid)
+
+    def test_cas_manifest_is_not_modified(self):
+        """Only the channel COPY grows fields. The CAS manifest stays canonical."""
+        rc, res, err = self.pull()
+        self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
+        man = json.load(open(os.path.join(self.cas, "manifests", res["manifest_digest"] + ".json")))
+        self.assertNotIn("promote_order", man)
+        self.assertNotIn("previous_source_oid", man)
+        # and the channel file still carries everything a manifest reader needs
+        for key in ("source_oid", "manifest_digest", "app", "platform", "files"):
+            self.assertIn(key, self.chan(), key)
+
+    def test_dry_run_reports_the_order_without_writing(self):
+        self.seed_channel(self.NEWER)
+        self.add_compare(self.NEWER, self.oid, "behind")
+        rc, res, err = self.pull("--allow-rollback", "--dry-run")
+        self.assertEqual((rc, res.get("status")), (0, "dry-run-verified"), err)
+        self.assertEqual(res["promote_order"], "backward")
+        self.assertEqual(self.head_now(), self.NEWER)
 
 
 if __name__ == "__main__":

@@ -116,6 +116,53 @@ st="$("$ROOT/bin/host-track" status --json demo)"
 printf '%s\n' "$st" | jq -e '.main_unpublished == true and .gate == "github"' >/dev/null \
   || fail "tip ahead of channel not reported as main_unpublished: $st"
 
+# 1b. The channel ORDER is reported separately from publish lag. `main_unpublished`
+# answers "is main published", which is true of both a channel waiting on a
+# publish and a channel that was moved BACKWARD -- two conditions whose correct
+# actions are opposite (wait vs act). The puller records the direction it moved
+# the channel, because it is the only place the order is known.
+# Brain: papercut-host-track-main-unpublished-cannot-tell-publish-lag-from-a-channel-regression-20261001
+#
+# A channel file with no recorded order reads `unknown`, never `forward`: it was
+# written by a puller that did not look, or by the retired LastGit promote arm.
+printf '%s\n' "$st" | jq -e '.channel_order == "unknown" and .channel_previous_oid == null' >/dev/null \
+  || fail "channel with no recorded order did not read unknown: $st"
+
+stamp_channel_order() {  # order [previous_oid]
+  local order="$1" prev="${2:-}" f="$tmp/cas/channels/demo/stable.json"
+  jq --arg order "$order" --arg prev "$prev" \
+    '.promote_order = $order | .previous_source_oid = (if $prev == "" then null else $prev end)' \
+    "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
+# A regression is NOT publish lag. Same two oids, same main_unpublished, and the
+# row now says which of the two conditions holds, and from which head.
+stamp_channel_order backward "$oid_two"
+st="$("$ROOT/bin/host-track" status --json demo)"
+printf '%s\n' "$st" | jq -e --arg prev "$oid_two" \
+  '.channel_order == "backward" and .channel_previous_oid == $prev and .main_unpublished == true' >/dev/null \
+  || fail "backward channel not reported as a regression: $st"
+# The text render carries it too, with the displaced head.
+"$ROOT/bin/host-track" status demo | tr '\t' '\n' | grep -q "^channel_order=backward:from=${oid_two:0:12}$" \
+  || fail "text status did not render the backward channel order"
+
+# A forward promote is the ordinary case and must not read as a regression.
+stamp_channel_order forward "$oid_one"
+st="$("$ROOT/bin/host-track" status --json demo)"
+printf '%s\n' "$st" | jq -e '.channel_order == "forward"' >/dev/null \
+  || fail "forward channel order not reported: $st"
+
+# An unorderable promote is not a forward one either.
+stamp_channel_order unordered "$oid_one"
+st="$("$ROOT/bin/host-track" status --json demo)"
+printf '%s\n' "$st" | jq -e '.channel_order == "unordered"' >/dev/null \
+  || fail "unordered channel order not reported: $st"
+
+# Restore the fixture's own channel shape for the refresh cases below.
+jq 'del(.promote_order) | del(.previous_source_oid)' "$tmp/cas/channels/demo/stable.json" \
+  > "$tmp/cas/channels/demo/stable.json.tmp" \
+  && mv "$tmp/cas/channels/demo/stable.json.tmp" "$tmp/cas/channels/demo/stable.json"
+
 # 2. hold (rc 3): channel kept, refresh does not fail, install unchanged.
 printf '3\n' > "$tmp/pull-rc"
 "$ROOT/bin/host-track" refresh demo >"$tmp/out" 2>"$tmp/err" || fail "refresh failed on a pull hold: $(cat "$tmp/err")"

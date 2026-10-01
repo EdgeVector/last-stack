@@ -29,7 +29,11 @@ publish` + `lastgit artifact promote` did after a green LastGit gate:
   6. `lastgit artifact publish` into a STAGING CAS, then the manifest files must
      equal the provenance files and `lastgit artifact verify` must pass.
   7. Only then blobs, manifest, and builds/ row are copied into the real CAS and
-     the channel pointer is written, atomically, like promoteArtifact does.
+     the channel pointer is written, atomically, like promoteArtifact does. The
+     channel file carries `promote_order` and `previous_source_oid` on top of the
+     manifest it copies, so a later reader can tell a channel that REGRESSED from
+     one that is merely behind an unpublished main. The CAS manifest itself is
+     untouched.
 
 Nothing is written to the real CAS before every check has passed. The tool never
 touches an install root; activation stays host-track's soak-gated flow.
@@ -134,8 +138,24 @@ def channel_oid(root, app, channel):
         return ""
 
 
-def channel_move_is_backward(gh, repo, head, oid):
-    """True when promoting `oid` would move a channel that is at `head` BACKWARD.
+def channel_promote_order(gh, repo, head, oid):
+    """The commit order of promoting `oid` onto a channel whose head is `head`.
+
+    Returns one of "initial" (no previous head), "resign" (same oid re-promoted),
+    "forward", "backward" (`oid` is an ancestor of `head`, or the two diverged),
+    or "unordered" (GitHub cannot order them, e.g. the previous head was
+    force-pushed away).
+
+    This is computed on EVERY promote, including one that `--allow-rollback`
+    permits, because the verdict is recorded on the channel file and is the only
+    place the order is ever known. `host-track` holds no git object store, so a
+    reader of the channel file cannot re-derive it: a status call would need one
+    compare per app. Writing it here costs nothing the refusal below did not
+    already pay for.
+    Brain: papercut-host-track-main-unpublished-cannot-tell-publish-lag-from-a-channel-regression-20261001
+
+    Refusing a backward move is the other half, and the reason the order is
+    computed at all:
 
     The channel file is the only input `host-track` stages a version tree and
     parks a canary from, and nothing downstream of it reads commit order: a
@@ -157,21 +177,23 @@ def channel_move_is_backward(gh, repo, head, oid):
     other compare failure refuses: leaving the channel unchanged is this tool's
     documented safe outcome.
     """
-    if not head or head == oid:
-        return False
+    if not head:
+        return "initial"
+    if head == oid:
+        return "resign"
     try:
         cmp_json = gh.api_json("repos/%s/compare/%s...%s" % (repo, head, oid))
     except Fail as exc:
         if "404" in str(exc) or "Not Found" in str(exc) or "no common ancestor" in str(exc):
             log("cannot order %s against channel head %s (%s); allowing the move"
                 % (oid[:12], head[:12], str(exc)[:120]))
-            return False
+            return "unordered"
         raise
     status = cmp_json.get("status") or ""
     if status in ("behind", "diverged"):
         log("channel head %s vs %s: %s" % (head[:12], oid[:12], status))
-        return True
-    return False
+        return "backward"
+    return "forward"
 
 
 def sign_specs(args):
@@ -356,7 +378,8 @@ def pull(args):
     # untouched. `--allow-non-tip` is NOT sufficient -- the 2026-10-01 routines
     # regression was produced BY an --allow-non-tip run, which also skips the
     # post-pull tip re-check below, so the rollback intent needs its own flag.
-    if not args.allow_rollback and channel_move_is_backward(gh, repo, head, oid):
+    order = channel_promote_order(gh, repo, head, oid)
+    if order == "backward" and not args.allow_rollback:
         raise Fail("promoting %s would move %s/%s BACKWARD from %s "
                    "(pass --allow-rollback to mean it)"
                    % (oid[:12], args.app, args.channel, head[:12]))
@@ -457,6 +480,8 @@ def pull(args):
             result["signed"] = {rel: {"pre_sign_sha256": d} for rel, d in sorted(pre_sign.items())}
         if args.dry_run:
             result["status"] = "dry-run-verified"
+            result["promote_order"] = order
+            result["previous_source_oid"] = head or None
             return result
 
         if not args.allow_non_tip:
@@ -468,10 +493,30 @@ def pull(args):
         dst = os.path.join(root, "channels", args.app, args.channel + ".json")
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         tmpf = "%s.tmp-%d" % (dst, os.getpid())
-        shutil.copyfile(os.path.join(root, "manifests", mdigest + ".json"), tmpf)
+        # The channel file is a copy of the CAS manifest plus the two facts only
+        # this writer knows: which head it displaced, and in which commit
+        # direction. Without them a backward write is undetectable after the
+        # fact -- the 2026-10-01 routines forensics had to be reconstructed from
+        # manifest created_at values and LaunchAgent logs -- and
+        # `host-track status` has to render a regression with the same
+        # `main_unpublished=true` it uses for ordinary publish lag. Additive:
+        # the CAS manifest under manifests/ is untouched and stays canonical,
+        # and every reader of this file (host-track's source_oid and
+        # manifest_digest, channel_is_signed's files/platform) ignores unknown
+        # keys.
+        # Brain: papercut-host-track-main-unpublished-cannot-tell-publish-lag-from-a-channel-regression-20261001
+        with open(os.path.join(root, "manifests", mdigest + ".json")) as fh:
+            chan = json.load(fh)
+        chan["previous_source_oid"] = head or None
+        chan["promote_order"] = order
+        with open(tmpf, "w") as fh:
+            json.dump(chan, fh, indent=2, sort_keys=True)
+            fh.write("\n")
         os.chmod(tmpf, 0o600)
         os.replace(tmpf, dst)
         result["status"] = "promoted"
+        result["promote_order"] = order
+        result["previous_source_oid"] = head or None
         return result
 
 
