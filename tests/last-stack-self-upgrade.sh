@@ -40,6 +40,17 @@ git clone "$tmp/origin.git" "$tmp/install" >/dev/null 2>&1
 git -C "$tmp/install" checkout main >/dev/null 2>&1
 chmod +x "$tmp/install/bin/"* "$tmp/install/setup"
 
+# A routine supervisor must not reset a developer's Loom worktree while a gate
+# runs in it. The helper should skip that root before it inspects Git state.
+mkdir -p "$tmp/home/.loom/worktrees/card/bin"
+cp "$ROOT/bin/last-stack-self-upgrade" "$tmp/home/.loom/worktrees/card/bin/"
+chmod +x "$tmp/home/.loom/worktrees/card/bin/last-stack-self-upgrade"
+out="$(HOME="$tmp/home" "$tmp/home/.loom/worktrees/card/bin/last-stack-self-upgrade" --repair-dirty --reason=test)"
+case "$out" in
+  *"result=worktree-skipped"*) ;;
+  *) printf 'expected developer worktree skip, got:\n%s\n' "$out" >&2; exit 1 ;;
+esac
+
 # --- up-to-date ---
 out="$("$tmp/install/bin/last-stack-self-upgrade" --reason=test)"
 case "$out" in
