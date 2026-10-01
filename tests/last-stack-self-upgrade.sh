@@ -45,10 +45,18 @@ chmod +x "$tmp/install/bin/"* "$tmp/install/setup"
 mkdir -p "$tmp/home/.loom/worktrees/card/bin"
 cp "$ROOT/bin/last-stack-self-upgrade" "$tmp/home/.loom/worktrees/card/bin/"
 chmod +x "$tmp/home/.loom/worktrees/card/bin/last-stack-self-upgrade"
-out="$(HOME="$tmp/home" "$tmp/home/.loom/worktrees/card/bin/last-stack-self-upgrade" --repair-dirty --reason=test)"
+# Capture the status instead of letting `set -e` abort at the assignment: with
+# the guard removed this helper exits non-zero, and an aborted assignment skips
+# the diagnostic below, so the probe would fail with no output at all.
+if out="$(HOME="$tmp/home" "$tmp/home/.loom/worktrees/card/bin/last-stack-self-upgrade" --repair-dirty --reason=test 2>"$tmp/worktree-skip.err")"; then
+  skip_rc=0
+else
+  skip_rc=$?
+fi
 case "$out" in
   *"result=worktree-skipped"*) ;;
-  *) printf 'expected developer worktree skip, got:\n%s\n' "$out" >&2; exit 1 ;;
+  *) printf 'expected developer worktree skip, got rc=%s\nstdout:\n%s\nstderr:\n%s\n' \
+       "$skip_rc" "$out" "$(cat "$tmp/worktree-skip.err" 2>/dev/null)" >&2; exit 1 ;;
 esac
 
 # --- up-to-date ---
