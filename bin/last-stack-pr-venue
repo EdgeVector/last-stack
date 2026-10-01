@@ -139,6 +139,31 @@ if [ -z "$venue" ] && [ -n "$repo_root" ] && [ -f "$repo_root/.last-stack/pr-ven
   fi
 fi
 
+# A `lastgit` answer is never actionable: LastGit is retired
+# (decision-2026-09-29-retire-lastgit-all-repos-to-github) and no repo on this
+# fleet has that venue -- EdgeVector/lastgit is the repo LastGit hosted, and it
+# lives on Forgejo. The ambient env door to the retired venue was closed in
+# last-stack PR 138 by requiring an explicit opt-in; this is the same gate on
+# the remaining door, an explicit marker or git config.
+#
+# The data stays VISIBLE, which was the reason the raw value used to be
+# returned: the ignored value and the source that carried it go to stderr and
+# into --json as `ignored_venue` / `ignored_venue_source`. What changes is that
+# stdout now carries a venue a caller can act on. Returning `lastgit` sent
+# every caller that follows CLAUDE.md to a retired forge, and the retired
+# `lastdb:///` and archived Forgejo remotes are still present and pushable in
+# stale trees -- so an always-wrong stdout value was a trap, not visibility.
+# papercut-portal-pr-venue-stubs-still-say-lastgit-20260923
+ignored_venue=""
+ignored_venue_source=""
+if [ "$venue" = "lastgit" ] && [ "${LAST_STACK_LASTGIT_ENABLED:-}" != "1" ]; then
+  ignored_venue="lastgit"
+  ignored_venue_source="$reason"
+  echo "LAST_STACK_PR_VENUE: ignoring retired venue 'lastgit' for $repo from $reason${repo_root:+ (root $repo_root)}; LastGit is retired (decision-2026-09-29-retire-lastgit-all-repos-to-github). Set LAST_STACK_LASTGIT_ENABLED=1 to honor it." >&2
+  venue=""
+  reason=""
+fi
+
 list_contains_repo() {
   haystack="$1"
   old_ifs=$IFS
@@ -155,8 +180,8 @@ list_contains_repo() {
 
 # LAST_STACK_LASTGIT_NATIVE_REPOS is ignored: LastGit is retired
 # (decision-2026-09-29-retire-lastgit-all-repos-to-github), so no env list can
-# bring it back. An explicit `lastgit` marker or git config still answers
-# `lastgit` so a stale marker stays visible to callers.
+# bring it back. An explicit `lastgit` marker or git config is ignored too,
+# unless LAST_STACK_LASTGIT_ENABLED=1 -- see the gate above.
 
 if [ -z "$venue" ] && list_contains_repo "${LAST_STACK_FORGEJO_REPOS:-}"; then
   venue="forgejo"
@@ -203,7 +228,9 @@ if [ "$mode" = json ]; then
     --arg ci_context "$ci_context" \
     --arg reason "$reason" \
     --arg compare_ref "$compare_ref" \
-    '{repo:$repo, repo_root:$repo_root, venue:$venue, lastgit_slug:$lastgit_slug, ci_context:$ci_context, reason:$reason, compare_ref:$compare_ref}'
+    --arg ignored_venue "$ignored_venue" \
+    --arg ignored_venue_source "$ignored_venue_source" \
+    '{repo:$repo, repo_root:$repo_root, venue:$venue, lastgit_slug:$lastgit_slug, ci_context:$ci_context, reason:$reason, compare_ref:$compare_ref, ignored_venue:$ignored_venue, ignored_venue_source:$ignored_venue_source}'
 elif [ "$mode" = compare_ref ]; then
   if [ -z "$compare_ref" ]; then
     echo "LAST_STACK_PR_VENUE: no comparison ref found for $repo" >&2
