@@ -78,6 +78,9 @@ Design: `fold/docs/designs/lastdb-minimal-downtime-cutover.md`.
 Env overrides: `LASTDB_SIDEBIN_DIR`, `LASTDB_LAUNCHD_LABEL`, `LASTDB_LAUNCHD_PLIST`.
 The sidebin path reloads the LaunchAgent job definition so plist environment
 edits take effect; `kickstart` alone only restarts the cached definition. The
+driver caps `LASTDB_HASH_GROUP_WARM_BYTES` at `4294967296` bytes before the
+reload. A lower configured value remains unchanged. This keeps the full-heap
+warm-cache contract within the feature-flow proof limit. The
 driver verifies both staged files before either rename. It verifies the
 installed hashes before the reload and during the post-install gate. A hash
 failure after a rename restores both pre-cutover files before exit. The live
@@ -291,7 +294,9 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
     sanitized failure output before its final RED verdict.
 14. **LaunchAgent config parity:** sidebin cutover uses `bootout` then
     `bootstrap` so the plist job definition is re-read. It falls back to
-    `kickstart -k` only when those launchctl verbs are unavailable. After the
+    `kickstart -k` only when those launchctl verbs are unavailable. Before the
+    reload, the cutover caps the full-heap warm-cache setting at
+    `4294967296` bytes. After the
     new daemon is serving, compare plist `EnvironmentVariables` key names with
     the running process environment (never print values). Missing keys are a
     loud WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` makes them RED.

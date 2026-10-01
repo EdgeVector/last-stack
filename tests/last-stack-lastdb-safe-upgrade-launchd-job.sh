@@ -462,7 +462,9 @@ grep -q 'LASTDB_LAUNCHD_BOOTOUT_WAIT_SECS:-180' "$CHECKS" \
   || { echo "FAIL: the bootout wait must exceed the 150 s primary ExitTimeOut" >&2; exit 1; }
 grep -q 'PRIMARY_EXIT_TIMEOUT_SECS="${LASTDB_PRIMARY_EXIT_TIMEOUT_SECS:-150}"' "$DRIVER" \
   || { echo "FAIL: driver must default the primary ExitTimeOut to 150 s" >&2; exit 1; }
-grep -A2 '^  ensure_primary_launchd_rss_limit$' "$DRIVER" | grep -q 'ensure_primary_launchd_exit_timeout' \
+grep -A4 '^  ensure_primary_launchd_rss_limit$' "$DRIVER" | grep -q 'ensure_primary_launchd_warm_cache_limit' \
+  || { echo "FAIL: driver must stamp the warm-cache limit before the sidebin job reload" >&2; exit 1; }
+grep -A2 '^  ensure_primary_launchd_warm_cache_limit$' "$DRIVER" | grep -q 'ensure_primary_launchd_exit_timeout' \
   || { echo "FAIL: driver must stamp ExitTimeOut before the sidebin job reload" >&2; exit 1; }
 grep -B8 'lastdb_launchd_reload_job \\' "$DRIVER" | grep -q 'warn_loaded_exit_timeout_short' \
   || { echo "FAIL: driver must warn about a short loaded exit timeout before bootout" >&2; exit 1; }
@@ -551,6 +553,42 @@ if [ -x /usr/libexec/PlistBuddy ]; then
   got="$(/usr/libexec/PlistBuddy -c 'Print :ExitTimeOut' "$plist")"
   [ "$got" = "150" ] \
     || { echo "FAIL: stamped ExitTimeOut is '$got', want 150" >&2; exit 1; }
+
+  warm_limit_plist="$TMP/warm-limit.plist"
+  printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+    '<plist version="1.0"><dict><key>EnvironmentVariables</key><dict>' \
+    '<key>LASTDB_HASH_GROUP_WARM_BYTES</key><string>7516192768</string>' \
+    '</dict></dict></plist>' >"$warm_limit_plist"
+  (
+    log() { :; }
+    warn() { :; }
+    die() { echo "FAIL: $*" >&2; exit 1; }
+    eval "$(sed -n '/^LASTDB_HASH_GROUP_WARM_LIMIT_BYTES=/p;/^ensure_primary_launchd_warm_cache_limit() {/,/^}/p' "$DRIVER")"
+    LAUNCHD_PLIST="$warm_limit_plist"
+    ensure_primary_launchd_warm_cache_limit
+  )
+  got="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:LASTDB_HASH_GROUP_WARM_BYTES' "$warm_limit_plist")"
+  [ "$got" = "4294967296" ] \
+    || { echo "FAIL: over-budget warm cache remained '$got', want 4294967296" >&2; exit 1; }
+
+  warm_boundary_plist="$TMP/warm-boundary.plist"
+  printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+    '<plist version="1.0"><dict><key>EnvironmentVariables</key><dict>' \
+    '<key>LASTDB_HASH_GROUP_WARM_BYTES</key><string>4294967296</string>' \
+    '</dict></dict></plist>' >"$warm_boundary_plist"
+  (
+    log() { :; }
+    warn() { :; }
+    die() { echo "FAIL: $*" >&2; exit 1; }
+    eval "$(sed -n '/^LASTDB_HASH_GROUP_WARM_LIMIT_BYTES=/p;/^ensure_primary_launchd_warm_cache_limit() {/,/^}/p' "$DRIVER")"
+    LAUNCHD_PLIST="$warm_boundary_plist"
+    ensure_primary_launchd_warm_cache_limit
+  )
+  got="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:LASTDB_HASH_GROUP_WARM_BYTES' "$warm_boundary_plist")"
+  [ "$got" = "4294967296" ] \
+    || { echo "FAIL: exact warm-cache boundary changed to '$got'" >&2; exit 1; }
 fi
 
 echo "PASS: lastdb-safe-upgrade retries bootstrap, refuses GREEN while launchd is unloaded, releases the cutover lock, and detects config drift"
