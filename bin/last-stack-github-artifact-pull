@@ -131,6 +131,49 @@ def channel_oid(root, app, channel):
         return ""
 
 
+def sign_specs(args):
+    """The (rel, identifier) files this run must sign: the app default plus every --sign."""
+    specs = list(SIGN_DEFAULTS.get(args.app, [])) if not args.no_sign else []
+    for item in args.sign or []:
+        if "=" not in item:
+            raise Fail("--sign wants PATH=IDENTIFIER, got %r" % item)
+        specs.append(tuple(item.split("=", 1)))
+    return specs
+
+
+def channel_is_signed(root, app, channel, specs, codesign):
+    """True when every sign target in the channel manifest is signed with its identifier.
+
+    The check reads the CAS blob, not a side record, so an entry promoted by an
+    older puller (ad-hoc bytes) reads as unsigned and gets re-pulled and re-signed.
+    A non-darwin channel entry needs no signature."""
+    try:
+        with open(os.path.join(root, "channels", app, channel + ".json")) as fh:
+            man = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    if (man.get("platform") or "").split("-")[0] != "darwin":
+        return True
+    files = {f.get("path"): f for f in man.get("files", [])}
+    for rel, ident_id in specs:
+        f = files.get(rel)
+        digest = (f or {}).get("sha256", "")
+        if not digest:
+            return False
+        blob = os.path.join(root, "blobs", "sha256", digest[:2], digest)
+        if not os.path.isfile(blob):
+            return False
+        try:
+            v = subprocess.run([codesign, "--verify", "--strict", blob], capture_output=True, text=True)
+            r = subprocess.run([codesign, "-d", "-r-", blob], capture_output=True, text=True)
+        except OSError:
+            return False
+        req = r.stdout + r.stderr
+        if v.returncode != 0 or 'identifier "%s"' % ident_id not in req or "anchor apple generic" not in req:
+            return False
+    return True
+
+
 def first_json(text):
     dec = json.JSONDecoder()
     i = 0
@@ -261,7 +304,10 @@ def pull(args):
         raise Fail("--oid %s is not the %s tip %s (rollback needs --allow-non-tip)" % (oid[:12], args.branch, tip[:12]))
     head = channel_oid(root, args.app, args.channel)
     if head == oid:
-        return {"status": "current", "oid": oid, "channel": args.channel}
+        specs = sign_specs(args)
+        if not specs or channel_is_signed(root, args.app, args.channel, specs, args.codesign):
+            return {"status": "current", "oid": oid, "channel": args.channel}
+        log("channel %s/%s at %s is not signed as required; re-pulling and re-signing" % (args.app, args.channel, oid[:12]))
 
     checks = gh.api_json("repos/%s/commits/%s/check-runs?per_page=100&check_name=%s" % (repo, oid, args.context))
     runs = [c for c in checks.get("check_runs", []) if c.get("name") == args.context]
@@ -331,11 +377,7 @@ def pull(args):
         os.makedirs(src)
         extract_bundle(tar_bytes, src, prov)
 
-        specs = list(SIGN_DEFAULTS.get(args.app, [])) if not args.no_sign else []
-        for item in args.sign or []:
-            if "=" not in item:
-                raise Fail("--sign wants PATH=IDENTIFIER, got %r" % item)
-            specs.append(tuple(item.split("=", 1)))
+        specs = sign_specs(args)
         if plat.split("-")[0] != "darwin":
             specs = []
         pre_sign = sign_files(src, specs, args.sign_identity, args.codesign, args.security)
