@@ -1048,6 +1048,7 @@ status_json_for() {
   local soak_elapsed_secs soak_need_secs soak_abandoned soak_checks_total
   local registry_channel registry_pin_oid registry_pin_state pin_rc
   local published_oid pin_behind_oid
+  local channel_path channel_row channel_order channel_previous_oid
 
   json="$(require_app_json "$app")"
   kind="$(field "$json" kind)"
@@ -1085,6 +1086,11 @@ status_json_for() {
   artifact_previous=""
   artifact_problem=""
   main_unpublished="false"
+  # Every status row carries these, not only the artifact rows: a checkout-shim
+  # app has no channel file, so `unknown` is the truthful value and `set -u`
+  # needs them bound before the render.
+  channel_order="unknown"
+  channel_previous_oid=""
   soak_state=""
   soak_checks="null"
   soak_min="null"
@@ -1144,7 +1150,27 @@ status_json_for() {
       host_head="$stamp_oid"
     fi
     host_head_short="${host_head:0:12}"
-    channel_oid="$(jq -r '.source_oid // ""' "$artifact_root/channels/$artifact_app/$artifact_channel.json" 2>/dev/null || true)"
+    channel_path="$artifact_root/channels/$artifact_app/$artifact_channel.json"
+    # One jq call for all three facts the channel file carries about itself. The
+    # puller records the commit DIRECTION of the promote that wrote this file
+    # (`promote_order`) and the head it displaced, because the order is knowable
+    # only there: host-track holds no git object store, so re-deriving it here
+    # would cost one GitHub compare per app per status call.
+    #
+    # Additive on purpose, exactly like pin_behind_oid below. `main_unpublished`
+    # keeps its meaning -- last-stack-post-merge-safe-upgrade branches on it --
+    # and a channel file written before this field existed, or by the retired
+    # LastGit promote arm, reads `unknown` rather than `forward`: "I did not
+    # look" must not render as "nothing to see".
+    # Brain: papercut-host-track-main-unpublished-cannot-tell-publish-lag-from-a-channel-regression-20261001
+    channel_oid=""
+    if [ -f "$channel_path" ]; then
+      channel_row="$(jq -r '[(.source_oid // "-"), (.promote_order // "unknown"), (.previous_source_oid // "-")] | @tsv' "$channel_path" 2>/dev/null || printf -- '-\tunknown\t-\n')"
+      IFS=$'\t' read -r channel_oid channel_order channel_previous_oid < <(printf '%s\n' "$channel_row") || true
+      case "$channel_oid" in -) channel_oid="" ;; esac
+      case "$channel_previous_oid" in -) channel_previous_oid="" ;; esac
+      [ -n "$channel_order" ] || channel_order="unknown"
+    fi
     # Keep the PUBLISHED head before a registry pin replaces it below. Every
     # other field in this row is then about the pin, which is correct and is
     # also how an app 5 commits behind reads `fresh`: `gate_head` is the pin,
@@ -1463,6 +1489,8 @@ status_json_for() {
     --arg registry_pin_oid "$registry_pin_oid" \
     --arg registry_pin_state "$registry_pin_state" \
     --arg pin_behind_oid "$pin_behind_oid" \
+    --arg channel_order "$channel_order" \
+    --arg channel_previous_oid "$channel_previous_oid" \
     '{
       app: $app,
       command: $command,
@@ -1484,6 +1512,8 @@ status_json_for() {
       registry_pin_oid: ($registry_pin_oid | select(length > 0) // null),
       registry_pin_state: ($registry_pin_state | select(length > 0) // null),
       pin_behind_oid: ($pin_behind_oid | select(length > 0) // null),
+      channel_order: $channel_order,
+      channel_previous_oid: ($channel_previous_oid | select(length > 0) // null),
       behind_by: $behind_by,
       binary_pair_match: $binary_pair_match,
       paired_version: ($deployment_peer_version | select(length > 0) // null),
@@ -1538,6 +1568,7 @@ status_plain_for() {
       "main_unpublished=" + ((.main_unpublished // false) | tostring),
       "registry=" + (if .registry_channel then .registry_channel + ":" + (.registry_pin_state // "-") else "-" end),
       "pin_behind=" + (if .pin_behind_oid then (.pin_behind_oid[0:12]) else "-" end),
+      "channel_order=" + (.channel_order // "unknown") + (if .channel_previous_oid then ":from=" + (.channel_previous_oid[0:12]) else "" end),
       "freshness=" + (.freshness // "-"),
       "soak=" + (if .soak_state then .soak_state + ":" + ((.soak_checks // 0) | tostring) + "/" + ((.soak_min_checks // 0) | tostring) + (if .soak_need_secs then ":" + ((.soak_elapsed_secs // 0) | tostring) + "s/" + (.soak_need_secs | tostring) + "s" else "" end) + (if (.soak_abandoned // 0) > 0 then ":total=" + ((.soak_checks_total // .soak_checks // 0) | tostring) + ":abandoned=" + (.soak_abandoned | tostring) else "" end) else "-" end),
       "post_flip=" + ((.post_flip_ticks_left // "-") | tostring),
