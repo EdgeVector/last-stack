@@ -8,6 +8,16 @@ closeout="$ROOT/bin/last-stack-card-closeout"
 scan="$ROOT/bin/last-stack-pipeline-deploy-scan"
 chmod +x "$closeout" "$scan"
 
+# This fixture's repo names (schema-infra, fold) collide with real EdgeVector
+# repos, so by default the scan's launchd watcher-retirement check
+# (last-stack-pipeline-deploy-scan.sh covers that behavior directly) would
+# read THIS machine's live launchd state instead of the fixture — schema-infra's
+# real watcher is retired, which turned every "success" assertion below into a
+# "retired" row and broke this test on 2026-10-01
+# (papercut-pipeline-deploy-schema-infra). Force "loaded" so this fixture
+# exercises only the status-line parsing and gating it is meant to test.
+export LAST_STACK_DEPLOY_SCAN_LAUNCHCTL_BIN=/usr/bin/true
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 

@@ -9,9 +9,29 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 mkdir -p "$tmp/deploy-ok-repo" "$tmp/deploy-bad-repo" "$tmp/deploy-pending-repo" \
-  "$tmp/deploy-ts-ok-repo" "$tmp/deploy-ts-bad-repo"
+  "$tmp/deploy-ts-ok-repo" "$tmp/deploy-ts-bad-repo" "$tmp/deploy-retired-repo"
 # deploy-run's checkout root: never a producer, never a row.
 mkdir -p "$tmp/deploy-checkouts/ok-repo"
+
+# Fake launchctl: every watcher is "loaded" except retired-repo's, so the
+# fixtures above exercise a live watcher by default and retired-repo alone
+# exercises papercut-pipeline-deploy-schema-infra's frozen-log case (a
+# booted-out LastGit watcher whose last log line — here `failure` — is not a
+# live signal once the repo moved to GitHub Actions deploy).
+cat >"$tmp/fake-launchctl" <<'EOF'
+#!/usr/bin/env bash
+case "$2" in
+  *retired-repo*) exit 1 ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$tmp/fake-launchctl"
+export LAST_STACK_DEPLOY_SCAN_LAUNCHCTL_BIN="$tmp/fake-launchctl"
+
+cat >"$tmp/deploy-retired-repo/deploy.log" <<'EOF'
+pending eee deploy-pipeline from x:refs/heads/main:accepted
+failure eee deploy-pipeline
+EOF
 
 cat >"$tmp/deploy-ok-repo/deploy.log" <<'EOF'
 pending aaa deploy-pipeline from x:refs/heads/main:accepted
@@ -136,6 +156,34 @@ echo "$unconf" | jq -e 'type=="array" and length==1 and .[0].repo=="fold" and .[
 badrow="$("$SCAN" --json --root "$tmp" --repo bad-repo)"
 echo "$badrow" | jq -e 'type=="array" and length==1 and .[0].blocked==true' >/dev/null || {
   echo "expected bad-repo still blocked under --repo, got $badrow" >&2
+  exit 1
+}
+
+# retired-repo's log ends in `failure`, the same shape as bad-repo — but its
+# launchd watcher is not loaded, so it must report retired/unblocked, not
+# BLOCKED forever on a frozen line (papercut-pipeline-deploy-schema-infra).
+retired="$(echo "$out" | jq -r '.[] | select(.repo=="retired-repo")')"
+retired_status="$(echo "$retired" | jq -r '.status')"
+retired_blocked="$(echo "$retired" | jq -r '.blocked')"
+[ "$retired_status" = "retired" ] || {
+  echo "expected retired-repo status=retired, got $retired_status / $out" >&2
+  exit 1
+}
+[ "$retired_blocked" = "false" ] || {
+  echo "expected retired-repo unblocked, got $retired_blocked / $out" >&2
+  exit 1
+}
+echo "$retired" | jq -e '.reason | test("not loaded")' >/dev/null || {
+  echo "expected retired-repo reason to name the unloaded watcher, got $retired" >&2
+  exit 1
+}
+
+# Mutation check: bad-repo's watcher IS loaded (the fake launchctl's default
+# exit 0 arm), so a failing log with a live watcher must still block — proves
+# the retirement override only fires on an unloaded watcher, not on every
+# `failure` line.
+echo "$out" | jq -e '.[] | select(.repo=="bad-repo") | .status=="failure" and .blocked==true' >/dev/null || {
+  echo "expected bad-repo (loaded watcher) to stay status=failure blocked=true, got $out" >&2
   exit 1
 }
 
