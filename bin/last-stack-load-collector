@@ -94,6 +94,9 @@ LOAD_CONSEC = int(envf("LOAD_MON_ALERT_LOAD_CONSEC", 5))
 HOG_PCT = envf("LOAD_MON_ALERT_HOG_PCT", 90)
 HOG_CONSEC = int(envf("LOAD_MON_ALERT_HOG_CONSEC", 15))
 COOLDOWN = envf("LOAD_MON_ALERT_COOLDOWN_SEC", 1800)
+# lastdbd refuses to load a cold group over its cap (LASTSTORE_COLD_GROUP_TOO_LARGE); warn at 90%
+COLD_CAP_BYTES = int(envf("LOAD_MON_COLD_GROUP_CAP_BYTES", 2147483648))
+COLD_WARN_PCT = envf("LOAD_MON_ALERT_COLD_GROUP_PCT", 90)
 NOTIFY = os.environ.get("LOAD_MON_NOTIFY", "1") != "0"
 PHONE = os.environ.get("LOAD_MON_PHONE", "1" if NOTIFY else "0") != "0"
 RA = os.environ.get("LOAD_MON_RA", os.path.join(HOME, ".local/bin/ra"))
@@ -158,6 +161,7 @@ def host_sample():
             continue
     rows.sort(key=lambda r: r[1], reverse=True)
     h["top"] = [[p, c, r, os.path.basename(n)] for p, c, r, n in rows[:12]]
+    h["cold_group"] = cold_group_max()
     h["lastdbd"] = None
     h["lastdbd_other"] = []
     cands = [r for r in rows if os.path.basename(r[3]) == "lastdbd"]
@@ -178,6 +182,29 @@ def host_sample():
     return h
 
 
+def cold_group_max(data_root=None):
+    """Largest keep_small group dir in bytes, from stat only (about 20 files). Never raises."""
+    root = os.path.join(data_root or os.environ.get("LOAD_MON_DATA_ROOT") or os.path.join(HOME, ".lastdb/data/data"), "keep_small")
+    best = None
+    try:
+        for shard in os.scandir(root):
+            g = os.path.join(shard.path, "g")
+            if not os.path.isdir(g):
+                continue
+            for grp in os.scandir(g):
+                total = 0
+                with os.scandir(grp.path) as it:
+                    for i, f in enumerate(it):
+                        if i >= 5000:  # bound the walk
+                            break
+                        total += f.stat().st_size
+                if best is None or total > best[1]:
+                    best = (grp.name, total)
+    except OSError:
+        return None
+    return {"group": best[0], "bytes": best[1]} if best else None
+
+
 def status_vitals(buf):
     """Compact node internals from the /api/status body. Never raises."""
     try:
@@ -192,6 +219,7 @@ def status_vitals(buf):
         return {
             "fp_mb": int((st.get("phys_footprint_bytes") or 0) / 1048576),
             "cpu": st.get("cpu_percent"),
+            "up_s": st.get("uptime_secs"),
             "evict": mb.get("eviction_events"),
             "gov": mb.get("governor_state"),
             "slow_ms": mb.get("slowest_request_ms"),
@@ -445,12 +473,25 @@ def evaluate_alerts(rec, now):
     load = rec["host"].get("load") or [0]
     st["load_hot"] = st.get("load_hot", 0) + 1 if load[0] >= LOAD1 else 0
     prim = (lastdbd or {}).get("pid")
+    restart_msg = None
+    if prim:
+        old = st.get("lastdbd_pid")
+        if old and old != prim:
+            restart_msg = "lastdbd restarted: pid %s -> %s (node up %s)" % (
+                old, prim, "%ss" % v["up_s"] if v.get("up_s") is not None else "unknown")
+        st["lastdbd_pid"] = prim
+    cold = rec["host"].get("cold_group")
+    cold_hot = bool(cold) and cold["bytes"] >= COLD_CAP_BYTES * COLD_WARN_PCT / 100
+    st["cold_hot"] = st.get("cold_hot", 0) + 1 if cold_hot else 0
     hog = next(((t[3], t[1]) for t in rec["host"].get("top") or [] if t[0] != prim), None)
     hog_name = hog[0] if hog and hog[1] >= HOG_PCT else None
     st["hog_hot"] = st.get("hog_hot", 0) + 1 if hog_name and hog_name == st.get("hog_name") else (1 if hog_name else 0)
     st["hog_name"] = hog_name
     last = st.setdefault("last_alert", {})
     checks = [
+        ("lastdb_cold_group_near_cap", st["cold_hot"] >= 2,
+         "keep_small group %s is %s MB of the %d MB cold-load cap (>= %d%%): the node refuses to load it over the cap"
+         % (cold and cold["group"], cold and cold["bytes"] // 1048576, COLD_CAP_BYTES // 1048576, COLD_WARN_PCT)),
         ("host_swap_high", st["swap_hot"] >= SWAP_CONSEC,
          "host swap %s MB >= %d MB for %d passes" % (swap, SWAP_MB, st["swap_hot"])),
         ("host_load_high", st["load_hot"] >= LOAD_CONSEC,
@@ -468,6 +509,9 @@ def evaluate_alerts(rec, now):
         ("lastdbd_cpu_high", st["cpu_hot"] >= CPU_CONSEC,
          "lastdbd CPU >= %d%% for %d passes" % (CPU_PCT, st["cpu_hot"])),
     ]
+    if restart_msg:
+        last["lastdbd_restarted"] = now
+        fire("lastdbd_restarted", restart_msg, now)
     for name, cond, msg in checks:
         if cond and now - last.get(name, 0) >= COOLDOWN:
             last[name] = now
