@@ -43,8 +43,21 @@ verdict="$(jq -r '.verdict // "UNKNOWN"' "$PROOF")"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/registry-proof-issue.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
-existing="$("$GH_BIN" issue list -R "$REPO" --state open --label registry-proof-red --limit 100 --json number,title \
-  | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')"
+# A repository with Issues turned off (last-stack, measured 2026-10-01, run
+# 36802364469) answers `has disabled issues`. The reporter must not fail the run
+# for that: the proof verdict, the job summary and the bundle already say what
+# happened. Say so on a warning line and stop. Enable Issues on the repo to get
+# the one-issue-per-RED-build report (Tom's settings change, not made here).
+if ! listing="$("$GH_BIN" issue list -R "$REPO" --state open --label registry-proof-red --limit 100 --json number,title 2>"$tmp/list.err")"; then
+  if grep -qi 'disabled issues' "$tmp/list.err"; then
+    printf '::warning::%s has Issues disabled; no issue was opened or updated for build %s (verdict %s)\n' "$REPO" "$BUILD" "$verdict"
+    printf 'RED_ISSUE status=issues-disabled build=%s verdict=%s\n' "$BUILD" "$verdict"
+    exit 0
+  fi
+  cat "$tmp/list.err" >&2
+  die "gh issue list failed"
+fi
+existing="$(printf '%s' "$listing" | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')"
 
 if [ "$verdict" = GREEN ]; then
   if [ -n "$existing" ]; then

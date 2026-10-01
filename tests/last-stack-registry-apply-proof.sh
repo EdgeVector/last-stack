@@ -77,6 +77,7 @@ case "\$1" in
     esac ;;
   api)
     case "\$2" in
+      repos/$REPO/actions/runs/*/jobs*) id="\${2#repos/$REPO/actions/runs/}"; cat "\$fx/jobs-\${id%%/*}.json" ;;
       repos/$REPO/actions/runs/*) f="\$fx/run-\${2##*/}.json"; [ -f "\$f" ] && cat "\$f" || { echo "no such run" >&2; exit 1; } ;;
       repos/$REPO/actions/workflows/*) cat "\$fx/runs-list.json" ;;
       repos/$TAP/contents/registry/next.json) cat "\$fx/tap-next.json" ;;
@@ -112,13 +113,15 @@ mkrun() {
     --moved alpha,beta --fingerprint fp >/dev/null
   mkrunmeta "$id" "$conclusion"
 }
-# mkrunmeta <id> <conclusion> [jq filter to break something]
+# mkrunmeta <id> <conclusion of the proof job> [jq filter to break something]
 mkrunmeta() {
   local id="$1" conclusion="$2" breaker="${3:-.}"
   jq -n --arg id "$id" --arg c "$conclusion" --arg repo "$REPO" --arg sha "$HEAD_SHA" --arg at "$NOW" \
     '{id: ($id | tonumber), status: "completed", conclusion: $c, event: "schedule", head_branch: "main", head_sha: $sha,
       path: ".github/workflows/registry-proof.yml", created_at: $at, html_url: ("https://github.com/" + $repo + "/actions/runs/" + $id),
       repository: {full_name: $repo}, head_repository: {full_name: $repo}}' | jq "$breaker" >"$fx/run-$id.json"
+  # the run-level conclusion is "failure" whenever the report job failed; the verdict is the proof job
+  jq -n --arg c "$conclusion" '{jobs: [{name: "plan", conclusion: "success"}, {name: "proof", conclusion: $c}, {name: "report", conclusion: "failure"}]}' >"$fx/jobs-$id.json"
 }
 
 export GH_BIN="$work/gh" LASTDB_BIN="$work/lastdb" LASTDB_REGISTRY_SIGNING_KEY="$work/signing.key"
@@ -249,7 +252,12 @@ refuse "old run" --run-id 2011; grep -q 'older than' <<<"$err" || fail "age reas
 
 mkrun 2012 success GREEN 'verdict=GREEN\n'
 mkrunmeta 2012 failure
-refuse "GREEN verdict on a failed run" --run-id 2012; grep -q 'concluded failure' <<<"$err" || fail "conclusion reason: $err"
+refuse "GREEN verdict on a failed proof job" --run-id 2012; grep -q 'proof job concluded failure' <<<"$err" || fail "conclusion reason: $err"
+
+# a planned run whose plan said no-op has no proof job: nothing to apply
+mkrun 2015 success GREEN 'verdict=GREEN\n'
+jq -n '{jobs: [{name: "plan", conclusion: "success"}, {name: "proof", conclusion: "skipped"}]}' >"$fx/jobs-2015.json"
+refuse "skipped proof job" --run-id 2015; grep -q 'proof job concluded skipped' <<<"$err" || fail "skipped reason: $err"
 
 mkrun 2013 success GREEN 'verdict=GREEN\n'
 rm -rf "$fx/bundle-2013"

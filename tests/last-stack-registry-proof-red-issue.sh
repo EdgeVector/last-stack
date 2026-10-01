@@ -64,4 +64,23 @@ out="$(run "$work/green.json" "$work/attr-green.txt")"
 grep -q 'status=none' <<<"$out" || fail "none: $out"
 if grep -qE '^issue (create|close|comment)' "$calls"; then fail "no write expected"; fi
 
+# 5. a repository with Issues disabled: a warning and exit 0, never a failed run
+cat >"$work/gh-off" <<GHEOF
+#!/usr/bin/env bash
+echo "the '\$3' repository has disabled issues" >&2
+exit 1
+GHEOF
+chmod +x "$work/gh-off"
+out="$(GH_BIN="$work/gh-off" run "$work/red-shared.json" "$work/attr-shared.txt")" || fail "disabled issues must not fail"
+grep -q 'status=issues-disabled' <<<"$out" || fail "disabled issues: $out"
+grep -q '::warning::' <<<"$out" || fail "disabled issues warning: $out"
+# any other gh failure still fails
+cat >"$work/gh-bad" <<GHEOF
+#!/usr/bin/env bash
+echo "HTTP 500" >&2
+exit 1
+GHEOF
+chmod +x "$work/gh-bad"
+if GH_BIN="$work/gh-bad" run "$work/red-shared.json" "$work/attr-shared.txt" >/dev/null 2>&1; then fail "a real gh error must fail"; fi
+
 echo "ok last-stack-registry-proof-red-issue"
