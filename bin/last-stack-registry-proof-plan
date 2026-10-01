@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Decide, with no lastdb binary and no secret, what the registry proof should do.
+
+The scheduled `registry-proof` workflow runs this on a cheap ubuntu runner. It
+answers three questions from files, so each one has a fixture test
+(tests/last-stack-registry-proof-plan.sh):
+
+  select-build   Which lastdb build does the proof target?
+                 The override target in config/registry/proof-builds.json when
+                 it is set, else the build of the NEWEST row in the `next`
+                 index (the build the registry already pins for the Mac). No
+                 Mac state is read (design D4).
+  moved          Did any app head move past the pin that `next` holds for that
+                 build? Prints the moved apps and a fingerprint of the whole
+                 head set. An app with no row for the build counts as moved.
+  fingerprint    The fingerprint of a candidate set (build + every app sha).
+                 A RED or GREEN-pending set is not proved again until the
+                 fingerprint changes.
+
+One row of `next` is a proved pair <app sha, lastdb build>. The pin an app holds
+for a build is its newest row (by proved_at) whose lastdb_version is that build,
+the same rule as `lastdb app resolve --channel next --lastdb-version <build>`.
+
+Every output is one JSON object on stdout. No walk; every path is a flag.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+
+def die(message: str, code: int = 1) -> None:
+    print(f"last-stack-registry-proof-plan: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def load_json(path: Path, what: str) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        die(f"{what} {path}: {exc}", 2)
+    if not isinstance(data, dict):
+        die(f"{what} {path} is not a JSON object", 2)
+    return data
+
+
+def index_rows(index: dict) -> list[tuple[str, dict]]:
+    """Every (app_id, row) pair in a registry index."""
+    out: list[tuple[str, dict]] = []
+    for app in index.get("apps") or []:
+        app_id = str(app.get("app_id") or "")
+        for row in app.get("compat") or []:
+            if app_id and isinstance(row, dict):
+                out.append((app_id, row))
+    return out
+
+
+def newest_build(index: dict) -> str:
+    best = ("", "")
+    for _app, row in index_rows(index):
+        key = (str(row.get("proved_at") or ""), str(row.get("lastdb_version") or ""))
+        if key[1] and key > best:
+            best = key
+    return best[1]
+
+
+def valid_build(build: str) -> bool:
+    """A `git describe --long --abbrev=9` build: <tag>-<n>-g<hex>, hex only."""
+    head, sep, tail = build.rpartition("-g")
+    return bool(sep and head and tail and all(c in "0123456789abcdef" for c in tail))
+
+
+def held_pin(index: dict, app: str, build: str) -> str:
+    best = ("", "")
+    for app_id, row in index_rows(index):
+        if app_id != app or str(row.get("lastdb_version") or "") != build:
+            continue
+        key = (str(row.get("proved_at") or ""), str(row.get("sha") or ""))
+        if key > best:
+            best = key
+    return best[1]
+
+
+def fingerprint_of(build: str, shas: dict[str, str]) -> str:
+    text = build + "\n" + "\n".join(f"{a}={shas[a]}" for a in sorted(shas))
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def cmd_select_build(args: argparse.Namespace) -> int:
+    index = load_json(args.index, "index")
+    build, source, fold_oid = "", "", ""
+    if args.override and args.override.is_file():
+        target = load_json(args.override, "override").get("target")
+        if isinstance(target, dict) and str(target.get("build") or "").strip():
+            build = str(target["build"]).strip()
+            fold_oid = str(target.get("fold_oid") or "").strip().lower()
+            source = "override"
+    if not build:
+        build = newest_build(index)
+        source = "next-newest"
+    if not build:
+        die("the index holds no row and no override names a build", 3)
+    if not valid_build(build):
+        die(f"build {build!r} is not a git describe string (<tag>-<n>-g<hex>)", 2)
+    if fold_oid and (len(fold_oid) != 40 or any(c not in "0123456789abcdef" for c in fold_oid)):
+        die(f"override fold_oid {fold_oid!r} is not a 40-hex oid", 2)
+    print(json.dumps({"build": build, "source": source, "fold_oid": fold_oid}))
+    return 0
+
+
+def cmd_moved(args: argparse.Namespace) -> int:
+    index = load_json(args.index, "index")
+    heads = load_json(args.heads, "heads")
+    set_build = str((heads.get("lastdb") or {}).get("build") or "")
+    if set_build != args.build:
+        die(f"heads file names build {set_build!r}, not {args.build!r}", 2)
+    shas = {a: str(v.get("sha") or "") for a, v in (heads.get("apps") or {}).items()}
+    if not shas or not all(shas.values()):
+        die("heads file has no apps, or an app with no sha", 2)
+    held = {a: held_pin(index, a, args.build) for a in shas}
+    moved = sorted(a for a in shas if held[a] != shas[a])
+    print(json.dumps({
+        "build": args.build,
+        "moved": moved,
+        "heads": shas,
+        "held": held,
+        "fingerprint": fingerprint_of(args.build, shas),
+    }))
+    return 0
+
+
+def cmd_fingerprint(args: argparse.Namespace) -> int:
+    cset = load_json(args.candidate_set, "candidate set")
+    build = str((cset.get("lastdb") or {}).get("build") or "")
+    shas = {a: str(v.get("sha") or "") for a, v in (cset.get("apps") or {}).items()}
+    if not build or not shas:
+        die("candidate set has no build or no apps", 2)
+    print(json.dumps({"build": build, "fingerprint": fingerprint_of(build, shas)}))
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="last-stack-registry-proof-plan", description=__doc__.split("\n\n")[0])
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("select-build", help="the lastdb build the proof targets")
+    p.add_argument("--index", type=Path, required=True, help="registry/next.json")
+    p.add_argument("--override", type=Path, default=None, help="config/registry/proof-builds.json")
+    p.set_defaults(fn=cmd_select_build)
+
+    p = sub.add_parser("moved", help="apps whose head moved past the pin next holds for the build")
+    p.add_argument("--index", type=Path, required=True)
+    p.add_argument("--build", required=True)
+    p.add_argument("--heads", type=Path, required=True, help="last-stack-canary-candidate-set output")
+    p.set_defaults(fn=cmd_moved)
+
+    p = sub.add_parser("fingerprint", help="fingerprint of a candidate set")
+    p.add_argument("--candidate-set", type=Path, required=True)
+    p.set_defaults(fn=cmd_fingerprint)
+
+    args = parser.parse_args(argv)
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
