@@ -8,6 +8,9 @@ whose gate_main is a GitHub URL (or by hand), does the work `lastgit artifact
 publish` + `lastgit artifact promote` did after a green LastGit gate:
 
   1. Situations preflight (`artifact-promote`), before any network read.
+  1b. Order: the commit is not an ancestor of, nor on a line divergent from,
+     the channel's current head. A backward channel write installs an older
+     build while every surface reports success, so it needs --allow-rollback.
   2. Gate: the `ci-required` check run for the commit is success.
   3. The Actions artifact belongs to a completed, successful `push` run of the
      repo on the branch, for exactly that commit. Its zip sha256 equals the
@@ -129,6 +132,46 @@ def channel_oid(root, app, channel):
             return json.load(fh).get("source_oid", "")
     except (OSError, ValueError):
         return ""
+
+
+def channel_move_is_backward(gh, repo, head, oid):
+    """True when promoting `oid` would move a channel that is at `head` BACKWARD.
+
+    The channel file is the only input `host-track` stages a version tree and
+    parks a canary from, and nothing downstream of it reads commit order: a
+    channel pointed at an ancestor of its own previous head installs an older
+    build while `promoted`, `probe GREEN`, `canary parked` and finally
+    `host_head == gate_head` all report success. Measured 2026-10-01 on
+    EdgeVector/routines: the channel went d16ff165 -> 7845cb9b (three commits
+    back) at 16:41:19Z, host-track staged that build 24 s later and parked it
+    for a 1 h soak, and the next pass measured a canary whose code predated
+    three merged PRs. Brain:
+    papercut-host-track-stages-a-canary-binary-that-is-not-the-artifact-it-promoted-20261001
+
+    Order comes from GitHub's compare API with base=head, head=oid, so no local
+    object store is needed and the answer is exact. "behind" means `oid` is an
+    ancestor of `head`; "diverged" means the two sit on different lines, which
+    is not a forward move either. A head GitHub cannot resolve (404) is not
+    orderable -- that happens when the previous head was force-pushed away --
+    so the move is allowed and logged rather than freezing the channel. Any
+    other compare failure refuses: leaving the channel unchanged is this tool's
+    documented safe outcome.
+    """
+    if not head or head == oid:
+        return False
+    try:
+        cmp_json = gh.api_json("repos/%s/compare/%s...%s" % (repo, head, oid))
+    except Fail as exc:
+        if "404" in str(exc) or "Not Found" in str(exc) or "no common ancestor" in str(exc):
+            log("cannot order %s against channel head %s (%s); allowing the move"
+                % (oid[:12], head[:12], str(exc)[:120]))
+            return False
+        raise
+    status = cmp_json.get("status") or ""
+    if status in ("behind", "diverged"):
+        log("channel head %s vs %s: %s" % (head[:12], oid[:12], status))
+        return True
+    return False
 
 
 def sign_specs(args):
@@ -309,6 +352,15 @@ def pull(args):
             return {"status": "current", "oid": oid, "channel": args.channel}
         log("channel %s/%s at %s is not signed as required; re-pulling and re-signing" % (args.app, args.channel, oid[:12]))
 
+    # Order before download: a refusal here leaves the CAS and the channel
+    # untouched. `--allow-non-tip` is NOT sufficient -- the 2026-10-01 routines
+    # regression was produced BY an --allow-non-tip run, which also skips the
+    # post-pull tip re-check below, so the rollback intent needs its own flag.
+    if not args.allow_rollback and channel_move_is_backward(gh, repo, head, oid):
+        raise Fail("promoting %s would move %s/%s BACKWARD from %s "
+                   "(pass --allow-rollback to mean it)"
+                   % (oid[:12], args.app, args.channel, head[:12]))
+
     checks = gh.api_json("repos/%s/commits/%s/check-runs?per_page=100&check_name=%s" % (repo, oid, args.context))
     runs = [c for c in checks.get("check_runs", []) if c.get("name") == args.context]
     if not runs:
@@ -435,6 +487,9 @@ def main():
     ap.add_argument("--context", default="ci-required", help="required check run name")
     ap.add_argument("--platform", help="hold unless the artifact has this platform (host-track passes its own)")
     ap.add_argument("--allow-non-tip", action="store_true", help="rollback: pull an --oid that is not the tip")
+    ap.add_argument("--allow-rollback", action="store_true",
+                    help="permit a promote that moves the channel to an ancestor of, or a line "
+                         "divergent from, its current head")
     ap.add_argument("--allow-missing-digest", action="store_true", help="accept an artifact GitHub gave no digest for")
     ap.add_argument("--dry-run", action="store_true", help="verify in a staging CAS; write nothing to --root")
     ap.add_argument("--sign", action="append", metavar="PATH=IDENTIFIER",

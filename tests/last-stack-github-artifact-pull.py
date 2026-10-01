@@ -417,5 +417,83 @@ class SignTests(Base):
         self.assertEqual(mod.SIGN_DEFAULTS["routines"], [("dist/routines", "com.edgevector.routines")])
 
 
+class ChannelOrderTests(Base):
+    """A promote must never move the channel to an ancestor of its own head.
+
+    host-track stages a version tree and parks a canary from the channel file
+    alone, and no reader downstream of it checks commit order, so a backward
+    channel write installs an older build while every surface reports success.
+    Brain: papercut-host-track-stages-a-canary-binary-that-is-not-the-artifact-it-promoted-20261001
+    """
+    NEWER = "f" * 40
+
+    def seed_channel(self, head):
+        d = os.path.join(self.cas, "channels", "remote")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "stable.json"), "w") as fh:
+            json.dump({"source_oid": head, "manifest_digest": "d" * 64, "files": []}, fh)
+
+    def head_now(self):
+        with open(os.path.join(self.cas, "channels", "remote", "stable.json")) as fh:
+            return json.load(fh)["source_oid"]
+
+    def add_compare(self, base, head, status):
+        with open(self.routes_path) as fh:
+            routes = json.load(fh)
+        routes["repos/%s/compare/%s...%s" % (REPO, base, head)] = {"json": {"status": status}}
+        with open(self.routes_path, "w") as fh:
+            json.dump(routes, fh)
+
+    def test_refuses_backward_channel_move(self):
+        self.seed_channel(self.NEWER)
+        self.add_compare(self.NEWER, self.oid, "behind")
+        rc, res, err = self.pull()
+        self.assertEqual(rc, 1, err)
+        self.assertEqual(res.get("status"), "failed")
+        self.assertIn("BACKWARD", res.get("reason", ""))
+        # The channel still names the newer head and nothing was downloaded.
+        self.assertEqual(self.head_now(), self.NEWER)
+        self.assertNotIn("/zip", open(self.log).read())
+
+    def test_refuses_diverged_channel_move(self):
+        self.seed_channel(self.NEWER)
+        self.add_compare(self.NEWER, self.oid, "diverged")
+        rc, res, err = self.pull()
+        self.assertEqual(rc, 1, err)
+        self.assertIn("BACKWARD", res.get("reason", ""))
+        self.assertEqual(self.head_now(), self.NEWER)
+
+    def test_allow_rollback_permits_the_backward_move(self):
+        self.seed_channel(self.NEWER)
+        self.add_compare(self.NEWER, self.oid, "behind")
+        rc, res, err = self.pull("--allow-rollback")
+        self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
+        self.assertEqual(self.head_now(), self.oid)
+
+    def test_allow_non_tip_alone_does_not_permit_it(self):
+        """The 2026-10-01 regression was produced BY an --allow-non-tip run."""
+        self.seed_channel(self.NEWER)
+        self.add_compare(self.NEWER, self.oid, "behind")
+        rc, res, err = self.pull("--allow-non-tip", "--oid", self.oid)
+        self.assertEqual(rc, 1, err)
+        self.assertIn("BACKWARD", res.get("reason", ""))
+        self.assertEqual(self.head_now(), self.NEWER)
+
+    def test_forward_move_still_promotes(self):
+        self.seed_channel(self.NEWER)
+        self.add_compare(self.NEWER, self.oid, "ahead")
+        rc, res, err = self.pull()
+        self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
+        self.assertEqual(self.head_now(), self.oid)
+
+    def test_unorderable_head_is_allowed_and_logged(self):
+        """A head GitHub cannot resolve (force-pushed away) must not freeze the channel."""
+        self.seed_channel(self.NEWER)  # no compare route -> fake-gh answers HTTP 404
+        rc, res, err = self.pull()
+        self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
+        self.assertEqual(self.head_now(), self.oid)
+        self.assertIn("cannot order", err)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
