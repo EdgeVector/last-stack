@@ -33,9 +33,12 @@ mkdir -p "$tmp/fold-mirror"
 git -C "$tmp/fold-mirror" init -q
 git -C "$tmp/fold-mirror" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 mkdir -p "$tmp/cache-home/.cache/edgevector-git"
-# `branch -f main` fails when init.defaultBranch already selects `main`.
-# Rename the current initial branch instead, regardless of the Git default.
-git -C "$tmp/fold-mirror" branch -M main
+# Recent Git rejects a forced update of `main` while its worktree has it
+# checked out. Rename the initial branch only when the Git default differs.
+initial_branch="$(git -C "$tmp/fold-mirror" branch --show-current)"
+if [ "$initial_branch" != "main" ]; then
+  git -C "$tmp/fold-mirror" branch -m main
+fi
 git clone -q --bare "$tmp/fold-mirror" "$tmp/cache-home/.cache/edgevector-git/fold.git"
 expected_oid="$(git -C "$tmp/fold-mirror" rev-parse main)"
 
