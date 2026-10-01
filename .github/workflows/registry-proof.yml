@@ -1,31 +1,49 @@
-# Registry proof, phases 1 and 2: manual, publish-free smoke on a GitHub-hosted
-# macOS arm64 runner. Phase 2 adds a build of the exact lastdb source oid
-# (input fold_oid) inside this public repo, with the org GH_PAT used only to
-# check out the private fold repo. Brain: design-registry-proof-in-github-ci-20260930,
+# Registry proof, phases 1 to 3, in the public last-stack repo. Brain:
+# design-registry-proof-in-github-ci-20260930,
 # decision-2026-09-30-registry-proof-ci-sign-on-mac-gh-pat-build-in-last-stack.
 #
-# This workflow writes no registry row, opens no PR and touches no host-track or
-# primary node. It gets a lastdb build (a RELEASED tarball, or a build of fold at
-# fold_oid), runs the isolated llms.txt install smoke against it with the
-# candidate app set, and uploads one proof bundle (verdicts, oids, versions,
-# timings, uname, memory). It never uploads a lastdb or lastdbd binary and never
-# caches a build directory: this repo is public, so its artifacts and caches are
-# readable by anyone, and the fold source is private (decision D5).
-# The only secret is the existing org secret GH_PAT, passed to actions/checkout
-# and to one presence probe via env. It is never echoed and never reaches the
-# build or the smoke.
+# Shape (phase 3):
+#   plan    ubuntu, seconds. Reads the `next` index, picks the target lastdb
+#           build, reads the app heads (green ci-required + published
+#           artifact), and decides whether any head moved past the pin that
+#           `next` holds for that build. Nothing moved, or this exact head set
+#           was already proved: stop here (the cheap no-op path).
+#   proof   macOS arm64. Builds the exact lastdb oid inside this public repo
+#           (the org GH_PAT only checks out the private fold repo), asserts the
+#           build string, runs the isolated install smoke, and uploads ONE
+#           proof bundle: verdicts, candidate set with shas, oids, versions,
+#           timings. Never a binary, never a cache of a build directory.
+#   report  ubuntu. A RED opens or updates ONE GitHub issue per build (dedupe by
+#           title); a GREEN closes it.
+#
+# This workflow does NOT sign and does NOT open a tap PR. The registry signing
+# key stays on Tom's Mac (decision D1). The Mac command
+# bin/last-stack-registry-apply-proof downloads the bundle, verifies the run,
+# signs with the local key and opens the tap PR.
+#
+# Triggers: every 30 minutes, and workflow_dispatch. A dispatch with an explicit
+# fold_oid, lastdb_release or probe_only runs exactly that (phases 1 and 2). A
+# dispatch with none of them plans like the schedule; `force` skips the "head
+# moved" and "already proved" holds.
+#
+# Secrets: only the existing org secret GH_PAT. The plan job uses it only to
+# resolve the short oid of the build to a full fold oid when a proof will run;
+# the proof job passes it to actions/checkout and one presence probe. It is
+# never echoed and never reaches the build or the smoke.
 name: registry-proof
 
 on:
+  schedule:
+    - cron: "7,37 * * * *"
   workflow_dispatch:
     inputs:
       lastdb_release:
-        description: "EdgeVector/homebrew-lastdb release tag (empty = latest release)"
+        description: "EdgeVector/homebrew-lastdb release tag (empty = plan from the registry)"
         required: false
         default: ""
         type: string
       fold_oid:
-        description: "Build lastdb/lastdbd from EdgeVector/fold at this full 40-hex oid (private; needs GH_PAT). Empty = use the release tarball."
+        description: "Build lastdb/lastdbd from EdgeVector/fold at this full 40-hex oid (private; needs GH_PAT). Empty = plan from the registry."
         required: false
         default: ""
         type: string
@@ -39,7 +57,14 @@ on:
         required: false
         default: false
         type: boolean
+      force:
+        description: "Planned run only: prove even when no app head moved or this head set was already proved."
+        required: false
+        default: false
+        type: boolean
 
+# One proof at a time. A pending run replaces an older pending run: every run
+# re-reads the heads, so the newest pending run is the right one.
 concurrency:
   group: registry-proof
   cancel-in-progress: false
@@ -54,8 +79,175 @@ env:
   HOMEBREW_NO_ANALYTICS: "1"
 
 jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      run: ${{ steps.out.outputs.run }}
+      mode: ${{ steps.out.outputs.mode }}
+      reason: ${{ steps.out.outputs.reason }}
+      fold_oid: ${{ steps.out.outputs.fold_oid }}
+      lastdb_build: ${{ steps.out.outputs.lastdb_build }}
+      lastdb_release: ${{ steps.out.outputs.lastdb_release }}
+      probe_only: ${{ steps.out.outputs.probe_only }}
+      fingerprint: ${{ steps.out.outputs.fingerprint }}
+      moved: ${{ steps.out.outputs.moved }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Mode (explicit dispatch or planned)
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_RELEASE: ${{ inputs.lastdb_release }}
+          IN_FOLD_OID: ${{ inputs.fold_oid }}
+          IN_BUILD: ${{ inputs.lastdb_build }}
+          IN_PROBE: ${{ inputs.probe_only }}
+          IN_FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          mode=auto
+          if [ "$EVENT" = workflow_dispatch ] && { [ -n "$IN_RELEASE" ] || [ -n "$IN_FOLD_OID" ] || [ "$IN_PROBE" = true ]; }; then
+            mode=explicit
+          fi
+          {
+            echo "PLAN_MODE=$mode"
+            echo "PLAN_FORCE=${IN_FORCE:-false}"
+            echo "PLAN_RUN=false"
+            echo "PLAN_REASON=unset"
+            echo "PLAN_FOLD_OID=$IN_FOLD_OID"
+            echo "PLAN_BUILD=$IN_BUILD"
+            echo "PLAN_RELEASE=$IN_RELEASE"
+            echo "PLAN_PROBE=${IN_PROBE:-false}"
+            echo "PLAN_FP="
+            echo "PLAN_MOVED="
+          } >> "$GITHUB_ENV"
+          if [ "$mode" = explicit ]; then
+            echo "PLAN_RUN=true" >> "$GITHUB_ENV"
+            echo "PLAN_REASON=explicit dispatch inputs" >> "$GITHUB_ENV"
+          fi
+          echo "mode=$mode"
+
+      - name: Read the next index and pick the target build
+        if: ${{ env.PLAN_MODE == 'auto' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The contents API, not raw.githubusercontent.com: no CDN delay.
+          gh api repos/EdgeVector/homebrew-lastdb/contents/registry/next.json \
+            -H 'Accept: application/vnd.github.raw' > "$RUNNER_TEMP/next.json"
+          bin/last-stack-registry-proof-plan select-build --index "$RUNNER_TEMP/next.json" \
+            --override config/registry/proof-builds.json > "$RUNNER_TEMP/target.json"
+          cat "$RUNNER_TEMP/target.json"
+          {
+            echo "PLAN_BUILD=$(jq -r .build "$RUNNER_TEMP/target.json")"
+            echo "PLAN_FOLD_OID=$(jq -r .fold_oid "$RUNNER_TEMP/target.json")"
+          } >> "$GITHUB_ENV"
+
+      - name: App heads (green ci-required and a published artifact)
+        if: ${{ env.PLAN_MODE == 'auto' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # No lastdbd on this runner: the build string stands in for it. No
+          # package.json fetch and no clone probe: heads only.
+          bin/last-stack-canary-candidate-set \
+            --lastdb-build "$PLAN_BUILD" \
+            --source-venue github --sha-source github-ci \
+            --no-version-lookup --no-source-probe \
+            --out "$RUNNER_TEMP/heads.json"
+          bin/last-stack-registry-proof-plan moved --index "$RUNNER_TEMP/next.json" \
+            --build "$PLAN_BUILD" --heads "$RUNNER_TEMP/heads.json" > "$RUNNER_TEMP/moved.json"
+          cat "$RUNNER_TEMP/moved.json"
+          {
+            echo "PLAN_FP=$(jq -r .fingerprint "$RUNNER_TEMP/moved.json")"
+            echo "PLAN_MOVED=$(jq -r '.moved | join(",")' "$RUNNER_TEMP/moved.json")"
+          } >> "$GITHUB_ENV"
+
+      # A set that was proved (GREEN or RED) is not proved again until a head
+      # moves: the proof job saves one tiny cache entry keyed by the fingerprint.
+      # The entry holds a verdict word and a run id, nothing else.
+      - name: Was this head set already proved?
+        id: fpcache
+        if: ${{ env.PLAN_MODE == 'auto' && env.PLAN_MOVED != '' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: fp-marker
+          key: registry-proof-fp-${{ env.PLAN_FP }}
+          lookup-only: true
+
+      - name: Decide
+        if: ${{ env.PLAN_MODE == 'auto' }}
+        env:
+          FP_HIT: ${{ steps.fpcache.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PLAN_MOVED" ]; then
+            reason="no-op: no app head moved past the pins next holds for $PLAN_BUILD"
+            run=false
+          elif [ "$PLAN_FORCE" = true ]; then
+            reason="force: heads moved ($PLAN_MOVED), holds skipped"
+            run=true
+          elif [ "$FP_HIT" = true ]; then
+            reason="no-op: this head set was already proved (fingerprint $PLAN_FP); waiting for a head to move"
+            run=false
+          else
+            reason="heads moved: $PLAN_MOVED"
+            run=true
+          fi
+          echo "PLAN_RUN=$run" >> "$GITHUB_ENV"
+          echo "PLAN_REASON=$reason" >> "$GITHUB_ENV"
+          echo "$reason"
+
+      - name: Resolve the fold oid of the target build (only when a proof will run)
+        if: ${{ env.PLAN_MODE == 'auto' && env.PLAN_RUN == 'true' && env.PLAN_FOLD_OID == '' }}
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          set -euo pipefail
+          [ -n "$GH_PAT" ] || { echo "::error::GH_PAT is not available; cannot resolve the fold oid"; exit 1; }
+          abbrev="${PLAN_BUILD##*-g}"
+          oid="$(GH_TOKEN="$GH_PAT" gh api "repos/EdgeVector/fold/commits/$abbrev" --jq .sha)"
+          case "$oid" in
+            "$abbrev"*) ;;
+            *) echo "::error::fold commit $abbrev resolved to an unexpected oid"; exit 1 ;;
+          esac
+          [ "${#oid}" -eq 40 ] || { echo "::error::fold oid is not 40 hex"; exit 1; }
+          echo "PLAN_FOLD_OID=$oid" >> "$GITHUB_ENV"
+          echo "fold oid: $oid"
+
+      - name: Outputs and summary
+        id: out
+        run: |
+          set -euo pipefail
+          {
+            echo "run=$PLAN_RUN"
+            echo "mode=$PLAN_MODE"
+            echo "reason=$PLAN_REASON"
+            echo "fold_oid=$PLAN_FOLD_OID"
+            echo "lastdb_build=$PLAN_BUILD"
+            echo "lastdb_release=$PLAN_RELEASE"
+            echo "probe_only=$PLAN_PROBE"
+            echo "fingerprint=$PLAN_FP"
+            echo "moved=$PLAN_MOVED"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## registry-proof plan"
+            echo
+            echo "- mode: \`$PLAN_MODE\`"
+            echo "- target build: \`${PLAN_BUILD:--}\`"
+            echo "- moved apps: \`${PLAN_MOVED:--}\`"
+            echo "- decision: **$PLAN_RUN** ($PLAN_REASON)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   proof:
     name: proof
+    needs: plan
+    if: ${{ needs.plan.outputs.run == 'true' }}
     runs-on: macos-latest
     timeout-minutes: 240
     steps:
@@ -95,8 +287,8 @@ jobs:
 
       - name: Resolve the lastdb release tag
         env:
-          INPUT_TAG: ${{ inputs.lastdb_release }}
-          INPUT_FOLD_OID: ${{ inputs.fold_oid }}
+          INPUT_TAG: ${{ needs.plan.outputs.lastdb_release }}
+          INPUT_FOLD_OID: ${{ needs.plan.outputs.fold_oid }}
         run: |
           set -euo pipefail
           if [ -n "$INPUT_FOLD_OID" ]; then
@@ -152,8 +344,8 @@ jobs:
       - name: Preflight (GH_PAT presence, fold access)
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
-          FOLD_OID: ${{ inputs.fold_oid }}
-          PROBE_ONLY: ${{ inputs.probe_only }}
+          FOLD_OID: ${{ needs.plan.outputs.fold_oid }}
+          PROBE_ONLY: ${{ needs.plan.outputs.probe_only }}
         run: |
           set -u
           # Presence only. The value is never printed, and GH_TOKEN below is the
@@ -179,21 +371,21 @@ jobs:
           fi
 
       - name: Check out fold at the oid (private source)
-        if: ${{ inputs.fold_oid != '' && !inputs.probe_only }}
+        if: ${{ needs.plan.outputs.fold_oid != '' && needs.plan.outputs.probe_only != 'true' }}
         uses: actions/checkout@v4
         with:
           repository: EdgeVector/fold
-          ref: ${{ inputs.fold_oid }}
+          ref: ${{ needs.plan.outputs.fold_oid }}
           token: ${{ secrets.GH_PAT }}
           path: fold-src
           fetch-depth: 0
           persist-credentials: false
 
       - name: Build lastdb and lastdbd from fold (no cache, no upload)
-        if: ${{ inputs.fold_oid != '' && !inputs.probe_only }}
+        if: ${{ needs.plan.outputs.fold_oid != '' && needs.plan.outputs.probe_only != 'true' }}
         env:
-          FOLD_OID: ${{ inputs.fold_oid }}
-          EXPECT_BUILD: ${{ inputs.lastdb_build }}
+          FOLD_OID: ${{ needs.plan.outputs.fold_oid }}
+          EXPECT_BUILD: ${{ needs.plan.outputs.lastdb_build }}
           # Match the release workflow: no rustc wrapper; never stamp from a ref name.
           RUSTC_WRAPPER: ""
           GITHUB_REF_NAME: ""
@@ -249,7 +441,7 @@ jobs:
           exit "$rc"
 
       - name: Download the release binaries into the scratch dir
-        if: ${{ inputs.fold_oid == '' && !inputs.probe_only }}
+        if: ${{ needs.plan.outputs.fold_oid == '' && needs.plan.outputs.probe_only != 'true' }}
         run: |
           set -euo pipefail
           t0=$SECONDS; rc=0
@@ -278,9 +470,9 @@ jobs:
           exit "$rc"
 
       - name: Candidate set
-        if: ${{ !inputs.probe_only }}
+        if: ${{ needs.plan.outputs.probe_only != 'true' }}
         env:
-          FOLD_OID: ${{ inputs.fold_oid }}
+          FOLD_OID: ${{ needs.plan.outputs.fold_oid }}
           # Built-in job token: reads the public app repos' check runs and artifacts.
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -306,7 +498,7 @@ jobs:
             "$SCRATCH/candidate-set.json" || true
 
       - name: Runner probes (Schema Service, launchctl)
-        if: ${{ !inputs.probe_only }}
+        if: ${{ needs.plan.outputs.probe_only != 'true' }}
         run: |
           set -u
           t0=$SECONDS
@@ -325,7 +517,7 @@ jobs:
           printf 'probes\t%s\t0\n' "$((SECONDS - t0))" >> "$BUNDLE/timings.tsv"
 
       - name: Isolated llms.txt install smoke
-        if: ${{ !inputs.probe_only }}
+        if: ${{ needs.plan.outputs.probe_only != 'true' }}
         run: |
           set -u
           set +e   # a RED smoke exits 1; keep going so the bundle is written
@@ -364,7 +556,7 @@ jobs:
           exit 0
 
       - name: Collect smoke log, step times and search-init size
-        if: ${{ always() && !inputs.probe_only }}
+        if: ${{ always() && needs.plan.outputs.probe_only != 'true' }}
         run: |
           set -u
           sandbox="$(jq -r '.sandbox // empty' "$BUNDLE/proof.json" 2>/dev/null || true)"
@@ -397,10 +589,10 @@ jobs:
           cat "$BUNDLE/sandbox.txt"
 
       - name: Attribution and job summary
-        if: ${{ always() && !inputs.probe_only }}
+        if: ${{ always() && needs.plan.outputs.probe_only != 'true' }}
         env:
-          INPUT_FOLD_OID: ${{ inputs.fold_oid }}
-          INPUT_LASTDB_BUILD: ${{ inputs.lastdb_build }}
+          INPUT_FOLD_OID: ${{ needs.plan.outputs.fold_oid }}
+          INPUT_LASTDB_BUILD: ${{ needs.plan.outputs.lastdb_build }}
         run: |
           set -u
           # An earlier step can fail before the smoke runs. Say so in the verdict
@@ -488,6 +680,32 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Mark this head set as proved
+        if: ${{ always() && needs.plan.outputs.probe_only != 'true' }}
+        run: |
+          set -u
+          [ -s "$SCRATCH/candidate-set.json" ] || exit 0
+          [ -s "$BUNDLE/proof.json" ] || exit 0
+          # A runner-setup RED says nothing about the heads, so it is retried on
+          # the next schedule. A smoke verdict (GREEN, or RED with named fails)
+          # holds until a head moves.
+          if jq -e '(.fails // []) | map(startswith("runner-setup:")) | any' "$BUNDLE/proof.json" >/dev/null 2>&1; then
+            echo "runner-setup RED: no marker"
+            exit 0
+          fi
+          fp="$(bin/last-stack-registry-proof-plan fingerprint --candidate-set "$SCRATCH/candidate-set.json" | jq -r .fingerprint)"
+          mkdir -p fp-marker
+          printf '%s run=%s\n' "$(jq -r '.verdict // "UNKNOWN"' "$BUNDLE/proof.json")" "$GITHUB_RUN_ID" > fp-marker/marker.txt
+          echo "MARK_FP=$fp" >> "$GITHUB_ENV"
+          echo "marker fingerprint: $fp"
+
+      - name: Save the head-set marker (verdict word and run id only)
+        if: ${{ always() && env.MARK_FP != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: fp-marker
+          key: registry-proof-fp-${{ env.MARK_FP }}
+
       - name: Upload proof bundle
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -498,8 +716,44 @@ jobs:
           retention-days: 30
 
       - name: Fail the job when the smoke is RED
-        if: ${{ always() && !inputs.probe_only }}
+        if: ${{ always() && needs.plan.outputs.probe_only != 'true' }}
         run: |
           verdict="$(jq -r '.verdict // "UNKNOWN"' "$BUNDLE/proof.json" 2>/dev/null || echo UNKNOWN)"
           echo "verdict=$verdict smoke_rc=${SMOKE_RC:-unset}"
           [ "$verdict" = "GREEN" ]
+
+  report:
+    name: report
+    needs: [plan, proof]
+    if: ${{ always() && needs.proof.result != 'skipped' && needs.plan.outputs.probe_only != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download the proof bundle
+        id: dl
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: registry-proof-bundle-${{ github.run_id }}
+          path: bundle
+
+      - name: One issue per RED build (opened or updated); a GREEN closes it
+        if: ${{ steps.dl.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          build="$(jq -r '.lastdb_build // empty' bundle/proof.json)"
+          [ -n "$build" ] || build="$(jq -r '.lastdb_build_expected // empty' bundle/proof.json)"
+          [ -n "$build" ] || build=unknown
+          bin/last-stack-registry-proof-red-issue --repo "$GITHUB_REPOSITORY" --build "$build" \
+            --proof bundle/proof.json --attribution bundle/attribution.txt \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

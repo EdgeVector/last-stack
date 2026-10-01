@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Report the verdict of one registry-proof run as ONE GitHub issue per build.
+#
+#   RED   open the issue `registry-proof RED: <build>` (label registry-proof-red),
+#         or add a comment to it when it is already open. The title is the
+#         dedupe key: one open issue per build, never two.
+#   GREEN close that issue with a comment, when one is open.
+#
+# The workflow calls this from a job with `issues: write` and the built-in job
+# token. Nothing here reads a secret, and the body holds only what the proof
+# bundle already holds (fails, attribution, run URL). A closed issue also
+# releases the "do not smoke a RED set again" hold on its fingerprint: see the
+# plan job in .github/workflows/registry-proof.yml.
+set -euo pipefail
+
+GH_BIN="${GH_BIN:-gh}"
+REPO="" BUILD="" PROOF="" ATTRIBUTION="" RUN_URL=""
+
+usage() {
+  cat <<'USAGE'
+last-stack-registry-proof-red-issue --repo OWNER/NAME --build BUILD --proof FILE --attribution FILE --run-url URL
+Env: GH_BIN (default gh)
+USAGE
+}
+die() { printf 'last-stack-registry-proof-red-issue: %s\n' "$*" >&2; exit 1; }
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --repo) REPO="$2"; shift 2 ;;
+    --build) BUILD="$2"; shift 2 ;;
+    --proof) PROOF="$2"; shift 2 ;;
+    --attribution) ATTRIBUTION="$2"; shift 2 ;;
+    --run-url) RUN_URL="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+[ -n "$REPO" ] && [ -n "$BUILD" ] && [ -f "$PROOF" ] && [ -f "$ATTRIBUTION" ] && [ -n "$RUN_URL" ] || { usage >&2; exit 2; }
+command -v jq >/dev/null 2>&1 || die "jq is required"
+
+title="registry-proof RED: $BUILD"
+verdict="$(jq -r '.verdict // "UNKNOWN"' "$PROOF")"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/registry-proof-issue.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+
+existing="$("$GH_BIN" issue list -R "$REPO" --state open --label registry-proof-red --limit 100 --json number,title \
+  | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')"
+
+if [ "$verdict" = GREEN ]; then
+  if [ -n "$existing" ]; then
+    printf 'The proof is GREEN for build `%s` in %s. Closing.\n' "$BUILD" "$RUN_URL" >"$tmp/body.md"
+    "$GH_BIN" issue comment "$existing" -R "$REPO" --body-file "$tmp/body.md" >/dev/null
+    "$GH_BIN" issue close "$existing" -R "$REPO" >/dev/null
+    printf 'RED_ISSUE status=closed number=%s build=%s\n' "$existing" "$BUILD"
+  else
+    printf 'RED_ISSUE status=none build=%s\n' "$BUILD"
+  fi
+  exit 0
+fi
+
+shared="$(sed -n 's/^shared_fail=//p' "$ATTRIBUTION")"
+failed="$(sed -n 's/^failed_apps=//p' "$ATTRIBUTION")"
+passed="$(sed -n 's/^passed_apps=//p' "$ATTRIBUTION")"
+{
+  printf 'Run: %s\n\n' "$RUN_URL"
+  printf -- '- build: `%s`\n- verdict: **%s**\n' "$BUILD" "$verdict"
+  if [ "$shared" = 1 ]; then
+    printf -- '- attribution: **shared fail**. The isolated node or its install pipeline did not come up, so the proof is worthless for every app. Nothing is published.\n'
+  else
+    printf -- '- attribution: per app. Failed apps: `%s`. Apps with no fail of their own: `%s`. The Mac apply command may publish rows for the passed apps only.\n' "$failed" "$passed"
+  fi
+  printf '\nFails:\n\n```\n'
+  jq -r '(.fails // [])[]' "$PROOF" | head -40
+  printf '```\n\n'
+  printf 'The proof bundle (smoke log, verdict, candidate set) is the run artifact. This set is not smoked again until an app head moves. Dispatch the workflow with force to retry.\n'
+} >"$tmp/body.md"
+
+if [ -n "$existing" ]; then
+  "$GH_BIN" issue comment "$existing" -R "$REPO" --body-file "$tmp/body.md" >/dev/null
+  printf 'RED_ISSUE status=updated number=%s build=%s\n' "$existing" "$BUILD"
+else
+  "$GH_BIN" label create registry-proof-red --repo "$REPO" --color B60205 \
+    --description "registry proof in CI was RED" >/dev/null 2>&1 || true
+  url="$("$GH_BIN" issue create -R "$REPO" --title "$title" --label registry-proof-red --body-file "$tmp/body.md")"
+  printf 'RED_ISSUE status=opened url=%s build=%s\n' "$url" "$BUILD"
+fi

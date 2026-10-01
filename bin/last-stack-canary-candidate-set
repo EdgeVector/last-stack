@@ -323,7 +323,10 @@ def main(argv: list[str]) -> int:
         prog="last-stack-canary-candidate-set",
         description="Write the nightly candidate set: one LastDB build plus one commit per app.",
     )
-    parser.add_argument("--lastdbd", type=Path, required=True, help="the candidate lastdbd binary (canary-builds/<oid>/lastdbd)")
+    parser.add_argument("--lastdbd", type=Path, default=None, help="the candidate lastdbd binary (canary-builds/<oid>/lastdbd)")
+    parser.add_argument("--lastdb-build", default="",
+                        help="the build string, in place of --lastdbd, for a host with no lastdbd (the cheap "
+                        "heads check on an ubuntu runner). The set records an empty lastdb.bin.")
     parser.add_argument("--apps-config", type=Path, default=DEFAULT_APPS_CONFIG)
     parser.add_argument("--only", action="append", default=[], help="limit to these app ids (repeatable)")
     parser.add_argument("--pin", action="append", default=[], help="<app>=<sha> override (repeatable)")
@@ -354,7 +357,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--json", action="store_true", help="print the set to stdout as well")
     args = parser.parse_args(argv)
 
-    if not args.lastdbd.is_file():
+    if bool(args.lastdbd) == bool(args.lastdb_build):
+        die("give exactly one of --lastdbd and --lastdb-build", 2)
+    if args.lastdbd and not args.lastdbd.is_file():
         die(f"lastdbd not found at {args.lastdbd}", 2)
     try:
         config = json.loads(args.apps_config.read_text(encoding="utf-8"))
@@ -372,11 +377,11 @@ def main(argv: list[str]) -> int:
         if wanted not in apps_cfg:
             die(f"--only names unknown app {wanted!r}", 2)
 
-    build = lastdbd_build(args.lastdbd)
+    build = args.lastdb_build.strip() if args.lastdb_build else lastdbd_build(args.lastdbd)
     oid, oid_source = "", ""
     if args.lastdb_oid:
         oid, oid_source = args.lastdb_oid.strip().lower(), "flag"
-    else:
+    elif args.lastdbd:
         oid = lastdb_oid_from_manifest(args.lastdbd, args.lastdb_manifest)
         oid_source = "manifest" if oid else ""
     if oid:
@@ -456,7 +461,7 @@ def main(argv: list[str]) -> int:
 
     candidate_set = {
         "created_at": utc_now(),
-        "lastdb": {"build": build, "oid": oid, "oid_source": oid_source, "bin": str(args.lastdbd)},
+        "lastdb": {"build": build, "oid": oid, "oid_source": oid_source, "bin": str(args.lastdbd or "")},
         "apps": apps_out,
     }
     out = args.out or (args.out_root / f"{build}.json")
