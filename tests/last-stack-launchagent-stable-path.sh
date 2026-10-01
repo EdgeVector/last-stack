@@ -57,6 +57,8 @@ cp "$ROOT/launchd/com.edgevector.gui-app-memory-guard.plist" "$version/launchd/"
 cp "$ROOT/launchd/com.edgevector.testbin-memory-guard.plist" "$version/launchd/"
 cp "$ROOT/launchd/com.edgevector.host-memory-sentinel.plist" "$version/launchd/"
 cp "$ROOT/launchd/com.edgevector.load-collector.plist" "$version/launchd/"
+cp "$ROOT/bin/last-stack-registry-apply-proof-install" "$version/bin/"
+cp "$ROOT/launchd/com.edgevector.last-stack-registry-apply-proof.plist" "$version/launchd/"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-factory-health"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-board-closeout-sweep"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-self-upgrade"
@@ -65,6 +67,7 @@ printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-gui-app-memory-guard"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-testbin-memory-guard"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-host-memory-sentinel"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-load-collector"
+printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-registry-apply-proof"
 chmod +x \
   "$version/bin/last-stack-factory-health-install" \
   "$version/bin/last-stack-board-closeout-install" \
@@ -81,7 +84,9 @@ chmod +x \
   "$version/bin/last-stack-gui-app-memory-guard" \
   "$version/bin/last-stack-testbin-memory-guard" \
   "$version/bin/last-stack-host-memory-sentinel" \
-  "$version/bin/last-stack-load-collector"
+  "$version/bin/last-stack-load-collector" \
+  "$version/bin/last-stack-registry-apply-proof-install" \
+  "$version/bin/last-stack-registry-apply-proof"
 
 # Host Track exposes these commands through ~/.local/bin links. Every command
 # must resolve that link before it loads the sibling library from the artifact.
@@ -94,6 +99,7 @@ for installer in \
   last-stack-factory-ready-buffer-install \
   last-stack-host-memory-guards-install \
   last-stack-loom-reaper-install \
+  last-stack-registry-apply-proof-install \
   last-stack-self-upgrade-install \
   last-stack-vm-disk-trim-install; do
   ln -s "$version/bin/$installer" "$public_bin/$installer"
@@ -233,6 +239,38 @@ printf '%s\n' "$out" | grep -q 'already current, skipped launchctl' \
 "$version/bin/last-stack-host-memory-guards-install" uninstall >/dev/null
 [ ! -f "$hplist" ] || fail "host-memory-guards uninstall left a plist"
 [ ! -s "$LAUNCHCTL_LOG" ] || fail "host-memory-guards uninstall called launchctl: $(cat "$LAUNCHCTL_LOG")"
+
+# 3d. registry-apply-proof same contract. Without this agent loaded, the Mac
+# half of the registry-proof pipeline only ever runs when a human remembers
+# to call it, which is the confirmed cause of a registry pin lagging behind
+# a green published main tip
+# (papercut-host-track-registry-pin-lags-behind-published-artifact-20260927).
+out="$("$version/bin/last-stack-registry-apply-proof-install" install)" \
+  || fail "registry-apply-proof install failed"
+printf '%s\n' "$out" | grep -q 'launchctl skipped' \
+  || fail "registry-apply-proof expected skip, got: $out"
+rplist="$HOME/Library/LaunchAgents/com.edgevector.last-stack-registry-apply-proof.plist"
+rprog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$rplist")"
+[ "$rprog" = "$compat/bin/last-stack-registry-apply-proof" ] \
+  || fail "registry-apply-proof program=$rprog"
+case "$rprog" in
+  */artifacts/versions/*) fail "registry-apply-proof still version-pinned: $rprog" ;;
+esac
+rarg="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$rplist")"
+[ "$rarg" = "--latest" ] || fail "registry-apply-proof arg=$rarg"
+out="$("$version/bin/last-stack-registry-apply-proof-install" proof)" \
+  || fail "registry-apply-proof proof failed under domain=none"
+printf '%s\n' "$out" | grep -q 'proof: ok label=com.edgevector.last-stack-registry-apply-proof' \
+  || fail "registry-apply-proof proof output=$out"
+out="$("$version/bin/last-stack-registry-apply-proof-install" install)" \
+  || fail "second registry-apply-proof install failed"
+printf '%s\n' "$out" | grep -q 'already current, skipped launchctl' \
+  || fail "registry-apply-proof expected already current, got: $out"
+: >"$LAUNCHCTL_LOG"
+"$version/bin/last-stack-registry-apply-proof-install" uninstall >/dev/null
+[ ! -f "$rplist" ] || fail "registry-apply-proof uninstall left the plist"
+[ ! -s "$LAUNCHCTL_LOG" ] \
+  || fail "registry-apply-proof uninstall called launchctl: $(cat "$LAUNCHCTL_LOG")"
 
 # 4. Foreign HOME + default domain must not call launchctl (gui-domain leak).
 unset LAST_STACK_LAUNCHD_DOMAIN

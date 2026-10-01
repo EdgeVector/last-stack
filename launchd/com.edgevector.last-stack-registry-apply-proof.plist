@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.edgevector.last-stack-registry-apply-proof</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/REPLACE/.last-stack/bin/last-stack-registry-apply-proof</string>
+    <string>--latest</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/REPLACE/.last-stack</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/REPLACE</string>
+    <key>USER</key>
+    <string>REPLACE</string>
+    <key>PATH</key>
+    <string>/Users/REPLACE/.local/bin:/Users/REPLACE/.last-stack/bin:/Users/REPLACE/.bun/bin:/Users/REPLACE/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <!-- The registry-proof GitHub Action runs at :07 and :37 (schedule: "7,37
+       * * * *") and a GREEN macOS build+smoke run typically completes within
+       10-20 minutes. Fire at :28 and :58 so --latest usually finds a
+       completed run, offset from pickup (:00/:20/:40) and self-upgrade
+       (:12/:42). This command is a no-op in seconds when there is nothing new
+       to apply (APPLY_PROOF status=none/already-applied) — see
+       bin/last-stack-registry-apply-proof's own exit-code contract. -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Minute</key>
+      <integer>28</integer>
+    </dict>
+    <dict>
+      <key>Minute</key>
+      <integer>58</integer>
+    </dict>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Nice</key>
+  <integer>5</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE/Library/Logs/last-stack-registry-apply-proof.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE/Library/Logs/last-stack-registry-apply-proof.err.log</string>
+</dict>
+</plist>
