@@ -49,7 +49,13 @@ set -euo pipefail
 state="${LAUNCHCTL_STATE:?}"
 case "${1:-}" in
   print)
-    [ -f "$state" ]
+    [ -f "$state" ] || exit 1
+    # The real `launchctl print` reports the daemon pid; the drain carve-out
+    # reads it as the ancestry boundary.
+    [ -z "${LAUNCHCTL_PRINT_PID:-}" ] || {
+      echo "	state = running"
+      echo "	pid = ${LAUNCHCTL_PRINT_PID}"
+    }
     ;;
   kickstart)
     if [ "${LAUNCHCTL_KICKSTART_FAIL:-0}" = "1" ]; then
@@ -84,6 +90,10 @@ if [ "${1:-}" = "status" ]; then
   seen=0
   if [ -n "${ROUTINES_STATUS_CALLS:-}" ] && [ -f "$ROUTINES_STATUS_CALLS" ]; then
     seen="$(grep -c . "$ROUTINES_STATUS_CALLS" || true)"
+  fi
+  if [ -n "${ROUTINES_STATUS_JSON:-}" ]; then
+    printf '%s\n' "$ROUTINES_STATUS_JSON"
+    exit 0
   fi
   if [ "$busy" -gt 0 ] && [ "$seen" -le "$busy" ]; then
     echo '{"rows":[{"id":"last-stack-fkanban-pickup","running":true}]}'
@@ -235,6 +245,120 @@ printf '%s\n' "$now_out" | grep -q 'kickstart ok' || {
 }
 [ ! -s "$status_calls" ] || {
   echo "FAIL: drain 0 must not read status: $(cat "$status_calls")" >&2
+  exit 1
+}
+
+# The run performing the drain is carved out of the drain set. Its own row is
+# `running:true` until it exits, and it cannot exit while it waits here, so
+# counting it makes the wait unsatisfiable: the whole deadline burns and the
+# restart orphans the caller
+# (papercut-host-track-refresh-routines-self-deadlock-kills-own-caller-20261001).
+# `$$` here is this test script, a real ancestor of the hook, standing in for the
+# calling run's harness; the boundary sits one level above it.
+: >"$status_calls"
+self_out="$(
+  LAUNCHCTL_STATE="$state" \
+  LAUNCHCTL_CALLS="$launchctl_calls" \
+  LAUNCHCTL_PRINT_PID="$PPID" \
+  ROUTINES_CALLS="$calls" \
+  ROUTINES_STATUS_CALLS="$status_calls" \
+  ROUTINES_STATUS_JSON="{\"rows\":[{\"id\":\"last-stack-papercut-resolver\",\"running\":true,\"harnessPid\":$$}]}" \
+  LAST_STACK_LAUNCHCTL_BIN="$launchctl_stub" \
+  LAST_STACK_ROUTINES_DRAIN_POLL_SEC=1 \
+  LAST_STACK_ROUTINES_DRAIN_MAX_SEC=2 \
+  HOST_TRACK_VERSION_DIR="$tmp" \
+  "$hook" 2>&1
+)"
+printf '%s\n' "$self_out" | grep -q 'carving this run out of the drain' || {
+  echo "FAIL: the caller's own run must be carved out: $self_out" >&2
+  exit 1
+}
+printf '%s\n' "$self_out" | grep -q 'drain deadline' && {
+  echo "FAIL: carving out the caller must not burn the deadline: $self_out" >&2
+  exit 1
+}
+printf '%s\n' "$self_out" | grep -q 'kickstart ok' || {
+  echo "FAIL: a carved-out caller must still restart: $self_out" >&2
+  exit 1
+}
+
+# The boundary is load-bearing. One running row was measured reporting
+# routinesd's OWN pid as its harnessPid, and every dispatch descends from
+# routinesd -- so an ancestry match that did not stop at the daemon would carve
+# out an unrelated run and re-open the 2026-09-06 orphan bug. A row at the
+# daemon pid must still be drained and still be named.
+: >"$status_calls"
+daemon_out="$(
+  LAUNCHCTL_STATE="$state" \
+  LAUNCHCTL_CALLS="$launchctl_calls" \
+  LAUNCHCTL_PRINT_PID="$PPID" \
+  ROUTINES_CALLS="$calls" \
+  ROUTINES_STATUS_CALLS="$status_calls" \
+  ROUTINES_STATUS_JSON="{\"rows\":[{\"id\":\"last-stack-whats-wrong\",\"running\":true,\"harnessPid\":$PPID}]}" \
+  LAST_STACK_LAUNCHCTL_BIN="$launchctl_stub" \
+  LAST_STACK_ROUTINES_DRAIN_POLL_SEC=1 \
+  LAST_STACK_ROUTINES_DRAIN_MAX_SEC=2 \
+  HOST_TRACK_VERSION_DIR="$tmp" \
+  "$hook" 2>&1
+)"
+printf '%s\n' "$daemon_out" | grep -q 'drain deadline 2s reached' || {
+  echo "FAIL: a row at the daemon pid must still be drained: $daemon_out" >&2
+  exit 1
+}
+printf '%s\n' "$daemon_out" | grep -q 'last-stack-whats-wrong' || {
+  echo "FAIL: a row at the daemon pid must still be named as orphaned: $daemon_out" >&2
+  exit 1
+}
+
+# An unrelated concurrent run is not an ancestor, so it is still drained. The
+# carve-out is one run, not a blanket exemption.
+: >"$status_calls"
+other_out="$(
+  LAUNCHCTL_STATE="$state" \
+  LAUNCHCTL_CALLS="$launchctl_calls" \
+  LAUNCHCTL_PRINT_PID="$PPID" \
+  ROUTINES_CALLS="$calls" \
+  ROUTINES_STATUS_CALLS="$status_calls" \
+  ROUTINES_STATUS_JSON="{\"rows\":[{\"id\":\"last-stack-papercut-resolver\",\"running\":true,\"harnessPid\":$$},{\"id\":\"last-stack-fkanban-pickup\",\"running\":true,\"harnessPid\":1}]}" \
+  LAST_STACK_LAUNCHCTL_BIN="$launchctl_stub" \
+  LAST_STACK_ROUTINES_DRAIN_POLL_SEC=1 \
+  LAST_STACK_ROUTINES_DRAIN_MAX_SEC=2 \
+  HOST_TRACK_VERSION_DIR="$tmp" \
+  "$hook" 2>&1
+)"
+printf '%s\n' "$other_out" | grep -q 'last-stack-fkanban-pickup' || {
+  echo "FAIL: an unrelated run must still be drained: $other_out" >&2
+  exit 1
+}
+printf '%s\n' "$other_out" | grep -q 'orphans: last-stack-papercut-resolver' && {
+  echo "FAIL: the carved-out caller must not be named as orphaned: $other_out" >&2
+  exit 1
+}
+
+# No daemon pid means no boundary, so the carve-out is skipped entirely and the
+# drain behaves exactly as it did before the carve-out existed. This property is
+# protected twice -- the unreadable-pid arm returns early, and a walk that never
+# reaches the daemon also yields nothing -- so no single-point mutation turns
+# this case red; removing both protections does.
+: >"$status_calls"
+noboundary_out="$(
+  LAUNCHCTL_STATE="$state" \
+  LAUNCHCTL_CALLS="$launchctl_calls" \
+  ROUTINES_CALLS="$calls" \
+  ROUTINES_STATUS_CALLS="$status_calls" \
+  ROUTINES_STATUS_JSON="{\"rows\":[{\"id\":\"last-stack-papercut-resolver\",\"running\":true,\"harnessPid\":$$}]}" \
+  LAST_STACK_LAUNCHCTL_BIN="$launchctl_stub" \
+  LAST_STACK_ROUTINES_DRAIN_POLL_SEC=1 \
+  LAST_STACK_ROUTINES_DRAIN_MAX_SEC=2 \
+  HOST_TRACK_VERSION_DIR="$tmp" \
+  "$hook" 2>&1
+)"
+printf '%s\n' "$noboundary_out" | grep -q 'carving this run out' && {
+  echo "FAIL: no daemon pid must mean no carve-out: $noboundary_out" >&2
+  exit 1
+}
+printf '%s\n' "$noboundary_out" | grep -q 'drain deadline 2s reached' || {
+  echo "FAIL: no carve-out must keep the old drain behaviour: $noboundary_out" >&2
   exit 1
 }
 
