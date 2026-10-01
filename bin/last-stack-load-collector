@@ -184,7 +184,7 @@ def host_sample():
 
 def cold_group_max(data_root=None):
     """Largest keep_small group dir in bytes, from stat only (about 20 files). Never raises."""
-    root = os.path.join(data_root or os.path.join(HOME, ".lastdb/data/data"), "keep_small")
+    root = os.path.join(data_root or os.environ.get("LOAD_MON_DATA_ROOT") or os.path.join(HOME, ".lastdb/data/data"), "keep_small")
     best = None
     try:
         for shard in os.scandir(root):
