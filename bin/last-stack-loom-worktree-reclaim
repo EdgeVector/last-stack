@@ -133,6 +133,56 @@ save_patch() {
   log "saved dirty patch $patch"
 }
 
+# A clean working tree can still hold commits that exist nowhere else: the
+# branch advanced locally after its PR was pushed. save_patch returns early on a
+# clean tree, so those commits used to be removed with no salvage at all (see
+# papercut-loom-worktree-reclaim-reaps-a-clean-tree-holding-unpushed-commits-20261001:
+# 3 commits lost 2026-10-01 while the PR had already merged the stale origin head).
+# This never refuses the reap -- the pool still has to shrink -- it only makes the
+# commits recoverable, the same way save_patch does for uncommitted work.
+save_unpushed() {
+  local wt="$1" branch base name bundle n
+  git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  branch="$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  [ -n "$branch" ] || return 0
+
+  # Prefer the branch's own remote ref; fall back to origin/main so a branch that
+  # was never pushed still bundles a bounded range instead of all of history.
+  base=""
+  if git -C "$wt" rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null 2>&1; then
+    base="refs/remotes/origin/$branch"
+  elif git -C "$wt" rev-parse --verify --quiet refs/remotes/origin/main >/dev/null 2>&1; then
+    base="refs/remotes/origin/main"
+  else
+    log "cannot check unpushed commits (no origin ref) $wt"
+    return 0
+  fi
+
+  # The count IS the discriminator: `$base..HEAD` is empty exactly when HEAD is an
+  # ancestor of the base, so a separate `merge-base --is-ancestor` short-circuit
+  # here is dead weight (its mutation probe cannot go red). This one line decides
+  # "nothing to salvage" AND supplies the number for the log.
+  n="$(git -C "$wt" rev-list --count "$base..HEAD" 2>/dev/null || echo 0)"
+  [ "$n" -gt 0 ] 2>/dev/null || return 0
+
+  name="$(basename "$wt" | tr '#' '_')"
+  bundle="$patch_root/loom-${name}-$(date -u +%Y%m%dT%H%M%SZ).bundle"
+  if [ "$dry_run" -eq 1 ]; then
+    log "dry-run would save $n unpushed commit(s) $bundle"
+    return 0
+  fi
+  mkdir -p "$patch_root"
+  # Bundle the BRANCH tip, not HEAD: a `base..HEAD` range stores a bare `HEAD`
+  # ref, so the recovered bundle would not say which branch it came from. With
+  # the branch named, recovery is one fetch:
+  #   git fetch <bundle> 'refs/heads/*:refs/heads/salvaged/*'
+  if git -C "$wt" bundle create "$bundle" "$base..$branch" >/dev/null 2>&1; then
+    log "saved $n unpushed commit(s) vs $base to $bundle"
+  else
+    log "WARNING could not bundle $n unpushed commit(s) from $wt (base $base)"
+  fi
+}
+
 remove_tree() {
   local wt="$1" gitdir common
   if [ "$dry_run" -eq 1 ]; then
@@ -189,6 +239,7 @@ for wt in "$root"/*; do
   fi
   log "reclaim status=$status age_h=$((age / 3600)) $name"
   save_patch "$wt"
+  save_unpushed "$wt"
   remove_tree "$wt"
   reclaimed=$((reclaimed + 1))
 done
