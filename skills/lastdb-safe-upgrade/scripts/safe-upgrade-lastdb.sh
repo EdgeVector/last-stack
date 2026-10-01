@@ -206,6 +206,9 @@ page_human() {
 # (incident after 2026-07-22 sled-free cutover: candidate ~8.5G vs limit 6G).
 MEMORY_GUARD_PLIST="${LASTDBD_MEMORY_GUARD_PLIST:-$HOME/Library/LaunchAgents/com.REPLACE.lastdbd-memory-guard.plist}"
 DEFAULT_LASTDBD_RSS_LIMIT_MB="${LASTDBD_DEFAULT_RSS_LIMIT_MB:-16384}"
+# Keep the full-heap warm cache within the feature-flow proof contract. The
+# value applies to the primary LaunchAgent before a sidebin cutover reloads it.
+LASTDB_HASH_GROUP_WARM_LIMIT_BYTES=4294967296
 # Extra headroom fraction (0–100). Fail probe if RSS >= limit * (100-HEADROOM)/100.
 # Default 10% so live does not sit right on the kill line after settle.
 RSS_HEADROOM_PCT="${LASTDB_PROBE_RSS_HEADROOM_PCT:-10}"
@@ -1310,6 +1313,30 @@ ensure_primary_launchd_rss_limit() {
   log "stamped primary LaunchAgent LASTDBD_RSS_LIMIT_MB=$limit (was ${current:-unset})"
 }
 
+ensure_primary_launchd_warm_cache_limit() {
+  local limit="$LASTDB_HASH_GROUP_WARM_LIMIT_BYTES" current
+  if [ ! -f "$LAUNCHD_PLIST" ]; then
+    warn "primary LaunchAgent plist missing ($LAUNCHD_PLIST); cannot stamp LASTDB_HASH_GROUP_WARM_BYTES before job reload"
+    return 0
+  fi
+  current="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:LASTDB_HASH_GROUP_WARM_BYTES' "$LAUNCHD_PLIST" 2>/dev/null || true)"
+  if [ -n "$current" ] && ! [[ "$current" =~ ^[0-9]+$ ]]; then
+    die "invalid LASTDB_HASH_GROUP_WARM_BYTES in primary LaunchAgent: $current"
+  fi
+  if [ -n "$current" ] && [ "$current" -le "$limit" ]; then
+    log "primary LaunchAgent LASTDB_HASH_GROUP_WARM_BYTES already $current (limit=$limit)"
+    return 0
+  fi
+  /usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables' "$LAUNCHD_PLIST" >/dev/null 2>&1 \
+    || /usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables dict' "$LAUNCHD_PLIST"
+  if [ -n "$current" ]; then
+    /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:LASTDB_HASH_GROUP_WARM_BYTES $limit" "$LAUNCHD_PLIST"
+  else
+    /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:LASTDB_HASH_GROUP_WARM_BYTES string $limit" "$LAUNCHD_PLIST"
+  fi
+  log "stamped primary LaunchAgent LASTDB_HASH_GROUP_WARM_BYTES=$limit (was ${current:-unset})"
+}
+
 # launchd SIGKILLs a job ExitTimeOut seconds after SIGTERM. With no key the
 # primary job printed `exit timeout = 5`. On 2026-09-24 the 2173 -> 2274
 # cutover killed the old daemon 5 s into its graceful shutdown, before the
@@ -1529,6 +1556,7 @@ live_install_sidebin() {
   write_cutover_recovery_state "sidebin-candidate-installed" true
 
   ensure_primary_launchd_rss_limit
+  ensure_primary_launchd_warm_cache_limit
   ensure_primary_launchd_exit_timeout
 
   local uid
