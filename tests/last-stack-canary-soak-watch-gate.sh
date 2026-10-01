@@ -128,6 +128,18 @@ test "$status_red_rc" -eq 0
 printf '%s\n' "$status_red" | grep -q 'verdict=red subject=build action=heal'
 printf '%s\n' "$status_red" | grep -q 'ROUTINE_RESULT outcome=error detail=verdict=red'
 
+# A second red/heal tick reports the same evidence, but has no new queued
+# heal token. The gate must not report it as a fresh fleet error.
+set +e
+status_red_repeat="$(run_gate status-red 'exit 7')"
+status_red_repeat_rc=$?
+set -e
+test "$status_red_repeat_rc" -eq 0
+printf '%s\n' "$status_red_repeat" | grep -q 'verdict=red subject=build action=heal' \
+  || { printf 'repeat red tick lost its evidence: %s\n' "$status_red_repeat" >&2; exit 1; }
+printf '%s\n' "$status_red_repeat" | grep -q 'ROUTINE_RESULT outcome=noop detail=verdict=red' \
+  || { printf 'a repeat red/heal tick must be noop: %s\n' "$status_red_repeat" >&2; exit 1; }
+
 set +e
 host_pause="$(run_gate host-pause true 'exit 9')"
 host_pause_rc=$?

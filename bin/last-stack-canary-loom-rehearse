@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Start an on-demand lastdb-canary-release run. It uses the same graph as the
+# scheduled candidate path and uses a new key for each rehearsal.
+set -euo pipefail
+
+OID=""
+WATCH_SECS=120
+JSON=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --oid) OID="${2:-}"; shift 2 ;;
+    --watch-secs) WATCH_SECS="${2:-}"; shift 2 ;;
+    --json) JSON=1; shift ;;
+    -h|--help)
+      cat <<'EOF'
+Usage: last-stack-canary-loom-rehearse [--oid SHA] [--watch-secs N] [--json]
+EOF
+      exit 0
+      ;;
+    *) echo "last-stack-canary-loom-rehearse: unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+case "$WATCH_SECS" in
+  ''|*[!0-9]*) echo "last-stack-canary-loom-rehearse: --watch-secs must be a non-negative integer" >&2; exit 2 ;;
+esac
+
+_self_src="$0"
+while [ -L "$_self_src" ]; do
+  _self_link="$(readlink "$_self_src")"
+  case "$_self_link" in /*) _self_src="$_self_link" ;; *) _self_src="$(dirname "$_self_src")/$_self_link" ;; esac
+done
+ROOT="$(CDPATH= cd -- "$(dirname -- "$_self_src")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+
+if [ -z "$OID" ]; then
+  OID="$(git -C "${HOME}/.cache/edgevector-git/fold.git" rev-parse refs/heads/main 2>/dev/null || true)"
+  [ -n "$OID" ] || { echo "last-stack-canary-loom-rehearse: no --oid given and fold main is unresolvable" >&2; exit 2; }
+fi
+
+key="canary-rehearse-$(date -u +%Y%m%dT%H%M%SZ)"
+echo "last-stack-canary-loom-rehearse: starting a real run oid=$OID key=$key" >&2
+echo "last-stack-canary-loom-rehearse: this can reach a primary cutover if candidate probes pass" >&2
+
+start_out="$(last-stack-canary-loom --start --oid "$OID" --key "$key" --json --quiet)"
+exec_id="$(printf '%s\n' "$start_out" | head -1 | jq -r '.execution // empty')"
+if [ -z "$exec_id" ]; then
+  echo "last-stack-canary-loom-rehearse: launch did not return an execution id: $start_out" >&2
+  exit 3
+fi
+echo "last-stack-canary-loom-rehearse: launched $exec_id (key=$key)" >&2
+
+if [ "$WATCH_SECS" -gt 0 ]; then
+  waited=0
+  interval=15
+  while [ "$waited" -lt "$WATCH_SECS" ]; do
+    sleep "$interval"
+    waited=$((waited + interval))
+    snapshot="$(loom show "$exec_id" 2>&1 || true)"
+    state_line="$(printf '%s\n' "$snapshot" | grep -m1 '^state: ' || true)"
+    status_line="$(printf '%s\n' "$snapshot" | grep -m1 '^status: ' || true)"
+    echo "last-stack-canary-loom-rehearse: t+${waited}s ${status_line} ${state_line}" >&2
+    case "$status_line" in
+      *succeeded*|*failed*|*cancelled*) break ;;
+    esac
+  done
+fi
+
+if [ "$JSON" -eq 1 ]; then
+  jq -cn --arg exec "$exec_id" --arg key "$key" --arg oid "$OID" \
+    '{execution:$exec,key:$key,oid:$oid}'
+else
+  printf 'REHEARSE_RESULT execution=%s key=%s oid=%s\n' "$exec_id" "$key" "$OID"
+  printf 'Watch it yourself: loom show %s\n' "$exec_id"
+fi

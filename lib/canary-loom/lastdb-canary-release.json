@@ -1,6 +1,6 @@
 {
   "name": "lastdb-canary-release",
-  "version": "11",
+  "version": "12",
   "start_at": "DECIDE_ENTRY",
   "max_depth": 2,
   "node_budget": 80,
@@ -77,6 +77,14 @@
       "command": ["/bin/bash", "-c", "exec \"${LOOM_SCRIPTS:-$HOME/.last-stack/lib/canary-loom}/loom-canary-step.sh\" BUILD_COLLECT"],
       "effects": "none",
       "timeout_sec": 300,
+      "next": "VALIDATE_A",
+      "on_error": "FAILED"
+    },
+    "VALIDATE_A": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"${LOOM_SCRIPTS:-$HOME/.last-stack/lib/canary-loom}/loom-canary-step.sh\" VALIDATE_A"],
+      "effects": "none",
+      "timeout_sec": 120,
       "next": "CALL_A",
       "on_error": "FAILED"
     },

@@ -146,6 +146,10 @@ fi
 [ -n "$LASTDBD_BIN" ] || { echo "FAIL: --lastdbd PATH is required" >&2; exit 2; }
 [ -x "$LASTDBD_BIN" ] || fail_red "candidate not executable: $LASTDBD_BIN"
 
+# A debug lastdbd can exceed the default UDS worker stack during readiness.
+# Each candidate inherits this value, unless its caller set a wider value.
+export RUST_MIN_STACK="${RUST_MIN_STACK:-67108864}"
+
 if write_path_data_dir_is_live_home "${LASTDB_PROBE_DATA_DIR:-}" "$PRIMARY_HOME" 2>/dev/null; then
   fail_red "refusing live-home --data-dir ${LASTDB_PROBE_DATA_DIR}"
 fi

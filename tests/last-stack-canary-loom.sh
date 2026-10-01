@@ -7,7 +7,7 @@ bash -n "$BIN"
 bash -n "$ROOT/lib/canary-loom/loom-canary-step.sh"
 bash -n "$ROOT/lib/canary-loom/loom-run-deadline.sh"
 [ -f "$ROOT/lib/canary-loom/lastdb-canary-release.json" ] || fail "graph missing"
-[ "$(jq -r .version "$ROOT/lib/canary-loom/lastdb-canary-release.json")" = "11" ] \
+[ "$(jq -r .version "$ROOT/lib/canary-loom/lastdb-canary-release.json")" = "12" ] \
   || fail "canary graph version did not advance"
 jq -e '
   .states.CALL_A.epoch_from == "candidate_artifact_digest"
@@ -19,6 +19,11 @@ jq -e '
   ])
 ' "$ROOT/lib/canary-loom/lastdb-canary-release.json" >/dev/null \
   || fail "parent graph does not bind its child to the exact candidate pair"
+jq -e '.states.BUILD_COLLECT.next == "VALIDATE_A"
+       and .states.VALIDATE_A.next == "CALL_A"
+       and .states.VALIDATE_A.on_error == "FAILED"' \
+  "$ROOT/lib/canary-loom/lastdb-canary-release.json" >/dev/null \
+  || fail "BUILD_COLLECT does not route through VALIDATE_A before CALL_A"
 # Every node command must survive a launcher that forgot LOOM_SCRIPTS: the
 # 2026-08-30 recovery exec died at spawn (exit 127, no recorded output)
 # because the env contract was hand-rolled (lx-20260830T122141.772-6345-1).
@@ -258,6 +263,57 @@ mutated_patch="$(printf '%s\n' "$mutated_collect_out" | sed -n 's/^LOOM_CONTEXT_
   || fail "parent fanout epoch ignored a paired CLI byte change"
 mv "$recovery_stage/lastdb.saved" "$recovery_stage/lastdb"
 chmod 755 "$recovery_stage/lastdb"
+
+# A complete job is a no-op. A stale three-key job must self-heal to the
+# complete safe-upgrade tuple before CALL_A sees it.
+complete_job="$(printf '%s\n' "$build_patch" | jq -c '{upgrade_jobs:[.upgrade_jobs[0]]}')"
+validate_noop_out="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
+  LOOM_INPUT="$complete_job" "$ROOT/lib/canary-loom/loom-canary-step.sh" VALIDATE_A)"
+printf '%s\n' "$validate_noop_out" | grep -q '^LOOM_CONTEXT_PATCH:{}$' \
+  || fail "VALIDATE_A patched a complete upgrade_jobs entry: $validate_noop_out"
+
+stale_job="$(jq -cn --arg d "$recovery_stage/lastdbd" --arg oid "$recovery_oid" --arg v "$recovery_version" \
+  '{upgrade_jobs:[{candidate:$d,source_git_oid:$oid,version:$v}]}')"
+validate_heal_out="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
+  LOOM_INPUT="$stale_job" "$ROOT/lib/canary-loom/loom-canary-step.sh" VALIDATE_A)"
+validate_heal_patch="$(printf '%s\n' "$validate_heal_out" | sed -n 's/^LOOM_CONTEXT_PATCH://p')"
+printf '%s\n' "$validate_heal_patch" | jq -e \
+  --arg daemon "$recovery_stage/lastdbd" --arg cli "$recovery_stage/lastdb" \
+  --arg oid "$recovery_oid" --arg version "$recovery_version" \
+  --arg daemon_sha "$daemon_sha" --arg cli_sha "$cli_sha" --arg digest "$artifact_digest" '
+    .candidate == $daemon and .candidate_cli == $cli and .source_git_oid == $oid
+    and .version == $version and .lastdbd_version == $version and .lastdb_version == $version
+    and .lastdbd_sha256 == $daemon_sha and .lastdb_sha256 == $cli_sha
+    and .candidate_artifact_digest == $digest and .safe_upgrade_protocol_version == "6"
+    and (.upgrade_jobs | length) == 1
+    and (.upgrade_jobs[0] | keys | length) == 10
+  ' >/dev/null || fail "VALIDATE_A did not self-heal a stale 3-key job: $validate_heal_patch"
+printf '%s\n' "$validate_heal_out" | grep -q 'self-healed stale upgrade_jobs' \
+  || fail "VALIDATE_A self-heal did not explain itself: $validate_heal_out"
+
+set +e
+validate_unrepairable_out="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
+  LOOM_INPUT='{"upgrade_jobs":[{"version":"0.0.0"}]}' \
+  "$ROOT/lib/canary-loom/loom-canary-step.sh" VALIDATE_A 2>&1)"
+validate_unrepairable_rc=$?
+set -e
+[ "$validate_unrepairable_rc" -ne 0 ] \
+  || fail "VALIDATE_A accepted an unrepairable job: $validate_unrepairable_out"
+printf '%s\n' "$validate_unrepairable_out" | grep -q 'cannot self-heal' \
+  || fail "VALIDATE_A unrepairable refusal did not explain itself: $validate_unrepairable_out"
+
+set +e
+validate_empty_out="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
+  LOOM_INPUT='{"upgrade_jobs":[]}' "$ROOT/lib/canary-loom/loom-canary-step.sh" VALIDATE_A 2>&1)"
+validate_empty_rc=$?
+set -e
+[ "$validate_empty_rc" -ne 0 ] || fail "VALIDATE_A accepted an empty upgrade_jobs: $validate_empty_out"
+
+standin_validate_out="$(env -u LOOM_LIVE -u LOOM_CANARY_LIVE \
+  LOOM_INPUT='{"upgrade_jobs":[{"candidate":"/tmp/x"}]}' \
+  "$ROOT/lib/canary-loom/loom-canary-step.sh" VALIDATE_A)"
+printf '%s\n' "$standin_validate_out" | grep -q '^LOOM_CONTEXT_PATCH:{}$' \
+  || fail "stand-in VALIDATE_A was not a no-op: $standin_validate_out"
 
 recovery_input="$(jq -cn \
   --arg mode verified-live \
