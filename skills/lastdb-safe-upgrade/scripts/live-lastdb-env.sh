@@ -5,7 +5,9 @@
 #
 # LIVE_LASTDB_ENV_PAIRS: KEY=VAL per line from the live LaunchAgent plist.
 # HOME-shaped keys are excluded — the probe must only ever see its own
-# --data-dir copy.
+# --data-dir copy. LASTDB_BUILD_CONFLICT_STAMP_ON_COPY is excluded too.
+# The safe-upgrade candidate sets that flag on its ephemeral copy only.
+# A primary plist must not hand the flag to a probe or to the live daemon.
 #
 # bash 3.2 compatible (macOS /bin/bash). No side effects at source.
 
@@ -14,15 +16,16 @@ live_lastdb_env_pairs() {
   # line, so probe nodes boot with the primary's tuning (warm budget, atom
   # limit, …). Without this, probes measure default-config behavior the live
   # node does not have (e2e 2026-07-28: probe scan 43s vs live ~23s purely from
-  # the missing 4 GiB LASTDB_HASH_GROUP_WARM_BYTES). HOME-shaped keys are
-  # excluded — the probe must only ever see its own --data-dir copy.
+  # the missing 4 GiB LASTDB_HASH_GROUP_WARM_BYTES). HOME-shaped keys and
+  # LASTDB_BUILD_CONFLICT_STAMP_ON_COPY are excluded — the probe must only
+  # ever see its own --data-dir copy, and the stamp flag is not a live key.
   local plist="${1:-${LAUNCHD_PLIST:-}}"
   [ -n "$plist" ] && [ -f "$plist" ] || return 0
   /usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables' "$plist" 2>/dev/null \
     | awk -F' = ' '
         $1 ~ /^ *LASTDB_/ {
           key=$1; gsub(/^ +| +$/,"",key)
-          if (key == "LASTDB_HOME" || key == "FOLDDB_HOME" || key == "LASTDB_DATA_DIR") next
+          if (key == "LASTDB_HOME" || key == "FOLDDB_HOME" || key == "LASTDB_DATA_DIR" || key == "LASTDB_BUILD_CONFLICT_STAMP_ON_COPY") next
           val=$2; gsub(/^ +| +$/,"",val)
           if (key != "" && val != "") print key "=" val
         }'

@@ -14,6 +14,13 @@
 #      correct-but-slow is RED (incident 2026-07-25/27: 0.23.1 passed the
 #      correctness+RSS bars while scans ran 5-20x slower; the live primary
 #      was the first place anyone noticed)
+#      AND the FOOTPRINT BAR on that same ephemeral copy: proof_kind
+#      upgrade-gate at 600 seconds (not the 86400 soak), purge_delay_ms 0,
+#      purge slack at or under 512 MiB, and a 0.25 phys_footprint drop on a
+#      step that freed warm bytes. The 12 GiB p99 and the 1.3 multiplier
+#      stay backstops. A status sample that lacks the new fields is RED.
+#      There is no skip. LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1 is set on
+#      the candidate copy only and is not installed on the primary.
 #      AND the CANDIDATE CLASS BAR (incident 2026-08-01): refuse Cargo
 #      debug paths (target/debug), -dirty version stamps, and binaries
 #      ≫ incumbent size (debug/unstripped) before any backup or probe
@@ -256,6 +263,8 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/latency-bar-checks.sh"
 # shellcheck source=rowcount-bar-checks.sh
 . "$_SCRIPT_DIR/rowcount-bar-checks.sh"
+# shellcheck source=footprint-bar-checks.sh
+. "$_SCRIPT_DIR/footprint-bar-checks.sh"
 # shellcheck source=live-lastdb-env.sh
 . "$_SCRIPT_DIR/live-lastdb-env.sh"
 # shellcheck source=dev-photograph-stamp-gate.sh
@@ -948,7 +957,16 @@ EOF_ENV
   if [ "${#env_pairs[@]}" -gt 0 ]; then
     log "$label metrics probe: mirroring live env: ${env_pairs[*]}"
   fi
+  # The conflict-stamp builder runs on the candidate copy only. Do not export
+  # the flag into this shell, and do not write it into the primary plist.
+  # The stamp the copy builds is deleted with the copy. It is not installed
+  # onto the primary home.
+  local stamp_env=""
+  if [ "$label" = "candidate" ]; then
+    stamp_env="LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1"
+  fi
   env -u SENTRY_DSN -u FOLD_SENTRY_DSN ${env_pairs[@]+"${env_pairs[@]}"} \
+    ${stamp_env:+"$stamp_env"} \
     "$bin" --data-dir "$copy" >"$blog" 2>&1 &
   pid=$!
   uh=""
@@ -995,16 +1013,26 @@ stop_probe_node() {
 probe_like_to_like_metrics() {
   local cand_bin="$1" base_bin="$2" cand_out="$3" base_out="$4"
   local c_copy b_copy c_pid b_pid c_sock b_sock c_blog b_blog c_boot b_boot
-  local max_rss rss i
+  local max_rss rss i fp_status=""
   local c_cold_pt=-1 b_cold_pt=-1 c_cold_sc=-1 b_cold_sc=-1
   local c_hot_pt=-1 b_hot_pt=-1 c_hot_sc=-1 b_hot_sc=-1 c_hot_wr=-1 b_hot_wr=-1
 
   c_copy="$(clone_probe_home c)" || return 1
+  if ! footprint_copy_is_not_primary "$c_copy" "$PRIMARY_HOME"; then
+    warn "candidate metrics probe: copy is the primary home; the conflict stamp must stay on the ephemeral copy"
+    rm -rf "$c_copy" 2>/dev/null || true
+    return 1
+  fi
   if [ -n "$base_bin" ] && [ -x "$base_bin" ]; then
     b_copy="$(clone_probe_home b)" || {
       rm -rf "$c_copy" 2>/dev/null || true
       return 1
     }
+    if ! footprint_copy_is_not_primary "$b_copy" "$PRIMARY_HOME"; then
+      warn "baseline metrics probe: copy is the primary home"
+      rm -rf "$c_copy" "$b_copy" 2>/dev/null || true
+      return 1
+    fi
   else
     b_copy=""
   fi
@@ -1128,6 +1156,18 @@ probe_like_to_like_metrics() {
   fi
   log "row counts: point cand=${c_rows_pt} base=${b_rows_pt} · scan cand=${c_rows_sc} base=${b_rows_sc}"
 
+  # Sibling of the copy, not inside it, so stop_probe_node can delete the copy
+  # (and any conflict stamp the copy built) without deleting the sample.
+  fp_status="${c_copy}.footprint-status.json"
+  if ! curl -sS --max-time 15 --unix-socket "$c_sock" \
+      -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+      http://x/api/status >"$fp_status" 2>/dev/null; then
+    printf '%s\n' '{}' >"$fp_status"
+  fi
+  if [ ! -s "$fp_status" ]; then
+    printf '%s\n' '{}' >"$fp_status"
+  fi
+
   {
     echo "boot_secs=$c_boot"
     echo "peak_rss_mb=$max_rss"
@@ -1141,6 +1181,7 @@ probe_like_to_like_metrics() {
     echo "lat_write_ms=$c_hot_wr"
     echo "rows_point=$c_rows_pt"
     echo "rows_scan=$c_rows_sc"
+    echo "footprint_status=$fp_status"
   } >"$cand_out"
   if [ -n "$base_out" ]; then
     {
@@ -2102,6 +2143,44 @@ EOF
 else
   warn "latency bar SKIPPED (LASTDB_PROBE_LAT_SKIP=1) — Tom-clearance only; correct-but-slow will NOT be caught"
 fi
+
+# Footprint bar on the ephemeral candidate copy, next to the latency bar.
+# LASTDB_PROBE_LAT_SKIP does not skip it. Absent fields are RED. This block
+# does not restart a node and does not change the durability canary or the
+# live step. The conflict stamp stays on the copy.
+FP_STATUS="$(metric_val "$CAND_METRICS" footprint_status)"
+primary_stamp="$(footprint_plist_stamp_value "$LAUNCHD_PLIST")"
+if ! footprint_stamp_env_allowed primary "$primary_stamp"; then
+  echo ""
+  echo "VERDICT: RED"
+  echo "REASON: primary LaunchAgent sets LASTDB_BUILD_CONFLICT_STAMP_ON_COPY; the ephemeral copy stamp must not be installed on the primary home"
+  echo "BACKUP: $BACKUP  (kept; primary NOT upgraded)"
+  echo "NEXT:   remove LASTDB_BUILD_CONFLICT_STAMP_ON_COPY from the primary plist. The driver sets it on the candidate copy only."
+  exit 1
+fi
+if [ -z "${FP_STATUS:-}" ] || [ ! -f "$FP_STATUS" ] || ! footprint_copy_is_not_primary "$FP_STATUS" "$PRIMARY_HOME"; then
+  echo ""
+  echo "VERDICT: RED"
+  echo "REASON: candidate $CAND_VER fails the footprint bar — ephemeral status sample is absent or is on the primary home (absent fields fail the bar; not skipped)"
+  echo "BACKUP: $BACKUP  (kept; primary NOT upgraded)"
+  echo "NEXT:   do NOT live-upgrade. A candidate equivalent to build be41e547e has no footprint_net and must stay RED."
+  exit 1
+fi
+set +e
+FP_RECEIPT="$(footprint_bar_eval "$FP_STATUS" 2>&1)"
+FP_RC=$?
+set -e
+if [ "$FP_RC" -ne 0 ]; then
+  log "$FP_RECEIPT"
+  echo ""
+  echo "VERDICT: RED"
+  echo "REASON: candidate $CAND_VER fails the footprint bar — eviction must move phys_footprint on the ephemeral copy (upgrade-gate at 600 seconds, not the 86400 soak)"
+  echo "FOOTPRINT: $FP_RECEIPT"
+  echo "BACKUP: $BACKUP  (kept; primary NOT upgraded)"
+  echo "NEXT:   do NOT live-upgrade. There is no skip flag. A status sample that lacks footprint_net is RED, including a candidate equivalent to build be41e547e."
+  exit 1
+fi
+log "$FP_RECEIPT"
 log "row-count bar GREEN: point cand=${CAND_ROWS_POINT}(base ${BASE_ROWS_POINT}) scan cand=${CAND_ROWS_SCAN}(base ${BASE_ROWS_SCAN})"
 log "probe GREEN for candidate $CAND_VER (data-plane + RSS peak_mb=${PROBE_RSS_MB} + cold_point/scan=${CAND_LAT_COLD_POINT_MS}/${CAND_LAT_COLD_SCAN_MS}ms hot_point/scan/write=${CAND_LAT_POINT_MS}/${CAND_LAT_SCAN_MS}/${CAND_LAT_WRITE_MS}ms)"
 
@@ -2114,6 +2193,7 @@ if [ "$PROBE_ONLY" -eq 1 ]; then
   echo "RSS:     peak_mb=${PROBE_RSS_MB} limit_mb=$(resolve_rss_limit_mb) fail_at_mb=$(rss_fail_threshold_mb "$(resolve_rss_limit_mb)")"
   echo "LATENCY: cold_point=${CAND_LAT_COLD_POINT_MS}ms(base ${BASE_LAT_COLD_POINT_MS}ms) cold_scan=${CAND_LAT_COLD_SCAN_MS}ms(base ${BASE_LAT_COLD_SCAN_MS}ms) hot_point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) hot_scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) hot_write=${CAND_LAT_WRITE_MS}ms(base ${BASE_LAT_WRITE_MS}ms) boot=${CAND_BOOT_SECS}s(base ${BASE_BOOT_SECS:-?}s)"
   echo "ROWCOUNT: point cand=${CAND_ROWS_POINT}(base ${BASE_ROWS_POINT}) scan cand=${CAND_ROWS_SCAN}(base ${BASE_ROWS_SCAN})"
+  echo "FOOTPRINT: ${FP_RECEIPT:-unset}"
   echo "NEXT:    run last-stack-safe-upgrade-loom --candidate $CANDIDATE_BIN --source-git-oid <full-fold-commit>"
   exit 0
 fi
@@ -2514,7 +2594,7 @@ for cand in \
 do
   [ -x "$cand" ] && POST_NOTICE="$cand" && break
 done
-NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} with lastdb=${INSTALLED_CLI:-?} venue=${VENUE} cutover_s=${CUTOVER_SECS}; probe latency point/scan/write=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}/${CAND_LAT_WRITE_MS:-?}ms (baseline ${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}/${BASE_LAT_WRITE_MS:-?}ms) live_point_ms=${LIVE_LAT_POINT_MS:-?} live_scan_ms=${LIVE_LAT_SCAN_MS:-?} durability=${DURABILITY_N}/${DURABILITY_N} durability_mode=${DURABILITY_MODE:-durable}; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone. Design: lastdb-minimal-downtime-cutover."
+NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} with lastdb=${INSTALLED_CLI:-?} venue=${VENUE} cutover_s=${CUTOVER_SECS}; probe latency point/scan/write=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}/${CAND_LAT_WRITE_MS:-?}ms (baseline ${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}/${BASE_LAT_WRITE_MS:-?}ms) live_point_ms=${LIVE_LAT_POINT_MS:-?} live_scan_ms=${LIVE_LAT_SCAN_MS:-?} durability=${DURABILITY_N}/${DURABILITY_N} durability_mode=${DURABILITY_MODE:-durable}; footprint ${FP_RECEIPT:-unset}; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone. Design: lastdb-minimal-downtime-cutover."
 if [ -n "$POST_NOTICE" ]; then
   if "$POST_NOTICE" \
     --title "LastDB upgraded to ${INSTALLED}" \
@@ -2588,6 +2668,7 @@ echo ""
 echo "VERDICT: GREEN"
 echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED and lastdb → ${INSTALLED_CLI:-?}; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + live Board read OK; probe_rss_mb=${PROBE_RSS_MB:-?} live_rss_mb=${LIVE_RSS_MB:-?} limit_mb=$(resolve_rss_limit_mb); rollback point released"
 echo "LATENCY: probe point/scan/write=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}/${CAND_LAT_WRITE_MS:-?}ms baseline=${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}/${BASE_LAT_WRITE_MS:-?}ms live_point=${LIVE_LAT_POINT_MS:-?}ms live_scan=${LIVE_LAT_SCAN_MS:-?}ms"
+echo "FOOTPRINT: ${FP_RECEIPT:-unset}"
 echo ""
 echo "ROLLBACK (binary only, if new binary misbehaves but data is fine):"
 if [ "$VENUE" = "sidebin" ]; then
