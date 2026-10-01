@@ -33,7 +33,9 @@ mkdir -p "$tmp/fold-mirror"
 git -C "$tmp/fold-mirror" init -q
 git -C "$tmp/fold-mirror" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 mkdir -p "$tmp/cache-home/.cache/edgevector-git"
-git -C "$tmp/fold-mirror" branch -f main
+# `branch -f main` fails when init.defaultBranch already selects `main`.
+# Rename the current initial branch instead, regardless of the Git default.
+git -C "$tmp/fold-mirror" branch -M main
 git clone -q --bare "$tmp/fold-mirror" "$tmp/cache-home/.cache/edgevector-git/fold.git"
 expected_oid="$(git -C "$tmp/fold-mirror" rev-parse main)"
 
