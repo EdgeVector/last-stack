@@ -12,6 +12,23 @@
 # usual promote waits seconds. A bounded deadline keeps a busy fleet from
 # holding the promote forever, and crossing it NAMES the runs it is about to
 # orphan instead of leaving the next daemon to label them `unknown`.
+#
+# The drain must never count the run performing the drain. A routine that fixes
+# `routines` and then installs its own fix (papercut-resolver and kanban-agent
+# both have that shape) calls this hook from inside its own dispatch, so its own
+# row is `running:true` until it exits -- which it cannot do while it is blocked
+# here waiting for that row to clear. The wait is then unsatisfiable by
+# construction: it burns the whole deadline and force-restarts the daemon out
+# from under its own caller
+# (papercut-host-track-refresh-routines-self-deadlock-kills-own-caller-20261001).
+# So the caller's own row is carved out of the drain set, keyed on process
+# ancestry: the ancestors of this hook that sit strictly BELOW routinesd are the
+# calling run's harness. The boundary matters -- one running row was measured
+# reporting routinesd's own pid as its `harnessPid`, and every dispatch descends
+# from routinesd, so an unbounded ancestry match would carve out an unrelated
+# run and re-open the 2026-09-06 orphan bug. A pid at or above the daemon is
+# never carved out. When the daemon pid cannot be read the carve-out is skipped
+# entirely, which is exactly the pre-carve-out behaviour.
 set -euo pipefail
 
 routines_bin=""
@@ -39,13 +56,69 @@ drain_poll_sec="${LAST_STACK_ROUTINES_DRAIN_POLL_SEC:-15}"
 case "$drain_max_sec" in '' | *[!0-9]*) drain_max_sec=900 ;; esac
 case "$drain_poll_sec" in '' | 0 | *[!0-9]*) drain_poll_sec=15 ;; esac
 
-# Comma-joined ids of the runs the daemon still holds. Exit 2 means the count
-# is unknown, which must never be read as "nothing is running".
+# Set before any running_ids call; the drain fills it in with the real set.
+self_pids="[]"
+
+# The pid routinesd runs as, or empty when it cannot be read. The carve-out
+# below needs this boundary and refuses to guess at it.
+daemon_pid() {
+  local out
+  out="$("$launchctl_bin" print "$service" 2>/dev/null)" || return 0
+  # `q` after the first match instead of `| head -1`: a closed downstream pipe
+  # would SIGPIPE sed and trip pipefail.
+  printf '%s' "$out" \
+    | sed -n '/^[[:space:]]*pid = [0-9]/{s/^[[:space:]]*pid = \([0-9][0-9]*\).*$/\1/p;q;}'
+}
+
+# JSON array of this hook's ancestor pids that sit strictly below routinesd --
+# the calling run's harness, when this hook was invoked from inside a dispatch.
+# Empty whenever the daemon pid is unknown, when the walk never reaches the
+# daemon (this hook is not running under it), or when nothing is below it.
+self_harness_pids() {
+  local boundary pid parent hops acc
+  boundary="$(daemon_pid)"
+  case "$boundary" in '' | *[!0-9]*)
+    printf '[]'
+    return 0
+    ;;
+  esac
+
+  acc=""
+  pid="$$"
+  hops=0
+  while [ "$hops" -lt 64 ]; do
+    hops=$((hops + 1))
+    [ -n "$pid" ] || break
+    case "$pid" in *[!0-9]*) break ;; esac
+    [ "$pid" -gt 1 ] || break
+    # Reaching the daemon ends the walk: it and everything above it is shared by
+    # every dispatch and must never be carved out.
+    [ "$pid" != "$boundary" ] || {
+      printf '[%s]' "${acc#,}"
+      return 0
+    }
+    acc="$acc,$pid"
+    parent="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" || parent=""
+    pid="$parent"
+  done
+  # The walk never reached routinesd, so this hook is not inside a dispatch.
+  printf '[]'
+}
+
+# Comma-joined ids of the runs the daemon still holds, less the calling run.
+# Exit 2 means the count is unknown, which must never be read as "nothing is
+# running".
 running_ids() {
   local out
   out="$("$routines_bin" status --json 2>/dev/null)" || return 2
   printf '%s' "$out" \
-    | jq -r '[.rows[]? | select(.running == true) | .id] | join(",")' 2>/dev/null \
+    | jq -r --argjson self "$self_pids" '
+        [ .rows[]?
+          | select(.running == true)
+          | select(.harnessPid as $h | ($h == null) or (($self | index($h)) == null))
+          | .id
+        ] | join(",")
+      ' 2>/dev/null \
     || return 2
 }
 
@@ -54,6 +127,12 @@ drain_before_restart() {
   if ! command -v jq >/dev/null 2>&1; then
     echo "routines post-install: WARN no jq; restarting without a drain" >&2
     return 0
+  fi
+
+  self_pids="$(self_harness_pids)"
+  if [ "$self_pids" != "[]" ]; then
+    printf 'routines post-install: carving this run out of the drain (harness pids %s)\n' \
+      "$self_pids"
   fi
 
   local waited=0 ids rc
