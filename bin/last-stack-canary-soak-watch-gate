@@ -115,11 +115,17 @@ subject="$(printf '%s\n' "$verdict_json" | jq -r '.subject // empty')"
 [ -n "$subject" ] || subject=none
 action="$(printf '%s\n' "$verdict_json" | jq -r '.action // "unknown"')"
 detail="$(printf '%s\n' "$verdict_json" | jq -r '.evidence // "unknown"')"
+heal_queued="$(printf '%s\n' "$verdict_json" | jq -r '.heal_queued // false')"
 
 case "$verdict" in
   green) outcome=ok ;;
   window-open|superseded) outcome=noop ;;
-  red|line-stopped) outcome=error ;;
+  red)
+    # A new queued heal is an error. A repeated red verdict has no new heal
+    # token and is a known condition until a new candidate becomes available.
+    if [ "$heal_queued" = "true" ]; then outcome=error; else outcome=noop; fi
+    ;;
+  line-stopped) outcome=error ;;
   *) outcome=error ;;
 esac
 

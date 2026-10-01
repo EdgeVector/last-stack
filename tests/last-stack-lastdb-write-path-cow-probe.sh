@@ -136,4 +136,7 @@ if [ -f "$SKILL_MD" ]; then
     || echo "WARN: SKILL.md does not yet mention write-path CoW probe" >&2
 fi
 
+grep -q 'export RUST_MIN_STACK="\${RUST_MIN_STACK:-67108864}"' "$PROBE" \
+  || fail "probe must set a default worker stack for each candidate"
+
 echo "OK: write-path CoW probe (packaged, live_lastdb_env_pairs reused, live-home refused, incumbent RED, Table 5 GREEN)"

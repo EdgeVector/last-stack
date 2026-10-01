@@ -65,6 +65,22 @@ def file_sha256(path):
     return digest.hexdigest()
 
 
+# Must match CALL_A.input_from_context in lastdb-canary-release.json exactly.
+# tests/last-stack-canary-loom.sh checks the two lists for drift.
+REQUIRED_JOB_KEYS = (
+    "candidate",
+    "candidate_cli",
+    "version",
+    "lastdbd_version",
+    "lastdb_version",
+    "lastdbd_sha256",
+    "lastdb_sha256",
+    "source_git_oid",
+    "candidate_artifact_digest",
+    "safe_upgrade_protocol_version",
+)
+
+
 def exact_upgrade_job(candidate, source_git_oid, claimed_version):
     daemon = os.path.realpath(candidate)
     cli = os.path.realpath(os.path.join(os.path.dirname(daemon), "lastdb"))
@@ -172,6 +188,8 @@ if not live:
             },
             "canary-step BUILD_COLLECT stand-in",
         )
+    elif step == "VALIDATE_A":
+        emit({}, "canary-step VALIDATE_A stand-in complete")
     elif step == "READ_A":
         emit({"child_status": "green"}, "canary-step READ_A stand-in child_status=green")
     elif step == "LEDGER":
@@ -471,6 +489,44 @@ if step == "RECOVER_LIVE":
             "last_note": "verified already-live candidate; no build or cutover",
         },
         "canary-step RECOVER_LIVE verified",
+    )
+    raise SystemExit(0)
+
+
+if step == "VALIDATE_A":
+    # BUILD_COLLECT is a run-once node. A prior script version can leave an
+    # incomplete job which CALL_A cannot accept. Recompute that job before
+    # CALL_A, from the staged candidate, without a new build.
+    jobs = ctx.get("upgrade_jobs")
+    if not isinstance(jobs, list) or not jobs or not isinstance(jobs[0], dict):
+        print("canary-step VALIDATE_A: upgrade_jobs missing or empty", file=sys.stderr)
+        sys.exit(2)
+    job = jobs[0]
+    missing = [key for key in REQUIRED_JOB_KEYS if not job.get(key)]
+    if not missing:
+        emit({}, "canary-step VALIDATE_A live complete")
+        raise SystemExit(0)
+    candidate = str(job.get("candidate") or ctx.get("candidate") or "")
+    source_git_oid = str(job.get("source_git_oid") or ctx.get("source_git_oid") or "")
+    claimed_version = str(job.get("version") or ctx.get("version") or "")
+    if not candidate or not source_git_oid:
+        print(
+            "canary-step VALIDATE_A: cannot self-heal, missing candidate/"
+            f"source_git_oid (had keys={sorted(job.keys())})",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    try:
+        fresh = exact_upgrade_job(candidate, source_git_oid, claimed_version)
+    except Exception as exc:
+        print(f"canary-step VALIDATE_A: self-heal recompute failed: {exc}", file=sys.stderr)
+        sys.exit(2)
+    patch = dict(fresh)
+    patch["upgrade_jobs"] = [fresh]
+    emit(
+        patch,
+        "canary-step VALIDATE_A self-healed stale upgrade_jobs "
+        f"(was {len(job)} keys missing={missing}, now {len(fresh)} keys)",
     )
     raise SystemExit(0)
 
