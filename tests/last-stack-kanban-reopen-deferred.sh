@@ -42,6 +42,12 @@ if [ "\$1" = list ]; then
     val_status=none
     val_tags='[]'
   fi
+  stale_status=deferred
+  stale_tags='["awaiting-deploy"]'
+  if [ -f "$tmp/stale-cleared" ]; then
+    stale_status=none
+    stale_tags='[]'
+  fi
   cat <<JSON
 [
   {
@@ -67,6 +73,14 @@ if [ "\$1" = list ]; then
     "block_status": "deferred",
     "tags": ["awaiting-deploy"],
     "body": "merge=$unrelated"
+  },
+  {
+    "slug": "deferred-stale-head",
+    "repo": "EdgeVector/last-stack",
+    "kind": "pr",
+    "block_status": "\$stale_status",
+    "tags": \$stale_tags,
+    "body": "head=$unrelated\\nPR 111 merged as $recorded"
   }
 ]
 JSON
@@ -78,12 +92,15 @@ fi
 if [ "\$1" = set ] && [ "\$2" = deferred-validate ]; then
   touch "$tmp/validate-cleared"
 fi
+if [ "\$1" = set ] && [ "\$2" = deferred-stale-head ]; then
+  touch "$tmp/stale-cleared"
+fi
 printf '%s\n' "\$*" >>"$tmp/board.log"
 SH
 chmod +x "$tmp/bin/kanban"
 
 dry="$("$ROOT/bin/last-stack-kanban-reopen-deferred" --board-cli "$tmp/bin/kanban" --host-track "$tmp/bin/host-track" --repo-cache-root "$tmp/cache" --dry-run --json)"
-printf '%s\n' "$dry" | grep -q '"scanned": 3' || fail "dry run did not scan all deferred cards"
+printf '%s\n' "$dry" | grep -q '"scanned": 4' || fail "dry run did not scan all deferred cards"
 printf '%s\n' "$dry" | grep -q '"slug": "deferred-live"' || fail "dry run did not identify the live card"
 [ ! -f "$tmp/board.log" ] || fail "dry run wrote to the board"
 
@@ -91,6 +108,8 @@ actual="$("$ROOT/bin/last-stack-kanban-reopen-deferred" --board-cli "$tmp/bin/ka
 printf '%s\n' "$actual" | grep -q '"reopened":' || fail "live run did not report reopened cards"
 grep -q '^set deferred-live --block-status none --json$' "$tmp/board.log" || fail "live card did not clear its deferred status"
 grep -q '^move deferred-live todo$' "$tmp/board.log" || fail "live card did not move to todo"
+grep -q '^set deferred-stale-head --block-status none --json$' "$tmp/board.log" || fail "stale head= line hid the merged-as commit"
+grep -q '^move deferred-stale-head todo$' "$tmp/board.log" || fail "stale-head card did not move to todo"
 # A merged card that only awaits validation goes to doing, never to todo:
 # todo is the pickup WORK lane (2026-09-24 no-commit IMPLEMENT on such a card).
 grep -q '^move deferred-validate doing$' "$tmp/board.log" || fail "validate-only card did not move to doing"
@@ -133,11 +152,14 @@ loader = importlib.machinery.SourceFileLoader("rd", root + "/bin/last-stack-kanb
 spec = importlib.util.spec_from_loader("rd", loader)
 mod = importlib.util.module_from_spec(spec)
 loader.exec_module(mod)
-def commit(url):
-    card = {"repo": "EdgeVector/last-stack", "pr_url": url, "body": ""}
+def commit(url, text=""):
+    card = {"repo": "EdgeVector/last-stack", "pr_url": url, "body": text}
     return mod.recorded_commit(card, Path("/nonexistent"), bindir + "/forge-api", bindir + "/gh")
+stale = "head=" + ("a" * 40)
 assert commit("https://github.com/EdgeVector/last-stack/pull/7") == recorded
+assert commit("https://github.com/EdgeVector/last-stack/pull/7", stale) == recorded
 assert commit("http://localhost:3300/EdgeVector/last-stack/pulls/7") == "1" * 40
+assert commit("http://localhost:3300/EdgeVector/last-stack/pulls/7", stale) == "1" * 40
 assert commit("lastgit://last-stack/cr/cr-abc-1234") == ""
 print("ok")
 PY

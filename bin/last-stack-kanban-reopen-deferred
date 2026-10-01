@@ -25,6 +25,9 @@ HEX_RE = re.compile(r"\b[0-9a-f]{7,40}\b", re.IGNORECASE)
 RECORDED_RE = re.compile(
     r"(?i)\b(?:merge|merged|commit|head|head_oid|merge_oid|oid|sha|source_oid)\s*[:=]\s*([0-9a-f]{7,40})\b"
 )
+# Progress lines say "merged as <sha>" with no colon. That sha is the commit
+# that landed. A later "head=<pre-merge>" match must not hide it.
+MERGED_AS_RE = re.compile(r"(?i)\bmerged\s+as\s+([0-9a-f]{7,40})\b")
 PR_RE = re.compile(r"/(?:pull|pulls)/(\d+)(?:\b|/)", re.IGNORECASE)
 GITHUB_PR_RE = re.compile(r"github\.com/[^/\s]+/[^/\s]+/pulls?/(\d+)", re.IGNORECASE)
 # Same markers kanban pickup reads (`bodyDeclaredValidateOnly`): the card's
@@ -111,6 +114,7 @@ def recorded_candidates(card: dict[str, Any]) -> list[str]:
     found: list[str] = []
     for value in values:
         found.extend(match.group(1).lower() for match in RECORDED_RE.finditer(value))
+        found.extend(match.group(1).lower() for match in MERGED_AS_RE.finditer(value))
     return list(dict.fromkeys(found))
 
 
@@ -122,47 +126,72 @@ def branch_from_card(card: dict[str, Any]) -> str:
     return match.group(1) if match else ""
 
 
-def recorded_commit(card: dict[str, Any], repo_dir: Path, forge_api: str, gh: str = "gh") -> str:
-    candidates = recorded_candidates(card)
-    if candidates:
-        return candidates[0]
-
+def pr_url_of(card: dict[str, Any]) -> str:
     url = str(card.get("pr_url") or "").strip()
-    if not url:
-        match = re.search(r"(?im)^\s*(?:PR|CR):\s*(\S+)\s*$", body(card))
-        url = match.group(1) if match else ""
+    if url:
+        return url
+    match = re.search(r"(?im)^\s*(?:PR|CR):\s*(\S+)\s*$", body(card))
+    return match.group(1) if match else ""
 
+
+def pr_shas(card: dict[str, Any], forge_api: str, gh: str) -> tuple[str, str]:
+    """Return (merge_commit_sha, head_sha) for the card's PR. Either may be empty."""
+    url = pr_url_of(card)
     pr_match = PR_RE.search(url)
     repo = str(card.get("repo") or "").strip()
-    if pr_match and "/" in repo:
-        owner, name = repo.split("/", 1)
-        # GitHub is the default venue. Forgejo stays for the `lastgit` repo and
-        # for a card that recorded an explicit non-GitHub URL.
-        forgejo = name == "lastgit" or (
-            re.match(r"https?://", url) is not None and GITHUB_PR_RE.search(url) is None
-        )
-        if forgejo:
-            argv = [forge_api, f"repos/{owner}/{name}/pulls/{pr_match.group(1)}"] if forge_api else []
-        else:
-            argv = [gh, "api", f"repos/{owner}/{name}/pulls/{pr_match.group(1)}"] if gh else []
-        result = run(argv, timeout=45) if argv else None
-        if result is not None and result.returncode == 0:
-            try:
-                data = parse_json(result.stdout)
-                return str(
-                    data.get("merge_commit_sha")
-                    or data.get("head", {}).get("sha")
-                    or ""
-                ).lower()
-            except (json.JSONDecodeError, AttributeError):
-                pass
+    if not pr_match or "/" not in repo:
+        return "", ""
+    owner, name = repo.split("/", 1)
+    # GitHub is the default venue. Forgejo stays for the `lastgit` repo and
+    # for a card that recorded an explicit non-GitHub URL.
+    forgejo = name == "lastgit" or (
+        re.match(r"https?://", url) is not None and GITHUB_PR_RE.search(url) is None
+    )
+    if forgejo:
+        argv = [forge_api, f"repos/{owner}/{name}/pulls/{pr_match.group(1)}"] if forge_api else []
+    else:
+        argv = [gh, "api", f"repos/{owner}/{name}/pulls/{pr_match.group(1)}"] if gh else []
+    result = run(argv, timeout=45) if argv else None
+    if result is None or result.returncode != 0:
+        return "", ""
+    try:
+        data = parse_json(result.stdout)
+    except (json.JSONDecodeError, AttributeError):
+        return "", ""
+    if not isinstance(data, dict):
+        return "", ""
+    merge_sha = str(data.get("merge_commit_sha") or "").lower()
+    head = data.get("head")
+    head_sha = str(head.get("sha") or "").lower() if isinstance(head, dict) else ""
+    return merge_sha, head_sha
 
+
+def recorded_commits(card: dict[str, Any], repo_dir: Path, forge_api: str, gh: str = "gh") -> list[str]:
+    """Commits that may prove the card's build is live.
+
+    A merged PR's merge commit comes first. Body SHAs follow, including a
+    pre-merge `head=` line. The first body SHA must not hide the merge commit:
+    a squash or a merge commit is the ancestor of the installed build, and the
+    branch head often is not.
+    """
+    found: list[str] = []
+    merge_sha, head_sha = pr_shas(card, forge_api, gh)
+    if merge_sha:
+        found.append(merge_sha)
+    found.extend(recorded_candidates(card))
+    if head_sha:
+        found.append(head_sha)
     branch = branch_from_card(card)
     if branch:
         result = run(["git", "-C", str(repo_dir), "rev-parse", "--verify", f"{branch}^{{commit}}"])
         if result.returncode == 0:
-            return result.stdout.strip().lower()
-    return ""
+            found.append(result.stdout.strip().lower())
+    return list(dict.fromkeys(item for item in found if item))
+
+
+def recorded_commit(card: dict[str, Any], repo_dir: Path, forge_api: str, gh: str = "gh") -> str:
+    commits = recorded_commits(card, repo_dir, forge_api, gh)
+    return commits[0] if commits else ""
 
 
 def installed_head(repo: str, app: str, host_track: str, lastdb: str) -> str:
@@ -236,9 +265,19 @@ def reopen(args: argparse.Namespace) -> dict[str, Any]:
         if cache_key not in installed_cache:
             installed_cache[cache_key] = installed_head(repo, app, args.host_track, args.lastdb)
         installed = installed_cache[cache_key]
-        recorded = recorded_commit(card, repo_dir, args.forge_api, args.gh)
-        if not installed or not recorded or not is_ancestor(repo_dir, recorded, installed):
-            result["unchanged"].append({"slug": slug, "recorded": recorded or None, "installed": installed or None})
+        candidates = recorded_commits(card, repo_dir, args.forge_api, args.gh)
+        recorded = ""
+        if installed:
+            for candidate in candidates:
+                if is_ancestor(repo_dir, candidate, installed):
+                    recorded = candidate
+                    break
+        if not recorded:
+            result["unchanged"].append({
+                "slug": slug,
+                "recorded": candidates[0] if candidates else None,
+                "installed": installed or None,
+            })
             continue
 
         proof = (
