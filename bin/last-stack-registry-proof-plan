@@ -16,6 +16,11 @@ answers three questions from files, so each one has a fixture test
   fingerprint    The fingerprint of a candidate set (build + every app sha).
                  A RED or GREEN-pending set is not proved again until the
                  fingerprint changes.
+  manifest       Write apply.json into the proof bundle: everything the Mac
+                 apply command (bin/last-stack-registry-apply-proof) needs and
+                 checks. The verdict, the attribution, the candidate shas, the
+                 lastdb build and oid, the run id and URL, the proof record
+                 name, and the sha256 of each bundle file. No binary, no secret.
 
 One row of `next` is a proved pair <app sha, lastdb build>. The pin an app holds
 for a build is its newest row (by proved_at) whose lastdb_version is that build,
@@ -142,6 +147,70 @@ def cmd_fingerprint(args: argparse.Namespace) -> int:
     return 0
 
 
+def read_kv(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip()
+    return out
+
+
+def sha256_of(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
+
+
+def proof_run_name(run_id: str, build: str) -> str:
+    safe = "".join(c if c.isalnum() or c in ".-" else "_" for c in build)
+    return f"ci-smoke-{run_id}-{safe}"
+
+
+def cmd_manifest(args: argparse.Namespace) -> int:
+    bundle: Path = args.bundle
+    proof = load_json(bundle / "proof.json", "proof")
+    cset_path = bundle / "candidate-set.json"
+    cset = load_json(cset_path, "candidate set") if cset_path.is_file() else {}
+    attr = read_kv(bundle / "attribution.txt")
+    set_build = str((cset.get("lastdb") or {}).get("build") or "")
+    proof_build = str(proof.get("lastdb_build") or "")
+    if set_build and proof_build and set_build != proof_build:
+        die(f"proof names lastdb {proof_build} but the candidate set is {set_build}", 2)
+    build = set_build or proof_build or str(proof.get("lastdb_build_expected") or "")
+    verdict = str(proof.get("verdict") or "UNKNOWN")
+    apps = {a: str(v.get("sha") or "") for a, v in (cset.get("apps") or {}).items()}
+    words = lambda key: [w for w in attr.get(key, "").split() if w]
+    manifest = {
+        "schema": "registry-proof-bundle/1",
+        "run_id": args.run_id,
+        "run_attempt": args.run_attempt,
+        "repository": args.repository,
+        "workflow_path": args.workflow_path,
+        "last_stack_sha": args.sha,
+        "ref": args.ref,
+        "event": args.event,
+        "run_url": args.run_url,
+        "lastdb": {
+            "build": build,
+            "oid": str((cset.get("lastdb") or {}).get("oid") or proof.get("lastdb_oid") or ""),
+            "oid_source": str((cset.get("lastdb") or {}).get("oid_source") or ""),
+            "fold_oid": str(proof.get("fold_oid") or ""),
+        },
+        "verdict": verdict,
+        "shared_fail": attr.get("shared_fail", "1") != "0" if verdict != "GREEN" else False,
+        "failed_apps": words("failed_apps"),
+        "passed_apps": words("passed_apps"),
+        "apps": apps,
+        "moved": [a for a in args.moved.split(",") if a],
+        "fingerprint": args.fingerprint,
+        "proof_run": proof_run_name(args.run_id, build) if build else "",
+        "files": {n: sha256_of(bundle / n) for n in ("proof.json", "candidate-set.json", "attribution.txt")},
+    }
+    (bundle / "apply.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps({"apply_json": str(bundle / "apply.json"), "proof_run": manifest["proof_run"], "verdict": verdict}))
+    return 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="last-stack-registry-proof-plan", description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -160,6 +229,20 @@ def main(argv: list[str]) -> int:
     p = sub.add_parser("fingerprint", help="fingerprint of a candidate set")
     p.add_argument("--candidate-set", type=Path, required=True)
     p.set_defaults(fn=cmd_fingerprint)
+
+    p = sub.add_parser("manifest", help="write apply.json into a proof bundle")
+    p.add_argument("--bundle", type=Path, required=True, help="bundle dir with proof.json, candidate-set.json, attribution.txt")
+    p.add_argument("--run-id", required=True)
+    p.add_argument("--run-attempt", default="1")
+    p.add_argument("--repository", required=True)
+    p.add_argument("--workflow-path", default=".github/workflows/registry-proof.yml")
+    p.add_argument("--sha", default="")
+    p.add_argument("--ref", default="")
+    p.add_argument("--event", default="")
+    p.add_argument("--run-url", required=True)
+    p.add_argument("--moved", default="", help="comma list of moved apps from the plan job")
+    p.add_argument("--fingerprint", default="")
+    p.set_defaults(fn=cmd_manifest)
 
     args = parser.parse_args(argv)
     return args.fn(args)

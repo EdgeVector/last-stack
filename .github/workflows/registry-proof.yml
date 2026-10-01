@@ -680,6 +680,26 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Write the bundle manifest (apply.json)
+        if: ${{ always() && needs.plan.outputs.probe_only != 'true' }}
+        env:
+          PLAN_MOVED_OUT: ${{ needs.plan.outputs.moved }}
+          PLAN_FP_OUT: ${{ needs.plan.outputs.fingerprint }}
+        run: |
+          set -u
+          [ -s "$BUNDLE/proof.json" ] || exit 0
+          [ -f "$BUNDLE/attribution.txt" ] || printf 'verdict=RED\nshared_fail=1\npassed_apps=\nfailed_apps=\n' > "$BUNDLE/attribution.txt"
+          # Everything the Mac apply command needs and checks: verdict, per-app
+          # attribution, candidate shas, lastdb build and oid, run id and URL,
+          # proof record name, file digests. Verdicts and ids only: no binary.
+          bin/last-stack-registry-proof-plan manifest --bundle "$BUNDLE" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --repository "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --ref "$GITHUB_REF" \
+            --event "$GITHUB_EVENT_NAME" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --moved "$PLAN_MOVED_OUT" --fingerprint "$PLAN_FP_OUT"
+          jq -c '{run_id, verdict, shared_fail, failed_apps, passed_apps, proof_run, lastdb}' "$BUNDLE/apply.json"
+
       - name: Mark this head set as proved
         if: ${{ always() && needs.plan.outputs.probe_only != 'true' }}
         run: |
