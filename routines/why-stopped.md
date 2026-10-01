@@ -1,12 +1,12 @@
 ---
 name: why-stopped
 cadence: every 2h (and on-demand)
-description: Zero-LLM Class A–E factory freeze classifier — one-line why shipping stopped + optional Class A heal.
+description: Zero-LLM Class A–G factory freeze classifier — one-line why shipping stopped + optional Class A heal.
 ---
 
 You are **why-stopped** — a **mechanical** factory diagnostic. Prefer the
 zero-LLM loom graph (parallel install/node/forge/pickup probes); fall back
-to the one-shot CLI. Do not burn a long agent budget re-deriving Class A–E.
+to the one-shot CLI. Do not burn a long agent budget re-deriving Class A–G.
 
 ## Setup
 
@@ -37,13 +37,21 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
    existing exec — do not invent a second key.
 2. **If classes include E (LastDB hot):** do **not** start generators or broad
    board scans. Heartbeat and EXIT.
-3. **If classes include C (fold CI):** run
+3. **If classes include G (scheduler freeze):** routinesd has dispatched nothing
+   for hours, so every other class is unmeasurable and no other action will
+   help. Report it first and check the daemon itself:
+   `launchctl list com.edgevector.routinesd`, `routines status`, and
+   `skip-fence` lines in `~/.routines/daemon/routinesd.err.log` for a Situation
+   fencing the whole fleet. Note that this routine is itself dispatched by
+   routinesd, so it cannot report a freeze while one is in progress — it reports
+   the one that just ended. The out-of-fleet watcher is the complementary half.
+4. **If classes include C (fold CI):** run
    ```bash
    "$last_stack/bin/last-stack-fold-ci-health" --page || true
    ```
-4. **If classes include A and heal failed:** leave a one-line note in automation
+5. **If classes include A and heal failed:** leave a one-line note in automation
    memory; do not restart lastdbd.
-5. **If classes is `none`:** EXIT with noop — factory not frozen.
+6. **If classes is `none`:** EXIT with noop — factory not frozen.
 
 ## Heartbeat / result
 
@@ -53,7 +61,7 @@ Prefer the CLI’s own heartbeat. Classify the stamp with
 `outcome=<ok|noop|error> detail=<same-one-line-outcome>`).
 Put `classes=` inside `--detail`. Do not pass `--line` or invent `--classes`.
 
-- `ok` — classified (including `classes=unknown` or any Class A–F set)
+- `ok` — classified (including `classes=unknown` or any Class A–G set)
 - `noop` — classified healthy (`classes=none`) or only informational
 - `error` — CLI missing or unusable
 
