@@ -358,6 +358,9 @@ therefore signs `dist/routines` on the Mac, before the file enters the CAS:
 - The manifest holds the signed bytes. The result records the pre-sign sha256.
 - No identity, a locked keychain, or a failed verify is a failure. The tool
   never promotes an ad-hoc `routines` binary.
+- A channel entry at the same oid counts as current only when its signed files
+  pass `codesign --verify` and show the identifier. An older unsigned entry is
+  pulled again, signed, and promoted with a new manifest digest.
 - Other apps: `--sign PATH=IDENTIFIER`. Test: `tests/last-stack-github-artifact-pull.sh`.
 
 - **Script:** `last-stack-post-merge-safe-upgrade --all`

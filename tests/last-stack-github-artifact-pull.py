@@ -355,6 +355,59 @@ class SignTests(Base):
         self.assertIn("not in the bundle", res["reason"])
         self.assertCasUntouched()
 
+    def unsigned_promote(self):
+        rc, res, err = self.pull()
+        self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
+        return res
+
+    def chan(self):
+        return json.load(open(os.path.join(self.cas, "channels", "remote", "stable.json")))
+
+    def test_current_but_unsigned_resigns_same_oid(self):
+        old = self.unsigned_promote()
+        rc, res, err = self.sign_pull()
+        self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
+        self.assertEqual(res["oid"], old["oid"])
+        self.assertNotEqual(res["manifest_digest"], old["manifest_digest"])
+        self.assertIn("bin/ra", res["signed"])
+        got = {f["path"]: f for f in self.chan()["files"]}
+        blob = os.path.join(self.cas, "blobs", "sha256", got["bin/ra"]["sha256"][:2], got["bin/ra"]["sha256"])
+        self.assertIn(b"SIGNED:com.test.ra:AAAA", open(blob, "rb").read())
+
+    def test_current_but_unsigned_dry_run_reports_and_writes_nothing(self):
+        old = self.unsigned_promote()
+        before = open(os.path.join(self.cas, "channels", "remote", "stable.json")).read()
+        rc, res, err = self.sign_pull("--dry-run")
+        self.assertEqual((rc, res.get("status")), (0, "dry-run-verified"), err)
+        self.assertEqual(open(os.path.join(self.cas, "channels", "remote", "stable.json")).read(), before)
+        self.assertEqual(self.chan()["manifest_digest"], old["manifest_digest"])
+
+    def test_current_and_signed_is_noop(self):
+        rc, res, err = self.sign_pull()
+        self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
+        open(self.log, "w").close()
+        rc, res, err = self.sign_pull()
+        self.assertEqual((rc, res.get("status")), (0, "current"), err)
+        self.assertNotIn("/zip", open(self.log).read())
+
+    def test_current_but_unsigned_no_identity_fails_closed(self):
+        old = self.unsigned_promote()
+        rc, res, _ = self.sign_pull(env={"FAKE_SECURITY_NONE": "1"})
+        self.assertEqual(rc, 1)
+        self.assertIn("identity", res["reason"])
+        self.assertEqual(self.chan()["manifest_digest"], old["manifest_digest"])
+
+    def test_current_but_unsigned_codesign_failure_fails_closed(self):
+        old = self.unsigned_promote()
+        rc, res, _ = self.sign_pull(env={"FAKE_CODESIGN_FAIL": "1"})
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.chan()["manifest_digest"], old["manifest_digest"])
+
+    def test_unsigned_app_without_sign_spec_stays_current(self):
+        self.unsigned_promote()
+        rc, res, _ = self.pull()
+        self.assertEqual((rc, res["status"]), (0, "current"))
+
     def test_routines_default_sign_table(self):
         sys.path.insert(0, os.path.join(ROOT, "bin"))
         import importlib.machinery, importlib.util
