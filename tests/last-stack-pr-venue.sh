@@ -70,23 +70,73 @@ git -C "$repo" commit -m changed >/dev/null
 lastgit_head="$(git -C "$repo" rev-parse HEAD)"
 git -C "$repo" update-ref refs/remotes/lastgit/main "$lastgit_head"
 
-json="$("$ROOT/bin/last-stack-pr-venue" --json EdgeVector/last-stack "$repo")"
+# An explicit `lastgit` git config is a RETIRED venue. By default it is ignored
+# and the caller gets an actionable venue; the ignored value stays visible on
+# stderr and in --json. Honoring it needs LAST_STACK_LASTGIT_ENABLED=1.
+# papercut-portal-pr-venue-stubs-still-say-lastgit-20260923
+json="$("$ROOT/bin/last-stack-pr-venue" --json EdgeVector/last-stack "$repo" 2>"$tmp/gate.err")"
+printf '%s\n' "$json" | jq -e '.venue == "github"' >/dev/null \
+  || { echo "FAIL: retired lastgit git-config must not be honored by default" >&2; exit 1; }
+printf '%s\n' "$json" | jq -e '.reason == "default:github"' >/dev/null
+printf '%s\n' "$json" | jq -e '.ignored_venue == "lastgit"' >/dev/null \
+  || { echo "FAIL: the ignored venue must stay visible in --json" >&2; exit 1; }
+printf '%s\n' "$json" | jq -e '.ignored_venue_source == "git-config:laststack.pr-venue"' >/dev/null \
+  || { echo "FAIL: --json must name the source that carried the retired venue" >&2; exit 1; }
+grep -q "ignoring retired venue 'lastgit'" "$tmp/gate.err" \
+  || { echo "FAIL: ignoring a retired venue must warn on stderr" >&2; exit 1; }
+# compare-ref follows the resolved venue, so it must not point at lastgit/main.
+test "$("$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo" 2>/dev/null)" = "origin/main"
+
+# Opt-in restores the pre-retirement contract exactly, slug and ci-context included.
+json="$(LAST_STACK_LASTGIT_ENABLED=1 "$ROOT/bin/last-stack-pr-venue" --json EdgeVector/last-stack "$repo")"
 printf '%s\n' "$json" | jq -e '.venue == "lastgit"' >/dev/null
 printf '%s\n' "$json" | jq -e '.lastgit_slug == "last-stack-shadow"' >/dev/null
 printf '%s\n' "$json" | jq -e '.ci_context == "smoke-required"' >/dev/null
 printf '%s\n' "$json" | jq -e '.compare_ref == "lastgit/main"' >/dev/null
-test "$("$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo")" = "lastgit/main"
-test "$(git -C "$repo" rev-list --count "$("$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo")"..HEAD)" = "0"
+printf '%s\n' "$json" | jq -e '.ignored_venue == ""' >/dev/null \
+  || { echo "FAIL: nothing is ignored when the opt-in is set" >&2; exit 1; }
+test "$(LAST_STACK_LASTGIT_ENABLED=1 "$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo")" = "lastgit/main"
+test "$(git -C "$repo" rev-list --count "$(LAST_STACK_LASTGIT_ENABLED=1 "$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo")"..HEAD)" = "0"
+
+# The gate must fire ONLY on the retired venue. A live venue carried by the very
+# same git config must pass through untouched, with nothing reported as ignored
+# -- this is what goes red if the gate is ever widened past `lastgit`.
+git -C "$repo" config laststack.pr-venue forgejo
+json="$("$ROOT/bin/last-stack-pr-venue" --json EdgeVector/last-stack "$repo")"
+printf '%s\n' "$json" | jq -e '.venue == "forgejo"' >/dev/null \
+  || { echo "FAIL: a live forgejo git config must still be honored" >&2; exit 1; }
+printf '%s\n' "$json" | jq -e '.reason == "git-config:laststack.pr-venue"' >/dev/null
+printf '%s\n' "$json" | jq -e '.ignored_venue == ""' >/dev/null \
+  || { echo "FAIL: a live venue must never be reported as ignored" >&2; exit 1; }
+git -C "$repo" config laststack.pr-venue lastgit
 
 git -C "$repo" update-ref -d refs/remotes/lastgit/main
-test "$("$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo")" = "origin/main"
+test "$(LAST_STACK_LASTGIT_ENABLED=1 "$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo")" = "origin/main"
 git -C "$repo" update-ref refs/remotes/lastgit/main "$lastgit_head"
 
 git -C "$repo" config --unset laststack.pr-venue
 mkdir -p "$repo/.last-stack"
 printf '%s\n' "lastgit" > "$repo/.last-stack/pr-venue"
-test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo")" = "lastgit"
-test "$("$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo")" = "lastgit/main"
+# The marker door is the one an agent hits by following CLAUDE.md with a stale
+# repo root (the install root carried a Jul-21 `lastgit` marker and both retired
+# remotes). Default: ignored, and the source named is the marker, not git config.
+json="$("$ROOT/bin/last-stack-pr-venue" --json EdgeVector/last-stack "$repo" 2>"$tmp/marker.err")"
+printf '%s\n' "$json" | jq -e '.venue == "github"' >/dev/null \
+  || { echo "FAIL: a retired lastgit marker must not be honored by default" >&2; exit 1; }
+printf '%s\n' "$json" | jq -e '.ignored_venue_source == ".last-stack/pr-venue"' >/dev/null \
+  || { echo "FAIL: --json must name the marker as the source" >&2; exit 1; }
+grep -q "ignoring retired venue 'lastgit'" "$tmp/marker.err"
+test "$("$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo" 2>/dev/null)" = "origin/main"
+# Opt-in restores it.
+test "$(LAST_STACK_LASTGIT_ENABLED=1 "$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo")" = "lastgit"
+test "$(LAST_STACK_LASTGIT_ENABLED=1 "$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo")" = "lastgit/main"
+# A live venue in the marker is untouched, and reports nothing ignored.
+printf '%s\n' "github" > "$repo/.last-stack/pr-venue"
+json="$("$ROOT/bin/last-stack-pr-venue" --json EdgeVector/last-stack "$repo")"
+printf '%s\n' "$json" | jq -e '.venue == "github" and .reason == ".last-stack/pr-venue"' >/dev/null
+printf '%s\n' "$json" | jq -e '.ignored_venue == ""' >/dev/null \
+  || { echo "FAIL: a live marker venue must never be reported as ignored" >&2; exit 1; }
+printf '%s\n' "lastgit" > "$repo/.last-stack/pr-venue"
 
 rm "$repo/.last-stack/pr-venue"
 # LastGit is retired: even LAST_STACK_LASTGIT_ENABLED=1 with a native list cannot bring it back.
