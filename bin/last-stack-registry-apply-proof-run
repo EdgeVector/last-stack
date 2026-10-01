@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# launchd / routine wrapper for last-stack-registry-apply-proof --latest.
+#
+# One unattended pass on the Mac: apply the newest verifying CI registry proof,
+# sign with the local key, open one tap PR. It is safe to run every few minutes:
+#   - a lock keeps two passes from overlapping;
+#   - "nothing to apply", "a tap row PR is still open" and "no run verifies"
+#     (a shared RED, a stale run) are quiet successes: exit 0, one line in the
+#     log with the reason. The serial rule says wait, not fail;
+#   - a real error (exit 1: gh failed, publish-next failed) exits non-zero so a
+#     scheduler can alert.
+# It never touches the primary node and never runs host-track. Not installed by
+# default: Tom decides whether a LaunchAgent or a routine runs it.
+#
+# Env: LAST_STACK_REGISTRY_APPLY_PROOF_BIN (default: the sibling command),
+#      LAST_STACK_REGISTRY_APPLY_STATE_DIR (default ~/.local/state/last-stack/registry-apply-proof),
+#      LAST_STACK_REGISTRY_APPLY_WAIT (seconds to watch the tap PR, default 0).
+set -uo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:/opt/homebrew/bin:${PATH:-/usr/bin:/bin}"
+APPLY="${LAST_STACK_REGISTRY_APPLY_PROOF_BIN:-$ROOT/bin/last-stack-registry-apply-proof}"
+STATE="${LAST_STACK_REGISTRY_APPLY_STATE_DIR:-$HOME/.local/state/last-stack/registry-apply-proof}"
+WAIT="${LAST_STACK_REGISTRY_APPLY_WAIT:-0}"
+mkdir -p "$STATE"
+LOG="$STATE/apply.log"
+stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+if ! mkdir "$STATE/lock" 2>/dev/null; then
+  # A stale lock (a dead pass) is cleared when its pid is gone.
+  pid="$(cat "$STATE/lock/pid" 2>/dev/null || true)"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    printf '%s skipped: another pass is running (pid %s)\n' "$(stamp)" "$pid" >>"$LOG"
+    echo "skipped: another pass is running"
+    exit 0
+  fi
+  rm -rf "$STATE/lock"
+  mkdir "$STATE/lock" || exit 1
+fi
+echo "$$" >"$STATE/lock/pid"
+trap 'rm -rf "$STATE/lock"' EXIT
+
+out="$STATE/last-run.out"
+"$APPLY" --latest --wait-merge "$WAIT" >"$out" 2>&1
+rc=$?
+summary="$(grep -E '^APPLY_PROOF ' "$out" | tail -1)"
+printf '%s rc=%s %s\n' "$(stamp)" "$rc" "${summary:-no APPLY_PROOF line}" >>"$LOG"
+cat "$out"
+case "$rc" in
+  0) exit 0 ;;
+  3) exit 0 ;;   # refused by a rule: logged with its reason, not an alert
+  *) exit "$rc" ;;
+esac

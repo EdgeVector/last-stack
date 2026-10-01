@@ -83,6 +83,20 @@ grep -q '^pr create --repo EdgeVector/homebrew-lastdb --base main --head registr
 grep -q '^pr merge 321 --repo EdgeVector/homebrew-lastdb --squash --auto --delete-branch$' "$work/gh.calls" || fail "gh pr merge: $(cat "$work/gh.calls")"
 git --git-dir "$work/tap-live.git" for-each-ref --format='%(refname:short)' 'refs/heads/registry/*' | grep -q 'run-gh\|0.23.3-999' || fail "row branch not pushed"
 
+# --run-id puts the CI run id into the row branch name (closes
+# papercut-last-stack-registry-publish-next-row-branch-same-second-collision-20260930):
+# two applies in one second differ by run id as well as by pid.
+: >"$work/gh.calls"
+LAST_STACK_REGISTRY_TAP_URL="$work/tap-live.git" LAST_STACK_REGISTRY_TAP_DIR="$work/tapdir-gh" \
+  LASTDB_REGISTRY_SIGNING_KEY="$work/signing.key" LASTDB_BIN="$fake/lastdb" GH_BIN="$fake/gh" \
+  "$BIN" --candidate-set "$work/set.json" --proof "$work/proof.json" --proof-run run-id-a --run-id 424242 >/dev/null 2>"$work/err" \
+  || { cat "$work/err" >&2; fail "publish-next with --run-id failed"; }
+grep -Eq '^pr create --repo EdgeVector/homebrew-lastdb --base main --head registry/next-0\.23\.3-999-gtest-[0-9TZ]+-424242-[0-9]+ ' "$work/gh.calls" \
+  || fail "branch lacks the run id: $(cat "$work/gh.calls")"
+if "$BIN" --candidate-set "$work/set.json" --proof "$work/proof.json" --run-id 'a/b' >/dev/null 2>&1; then
+  fail "a run id with a slash was accepted"
+fi
+
 # The retired LastGit venue is refused before any write.
 if LAST_STACK_REGISTRY_TAP_VENUE=lastgit "$BIN" --candidate-set "$work/set.json" --proof "$work/proof.json" >/dev/null 2>&1; then
   fail "the retired lastgit venue was accepted"
