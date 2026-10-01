@@ -198,9 +198,21 @@ printf '%s' "$out" | grep -q 'argv_retired=1' || fail "retired argv site must be
 
 # 9. The two helpers the p0/p1 papercuts name must stay OUT of the argv baseline.
 # They are the reason this class exists; a regression in either one is a fresh leak.
-for helper in bin/last-stack-forge-git bin/last-stack-forge-api; do
-  grep -qx "$helper" "$ROOT/config/forge-token-argv-baseline.tsv" \
-    && fail "$helper must not be baselined: it is the converted reference implementation"
-done
+#
+# This covers the one path case 7 above cannot see. A reintroduced leak that is
+# NOT baselined already fails the real-tree gate there; baselining it is what
+# makes that gate pass, so accepting either of these two into the baseline is the
+# only way the leak comes back quietly. Nothing to check when there is no
+# baseline file -- the healthy state, since zero argv sites are accepted today --
+# and the `[ -f ]` guard is load-bearing for a second reason: a bare grep on the
+# absent path wrote "No such file or directory" to stderr on every gate run,
+# which reads like a broken check and costs the next reader a detour.
+real_argv_baseline="$ROOT/config/forge-token-argv-baseline.tsv"
+if [ -f "$real_argv_baseline" ]; then
+  for helper in bin/last-stack-forge-git bin/last-stack-forge-api; do
+    grep -qx "$helper" "$real_argv_baseline" \
+      && fail "$helper must not be baselined: it is the converted reference implementation"
+  done
+fi
 
 echo "PASS last-stack-lint-bin-authoring"
