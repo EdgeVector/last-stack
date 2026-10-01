@@ -12,7 +12,9 @@ This command is the Mac half. It
   3. VERIFIES the run through the GitHub API, not through the bundle's own claims:
        repository EdgeVector/last-stack (no fork), branch main, workflow
        .github/workflows/registry-proof.yml, event schedule or workflow_dispatch,
-       status completed, conclusion success (GREEN) or failure (attributed RED);
+       status completed, the `proof` JOB concluded success (GREEN) or failure
+       (attributed RED); the run-level conclusion is not used because it also
+       counts the best-effort report job;
   4. downloads the bundle with `gh` and cross-checks apply.json against the run
      (run id, sha, ref, URL, file digests) and against proof.json and
      candidate-set.json (one lastdb build everywhere, the proof record name);
@@ -120,8 +122,14 @@ def verify_run(run: dict, repo: str, run_id: str) -> str:
     need(path.split("@", 1)[0] == WORKFLOW_PATH, f"workflow is {path or 'unknown'}, not {WORKFLOW_PATH}")
     need(run.get("event") in EVENTS, f"event is {run.get('event')}, not one of {', '.join(EVENTS)}")
     need(run.get("status") == "completed", f"status is {run.get('status')}, not completed")
-    conclusion = str(run.get("conclusion") or "")
-    need(conclusion in ("success", "failure"), f"conclusion is {conclusion or 'none'}")
+    # The run-level conclusion also counts the best-effort report job (a failing
+    # issue report must not veto a GREEN proof; measured 2026-10-01, run
+    # 36802364469). The verdict is the conclusion of the `proof` job itself.
+    jobs = gh_json("api", f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=50")
+    proof_jobs = [j for j in ((jobs or {}).get("jobs") or []) if j.get("name") == "proof"]
+    need(len(proof_jobs) == 1, f"expected one proof job, found {len(proof_jobs)} (a no-op planned run has none)")
+    conclusion = str(proof_jobs[0].get("conclusion") or "")
+    need(conclusion in ("success", "failure"), f"the proof job concluded {conclusion or 'none'}")
     return conclusion
 
 
@@ -173,9 +181,9 @@ def verify_bundle(bundle: Path, run: dict, repo: str, run_id: str, conclusion: s
         need(build == expect_build, f"build {build} is not the expected {expect_build}")
 
     if verdict == "GREEN":
-        need(conclusion == "success", f"verdict GREEN but the run concluded {conclusion}")
+        need(conclusion == "success", f"verdict GREEN but the proof job concluded {conclusion}")
     elif verdict == "RED":
-        need(conclusion == "failure", f"verdict RED but the run concluded {conclusion}")
+        need(conclusion == "failure", f"verdict RED but the proof job concluded {conclusion}")
         need(manifest.get("shared_fail") is False, "RED with a shared fail proves no app")
         need(bool(manifest.get("passed_apps")), "RED and no app passed its own checks")
     else:

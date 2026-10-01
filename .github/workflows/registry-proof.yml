@@ -742,8 +742,11 @@ jobs:
           echo "verdict=$verdict smoke_rc=${SMOKE_RC:-unset}"
           [ "$verdict" = "GREEN" ]
 
+  # Best effort: a failing report (issues disabled, a gh error) must not turn a
+  # GREEN proof into a failed run. The proof job and its bundle are the verdict.
   report:
     name: report
+    continue-on-error: true
     needs: [plan, proof]
     if: ${{ always() && needs.proof.result != 'skipped' && needs.plan.outputs.probe_only != 'true' }}
     runs-on: ubuntu-24.04
