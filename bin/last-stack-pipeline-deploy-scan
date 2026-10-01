@@ -26,6 +26,17 @@
 #   - no producers under <root> whatsoever
 #                             -> status=unconfigured, blocked=true.
 #      Ambiguous — likely a wrong --root / LASTGIT_DEPLOY_ROOT — so fail closed.
+#   - a producer exists but its launchd watcher job
+#     (com.edgevector.lastgit-deploy-<repo>, underscores as dashes) is not
+#     loaded -> status=retired, blocked=false.
+#      The repo moved its deploy to GitHub Actions (sop-migrate-repo-to-github)
+#      and the LastGit watcher was deliberately booted out; its deploy.log
+#      stopped updating and freezes on whatever line it last wrote — which can
+#      be `failure` purely because that is what the watcher happened to be
+#      mid-write when it was stopped, not a live production signal
+#      (papercut-pipeline-deploy-schema-infra, 2026-10-01: a disabled plist
+#      from 2026-09-30 froze schema-infra's log on a stale `failure` line for
+#      a day while the repo's real deploy, now on GitHub Actions, was green).
 set -eu
 
 json=0
@@ -106,6 +117,21 @@ last_matching_line() {
   tail -c "$tail_bytes" "$log" 2>/dev/null | grep -aE "$pattern" | tail -n 1 || true
 }
 
+# The LastGit deploy watcher for <repo> is the launchd job
+# com.edgevector.lastgit-deploy-<repo>, underscores folded to dashes (matches
+# the plist filenames under ~/Library/LaunchAgents). Override the lookup
+# binary in tests with LAST_STACK_DEPLOY_SCAN_LAUNCHCTL_BIN.
+watcher_label() {
+  local repo="$1"
+  printf 'com.edgevector.lastgit-deploy-%s' "${repo//_/-}"
+}
+
+watcher_loaded() {
+  local label="$1"
+  local lc="${LAST_STACK_DEPLOY_SCAN_LAUNCHCTL_BIN:-launchctl}"
+  "$lc" list "$label" >/dev/null 2>&1
+}
+
 # Collect results as lines: repo|pipe_status|sha|blocked|reason|log|mtime
 results=()
 shopt -s nullglob
@@ -180,6 +206,17 @@ for dir in "$root"/deploy-*/; do
       fi
       ;;
   esac
+
+  # A frozen log is not a live signal. If the launchd watcher that writes
+  # this log is not loaded, the repo's deploy moved off the LastGit
+  # deploy-pipeline (sop-migrate-repo-to-github) and the last line — success,
+  # failure, or pending — is just whatever it happened to be mid-write when
+  # the job was booted out. Report it as retired, not blocked.
+  if ! watcher_loaded "$(watcher_label "$repo")"; then
+    reason="LastGit deploy watcher $(watcher_label "$repo") not loaded; log frozen since mtime=$mtime on last status=$pipe_status sha=${sha:-none} — repo likely moved to GitHub Actions deploy"
+    pipe_status="retired"
+    blocked=0
+  fi
 
   results+=("$repo|$pipe_status|$sha|$blocked|$reason|$log|$mtime")
 done

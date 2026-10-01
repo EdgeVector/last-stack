@@ -15,7 +15,12 @@ so nothing silently rots:
 3. **Post-merge deploy-pipeline** — every
    `~/.lastgit/deploy-*/deploy.log` (exemem-infra, schema-infra, …). A red or
    stuck deploy after main lands is a **pipeline block**, not a background
-   ops note.
+   ops note. `last-stack-pipeline-deploy-scan` now checks the producing
+   launchd job (`com.edgevector.lastgit-deploy-<repo>`) and reports
+   `status=retired` / unblocked when it is not loaded, instead of blocking
+   forever on whatever line a booted-out watcher happened to freeze on. A
+   `retired` row is informational, not a block — it means the repo's deploy
+   moved to GitHub Actions and this scanner has nothing live to read for it.
 
 ### Priority policy (Tom, 2026-07-14 severity + 2026-07-22 filing path)
 
@@ -55,9 +60,13 @@ Complements:
   **not** on pipeline-health-filed board P0s.
 - `drain-open-prs` — once-a-day broad PR drain / close dead weight.
 - GitHub Actions (`ci-required`) — continuous CI for every repo except `lastgit`
-  (Forgejo Actions runner). The LastGit
-  `deploy-run` daemon still writes the `~/.lastgit/deploy-*/deploy.log` files
-  that the deploy scan reads.
+  (Forgejo Actions runner). The LastGit `deploy-run` daemon wrote the
+  `~/.lastgit/deploy-*/deploy.log` files the deploy scan reads, but as each
+  repo's deploy moved to GitHub Actions (`sop-migrate-repo-to-github`) its
+  watcher job was booted out and its log froze. The scan now checks the
+  watcher's own launchd job and reports `status=retired` for a frozen log
+  instead of blocking on it — see step 3 above and
+  `papercut-pipeline-deploy-schema-infra`.
 
 You are the **agent backstop** when daemons stall, CI goes red, deploys fail,
 merges conflict, or auto-merge drops — especially anything open **longer than
