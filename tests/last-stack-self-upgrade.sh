@@ -40,6 +40,25 @@ git clone "$tmp/origin.git" "$tmp/install" >/dev/null 2>&1
 git -C "$tmp/install" checkout main >/dev/null 2>&1
 chmod +x "$tmp/install/bin/"* "$tmp/install/setup"
 
+# A routine supervisor must not reset a developer's Loom worktree while a gate
+# runs in it. The helper should skip that root before it inspects Git state.
+mkdir -p "$tmp/home/.loom/worktrees/card/bin"
+cp "$ROOT/bin/last-stack-self-upgrade" "$tmp/home/.loom/worktrees/card/bin/"
+chmod +x "$tmp/home/.loom/worktrees/card/bin/last-stack-self-upgrade"
+# Capture the status instead of letting `set -e` abort at the assignment: with
+# the guard removed this helper exits non-zero, and an aborted assignment skips
+# the diagnostic below, so the probe would fail with no output at all.
+if out="$(HOME="$tmp/home" "$tmp/home/.loom/worktrees/card/bin/last-stack-self-upgrade" --repair-dirty --reason=test 2>"$tmp/worktree-skip.err")"; then
+  skip_rc=0
+else
+  skip_rc=$?
+fi
+case "$out" in
+  *"result=worktree-skipped"*) ;;
+  *) printf 'expected developer worktree skip, got rc=%s\nstdout:\n%s\nstderr:\n%s\n' \
+       "$skip_rc" "$out" "$(cat "$tmp/worktree-skip.err" 2>/dev/null)" >&2; exit 1 ;;
+esac
+
 # --- up-to-date ---
 out="$("$tmp/install/bin/last-stack-self-upgrade" --reason=test)"
 case "$out" in

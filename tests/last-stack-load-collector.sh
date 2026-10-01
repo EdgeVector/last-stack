@@ -31,6 +31,15 @@ export LOAD_MON_WRITES=0  # a fixture must not scan the real home; 6b turns it o
 export LOAD_MON_NOTIFY=0 LOAD_MON_DEADLINE_SEC=1 LOAD_MON_DIR="$T/mon" LOAD_MON_SOCKET="$S/n.sock"
 [ "$LOAD_MON_NOTIFY" = "0" ] && [ "$LOAD_MON_DEADLINE_SEC" = "1" ] || { echo "test env must keep NOTIFY=0 (a fixture must never post to live Situations)" >&2; exit 1; }
 
+# The host sample must not depend on node access or host-tool permissions.
+# Supply deterministic host helpers because some runners deny their real ps and
+# sysctl even though the collector must still record a non-empty host sample.
+mkdir -p "$T/hostbin"
+printf '%s\n' '#!/bin/sh' 'printf "%s\\n" "vm.swapusage: total = 1.00M used = 1.00M free = 0.00M"' >"$T/hostbin/sysctl"
+printf '%s\n' '#!/bin/sh' 'case "$*" in *command=*) exit 0;; esac' 'printf "%s\\n" "123 1.0 1024 fixture-worker"' >"$T/hostbin/ps"
+chmod +x "$T/hostbin/sysctl" "$T/hostbin/ps"
+export PATH="$T/hostbin:$PATH"
+
 last_field() { tail -n 1 "$T/mon"/load-*.jsonl | jq -r "$1"; }
 
 # 1. no socket -> state down, still writes a full host sample

@@ -122,6 +122,18 @@ emit() {
   printf ' %s\n' "$*"
 }
 
+# A Loom or F-Kanban worktree is a developer checkout, not an install mirror.
+# A routine supervisor can invoke this helper with --repair-dirty while a
+# developer runs a gate; never let that path reset the developer's branch.
+home_res="$(cd "$HOME" 2>/dev/null && pwd -P || printf '%s' "$HOME")"
+case "$ROOT" in
+  "$HOME/.loom/worktrees/"*|"$HOME/.fkanban/worktrees/"*|"$home_res/.loom/worktrees/"*|"$home_res/.fkanban/worktrees/"*)
+    emit "result=worktree-skipped root=$ROOT"
+    echo "Refusing self-upgrade in a developer worktree: $ROOT" >&2
+    exit 0
+    ;;
+esac
+
 # One rule: the *live install* (compat root / artifact tree) is upgraded only
 # via host-track. Fixture checkouts and repo worktrees still use git self-upgrade.
 # Compare resolved paths (macOS /var vs /private/var).
