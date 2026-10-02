@@ -35,6 +35,7 @@ Env (defaults):
   LOAD_MON_ALERT_FOOTPRINT_MB  13107  lastdbd phys_footprint (guard ceiling 16384)
   LOAD_MON_ALERT_FOOTPRINT_CONSEC 3
   LOAD_MON_ALERT_SYNC_CONSEC   10      passes with sync degraded_reasons set
+  LOAD_MON_ALERT_LANES_CONSEC  2       passes with an unhealthy or quarantined persist lane
   LOAD_MON_ALERT_SWAP_MB       20480  host swap used (MB)
   LOAD_MON_ALERT_SWAP_CONSEC   3
   LOAD_MON_ALERT_LOAD1         32     host 1-min load average
@@ -87,6 +88,7 @@ CPU_CONSEC = int(envf("LOAD_MON_ALERT_CPU_CONSEC", 5))
 FP_MB = envf("LOAD_MON_ALERT_FOOTPRINT_MB", 13107)  # 80% of the 16 GiB guard
 FP_CONSEC = int(envf("LOAD_MON_ALERT_FOOTPRINT_CONSEC", 3))
 SYNC_CONSEC = int(envf("LOAD_MON_ALERT_SYNC_CONSEC", 10))
+LANES_CONSEC = int(envf("LOAD_MON_ALERT_LANES_CONSEC", 2))
 SWAP_MB = envf("LOAD_MON_ALERT_SWAP_MB", 20480)
 SWAP_CONSEC = int(envf("LOAD_MON_ALERT_SWAP_CONSEC", 3))
 LOAD1 = envf("LOAD_MON_ALERT_LOAD1", 32)
@@ -216,7 +218,15 @@ def status_vitals(buf):
         qos = st.get("qos") or {}
         uds = st.get("uds") or {}
         sy = st.get("sync") or {}
+        lanes = (st.get("request_ops") or {}).get("persist_lanes") or []
+        res = st.get("resident") or {}
         return {
+            # write-path health: a node can answer /api/status "ok" while persist lanes refuse writes
+            "pl_unhealthy": sum(int(l.get("unhealthy_lanes") or 0) for l in lanes),
+            "pl_quarantined": sum(1 for l in lanes if l.get("quarantined")),
+            "pl_breaker": sum(int(l.get("breaker_trips") or 0) for l in lanes),
+            "pl_fail": res.get("persist_lane_failures"),
+            "dp_failed": res.get("deferred_persist_failed"),
             "fp_mb": int((st.get("phys_footprint_bytes") or 0) / 1048576),
             "cpu": st.get("cpu_percent"),
             "up_s": st.get("uptime_secs"),
@@ -468,6 +478,8 @@ def evaluate_alerts(rec, now):
     v = rec["node"]["status"].get("vitals") or {}
     st["fp_hot"] = st.get("fp_hot", 0) + 1 if (v.get("fp_mb") or 0) >= FP_MB else 0
     st["sync_bad"] = st.get("sync_bad", 0) + 1 if v.get("sync_why") else 0
+    lanes_bad = bool(v.get("pl_unhealthy") or v.get("pl_quarantined"))
+    st["lanes_bad"] = st.get("lanes_bad", 0) + 1 if lanes_bad else 0
     swap = rec["host"].get("swap_used_mb")
     st["swap_hot"] = st.get("swap_hot", 0) + 1 if swap is not None and swap >= SWAP_MB else 0
     load = rec["host"].get("load") or [0]
@@ -501,6 +513,10 @@ def evaluate_alerts(rec, now):
          "%s at >= %d%% CPU for %d passes" % (hog_name, HOG_PCT, st["hog_hot"])),
         ("lastdbd_footprint_high", st["fp_hot"] >= FP_CONSEC,
          "lastdbd footprint %s MB >= %d MB for %d passes (gov=%s)" % (v.get("fp_mb"), FP_MB, st["fp_hot"], v.get("gov"))),
+        ("lastdb_persist_lanes_unhealthy", st["lanes_bad"] >= LANES_CONSEC,
+         "LastDB persist lanes refuse writes for %d passes: unhealthy=%s quarantined=%s breaker_trips=%s failures=%s "
+         "(status can still read ok; this is the write path)"
+         % (st["lanes_bad"], v.get("pl_unhealthy"), v.get("pl_quarantined"), v.get("pl_breaker"), v.get("pl_fail"))),
         ("lastdb_sync_degraded", st["sync_bad"] >= SYNC_CONSEC,
          "LastDB sync degraded for %d passes: %s%s" % (st["sync_bad"], v.get("sync_why"), sync_cause(v, now))),
         ("node_unresponsive", st["node_bad"] >= NODE_CONSEC,
