@@ -921,13 +921,38 @@ resolve_baseline_bin() {
   command -v lastdbd 2>/dev/null || true
 }
 
+# Delete one ephemeral probe copy. A path that is the primary home, or that
+# lives inside it, stays on disk. The caller must treat a refusal as fatal
+# for the probe, and must not start a daemon on that path.
+remove_probe_copy() {
+  local copy="$1" blog="${2:-}"
+  [ -n "$copy" ] || return 0
+  if ! footprint_copy_is_not_primary "$copy" "$PRIMARY_HOME"; then
+    warn "refusing to delete probe path; it is the primary home or inside it: $copy"
+    return 1
+  fi
+  if [ -n "$blog" ]; then
+    rm -rf "$copy" "$blog"
+  else
+    rm -rf "$copy"
+  fi
+}
+
 # Leaf must stay short: the node refuses a data dir over 82 bytes (103-byte
 # sockaddr_un limit minus socket name + atomic temp sibling). $$ keeps uniqueness.
 clone_probe_home() {
   local label="$1" copy
+  if ! footprint_copy_is_not_primary "$PROBE_ROOT" "$PRIMARY_HOME"; then
+    warn "$label metrics probe: probe root is the primary home or inside it: $PROBE_ROOT"
+    return 1
+  fi
   mkdir -p "$PROBE_ROOT"
   copy="$PROBE_ROOT/mp-${label}-$$"
-  rm -rf "$copy"
+  if ! footprint_copy_is_not_primary "$copy" "$PRIMARY_HOME"; then
+    warn "$label metrics probe: destination is the primary home or inside it: $copy"
+    return 1
+  fi
+  remove_probe_copy "$copy" || return 1
   if stat --version >/dev/null 2>&1; then
     cp -R "$PRIMARY_HOME" "$copy" 2>/dev/null || true
   else
@@ -935,7 +960,7 @@ clone_probe_home() {
   fi
   if [ ! -d "$copy" ] || [ ! -f "$copy/identity.key" ] || [ ! -d "$copy/data" ]; then
     warn "$label metrics probe: CoW clone incomplete"
-    rm -rf "$copy" 2>/dev/null || true
+    remove_probe_copy "$copy" || return 1
     return 1
   fi
   rm -f "$copy/cloud_sync.json" "$copy/data/"*.sock 2>/dev/null || true
@@ -965,7 +990,9 @@ EOF_ENV
   if [ "$label" = "candidate" ]; then
     stamp_env="LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1"
   fi
-  env -u SENTRY_DSN -u FOLD_SENTRY_DSN ${env_pairs[@]+"${env_pairs[@]}"} \
+  env -u SENTRY_DSN -u FOLD_SENTRY_DSN \
+    -u LASTDB_HOME -u FOLDDB_HOME -u LASTDB_DATA_DIR \
+    ${env_pairs[@]+"${env_pairs[@]}"} \
     ${stamp_env:+"$stamp_env"} \
     "$bin" --data-dir "$copy" >"$blog" 2>&1 &
   pid=$!
@@ -973,7 +1000,7 @@ EOF_ENV
   for i in $(seq 1 300); do
     if ! kill -0 "$pid" 2>/dev/null; then
       warn "$label metrics probe: node exited during boot ($(tail -2 "$blog" 2>/dev/null | tr '\n' ' '))"
-      rm -rf "$copy" "$blog" 2>/dev/null || true
+      remove_probe_copy "$copy" "$blog" || return 1
       return 1
     fi
     if [ -S "$sock" ]; then
@@ -987,7 +1014,7 @@ EOF_ENV
     kill "$pid" 2>/dev/null || true
     sleep 1
     kill -9 "$pid" 2>/dev/null || true
-    rm -rf "$copy" "$blog" 2>/dev/null || true
+    remove_probe_copy "$copy" "$blog" || return 1
     return 1
   fi
   log "$label metrics probe: identity ready after ${i}s"
@@ -1004,7 +1031,7 @@ stop_probe_node() {
   kill "$pid" 2>/dev/null || true
   sleep 2
   kill -9 "$pid" 2>/dev/null || true
-  rm -rf "$copy" "$blog" 2>/dev/null || true
+  remove_probe_copy "$copy" "$blog" || return 1
 }
 
 # Boot candidate and baseline CoWs together. Cold fetch = first query after
@@ -1020,17 +1047,16 @@ probe_like_to_like_metrics() {
   c_copy="$(clone_probe_home c)" || return 1
   if ! footprint_copy_is_not_primary "$c_copy" "$PRIMARY_HOME"; then
     warn "candidate metrics probe: copy is the primary home; the conflict stamp must stay on the ephemeral copy"
-    rm -rf "$c_copy" 2>/dev/null || true
     return 1
   fi
   if [ -n "$base_bin" ] && [ -x "$base_bin" ]; then
     b_copy="$(clone_probe_home b)" || {
-      rm -rf "$c_copy" 2>/dev/null || true
+      remove_probe_copy "$c_copy" || return 1
       return 1
     }
     if ! footprint_copy_is_not_primary "$b_copy" "$PRIMARY_HOME"; then
       warn "baseline metrics probe: copy is the primary home"
-      rm -rf "$c_copy" "$b_copy" 2>/dev/null || true
+      remove_probe_copy "$c_copy" || return 1
       return 1
     fi
   else
@@ -1038,7 +1064,7 @@ probe_like_to_like_metrics() {
   fi
 
   if ! start_probe_node "$cand_bin" "$c_copy" "candidate"; then
-    rm -rf "$b_copy" 2>/dev/null || true
+    remove_probe_copy "$b_copy" || return 1
     return 1
   fi
   c_pid="$LAST_PROBE_PID"

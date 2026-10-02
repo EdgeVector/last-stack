@@ -68,16 +68,64 @@ footprint_plist_stamp_value() {
   printf '%s\n' "$val"
 }
 
-# $1 = copy path, $2 = primary home. Fail when the copy is the primary home
-# or lives inside it. The copy's conflict stamp must not be installed there.
-footprint_copy_is_not_primary() {
-  local copy="$1" primary="$2"
-  [ -n "$copy" ] && [ -n "$primary" ] || return 1
-  case "$copy" in
-    "$primary"|"$primary"/*) return 1 ;;
+# Print the physical path of $1.
+# A symlink leaf fails. The caller must not follow it into the primary home.
+# A missing leaf resolves through its real parent, so a path can be checked
+# before cp creates it. A trailing slash does not change the result.
+footprint_physical_path() {
+  local path="$1" parent base parent_real
+  [ -n "$path" ] || return 1
+  if [ -L "$path" ]; then
+    return 1
+  fi
+  if [ -d "$path" ]; then
+    (CDPATH= cd -- "$path" && pwd -P) || return 1
+    return 0
+  fi
+  parent="$(dirname -- "$path")"
+  base="$(basename -- "$path")"
+  if [ -L "$parent" ]; then
+    parent="$(CDPATH= cd -- "$parent" && pwd -P)" || return 1
+  fi
+  if [ ! -d "$parent" ]; then
+    return 1
+  fi
+  parent_real="$(CDPATH= cd -- "$parent" && pwd -P)" || return 1
+  case "$base" in
+    ''|.) printf '%s\n' "$parent_real" ;;
+    ..) (CDPATH= cd -- "$parent_real/.." && pwd -P) || return 1 ;;
+    *)
+      parent_real="${parent_real%/}"
+      printf '%s/%s\n' "$parent_real" "$base"
+      ;;
   esac
-  case "$primary" in
-    "$copy"|"$copy"/*) return 1 ;;
+}
+
+# $1 = copy path, $2 = primary home. Fail when the copy is the primary home,
+# lives inside it, or contains it. A symlink copy fails. Paths are compared
+# after pwd -P, so a trailing slash does not hide a child.
+footprint_copy_is_not_primary() {
+  local copy="$1" primary="$2" copy_real primary_real
+  [ -n "$copy" ] && [ -n "$primary" ] || return 1
+  if [ -L "$copy" ]; then
+    return 1
+  fi
+  copy_real="$(footprint_physical_path "$copy")" || return 1
+  if [ -L "$primary" ]; then
+    primary_real="$(CDPATH= cd -- "$primary" && pwd -P)" || return 1
+  else
+    primary_real="$(footprint_physical_path "$primary")" || return 1
+  fi
+  copy_real="${copy_real%/}"
+  primary_real="${primary_real%/}"
+  [ -n "$copy_real" ] || copy_real="/"
+  [ -n "$primary_real" ] || primary_real="/"
+  [ "$copy_real" != "$primary_real" ] || return 1
+  case "$copy_real" in
+    "$primary_real"/*) return 1 ;;
+  esac
+  case "$primary_real" in
+    "$copy_real"/*) return 1 ;;
   esac
   return 0
 }

@@ -190,6 +190,35 @@ fi
 if footprint_copy_is_not_primary /tmp/footprint-primary/child /tmp/footprint-primary; then
   fail "copy inside the primary home must fail"
 fi
+mkdir -p "$TMP/primary/child" "$TMP/elsewhere"
+ln -s "$TMP/primary" "$TMP/primary-link"
+if footprint_copy_is_not_primary "$TMP/primary/" "$TMP/primary"; then
+  fail "a trailing slash must not make the primary path look distinct"
+fi
+if footprint_copy_is_not_primary "$TMP/primary/child" "$TMP/primary/"; then
+  fail "a trailing slash on the primary must still reject a child"
+fi
+if footprint_copy_is_not_primary "$TMP/primary-link" "$TMP/primary"; then
+  fail "a symlink to the primary home must fail"
+fi
+if footprint_copy_is_not_primary "$TMP/elsewhere" "$TMP/primary"; then
+  :
+else
+  fail "a real directory outside the primary must pass"
+fi
+if grep -n 'footprint_copy_is_not_primary' "$DRIVER" | grep -q 'rm -rf'; then
+  fail "a failed primary-path check must not sit on an rm -rf line"
+fi
+awk '
+  /if ! footprint_copy_is_not_primary "\$c_copy"/ { c=1; n=0 }
+  /if ! footprint_copy_is_not_primary "\$b_copy"/ { c=1; n=0 }
+  c { n++; if ($0 ~ /rm -rf/) bad=1 }
+  c && /^  fi$/ { c=0 }
+  END { if (bad) exit 1 }
+' "$DRIVER" || fail "the primary-path failure arm must not delete the path"
+grep -q 'remove_probe_copy' "$DRIVER" || fail "driver must delete probe copies through remove_probe_copy"
+grep -q -- '-u LASTDB_HOME -u FOLDDB_HOME -u LASTDB_DATA_DIR' "$DRIVER" \
+  || fail "the probe env must clear LASTDB_HOME, FOLDDB_HOME, and LASTDB_DATA_DIR"
 
 plist="$TMP/live.plist"
 /usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables:LASTDB_HASH_GROUP_WARM_BYTES string 4294967296' "$plist" >/dev/null
