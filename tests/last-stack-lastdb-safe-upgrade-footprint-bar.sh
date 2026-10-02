@@ -168,6 +168,14 @@ RC=$?
 set -e
 [ "$RC" -ne 0 ] || fail "p99 at 12 GiB must fail the backstop; out=$OUT"
 
+jq '.p99_phys_footprint = 9223372036854776000' "$TMP/pass.json" >"$TMP/p99-huge.json"
+set +e
+OUT="$(footprint_bar_eval "$TMP/p99-huge.json" 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "a p99 bash cannot compare must fail; out=$OUT"
+echo "$OUT" | grep -q ' RED:' || fail "huge proof p99 must print RED; out=$OUT"
+
 jq '.multiplier = 1.3' "$TMP/pass.json" >"$TMP/mult.json"
 set +e
 OUT="$(footprint_bar_eval "$TMP/mult.json" 2>&1)"
@@ -268,5 +276,145 @@ grep -q '12 GiB' "$SKILL_MD" || fail "SKILL.md must keep the 12 GiB backstop"
 grep -q '1.3' "$SKILL_MD" || fail "SKILL.md must keep the 1.3 backstop"
 grep -q 'FOOTPRINT:' "$SKILL_MD" || fail "SKILL.md must name the receipt line"
 grep -q 'FOOTPRINT:' "$DRIVER" || fail "driver must print the FOOTPRINT receipt"
+
+# --- one live status body is not the proof --------------------------------
+cat >"$TMP/live-status.json" <<'EOF'
+{
+  "ok": true,
+  "status": {
+    "phys_footprint_bytes": 8589934592,
+    "memory_budget": {
+      "footprint_net_bytes": 8321499136,
+      "warm_bytes_freed": 268435456,
+      "implied_footprint_multiplier": 1.1
+    }
+  }
+}
+EOF
+set +e
+OUT="$(footprint_bar_eval "$TMP/live-status.json" 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "one status body must fail even with footprint_net; out=$OUT"
+echo "$OUT" | grep -q 'one status body is not a 600 second upgrade-gate proof' \
+  || fail "status RED must say one body is not the proof; out=$OUT"
+echo "$OUT" | grep -q 'footprint_net is present' \
+  || fail "status RED must not claim footprint_net is absent; out=$OUT"
+echo "$OUT" | grep -q 'lacks footprint_net' \
+  && fail "a body that has footprint_net must not say it lacks it; out=$OUT"
+
+# --- harness report ----------------------------------------------------------
+cat >"$TMP/harness.json" <<'EOF'
+{
+  "ok": true,
+  "failures": [],
+  "proof_kind": "upgrade-gate",
+  "duration_secs": 600,
+  "p99_phys_footprint_bytes": 10737418240,
+  "full_allocator_proof": false
+}
+EOF
+set +e
+OUT="$(footprint_bar_eval "$TMP/harness.json" 2>&1)"
+RC=$?
+set -e
+[ "$RC" -eq 0 ] || fail "harness report must pass; rc=$RC out=$OUT"
+echo "$OUT" | grep -q 'proof_kind=upgrade-gate duration_secs=600' \
+  || fail "harness receipt must name the gate; out=$OUT"
+jq '.ok = false' "$TMP/harness.json" >"$TMP/harness-fail.json"
+set +e
+OUT="$(footprint_bar_eval "$TMP/harness-fail.json" 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "a failed harness report must fail; out=$OUT"
+jq '.p99_phys_footprint_bytes = ""' "$TMP/harness.json" >"$TMP/harness-empty-p99.json"
+set +e
+OUT="$(footprint_bar_eval "$TMP/harness-empty-p99.json" 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "an empty harness p99 must fail; out=$OUT"
+echo "$OUT" | grep -q ' RED:' || fail "empty harness p99 must print RED; out=$OUT"
+jq '.p99_phys_footprint_bytes = "99999999999999999999"' "$TMP/harness.json" >"$TMP/harness-huge-p99.json"
+set +e
+OUT="$(footprint_bar_eval "$TMP/harness-huge-p99.json" 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "a harness p99 bash cannot compare must fail; out=$OUT"
+echo "$OUT" | grep -q ' RED:' || fail "huge harness p99 must print RED; out=$OUT"
+jq 'del(.status.memory_budget.footprint_net_bytes) | .status.memory_budget.footprint_net = 8321499136' \
+  "$TMP/live-status.json" >"$TMP/live-status-net.json"
+set +e
+OUT="$(footprint_bar_eval "$TMP/live-status-net.json" 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "status with footprint_net must fail; out=$OUT"
+echo "$OUT" | grep -q 'footprint_net is present' \
+  || fail "status RED must see footprint_net; out=$OUT"
+echo "$OUT" | grep -q 'lacks footprint_net' \
+  && fail "footprint_net must not be described as absent; out=$OUT"
+
+# --- sample series, clock duration from the caller --------------------------
+mkdir -p "$TMP/series"
+cat >"$TMP/series/sample-001.json" <<'EOF'
+{
+  "ok": true,
+  "status": {
+    "phys_footprint_bytes": 8589934592,
+    "memory_budget": {
+      "footprint_net_bytes": 8321499136,
+      "warm_bytes_freed": 0,
+      "implied_footprint_multiplier": 1.05
+    }
+  }
+}
+EOF
+cat >"$TMP/series/sample-002.json" <<'EOF'
+{
+  "ok": true,
+  "status": {
+    "phys_footprint_bytes": 8522825728,
+    "memory_budget": {
+      "footprint_net_bytes": 8254390272,
+      "warm_bytes_freed": 268435456,
+      "implied_footprint_multiplier": 1.1
+    }
+  }
+}
+EOF
+footprint_bar_from_samples "$TMP/series" 600 0 "$TMP/series-proof.json" \
+  || fail "two samples and a 600 second clock must build a proof"
+set +e
+OUT="$(footprint_bar_eval "$TMP/series-proof.json" 2>&1)"
+RC=$?
+set -e
+[ "$RC" -eq 0 ] || fail "sample series must pass; rc=$RC out=$OUT"
+echo "$OUT" | grep -q 'purge_delay_ms=0' || fail "series receipt must record purge 0; out=$OUT"
+echo "$OUT" | grep -q 'duration_secs=600' || fail "series duration must be the caller clock; out=$OUT"
+footprint_bar_from_samples "$TMP/series" 599 0 "$TMP/series-short.json" \
+  || fail "a short clock must still write a document"
+set +e
+OUT="$(footprint_bar_eval "$TMP/series-short.json" 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "a 599 second clock must fail the gate; out=$OUT"
+mkdir -p "$TMP/one"
+cp "$TMP/series/sample-001.json" "$TMP/one/sample-001.json"
+if footprint_bar_from_samples "$TMP/one" 600 0 "$TMP/one-proof.json"; then
+  fail "one sample must not become a proof"
+fi
+
+# --- driver scores the series, not one curl ---------------------------------
+grep -q 'footprint_collect_upgrade_gate' "$DRIVER" \
+  || fail "driver must collect the upgrade-gate series"
+grep -q 'footprint-proof.json' "$DRIVER" || fail "driver must write a proof document"
+if grep -q 'footprint-status.json' "$DRIVER"; then
+  fail "driver must not keep the one-status sample file"
+fi
+grep -q -- '-u LASTDB_BUILD_CONFLICT_STAMP_ON_COPY' "$DRIVER" \
+  || fail "probe env must clear an inherited stamp flag"
+grep -q -- '-u MIMALLOC_PURGE_DELAY' "$DRIVER" \
+  || fail "probe env must clear MIMALLOC_PURGE_DELAY so purge_delay_ms stays 0"
+grep -q 'FOOTPRINT_BAR_UPGRADE_GATE_SECS' "$CHECKS" \
+  || fail "the collector must use the 600 second gate constant"
 
 echo "ok: footprint bar fixture"

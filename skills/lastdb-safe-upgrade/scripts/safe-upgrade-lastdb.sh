@@ -14,13 +14,14 @@
 #      correct-but-slow is RED (incident 2026-07-25/27: 0.23.1 passed the
 #      correctness+RSS bars while scans ran 5-20x slower; the live primary
 #      was the first place anyone noticed)
-#      AND the FOOTPRINT BAR on that same ephemeral copy: proof_kind
-#      upgrade-gate at 600 seconds (not the 86400 soak), purge_delay_ms 0,
-#      purge slack at or under 512 MiB, and a 0.25 phys_footprint drop on a
-#      step that freed warm bytes. The 12 GiB p99 and the 1.3 multiplier
-#      stay backstops. A status sample that lacks the new fields is RED.
-#      There is no skip. LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1 is set on
-#      the candidate copy only and is not installed on the primary.
+#      AND the FOOTPRINT BAR on that same ephemeral copy: a clocked sample
+#      series of at least 600 seconds (not one /api/status body, and not the
+#      86400 soak). purge_delay_ms 0, purge slack at or under 512 MiB, and a
+#      0.25 phys_footprint drop on a step that freed warm bytes. The 12 GiB
+#      p99 and the 1.3 multiplier stay backstops. A body that lacks
+#      footprint_net is RED. There is no skip.
+#      LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1 is set on the candidate copy
+#      only and is not installed on the primary.
 #      AND the CANDIDATE CLASS BAR (incident 2026-08-01): refuse Cargo
 #      debug paths (target/debug), -dirty version stamps, and binaries
 #      ≫ incumbent size (debug/unstripped) before any backup or probe
@@ -994,6 +995,8 @@ EOF_ENV
   fi
   env -u SENTRY_DSN -u FOLD_SENTRY_DSN \
     -u LASTDB_HOME -u FOLDDB_HOME -u LASTDB_DATA_DIR \
+    -u LASTDB_BUILD_CONFLICT_STAMP_ON_COPY \
+    -u MIMALLOC_PURGE_DELAY \
     ${env_pairs[@]+"${env_pairs[@]}"} \
     ${stamp_env:+"$stamp_env"} \
     "$bin" --data-dir "$copy" >"$blog" 2>&1 &
@@ -1185,15 +1188,14 @@ probe_like_to_like_metrics() {
   log "row counts: point cand=${c_rows_pt} base=${b_rows_pt} · scan cand=${c_rows_sc} base=${b_rows_sc}"
 
   # Sibling of the copy, not inside it, so stop_probe_node can delete the copy
-  # (and any conflict stamp the copy built) without deleting the sample.
-  fp_status="${c_copy}.footprint-status.json"
-  if ! curl -sS --max-time 15 --unix-socket "$c_sock" \
-      -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
-      http://x/api/status >"$fp_status" 2>/dev/null; then
-    printf '%s\n' '{}' >"$fp_status"
-  fi
-  if [ ! -s "$fp_status" ]; then
-    printf '%s\n' '{}' >"$fp_status"
+  # without deleting the proof. One /api/status body is not the 600 second gate.
+  # The clock in footprint_collect_upgrade_gate is the duration, not a JSON field.
+  fp_status="${c_copy}.footprint-proof.json"
+  fp_dir="${c_copy}.footprint-samples"
+  if ! footprint_collect_upgrade_gate "$c_sock" "$c_pid" "$fp_dir" "$fp_status"; then
+    stop_probe_node "$c_pid" "$c_copy" "$c_blog"
+    stop_probe_node "$b_pid" "$b_copy" "$b_blog"
+    return 1
   fi
 
   {

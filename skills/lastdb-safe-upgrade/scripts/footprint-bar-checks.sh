@@ -133,12 +133,83 @@ footprint_copy_is_not_primary() {
 # Read one status sample. Prints one GREEN or RED line. Returns 1 on RED.
 # A sample that lacks footprint_net (or any other required field) is RED.
 footprint_bar_eval() {
-  local file="$1" canon="" missing="" expected=""
+  local file="$1" canon="" missing="" expected="" kind="" has_net=""
   local proof_kind="" duration="" purge="" phys="" net="" p99="" multiplier="" collect=""
   local nsteps=0 i=0 freed="" before="" after="" drop=0 freed_steps=0 slack=0
+  local ok_flag="" h_expected=""
   if [ -z "$file" ] || [ ! -f "$file" ]; then
     printf 'footprint bar RED: status sample is absent (absent fields fail the bar; not skipped)\n'
     return 1
+  fi
+  # One /api/status body is not this proof, even when memory_budget carries
+  # footprint_net. A proof.py report is a different document: ok already
+  # scored slack, the 0.25 ratio, and the multiplier.
+  kind="$(jq -r '
+    if (.status | type) == "object" and .proof_kind == null and ((.steps | type) != "array") then
+      "status-body"
+    elif (.ok | type) == "boolean"
+      and .proof_kind != null
+      and .p99_phys_footprint_bytes != null
+      and ((.steps | type) != "array")
+      and .footprint_net == null
+      and .footprint_net_bytes == null then
+      "harness-report"
+    else
+      "proof-document"
+    end
+  ' "$file" 2>/dev/null)" || kind=""
+  if [ "$kind" = "status-body" ]; then
+    has_net="$(jq -r '
+      if .status.memory_budget.footprint_net_bytes != null
+        or .status.memory_budget.footprint_net != null
+        or .status.footprint_net_bytes != null
+        or .status.footprint_net != null
+        or .footprint_net_bytes != null
+        or .footprint_net != null then "yes" else "no" end
+    ' "$file" 2>/dev/null)" || has_net="no"
+    if [ "$has_net" = "yes" ]; then
+      printf 'footprint bar RED: one status body is not a 600 second upgrade-gate proof (footprint_net is present; score a sample series)\n'
+    else
+      printf 'footprint bar RED: one status body is not a 600 second upgrade-gate proof and it lacks footprint_net (absent fields fail the bar; not skipped)\n'
+    fi
+    return 1
+  fi
+  if [ "$kind" = "harness-report" ]; then
+    ok_flag="$(footprint_bar_field "$(jq -c '.' "$file")" '.ok | tostring')"
+    proof_kind="$(footprint_bar_field "$(jq -c '.' "$file")" '.proof_kind | tostring')"
+    duration="$(footprint_bar_field "$(jq -c '.' "$file")" '.duration_secs | tostring')"
+    p99="$(footprint_bar_field "$(jq -c '.' "$file")" '.p99_phys_footprint_bytes | tostring')"
+    if [ "$ok_flag" != "true" ]; then
+      printf 'footprint bar RED: harness report ok=%s (a failed proof does not pass)\n' "$ok_flag"
+      return 1
+    fi
+    # Check each field. Concatenation hides an empty p99 behind a numeric
+    # duration, and bash 3.2 does not abort `set -e` when `[` fails inside `if`.
+    case "$duration" in
+      ''|*[!0-9]*)
+        printf 'footprint bar RED: harness report duration is not an integer (not skipped)\n'
+        return 1
+        ;;
+    esac
+    case "$p99" in
+      ''|*[!0-9]*)
+        printf 'footprint bar RED: harness report p99 is not an integer (not skipped)\n'
+        return 1
+        ;;
+    esac
+    h_expected="$(footprint_bar_proof_kind "$duration")"
+    if [ "$proof_kind" != "upgrade-gate" ] || [ "$h_expected" != "upgrade-gate" ]; then
+      printf 'footprint bar RED: proof_kind=%s duration_secs=%s is not upgrade-gate at %s seconds\n' \
+        "$proof_kind" "$duration" "$FOOTPRINT_BAR_UPGRADE_GATE_SECS"
+      return 1
+    fi
+    if ! [ "$p99" -lt "$FOOTPRINT_BAR_P99_MAX_BYTES" ]; then
+      printf 'footprint bar RED: p99 phys_footprint %s bytes is at or above the 12 GiB backstop\n' "$p99"
+      return 1
+    fi
+    printf 'footprint bar GREEN: proof_kind=upgrade-gate duration_secs=%s purge_delay_ms=harness slack_bytes=harness drop_ratio_ok=1 p99_backstop=12GiB multiplier_backstop=1.3\n' \
+      "$duration"
+    return 0
   fi
   canon="$(jq -c -e '
     def intval:
@@ -288,7 +359,9 @@ footprint_bar_eval() {
     return 1
   fi
   # Backstop, not the operating target. physical_footprint_limit: p99 >= 12 GiB.
-  if [ "$p99" -ge "$FOOTPRINT_BAR_P99_MAX_BYTES" ]; then
+  # A failed `[` (a digit string bash cannot compare) must not fall through.
+  # `set -e` does not exit on a test inside `if`.
+  if ! [ "$p99" -lt "$FOOTPRINT_BAR_P99_MAX_BYTES" ]; then
     printf 'footprint bar RED: p99 phys_footprint %s bytes is at or above the 12 GiB backstop\n' "$p99"
     return 1
   fi
@@ -300,4 +373,148 @@ footprint_bar_eval() {
   printf 'footprint bar GREEN: proof_kind=upgrade-gate duration_secs=%s purge_delay_ms=%s slack_bytes=%s drop_ratio_ok=1 p99_backstop=12GiB multiplier_backstop=1.3\n' \
     "$duration" "$purge" "$slack"
   return 0
+}
+
+# Build a proof document from status samples.
+# $1 = directory of sample-NNN.json files, in sample order.
+# $2 = clock duration in seconds. This is not read from the JSON.
+# $3 = purge_delay_ms observed for the process that served the samples.
+# $4 = output proof path.
+# One sample is not a proof. The caller measured the clock.
+footprint_bar_from_samples() {
+  local dir="$1" duration="${2:-}" purge="${3:-}" out="$4"
+  local n=0 sample all=""
+  [ -n "$dir" ] && [ -d "$dir" ] && [ -n "$out" ] || return 1
+  for sample in "$dir"/sample-*.json; do
+    [ -f "$sample" ] || continue
+    n=$((n + 1))
+  done
+  if [ "$n" -lt 2 ]; then
+    printf '%s\n' '{}' >"$out"
+    printf 'footprint bar RED: one status body is not a 600 second upgrade-gate proof\n' >&2
+    return 1
+  fi
+  case "$duration" in
+    ''|*[!0-9]*)
+      printf '%s\n' '{}' >"$out"
+      return 1
+      ;;
+  esac
+  case "$purge" in
+    ''|*[!0-9]*)
+      printf '%s\n' '{}' >"$out"
+      return 1
+      ;;
+  esac
+  all="$dir/all.json"
+  if ! jq -s '.' "$dir"/sample-*.json >"$all"; then
+    printf '%s\n' '{}' >"$out"
+    return 1
+  fi
+  jq -c \
+    --argjson duration "$duration" \
+    --argjson purge "$purge" \
+    --argjson gate "$FOOTPRINT_BAR_UPGRADE_GATE_SECS" \
+    --argjson soak "$FOOTPRINT_BAR_SOAK_SECS" '
+    def num:
+      if . == null then null
+      elif type == "number" and floor == . then floor
+      elif type == "string" and test("^[0-9]+$") then tonumber
+      else null end;
+    def mult:
+      if . == null then null
+      elif type == "number" then .
+      elif type == "string" and test("^[0-9]+([.][0-9]+)?$") then tonumber
+      else null end;
+    def gauge($key):
+      if type == "object" and has($key) then .[$key]
+      elif (.status | type) == "object" then
+        if (.status | has($key)) then .status[$key]
+        elif (.status.memory_budget | type) == "object" and (.status.memory_budget | has($key)) then
+          .status.memory_budget[$key]
+        else null end
+      else null end;
+    def row:
+      {
+        phys: ((gauge("phys_footprint_bytes") // gauge("phys_footprint") // gauge("measured_phys_footprint_bytes")) | num),
+        net: ((gauge("footprint_net_bytes") // gauge("footprint_net")) | num),
+        freed: (gauge("warm_bytes_freed") | num),
+        mult: ((gauge("implied_footprint_multiplier") // gauge("multiplier")) | mult)
+      };
+    map(row) as $rows
+    | ([range(1; ($rows | length)) as $i
+       | select($rows[$i].freed != null and $rows[$i - 1].freed != null
+               and ($rows[$i].freed < $rows[$i - 1].freed))]
+       | length > 0) as $reset
+    | [range(1; ($rows | length)) as $i
+       | select($rows[$i].freed != null and $rows[$i - 1].freed != null)
+       | select($rows[$i].freed > $rows[$i - 1].freed)
+       | {
+           warm_bytes_freed: ($rows[$i].freed - $rows[$i - 1].freed),
+           footprint_before: $rows[$i - 1].phys,
+           footprint_after: $rows[$i].phys
+         }] as $steps
+    | ([$rows[] | select(.phys != null and .net != null)]) as $paired
+    | (if ($paired | length) == 0 then null else ($paired | max_by(.phys - .net)) end) as $worst
+    | ([$rows[] | .mult | select(. != null)]) as $mults
+    | (if ($mults | length) == 0 then null else ($mults | max) end) as $max_mult
+    | ([$rows[] | .phys | select(. != null)] | sort) as $fps
+    | (if ($fps | length) == 0 then null
+       else $fps[((($fps | length) * 0.99) | ceil) - 1] end) as $p99
+    | (if all($rows[]; .net != null) then true else null end) as $collect
+    | (if $reset then "counter-reset"
+       elif $duration >= $soak then "long-memory-candidate"
+       elif $duration >= $gate then "upgrade-gate"
+       else "short" end) as $kind
+    | {
+        proof_kind: $kind,
+        duration_secs: $duration,
+        purge_delay_ms: $purge,
+        request_end_collect: $collect,
+        phys_footprint: (if $collect == true then $worst.phys else null end),
+        footprint_net: (if $collect == true then $worst.net else null end),
+        p99_phys_footprint: $p99,
+        multiplier: $max_mult,
+        steps: $steps
+      }
+  ' "$all" >"$out"
+}
+
+# Sample $1 socket until the clock reaches the upgrade gate.
+# $2 = candidate pid (empty skips the liveness check).
+# $3 = sample directory. $4 = proof output path.
+# purge_delay_ms is 0 because start_probe_node clears MIMALLOC_PURGE_DELAY,
+# and the binary then sets mimalloc option 15 to 0. One curl is not this proof.
+footprint_collect_upgrade_gate() {
+  local sock="$1" pid="${2:-}" dir="$3" out="$4"
+  local start now elapsed n=0 sample
+  [ -n "$sock" ] && [ -n "$dir" ] && [ -n "$out" ] || return 1
+  mkdir -p "$dir"
+  start="$(date +%s)"
+  while true; do
+    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+      printf '%s\n' '{}' >"$out"
+      printf 'footprint bar RED: candidate exited during the upgrade-gate sample window\n' >&2
+      return 1
+    fi
+    n=$((n + 1))
+    sample="$(printf '%s/sample-%03d.json' "$dir" "$n")"
+    if ! curl -sS --max-time 15 --unix-socket "$sock" \
+        -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+        http://x/api/status >"$sample" 2>/dev/null; then
+      printf '%s\n' '{}' >"$sample"
+    fi
+    if [ ! -s "$sample" ]; then
+      printf '%s\n' '{}' >"$sample"
+    fi
+    now="$(date +%s)"
+    elapsed=$((now - start))
+    if [ "$elapsed" -ge "$FOOTPRINT_BAR_UPGRADE_GATE_SECS" ] && [ "$n" -ge 2 ]; then
+      break
+    fi
+    sleep 15
+  done
+  now="$(date +%s)"
+  elapsed=$((now - start))
+  footprint_bar_from_samples "$dir" "$elapsed" 0 "$out"
 }
