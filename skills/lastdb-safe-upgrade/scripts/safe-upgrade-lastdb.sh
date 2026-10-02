@@ -2626,11 +2626,13 @@ fi
 
 # A read-only post-check missed a delayed persist-lane failure on 2026-10-01.
 # Write fresh durable canaries on the candidate, then retain the rollback point
-# through a five-minute live soak and a cloud frontier beyond the write time.
-POST_CUTOVER_WRITE_S="$(date +%s)"
+# through a five-minute live soak and a cloud frontier beyond the last write.
 DURABILITY_SLUG_PREFIX="lastdb-safe-upgrade-post-cutover-canary"
 durability_write_sentinels
 durability_verify_after_cutover
+# The frontier floor must follow every canary write. A timestamp taken before
+# the first write can pass while later canaries still wait for cloud capture.
+POST_CUTOVER_WRITE_DONE_S="$(date +%s)"
 SOAK_MIN_SECS=300
 # A real-data rollback needed about 43 minutes to republish its cloud frontier.
 # Keep the rollback point and health checks active until that startup work ends.
@@ -2643,7 +2645,7 @@ while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
   if curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
     -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
     http://x/api/status >"$SOAK_STATUS" 2>/dev/null; then
-    SOAK_OUT="$(post_cutover_status_check "$SOAK_STATUS" "$(( (POST_CUTOVER_WRITE_S + 1) * 1000000000 ))" "$SOAK_REQUIRE_CLOUD" "$PRELIVE_METER_CAP_BYTES")" \
+    SOAK_OUT="$(post_cutover_status_check "$SOAK_STATUS" "$(( (POST_CUTOVER_WRITE_DONE_S + 1) * 1000000000 ))" "$SOAK_REQUIRE_CLOUD" "$PRELIVE_METER_CAP_BYTES")" \
       || true
     case "$SOAK_OUT" in
       POST_CUTOVER_STATUS=GREEN)
@@ -2661,12 +2663,13 @@ while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
   fi
   SOAK_ELAPSED="$(( $(date +%s) - SOAK_START ))"
   log "post-cutover soak: elapsed=${SOAK_ELAPSED}s minimum=${SOAK_MIN_SECS}s cloud_confirmed=${SOAK_CONFIRMED} status=${SOAK_OUT:-unavailable}"
-  if [ "$SOAK_ELAPSED" -ge "$SOAK_MIN_SECS" ] && [ "$SOAK_CONFIRMED" -eq 1 ]; then
+  if post_cutover_soak_green_in_bounds "$SOAK_ELAPSED" "$SOAK_MIN_SECS" "$SOAK_MAX_SECS" "$SOAK_CONFIRMED"; then
     break
   fi
+  [ "$SOAK_ELAPSED" -le "$SOAK_MAX_SECS" ] || break
   sleep 15
 done
-[ "$SOAK_CONFIRMED" -eq 1 ] && [ "$SOAK_ELAPSED" -ge "$SOAK_MIN_SECS" ] \
+post_cutover_soak_green_in_bounds "$SOAK_ELAPSED" "$SOAK_MIN_SECS" "$SOAK_MAX_SECS" "$SOAK_CONFIRMED" \
   || die "post-cutover soak did not confirm fresh cloud progress within ${SOAK_MAX_SECS}s; rollback point retained"
 
 # After this point the driver proved the live primary healthy and supervised.

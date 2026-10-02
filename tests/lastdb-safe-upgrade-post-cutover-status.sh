@@ -54,6 +54,21 @@ for terminal in persist-lane-failure deferred-persist-failure writes-disabled me
     exit 1
   fi
 done
+post_cutover_soak_green_in_bounds 300 300 3600 1 || {
+  echo 'FAIL: GREEN at the minimum soak time was rejected' >&2
+  exit 1
+}
+post_cutover_soak_green_in_bounds 3600 300 3600 1 || {
+  echo 'FAIL: GREEN at the soak deadline was rejected' >&2
+  exit 1
+}
+for late_or_unready in '299 1' '3601 1' '300 0'; do
+  read -r elapsed confirmed <<< "$late_or_unready"
+  if post_cutover_soak_green_in_bounds "$elapsed" 300 3600 "$confirmed"; then
+    echo "FAIL: invalid GREEN accepted at elapsed=$elapsed confirmed=$confirmed" >&2
+    exit 1
+  fi
+done
 jq '.status.sync.sync_degraded = true' "$scratch/healthy.json" > "$scratch/degraded.json"
 if post_cutover_status_check "$scratch/degraded.json" 100 1 1000 >/dev/null; then
   echo 'FAIL: degraded cloud passed' >&2
@@ -69,8 +84,19 @@ if post_cutover_status_check "$scratch/off.json" 100 1 1000 >/dev/null; then
   echo 'FAIL: cloud-off primary passed a cloud-required bar' >&2
   exit 1
 fi
-soak_line="$(rg -n '^POST_CUTOVER_WRITE_S=' "$root/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh" | cut -d: -f1)"
+driver="$root/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh"
+last_write_line="$(rg -n '^durability_write_sentinels$' "$driver" | tail -n 1 | cut -d: -f1)"
+last_verify_line="$(rg -n '^durability_verify_after_cutover$' "$driver" | tail -n 1 | cut -d: -f1)"
+soak_line="$(rg -n '^POST_CUTOVER_WRITE_DONE_S=' "$driver" | cut -d: -f1)"
 release_line="$(rg -n '^release_rollback_point$' "$root/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh" | tail -n 1 | cut -d: -f1)"
+if [ "$last_write_line" -ge "$last_verify_line" ] || [ "$last_verify_line" -ge "$soak_line" ]; then
+  echo 'FAIL: cloud frontier floor was set before the last canary write and read-back' >&2
+  exit 1
+fi
+if ! rg -q 'POST_CUTOVER_WRITE_DONE_S \+ 1' "$driver"; then
+  echo 'FAIL: cloud frontier floor does not use the post-write second' >&2
+  exit 1
+fi
 if [ "$soak_line" -ge "$release_line" ]; then
   echo 'FAIL: rollback point released before the live soak' >&2
   exit 1

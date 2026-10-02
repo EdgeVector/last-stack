@@ -34,3 +34,9 @@ post_cutover_status_retryable() {
     *) return 1 ;;
   esac
 }
+
+post_cutover_soak_green_in_bounds() {
+  # A status request can finish after the loop's top-of-pass deadline check.
+  local elapsed="$1" minimum="$2" maximum="$3" confirmed="$4"
+  [ "$confirmed" -eq 1 ] && [ "$elapsed" -ge "$minimum" ] && [ "$elapsed" -le "$maximum" ]
+}
