@@ -2632,7 +2632,9 @@ DURABILITY_SLUG_PREFIX="lastdb-safe-upgrade-post-cutover-canary"
 durability_write_sentinels
 durability_verify_after_cutover
 SOAK_MIN_SECS=300
-SOAK_MAX_SECS=900
+# A real-data rollback needed about 43 minutes to republish its cloud frontier.
+# Keep the rollback point and health checks active until that startup work ends.
+SOAK_MAX_SECS=3600
 SOAK_START="$(date +%s)"
 SOAK_STATUS="$WORK/post-cutover-soak-status.json"
 SOAK_CONFIRMED=0
@@ -2646,10 +2648,12 @@ while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
     case "$SOAK_OUT" in
       POST_CUTOVER_STATUS=GREEN)
         SOAK_CONFIRMED=1 ;;
-      POST_CUTOVER_STATUS=cloud-frontier-stale)
-        SOAK_CONFIRMED=0 ;;
       *)
-        die "post-cutover status bar failed: $SOAK_OUT; rollback point retained" ;;
+        if post_cutover_status_retryable "$SOAK_OUT"; then
+          SOAK_CONFIRMED=0
+        else
+          die "post-cutover status bar failed: $SOAK_OUT; rollback point retained"
+        fi ;;
     esac
   else
     SOAK_CONFIRMED=0

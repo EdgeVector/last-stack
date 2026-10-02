@@ -42,6 +42,27 @@ if post_cutover_status_check "$scratch/capture.json" 100 1 1000 >/dev/null; then
   echo 'FAIL: absent capture passed' >&2
   exit 1
 fi
+for temporary in cloud-capture-unregistered cloud-degraded cloud-frontier-stale; do
+  post_cutover_status_retryable "POST_CUTOVER_STATUS=$temporary" || {
+    echo "FAIL: $temporary did not allow the bounded soak" >&2
+    exit 1
+  }
+done
+for terminal in persist-lane-failure deferred-persist-failure writes-disabled meter-group-over-cap cloud-disabled status-invalid; do
+  if post_cutover_status_retryable "POST_CUTOVER_STATUS=$terminal"; then
+    echo "FAIL: $terminal allowed the bounded soak" >&2
+    exit 1
+  fi
+done
+jq '.status.sync.sync_degraded = true' "$scratch/healthy.json" > "$scratch/degraded.json"
+if post_cutover_status_check "$scratch/degraded.json" 100 1 1000 >/dev/null; then
+  echo 'FAIL: degraded cloud passed' >&2
+  exit 1
+fi
+if [ "$(post_cutover_status_check "$scratch/degraded.json" 100 1 1000 || true)" != 'POST_CUTOVER_STATUS=cloud-degraded' ]; then
+  echo 'FAIL: degraded cloud did not return the expected verdict' >&2
+  exit 1
+fi
 jq '.status.sync.enabled = false' "$scratch/healthy.json" > "$scratch/off.json"
 post_cutover_status_check "$scratch/off.json" 100 0 1000 >/dev/null
 if post_cutover_status_check "$scratch/off.json" 100 1 1000 >/dev/null; then
