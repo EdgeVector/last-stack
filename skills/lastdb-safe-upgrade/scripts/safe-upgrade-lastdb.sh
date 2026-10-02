@@ -2663,12 +2663,13 @@ while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
   fi
   SOAK_ELAPSED="$(( $(date +%s) - SOAK_START ))"
   log "post-cutover soak: elapsed=${SOAK_ELAPSED}s minimum=${SOAK_MIN_SECS}s cloud_confirmed=${SOAK_CONFIRMED} status=${SOAK_OUT:-unavailable}"
-  if [ "$SOAK_ELAPSED" -ge "$SOAK_MIN_SECS" ] && [ "$SOAK_CONFIRMED" -eq 1 ]; then
+  if post_cutover_soak_green_in_bounds "$SOAK_ELAPSED" "$SOAK_MIN_SECS" "$SOAK_MAX_SECS" "$SOAK_CONFIRMED"; then
     break
   fi
+  [ "$SOAK_ELAPSED" -le "$SOAK_MAX_SECS" ] || break
   sleep 15
 done
-[ "$SOAK_CONFIRMED" -eq 1 ] && [ "$SOAK_ELAPSED" -ge "$SOAK_MIN_SECS" ] \
+post_cutover_soak_green_in_bounds "$SOAK_ELAPSED" "$SOAK_MIN_SECS" "$SOAK_MAX_SECS" "$SOAK_CONFIRMED" \
   || die "post-cutover soak did not confirm fresh cloud progress within ${SOAK_MAX_SECS}s; rollback point retained"
 
 # After this point the driver proved the live primary healthy and supervised.

@@ -54,6 +54,21 @@ for terminal in persist-lane-failure deferred-persist-failure writes-disabled me
     exit 1
   fi
 done
+post_cutover_soak_green_in_bounds 300 300 3600 1 || {
+  echo 'FAIL: GREEN at the minimum soak time was rejected' >&2
+  exit 1
+}
+post_cutover_soak_green_in_bounds 3600 300 3600 1 || {
+  echo 'FAIL: GREEN at the soak deadline was rejected' >&2
+  exit 1
+}
+for late_or_unready in '299 1' '3601 1' '300 0'; do
+  read -r elapsed confirmed <<< "$late_or_unready"
+  if post_cutover_soak_green_in_bounds "$elapsed" 300 3600 "$confirmed"; then
+    echo "FAIL: invalid GREEN accepted at elapsed=$elapsed confirmed=$confirmed" >&2
+    exit 1
+  fi
+done
 jq '.status.sync.sync_degraded = true' "$scratch/healthy.json" > "$scratch/degraded.json"
 if post_cutover_status_check "$scratch/degraded.json" 100 1 1000 >/dev/null; then
   echo 'FAIL: degraded cloud passed' >&2
