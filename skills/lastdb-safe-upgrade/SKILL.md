@@ -113,8 +113,9 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
 2. **Always** create exactly one ephemeral CoW rollback point under the system
    temp directory. Release it on GREEN (including GREEN probe-only or operator
    abort); on RED retain it for the printed TTL, owned by the next safe-upgrade
-   run, which reclaims it before creating another. Never write rollback copies
-   under `$HOME`.
+   run, which reclaims it before creating another. A separate cleanup-only
+   helper can release one named RED point after it proves the primary never
+   restarted or changed build. Never write rollback copies under `$HOME`.
 3. **Never** restart/upgrade on a RED probe.
 3b. **A read that answers fast with ZERO rows is RED, not GREEN.** The
    **row-count bar** counts the rows the Board point-read and the `kanban list
@@ -475,6 +476,31 @@ The script:
 | **4a. Live soak** | Write and read four new durable canaries on the candidate. Keep the rollback point for at least five minutes. Check persist failures, write access, and meter size on each status sample. If Cloud Sync was on before cutover, require its confirmed frontier beyond the canary time. A failed or stale bar is RED. |
 | **4b. Release** | After GREEN, delete the rollback point and its empty root. GREEN probe-only and operator abort release it too. |
 | RED | Exit 1, retain the one rollback point, print its path, TTL, and cleanup owner; primary untouched if class/probe failed |
+
+### Release one retained RED point without a new probe
+
+Use `scripts/cleanup-retained-rollback.sh` only when the failed run ended
+before a live cutover. The helper checks the exact point name and retention
+marker, the host owner lock, the primary process start time and build, the
+installed daemon build, and active probe processes. It fails closed if the
+primary status over the Unix socket is unavailable. The default does not
+delete data. `--execute` deletes only the named rollback point. It does not
+start a candidate, create a copy, install a binary, or restart the primary.
+
+```bash
+export LASTDB_ROLLBACK_ROOT=/path/to/lastdb-safe-upgrade-rollback-UID
+helper="$HOME/.last-stack/skills/lastdb-safe-upgrade/scripts/cleanup-retained-rollback.sh"
+point="$LASTDB_ROLLBACK_ROOT/pre-CANDIDATE-from-CURRENT-YYYYMMDDTHHMMSSZ"
+bash "$helper" --point "$point" --expect-primary-pid PID \
+  --expect-retained-at YYYY-MM-DDTHH:MM:SSZ
+# After the check reports READY, run the same command with --execute.
+```
+
+Use the PID and `retained_at` from the failed probe record. Check the current
+primary with `lastdb status` first. Do not use this helper after any live
+cutover attempt or when the rollback point may be needed for recovery. A
+release can free less physical disk than `du` reports because APFS clones can
+share blocks.
 
 ### C. If the graph or script is missing or fails open
 
