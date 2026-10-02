@@ -264,6 +264,8 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/launchd-job-checks.sh"
 # shellcheck source=live-socket-health.sh
 . "$_SCRIPT_DIR/live-socket-health.sh"
+# shellcheck source=post-cutover-status.sh
+. "$_SCRIPT_DIR/post-cutover-status.sh"
 # shellcheck source=owner-lock.sh
 . "$_SCRIPT_DIR/owner-lock.sh"
 # shellcheck source=deadline.sh
@@ -2192,6 +2194,22 @@ fi
 
 # --- 3) human confirm before touching live -----------------------------------
 
+# The current meter plane is one large key. A cold group above 2 GiB can
+# prevent both the candidate and the prior binary from booting after a restart.
+# Refuse the live section before that group approaches the cold-load cap.
+PRELIVE_METER_CAP_BYTES=1610612736
+PRELIVE_STATUS="$WORK/pre-live-status.json"
+curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
+  -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+  http://x/api/status >"$PRELIVE_STATUS" \
+  || die "pre-live status unavailable; cannot prove the meter group is safe to restart"
+PRELIVE_STATUS_OUT="$(post_cutover_status_check "$PRELIVE_STATUS" 0 0 "$PRELIVE_METER_CAP_BYTES")" \
+  || die "pre-live status bar failed: $PRELIVE_STATUS_OUT; primary was not changed"
+jq -e '.status.sync.enabled | type == "boolean"' "$PRELIVE_STATUS" >/dev/null \
+  || die "pre-live status cannot determine whether Cloud Sync is enabled"
+SOAK_REQUIRE_CLOUD="$(jq -r 'if .status.sync.enabled == true then 1 else 0 end' "$PRELIVE_STATUS")"
+log "pre-live status bar $PRELIVE_STATUS_OUT (meter plane below 1.5 GiB)"
+
 detect_live_venue
 assert_exact_candidate_live_venue
 write_cutover_recovery_state "pre-live" false
@@ -2497,6 +2515,47 @@ if [ "$VENUE" = "sidebin" ]; then
     die "primary LaunchAgent is not supervising the live daemon; KeepAlive does not own lastdbd"
   fi
 fi
+
+# A read-only post-check missed a delayed persist-lane failure on 2026-10-01.
+# Write fresh durable canaries on the candidate, then retain the rollback point
+# through a five-minute live soak and a cloud frontier beyond the write time.
+POST_CUTOVER_WRITE_S="$(date +%s)"
+DURABILITY_SLUG_PREFIX="lastdb-safe-upgrade-post-cutover-canary"
+durability_write_sentinels
+durability_verify_after_cutover
+SOAK_MIN_SECS=300
+SOAK_MAX_SECS=900
+SOAK_START="$(date +%s)"
+SOAK_STATUS="$WORK/post-cutover-soak-status.json"
+SOAK_CONFIRMED=0
+while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
+  SOAK_OUT="unavailable"
+  if curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
+    -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+    http://x/api/status >"$SOAK_STATUS" 2>/dev/null; then
+    SOAK_OUT="$(post_cutover_status_check "$SOAK_STATUS" "$(( (POST_CUTOVER_WRITE_S + 1) * 1000000000 ))" "$SOAK_REQUIRE_CLOUD" "$PRELIVE_METER_CAP_BYTES")" \
+      || true
+    case "$SOAK_OUT" in
+      POST_CUTOVER_STATUS=GREEN)
+        SOAK_CONFIRMED=1 ;;
+      POST_CUTOVER_STATUS=cloud-frontier-stale)
+        SOAK_CONFIRMED=0 ;;
+      *)
+        die "post-cutover status bar failed: $SOAK_OUT; rollback point retained" ;;
+    esac
+  else
+    SOAK_CONFIRMED=0
+    log "post-cutover soak: status unavailable; retrying"
+  fi
+  SOAK_ELAPSED="$(( $(date +%s) - SOAK_START ))"
+  log "post-cutover soak: elapsed=${SOAK_ELAPSED}s minimum=${SOAK_MIN_SECS}s cloud_confirmed=${SOAK_CONFIRMED} status=${SOAK_OUT:-unavailable}"
+  if [ "$SOAK_ELAPSED" -ge "$SOAK_MIN_SECS" ] && [ "$SOAK_CONFIRMED" -eq 1 ]; then
+    break
+  fi
+  sleep 15
+done
+[ "$SOAK_CONFIRMED" -eq 1 ] && [ "$SOAK_ELAPSED" -ge "$SOAK_MIN_SECS" ] \
+  || die "post-cutover soak did not confirm fresh cloud progress within ${SOAK_MAX_SECS}s; rollback point retained"
 
 # After this point the driver proved the live primary healthy and supervised.
 # A later wrapper timeout must not restart that already-green primary.
