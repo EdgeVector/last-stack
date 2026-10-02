@@ -895,8 +895,16 @@ ci_test tests/host-track-local-safe-forgejo-gate-freshness.sh
 ci_test tests/host-track-local-safe-rollback-resolves-real-path.sh
 ci_test tests/last-stack-ci-test-registration.sh
 
-# Auto-discovery. A tests/*.sh that is neither listed above nor in
+# Auto-discovery. A tests/*.sh or tests/*.py that is neither listed above nor in
 # tests/.ci-exempt runs here, so a new test needs no edit to this file.
+# 2026-10-02: the glob was tests/*.sh only, and the registration guard that
+# certifies it said "Every tests/*.sh". So the four tests/*.py in this repo --
+# three load-collector unit tests written 2026-09-xx and one added that day --
+# had never run in any gate, and nothing could notice: `.lastgit/ci.sh` has no
+# python3 invocation at all, and ci-required.yml runs only `bash .lastgit/ci.sh`.
+# That is the same defect as papercut-last-stack-tests-can-land-unregistered-in-
+# required-gate wearing a different extension, which is why the interpreter is
+# chosen per file here instead of the loop assuming bash.
 # Before this, every PR that added a test edited the same lines just above the
 # registration guard: parallel PRs conflicted there, and a PR that forgot the
 # line went red one full CI cycle later (last-stack PRs 137, 206, 219, 229;
@@ -908,7 +916,7 @@ ci_test_discovered() {
   local listed exempt test_script test_slot ci_test_started ci_test_rc
   listed="$(grep -oE '^ci_test tests/[^ ]+' "$ROOT/.lastgit/ci.sh" | awk '{print $2}')"
   exempt="$(grep -vE '^(#|$)' "$ROOT/tests/.ci-exempt" | cut -f1)"
-  for test_script in tests/*.sh; do
+  for test_script in tests/*.sh tests/*.py; do
     [ -f "$test_script" ] || continue
     # A pipe into `grep -q` can SIGPIPE the printf and, under pipefail, report a
     # listed test as unlisted (so it ran twice). Match without a pipe.
@@ -918,7 +926,10 @@ ci_test_discovered() {
     echo "ci_test start: $test_script (auto-discovered)"
     ci_test_started="$SECONDS"
     ci_test_rc=0
-    bash "$test_script" || ci_test_rc=$?
+    case "$test_script" in
+      *.py) python3 "$test_script" || ci_test_rc=$? ;;
+      *) bash "$test_script" || ci_test_rc=$? ;;
+    esac
     echo "ci_test done: $test_script rc=${ci_test_rc} secs=$((SECONDS - ci_test_started))"
     if [ "$ci_test_rc" -ne 0 ] && [ "${LAST_STACK_CI_KEEP_GOING:-0}" = "1" ]; then
       ci_failed_tests="${ci_failed_tests:-} $test_script"

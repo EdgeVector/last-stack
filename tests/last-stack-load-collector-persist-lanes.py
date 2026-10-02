@@ -4,6 +4,12 @@ import importlib.machinery, importlib.util, json, os, tempfile
 
 root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 os.environ["LOAD_MON_DIR"] = tempfile.mkdtemp()
+# Isolate from this host's launchd state: freeze_watch_down reads the real
+# ~/Library/LaunchAgents plist, so on a host whose fleet-freeze watchdog is down
+# the unrelated fleet_freeze_watchdog_down rule fires and trips `assert not
+# fired`. A unit test of another rule must not depend on that. The rule has its
+# own coverage in tests/last-stack-load-collector-freeze-watch-liveness.py.
+os.environ["LOAD_MON_FREEZE_WATCH_PLIST"] = "/nonexistent/freeze-watch.plist"
 loader = importlib.machinery.SourceFileLoader("lc", os.path.join(root, "bin", "last-stack-load-collector"))
 spec = importlib.util.spec_from_loader("lc", loader)
 lc = importlib.util.module_from_spec(spec)

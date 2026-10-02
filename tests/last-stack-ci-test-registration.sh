@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Every tests/*.sh must be either scheduled by the required gate or recorded as
-# a deliberate exclusion with a reason.
+# Every tests/*.sh and tests/*.py must be either scheduled by the required gate
+# or recorded as a deliberate exclusion with a reason.
 #
 # Ground truth: papercut-last-stack-tests-can-land-unregistered-in-required-gate
 # (filed 2026-08-30, five recurrences to 2026-09-06). `.lastgit/ci.sh` schedules
@@ -35,8 +35,15 @@ fail() {
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-# Present: every test file in the suite's own naming convention.
-( cd "$ROOT" && ls tests/*.sh ) | sort -u > "$tmp/present"
+# Present: every test file in the suite's own naming conventions.
+#
+# 2026-10-02: this read tests/*.sh only, and so did the auto-discovery it
+# certifies. The four tests/*.py in this repo had therefore never run in any
+# gate, while a green `ok last-stack-ci-test-registration` line asserted the
+# suite was accounted for -- a guard whose promise was broader than its glob.
+# Both now cover .py. Keep the two globs in step: a guard that certifies a
+# discovery loop must read exactly what that loop runs.
+( cd "$ROOT" && ls tests/*.sh tests/*.py 2>/dev/null ) | sort -u > "$tmp/present"
 
 # Scheduled: the explicit ci_test enumeration the required gate actually runs.
 grep -oE '^ci_test tests/[^ ]+' "$CI" | awk '{print $2}' | sort -u > "$tmp/scheduled"
@@ -77,6 +84,32 @@ grep -qx 'ci_test_discovered' "$CI" || {
   echo "so an unlisted, non-exempt test runs in no required gate" >&2
   status=1
 }
+
+# 1b. The discovery loop must glob every extension this guard counts as present.
+# Until 2026-10-02 it globbed tests/*.sh while four tests/*.py existed, so this
+# guard printed `ok` over files that ran in no gate. A guard whose promise is
+# broader than the loop it certifies is worse than none: the files it names look
+# audited. Assert the two stay in step.
+discovery_loops="$(sed -n 's/^  for test_script in \(.*\); do$/\1/p' "$CI")"
+# Refuse to guess rather than silently audit the wrong loop: if a second loop
+# ever matches, this check would pick one by position and could read `ok` off a
+# line that runs nothing.
+if [ "$(printf '%s\n' "$discovery_loops" | grep -c .)" -ne 1 ]; then
+  echo "expected exactly one 'for test_script in ...' loop in .lastgit/ci.sh, found:" >&2
+  printf '%s\n' "$discovery_loops" | sed 's/^/  /' >&2
+  status=1
+fi
+discovery_glob="$discovery_loops"
+for ext in '*.sh' '*.py'; do
+  case " $discovery_glob " in
+    *" tests/$ext "*) ;;
+    *)
+      echo "ci_test_discovered globs '$discovery_glob', which omits tests/$ext," >&2
+      echo "but this guard counts tests/$ext as present -- those files run nowhere" >&2
+      status=1
+      ;;
+  esac
+done
 
 # 2. Dangling: scheduled, but the file is gone. The gate would die on it.
 comm -13 "$tmp/present" "$tmp/scheduled" > "$tmp/dangling"
