@@ -35,16 +35,28 @@ ABANDON_AFTER_S="${LAST_STACK_LOOM_REAPER_ABANDON_AFTER_S:-172800}"
 PASS_DEADLINE_MARGIN_S="${LAST_STACK_LOOM_REAPER_PASS_DEADLINE_MARGIN_S:-120}"
 PASS_DEADLINE_S="${LAST_STACK_LOOM_REAPER_PASS_DEADLINE_S:-$((RESUME_LIMIT * RESUME_TIMEOUT_S + PASS_DEADLINE_MARGIN_S))}"
 PASS_KILL_AFTER_S="${LAST_STACK_LOOM_REAPER_PASS_KILL_AFTER_S:-10}"
+# Enable only after the Loom source-audit CLI is installed and reviewed. The
+# owner writes exactly `1` plus a newline to a mode-600 state file. Removing
+# or renaming that file restores the legacy full census on the next pass.
+# One page of 250 keys per successful hourly pass covers about 2,334 current
+# executions in 10 passes; active index candidates run every hour.
+SOURCE_AUDIT_ENABLED=0
+SOURCE_AUDIT_GATE=absent
+ENABLE_FILE="$STATE_ROOT/source-audit.enabled"
+SOURCE_AUDIT_LIMIT="${LAST_STACK_LOOM_REAPER_SOURCE_AUDIT_LIMIT:-250}"
+CURSOR_FILE="${LAST_STACK_LOOM_REAPER_CURSOR_FILE:-$STATE_ROOT/source-audit-cursor.json}"
 LOCK_HELD=0
 OUT_FILE=""
 ERR_FILE=""
 RESULT_TMP=""
+CURSOR_TMP=""
 
 # shellcheck disable=SC2329 # Invoked through the EXIT and signal traps.
 cleanup() {
   [ -z "$OUT_FILE" ] || rm -f "$OUT_FILE"
   [ -z "$ERR_FILE" ] || rm -f "$ERR_FILE"
   [ -z "$RESULT_TMP" ] || rm -f "$RESULT_TMP"
+  [ -z "$CURSOR_TMP" ] || rm -f "$CURSOR_TMP"
   if [ "$LOCK_HELD" -eq 1 ]; then
     rm -f "$LOCK_DIR/owner"
     rmdir "$LOCK_DIR" 2>/dev/null || true
@@ -113,6 +125,19 @@ sweep_orphan_drives() {
 }
 
 mkdir -p "$STATE_ROOT" "$(dirname "$RESULT_FILE")"
+if [ -e "$ENABLE_FILE" ] || [ -L "$ENABLE_FILE" ]; then
+  enable_owner="$(stat -f '%u' "$ENABLE_FILE" 2>/dev/null || stat -c '%u' "$ENABLE_FILE" 2>/dev/null || true)"
+  enable_mode="$(stat -f '%Lp' "$ENABLE_FILE" 2>/dev/null || true)"
+  if [ -f "$ENABLE_FILE" ] && [ ! -L "$ENABLE_FILE" ] \
+    && [ "$enable_owner" = "$(id -u)" ] \
+    && [ "$enable_mode" = 600 ] \
+    && printf '1\n' | cmp -s - "$ENABLE_FILE"; then
+    SOURCE_AUDIT_ENABLED=1
+    SOURCE_AUDIT_GATE=enabled
+  else
+    SOURCE_AUDIT_GATE=invalid
+  fi
+fi
 
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   owner="$(awk 'NR == 1 { print $1 }' "$LOCK_DIR/owner" 2>/dev/null || true)"
@@ -147,6 +172,7 @@ printf '%s %s\n' "$$" "$started_epoch" >"$LOCK_DIR/owner"
 OUT_FILE="$STATE_ROOT/reap.out.$$"
 ERR_FILE="$STATE_ROOT/reap.err.$$"
 RESULT_TMP="$RESULT_FILE.tmp.$$"
+CURSOR_TMP="$CURSOR_FILE.tmp.$$"
 
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 timeout_bin=""
@@ -156,21 +182,94 @@ elif command -v timeout >/dev/null 2>&1; then
   timeout_bin=timeout
 fi
 
+source_audit_after=""
+cursor_error=""
+if [ "$SOURCE_AUDIT_ENABLED" != 0 ]; then
+  case "$SOURCE_AUDIT_LIMIT" in
+    ''|*[!0-9]*) cursor_error='source audit limit must be an integer from 1 to 1000' ;;
+    *)
+      if [ "$SOURCE_AUDIT_LIMIT" -lt 1 ] || [ "$SOURCE_AUDIT_LIMIT" -gt 1000 ]; then
+        cursor_error='source audit limit must be an integer from 1 to 1000'
+      fi
+      ;;
+  esac
+  if [ -z "$cursor_error" ]; then
+    mkdir -p "$(dirname "$CURSOR_FILE")"
+    if [ ! -e "$CURSOR_FILE" ]; then
+      # A durable empty seed skips no primary keys. A crash on either side of
+      # this rename repeats the first page; it cannot advance past a key.
+      jq -cn '{version:1,next_cursor:""}' >"$CURSOR_TMP"
+      chmod 600 "$CURSOR_TMP"
+      mv "$CURSOR_TMP" "$CURSOR_FILE"
+      CURSOR_TMP=""
+    fi
+    if ! jq -e '
+      .version == 1 and (.next_cursor | type == "string")
+      and (.next_cursor | length <= 8192)
+      and (.next_cursor | contains("\u0000") | not)
+      and (.next_cursor | contains("\n") | not)
+    ' "$CURSOR_FILE" >/dev/null 2>&1; then
+      cursor_error='source audit cursor state is malformed; no Loom pass ran'
+    else
+      source_audit_after="$(jq -r '.next_cursor' "$CURSOR_FILE")"
+    fi
+  fi
+fi
+
+: >"$OUT_FILE"
 set +e
-if [ -n "$timeout_bin" ]; then
-  "$timeout_bin" -k "${PASS_KILL_AFTER_S}s" "${PASS_DEADLINE_S}s" \
-    "$LOOM_BIN" reap \
+if [ -n "$cursor_error" ]; then
+  loom_rc=78
+  printf '%s\n' "$cursor_error" >"$ERR_FILE"
+elif [ -n "$timeout_bin" ]; then
+  set -- reap \
     --older-than-secs "$OLDER_THAN_S" \
     --abandon-after-secs "$ABANDON_AFTER_S" \
     --resume-limit "$RESUME_LIMIT" \
-    --resume-timeout-secs "$RESUME_TIMEOUT_S" \
-    --json >"$OUT_FILE" 2>"$ERR_FILE"
+    --resume-timeout-secs "$RESUME_TIMEOUT_S"
+  if [ "$SOURCE_AUDIT_ENABLED" = 1 ]; then
+    set -- "$@" --source-audit-after "$source_audit_after" \
+      --source-audit-limit "$SOURCE_AUDIT_LIMIT"
+  fi
+  set -- "$@" --json
+  "$timeout_bin" -k "${PASS_KILL_AFTER_S}s" "${PASS_DEADLINE_S}s" \
+    "$LOOM_BIN" "$@" >"$OUT_FILE" 2>"$ERR_FILE"
   loom_rc=$?
 else
   loom_rc=127
   printf '%s\n' 'timeout or gtimeout is required for a bounded Loom reaper pass' >"$ERR_FILE"
 fi
 set -e
+if [ "$loom_rc" -eq 0 ] && [ "$SOURCE_AUDIT_ENABLED" = 1 ]; then
+  if ! jq -e --arg limit "$SOURCE_AUDIT_LIMIT" --arg after "$source_audit_after" '
+    (.source_audit_next_cursor | type == "string")
+    and (.source_audit_next_cursor | length <= 8192)
+    and (.source_audit_next_cursor | contains("\u0000") | not)
+    and (.source_audit_next_cursor | contains("\n") | not)
+    and (.source_audit_cycle_complete | type == "boolean")
+    and (.source_audit_cycle_complete == (.source_audit_next_cursor == ""))
+    and (.source_audited | type == "number")
+    and (.source_audited >= 0 and .source_audited <= ($limit | tonumber))
+    and (.source_audited > 0 or .source_audit_next_cursor == "")
+    and (.source_audit_next_cursor != $after or .source_audit_next_cursor == "")
+  ' "$OUT_FILE" >/dev/null 2>&1; then
+    loom_rc=78
+    printf '%s\n' 'Loom returned no valid source-audit cursor; prior cursor retained' >>"$ERR_FILE"
+  else
+    next_cursor="$(jq -r '.source_audit_next_cursor' "$OUT_FILE")"
+    # All Loom recovery actions finished before exit zero. Only now may this
+    # pass advance the cursor. A crash before rename repeats the page; a crash
+    # after rename sees the committed next cursor on restart.
+    CURSOR_TMP="$CURSOR_FILE.tmp.$$"
+    jq -cn --arg next "$next_cursor" '{version:1,next_cursor:$next}' >"$CURSOR_TMP"
+    chmod 600 "$CURSOR_TMP"
+    mv "$CURSOR_TMP" "$CURSOR_FILE"
+    CURSOR_TMP=""
+  fi
+fi
+if [ "$SOURCE_AUDIT_GATE" = invalid ]; then
+  printf '%s\n' 'source audit enable file is invalid; legacy full census used' >>"$ERR_FILE"
+fi
 finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 finished_epoch="$(date -u +%s)"
 age_secs=$((finished_epoch - started_epoch))
@@ -198,15 +297,25 @@ jq -cn \
   --arg abandon_after "$ABANDON_AFTER_S" \
   --arg resume_limit "$RESUME_LIMIT" \
   --arg resume_timeout "$RESUME_TIMEOUT_S" \
+  --arg source_audit_after "$source_audit_after" \
+  --arg source_audit_limit "$SOURCE_AUDIT_LIMIT" \
+  --arg source_audit_enabled "$SOURCE_AUDIT_ENABLED" \
+  --arg source_audit_gate "$SOURCE_AUDIT_GATE" \
   --rawfile stdout "$OUT_FILE" \
   --rawfile stderr "$ERR_FILE" \
   '{status:$status,started_at:$started_at,finished_at:$finished_at,
     exit_code:$exit_code,loom_bin:$loom_bin,age_secs:$age_secs,
     pass_deadline_secs:$pass_deadline_secs,
     orphan_drives_swept:$orphan_drives_swept,
-    command:["reap","--older-than-secs",$older_than,
+    source_audit_enabled:($source_audit_enabled == "1"),
+    source_audit_gate:$source_audit_gate,
+    command:(["reap","--older-than-secs",$older_than,
       "--abandon-after-secs",$abandon_after,"--resume-limit",$resume_limit,
-      "--resume-timeout-secs",$resume_timeout,"--json"],
+      "--resume-timeout-secs",$resume_timeout]
+      + (if $source_audit_enabled == "1" then
+           ["--source-audit-after",$source_audit_after,
+            "--source-audit-limit",$source_audit_limit]
+         else [] end) + ["--json"]),
     report:(try ($stdout | fromjson) catch null),stdout:$stdout,stderr:$stderr}' \
   >"$RESULT_TMP"
 mv "$RESULT_TMP" "$RESULT_FILE"
@@ -215,5 +324,8 @@ RESULT_TMP=""
 cat "$RESULT_FILE"
 if [ "$loom_rc" -ne 0 ] && [ -s "$ERR_FILE" ]; then
   cat "$ERR_FILE" >&2
+fi
+if [ "$loom_rc" -eq 0 ] && [ "$SOURCE_AUDIT_GATE" = invalid ]; then
+  printf '%s\n' 'source audit enable file is invalid; legacy full census used' >&2
 fi
 exit "$loom_rc"
