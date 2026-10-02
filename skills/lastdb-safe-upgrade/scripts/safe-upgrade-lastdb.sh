@@ -2646,10 +2646,12 @@ while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
     case "$SOAK_OUT" in
       POST_CUTOVER_STATUS=GREEN)
         SOAK_CONFIRMED=1 ;;
-      POST_CUTOVER_STATUS=cloud-frontier-stale)
-        SOAK_CONFIRMED=0 ;;
       *)
-        die "post-cutover status bar failed: $SOAK_OUT; rollback point retained" ;;
+        if post_cutover_status_retryable "$SOAK_OUT"; then
+          SOAK_CONFIRMED=0
+        else
+          die "post-cutover status bar failed: $SOAK_OUT; rollback point retained"
+        fi ;;
     esac
   else
     SOAK_CONFIRMED=0

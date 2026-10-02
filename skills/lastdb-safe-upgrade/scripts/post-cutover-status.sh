@@ -25,3 +25,12 @@ post_cutover_status_check() {
   printf 'POST_CUTOVER_STATUS=%s\n' "$verdict"
   [ "$verdict" = GREEN ]
 }
+
+post_cutover_status_retryable() {
+  case "$1" in
+    POST_CUTOVER_STATUS=cloud-capture-unregistered|\
+    POST_CUTOVER_STATUS=cloud-degraded|\
+    POST_CUTOVER_STATUS=cloud-frontier-stale) return 0 ;;
+    *) return 1 ;;
+  esac
+}
