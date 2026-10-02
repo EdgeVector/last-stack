@@ -2632,7 +2632,9 @@ DURABILITY_SLUG_PREFIX="lastdb-safe-upgrade-post-cutover-canary"
 durability_write_sentinels
 durability_verify_after_cutover
 SOAK_MIN_SECS=300
-SOAK_MAX_SECS=900
+# A real-data rollback needed about 43 minutes to republish its cloud frontier.
+# Keep the rollback point and health checks active until that startup work ends.
+SOAK_MAX_SECS=3600
 SOAK_START="$(date +%s)"
 SOAK_STATUS="$WORK/post-cutover-soak-status.json"
 SOAK_CONFIRMED=0
