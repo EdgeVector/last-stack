@@ -29,7 +29,18 @@ chmod +x "$T/lastdb-hang" "$T/lastdb-ok"
 export LOAD_MON_ALERT_SWAP_MB=999999999 LOAD_MON_ALERT_LOAD1=999999 LOAD_MON_ALERT_HOG_PCT=999999
 export LOAD_MON_WRITES=0  # a fixture must not scan the real home; 6b turns it on for a temp root
 export LOAD_MON_DATA_ROOT="$T/nodata" LOAD_MON_NOTIFY=0 LOAD_MON_DEADLINE_SEC=1 LOAD_MON_DIR="$T/mon" LOAD_MON_SOCKET="$S/n.sock"
+# Same rule as LOAD_MON_WRITES above, for the fleet-freeze watchdog assertion:
+# freeze_watch_down reads ~/Library/LaunchAgents by default, so on a host whose
+# watchdog is down the fleet_freeze_watchdog_down rule fires and every alert
+# COUNT in this fixture is off by one. Point it at a path under $T that does not
+# exist (an absent plist is deliberately not a fault). That rule has its own
+# coverage in tests/last-stack-load-collector-freeze-watch-liveness.py.
+export LOAD_MON_FREEZE_WATCH_PLIST="$T/no-freeze-watch.plist"
 [ "$LOAD_MON_NOTIFY" = "0" ] && [ "$LOAD_MON_DEADLINE_SEC" = "1" ] || { echo "test env must keep NOTIFY=0 (a fixture must never post to live Situations)" >&2; exit 1; }
+case "${LOAD_MON_FREEZE_WATCH_PLIST-}" in
+  "$T"/*) ;;
+  *) echo "test env must keep LOAD_MON_FREEZE_WATCH_PLIST under \$T (a fixture must never read the real LaunchAgents)" >&2; exit 1 ;;
+esac
 
 # The host sample must not depend on node access or host-tool permissions.
 # Supply deterministic host helpers because some runners deny their real ps and

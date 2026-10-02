@@ -17,6 +17,12 @@ open(os.path.join(g, "2.seg"), "wb").write(b"x" * 500)
 assert lc.cold_group_max(d) == {"group": "025", "bytes": 1500}, lc.cold_group_max(d)
 
 lc.DIR = tempfile.mkdtemp()
+# Isolate from this host's launchd state: freeze_watch_down reads the real
+# ~/Library/LaunchAgents plist, so on a host whose fleet-freeze watchdog is down
+# the unrelated fleet_freeze_watchdog_down rule fires and trips the assertions
+# below. A unit test of another rule must not depend on that. The rule has its
+# own coverage in tests/last-stack-load-collector-freeze-watch-liveness.py.
+lc.FW_PLIST = "/nonexistent/freeze-watch.plist"
 fired = []
 lc.fire = lambda name, msg, now: fired.append((name, msg))
 state = {}

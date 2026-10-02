@@ -35,3 +35,4 @@ tests/last-stack-north-star-proof-cloud-backup.sh	Held back from the 2026-09-06 
 tests/last-stack-routine-shell-lint.sh	runs inside tests/last-stack-hooks-guards.sh (a registered required-gate test), which calls it; kept out of the ci.sh append point that conflicts across concurrent PRs
 tests/last-stack-prompt-shell-blocks.sh	runs inside tests/last-stack-hooks-guards.sh (a registered required-gate test), which calls it; kept out of the ci.sh append point that conflicts across concurrent PRs
 tests/last-stack-kanban-done-when-sweep.sh	runs inside tests/last-stack-hooks-guards.sh (a registered required-gate test), which calls it; kept out of the ci.sh append point that conflicts across concurrent PRs
+tests/canary-gate-pipeline.py	a stub canary CLI invoked by tests/last-stack-canary-soak-watch-gate.sh through LAST_STACK_CANARY_V2_PIPELINE, not a test: run directly it exits 2 on a missing subcommand

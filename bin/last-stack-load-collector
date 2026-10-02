@@ -43,6 +43,14 @@ Env (defaults):
   LOAD_MON_ALERT_HOG_PCT       90     one non-lastdbd process, %CPU
   LOAD_MON_ALERT_HOG_CONSEC    15
   LOAD_MON_ALERT_COOLDOWN_SEC  1800
+  LOAD_MON_ALERT_FREEZE_WATCH_CONSEC 2   passes with the routines fleet-freeze
+                                       watchdog not producing checks
+  LOAD_MON_FREEZE_WATCH_LABEL          launchd label to assert (default
+                                       com.edgevector.routines-freeze-watch)
+  LOAD_MON_FREEZE_WATCH_PLIST          its plist; absent => not installed, no alert
+  LOAD_MON_FREEZE_WATCH_LOG            its stdout log, checked for growth
+  LOAD_MON_FREEZE_WATCH_INTERVAL_SEC 900  its StartInterval; stale past 2x
+  LOAD_MON_LAUNCHCTL           /bin/launchctl
   LOAD_MON_NOTIFY         1      0 = no osascript notification, no Situations
   LOAD_MON_PHONE          =NOTIFY  1 = push to Tom's phone with `ra notify` (Telegram, no LastDB)
   LOAD_MON_RA             ~/.local/bin/ra
@@ -99,6 +107,24 @@ COOLDOWN = envf("LOAD_MON_ALERT_COOLDOWN_SEC", 1800)
 # lastdbd refuses to load a cold group over its cap (LASTSTORE_COLD_GROUP_TOO_LARGE); warn at 90%
 COLD_CAP_BYTES = int(envf("LOAD_MON_COLD_GROUP_CAP_BYTES", 2147483648))
 COLD_WARN_PCT = envf("LOAD_MON_ALERT_COLD_GROUP_PCT", 90)
+# The routines fleet-freeze watchdog is the only detector that is not dispatched BY
+# routinesd, so it is the only one that can report a scheduler freeze. It is also
+# labelled com.edgevector.routines-freeze-watch, which puts it inside the family an
+# operator sweeps with `launchctl disable` during a maintenance window. On
+# 2026-10-02 that happened: the agent was disabled at 00:44:45Z with routinesd,
+# routines-hygiene and admin-routines-status, and the fleet then sat at
+# active=0/81 for ~1h45m with nothing reporting it. A watchdog cannot report its
+# own absence, so the assertion has to come from here: this agent is outside that
+# family and stayed enabled through the window.
+FW_LABEL = os.environ.get("LOAD_MON_FREEZE_WATCH_LABEL", "com.edgevector.routines-freeze-watch")
+FW_PLIST = os.environ.get(
+    "LOAD_MON_FREEZE_WATCH_PLIST",
+    os.path.join(HOME, "Library/LaunchAgents", FW_LABEL + ".plist"))
+FW_LOG = os.environ.get(
+    "LOAD_MON_FREEZE_WATCH_LOG", os.path.join(HOME, ".routines/daemon/freeze-watch.out.log"))
+FW_INTERVAL = envf("LOAD_MON_FREEZE_WATCH_INTERVAL_SEC", 900)
+FW_CONSEC = int(envf("LOAD_MON_ALERT_FREEZE_WATCH_CONSEC", 2))
+LAUNCHCTL = os.environ.get("LOAD_MON_LAUNCHCTL", "/bin/launchctl")
 NOTIFY = os.environ.get("LOAD_MON_NOTIFY", "1") != "0"
 PHONE = os.environ.get("LOAD_MON_PHONE", "1" if NOTIFY else "0") != "0"
 RA = os.environ.get("LOAD_MON_RA", os.path.join(HOME, ".local/bin/ra"))
@@ -432,6 +458,48 @@ def sentry_event(name, msg, now):
                   "%s://%s/api/%s/envelope/" % (scheme, host, project)])
 
 
+def launchctl_text(args):
+    """One bounded launchctl read. Returns "" on any failure; never raises."""
+    try:
+        out = subprocess.run([LAUNCHCTL] + list(args), capture_output=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return (out.stdout or b"").decode("utf-8", "replace")
+
+
+def freeze_watch_down(now):
+    """Why the fleet-freeze watchdog is not producing checks, or None if it is.
+
+    Three distinct causes with three different repairs, so each one is named:
+    `launchctl disable` (re-enable), booted out (bootstrap), and loaded but not
+    writing (read the plist and the err log). Absent plist is NOT a fault — the
+    watchdog is optional and this must not alert on a host that never installed
+    it. Reads two files and launchctl; no node, no daemon, no board, matching the
+    watchdog's own contract.
+    """
+    if not os.path.exists(FW_PLIST):
+        return None
+    uid = os.getuid()
+    disabled = launchctl_text(["print-disabled", "gui/%d" % uid])
+    if disabled:
+        m = re.search(r'"%s"\s*=>\s*(\w+)' % re.escape(FW_LABEL), disabled)
+        if m and m.group(1) == "disabled":
+            return ("the agent is launchctl-disabled (plist present and valid); "
+                    "`launchctl enable gui/%d/%s` then bootstrap it" % (uid, FW_LABEL))
+    listing = launchctl_text(["list"])
+    if listing and not re.search(r"\s%s$" % re.escape(FW_LABEL), listing, re.M):
+        return ("the agent is not loaded (plist present); "
+                "`launchctl bootstrap gui/%d %s`" % (uid, FW_PLIST))
+    try:
+        age = now - os.path.getmtime(FW_LOG)
+    except OSError:
+        return "the agent is loaded but has never written %s" % FW_LOG
+    if age > 2 * FW_INTERVAL:
+        return ("the agent is loaded but %s has not grown for %ds (interval %ds); "
+                "read freeze-watch.err.log" % (FW_LOG, int(age), int(FW_INTERVAL)))
+    return None
+
+
 def fire(name, msg, now):
     rec = {"ts": iso(now), "alert": name, "message": msg}
     with open(os.path.join(DIR, "alerts.jsonl"), "a") as f:
@@ -499,8 +567,14 @@ def evaluate_alerts(rec, now):
     hog_name = hog[0] if hog and hog[1] >= HOG_PCT else None
     st["hog_hot"] = st.get("hog_hot", 0) + 1 if hog_name and hog_name == st.get("hog_name") else (1 if hog_name else 0)
     st["hog_name"] = hog_name
+    fw_why = guarded(lambda: freeze_watch_down(now), None)
+    st["fw_down"] = st.get("fw_down", 0) + 1 if fw_why else 0
     last = st.setdefault("last_alert", {})
     checks = [
+        ("fleet_freeze_watchdog_down", st["fw_down"] >= FW_CONSEC,
+         "the routines fleet-freeze watchdog is not running for %d passes: %s "
+         "(while it is down, a scheduler freeze is reported by nothing)"
+         % (st["fw_down"], fw_why)),
         ("lastdb_cold_group_near_cap", st["cold_hot"] >= 2,
          "keep_small group %s is %s MB of the %d MB cold-load cap (>= %d%%): the node refuses to load it over the cap"
          % (cold and cold["group"], cold and cold["bytes"] // 1048576, COLD_CAP_BYTES // 1048576, COLD_WARN_PCT)),
