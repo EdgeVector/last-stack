@@ -124,13 +124,24 @@ sweep_orphan_drives() {
   printf '%s\n' "$swept"
 }
 
+# A cursor or enable file must belong to this user and stay private. GNU and
+# BSD stat use different options for the same owner and mode fields.
+owner_mode_600_regular_file() {
+  checked_file="$1"
+  [ -f "$checked_file" ] && [ ! -L "$checked_file" ] || return 1
+  if stat --version >/dev/null 2>&1; then
+    checked_owner="$(stat -c '%u' "$checked_file" 2>/dev/null || true)"
+    checked_mode="$(stat -c '%a' "$checked_file" 2>/dev/null || true)"
+  else
+    checked_owner="$(stat -f '%u' "$checked_file" 2>/dev/null || true)"
+    checked_mode="$(stat -f '%Lp' "$checked_file" 2>/dev/null || true)"
+  fi
+  [ "$checked_owner" = "$(id -u)" ] && [ "$checked_mode" = 600 ]
+}
+
 mkdir -p "$STATE_ROOT" "$(dirname "$RESULT_FILE")"
 if [ -e "$ENABLE_FILE" ] || [ -L "$ENABLE_FILE" ]; then
-  enable_owner="$(stat -f '%u' "$ENABLE_FILE" 2>/dev/null || stat -c '%u' "$ENABLE_FILE" 2>/dev/null || true)"
-  enable_mode="$(stat -f '%Lp' "$ENABLE_FILE" 2>/dev/null || true)"
-  if [ -f "$ENABLE_FILE" ] && [ ! -L "$ENABLE_FILE" ] \
-    && [ "$enable_owner" = "$(id -u)" ] \
-    && [ "$enable_mode" = 600 ] \
+  if owner_mode_600_regular_file "$ENABLE_FILE" \
     && printf '1\n' | cmp -s - "$ENABLE_FILE"; then
     SOURCE_AUDIT_ENABLED=1
     SOURCE_AUDIT_GATE=enabled
@@ -184,6 +195,10 @@ fi
 
 source_audit_after=""
 cursor_error=""
+run_attempted=0
+if [ "$SOURCE_AUDIT_GATE" = invalid ]; then
+  cursor_error='source audit enable file is invalid; no Loom pass ran'
+fi
 if [ "$SOURCE_AUDIT_ENABLED" != 0 ]; then
   case "$SOURCE_AUDIT_LIMIT" in
     ''|*[!0-9]*) cursor_error='source audit limit must be an integer from 1 to 1000' ;;
@@ -195,7 +210,7 @@ if [ "$SOURCE_AUDIT_ENABLED" != 0 ]; then
   esac
   if [ -z "$cursor_error" ]; then
     mkdir -p "$(dirname "$CURSOR_FILE")"
-    if [ ! -e "$CURSOR_FILE" ]; then
+    if [ ! -e "$CURSOR_FILE" ] && [ ! -L "$CURSOR_FILE" ]; then
       # A durable empty seed skips no primary keys. A crash on either side of
       # this rename repeats the first page; it cannot advance past a key.
       jq -cn '{version:1,next_cursor:""}' >"$CURSOR_TMP"
@@ -203,7 +218,9 @@ if [ "$SOURCE_AUDIT_ENABLED" != 0 ]; then
       mv "$CURSOR_TMP" "$CURSOR_FILE"
       CURSOR_TMP=""
     fi
-    if ! jq -e '
+    if ! owner_mode_600_regular_file "$CURSOR_FILE"; then
+      cursor_error='source audit cursor file is invalid; no Loom pass ran'
+    elif ! jq -e '
       .version == 1 and (.next_cursor | type == "string")
       and (.next_cursor | length <= 8192)
       and (.next_cursor | contains("\u0000") | not)
@@ -232,6 +249,7 @@ elif [ -n "$timeout_bin" ]; then
       --source-audit-limit "$SOURCE_AUDIT_LIMIT"
   fi
   set -- "$@" --json
+  run_attempted=1
   "$timeout_bin" -k "${PASS_KILL_AFTER_S}s" "${PASS_DEADLINE_S}s" \
     "$LOOM_BIN" "$@" >"$OUT_FILE" 2>"$ERR_FILE"
   loom_rc=$?
@@ -267,9 +285,6 @@ if [ "$loom_rc" -eq 0 ] && [ "$SOURCE_AUDIT_ENABLED" = 1 ]; then
     CURSOR_TMP=""
   fi
 fi
-if [ "$SOURCE_AUDIT_GATE" = invalid ]; then
-  printf '%s\n' 'source audit enable file is invalid; legacy full census used' >>"$ERR_FILE"
-fi
 finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 finished_epoch="$(date -u +%s)"
 age_secs=$((finished_epoch - started_epoch))
@@ -301,6 +316,7 @@ jq -cn \
   --arg source_audit_limit "$SOURCE_AUDIT_LIMIT" \
   --arg source_audit_enabled "$SOURCE_AUDIT_ENABLED" \
   --arg source_audit_gate "$SOURCE_AUDIT_GATE" \
+  --argjson run_attempted "$run_attempted" \
   --rawfile stdout "$OUT_FILE" \
   --rawfile stderr "$ERR_FILE" \
   '{status:$status,started_at:$started_at,finished_at:$finished_at,
@@ -309,13 +325,15 @@ jq -cn \
     orphan_drives_swept:$orphan_drives_swept,
     source_audit_enabled:($source_audit_enabled == "1"),
     source_audit_gate:$source_audit_gate,
-    command:(["reap","--older-than-secs",$older_than,
+    command:(if $run_attempted == 1 then
+      ["reap","--older-than-secs",$older_than,
       "--abandon-after-secs",$abandon_after,"--resume-limit",$resume_limit,
       "--resume-timeout-secs",$resume_timeout]
       + (if $source_audit_enabled == "1" then
            ["--source-audit-after",$source_audit_after,
             "--source-audit-limit",$source_audit_limit]
-         else [] end) + ["--json"]),
+         else [] end) + ["--json"]
+      else [] end),
     report:(try ($stdout | fromjson) catch null),stdout:$stdout,stderr:$stderr}' \
   >"$RESULT_TMP"
 mv "$RESULT_TMP" "$RESULT_FILE"
@@ -324,8 +342,5 @@ RESULT_TMP=""
 cat "$RESULT_FILE"
 if [ "$loom_rc" -ne 0 ] && [ -s "$ERR_FILE" ]; then
   cat "$ERR_FILE" >&2
-fi
-if [ "$loom_rc" -eq 0 ] && [ "$SOURCE_AUDIT_GATE" = invalid ]; then
-  printf '%s\n' 'source audit enable file is invalid; legacy full census used' >&2
 fi
 exit "$loom_rc"

@@ -52,33 +52,41 @@ run() {
     "$ROOT/bin/last-stack-loom-reaper-run"
 }
 
-# An absent or malformed owner gate uses the legacy full census. The malformed
-# file needs the exact newline too; a symlink cannot enable the mode.
+# An absent owner gate uses the legacy full census. A malformed gate stops
+# before Loom, so a bad attempted opt-in cannot start a costly full pass.
 absent="$(run)" || fail "absent gate pass failed"
 printf '%s\n' "$absent" | jq -e \
   '.status == "ok" and .source_audit_gate == "absent" and
    (.source_audit_enabled | not)' >/dev/null || fail "absent gate enabled audit"
 [ ! -e "$cursor" ] || fail "absent gate seeded a cursor"
+expect_invalid_gate() {
+  local label="$1" prior_calls rc
+  prior_calls="$(wc -l <"$MOCK_LOOM_CALLS" | tr -d ' ')"
+  set +e
+  run >"$tmp/$label.out" 2>"$tmp/$label.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 78 ] || fail "$label gate exit changed: $rc"
+  jq -e '.status == "error" and .exit_code == 78
+    and .source_audit_gate == "invalid" and .command == []
+    and (.stderr | contains("no Loom pass ran"))' \
+    "$tmp/$label.out" >/dev/null || fail "$label gate result is incomplete"
+  [ "$(wc -l <"$MOCK_LOOM_CALLS" | tr -d ' ')" = "$prior_calls" ] \
+    || fail "$label gate invoked Loom"
+  [ ! -e "$cursor" ] || fail "$label gate seeded a cursor"
+}
 mkdir -p "$(dirname "$gate")"
 printf '1' >"$gate"
 chmod 600 "$gate"
-malformed="$(run 2>"$tmp/malformed.err")" || fail "malformed gate pass failed"
-printf '%s\n' "$malformed" | jq -e \
-  '.status == "ok" and .source_audit_gate == "invalid" and
-   (.source_audit_enabled | not)' >/dev/null || fail "malformed gate enabled audit"
-[ ! -e "$cursor" ] || fail "malformed gate seeded a cursor"
+expect_invalid_gate malformed
 printf '1\n' >"$tmp/gate-target"
 rm -f "$gate"
 ln -s "$tmp/gate-target" "$gate"
-symlink="$(run 2>"$tmp/symlink.err")" || fail "symlink gate pass failed"
-printf '%s\n' "$symlink" | jq -e '.source_audit_gate == "invalid"' >/dev/null \
-  || fail "symlink gate enabled audit"
+expect_invalid_gate symlink
 rm -f "$gate"
 printf '1\n' >"$gate"
 chmod 644 "$gate"
-wrong_mode="$(run 2>"$tmp/mode.err")" || fail "wrong-mode gate pass failed"
-printf '%s\n' "$wrong_mode" | jq -e '.source_audit_gate == "invalid"' >/dev/null \
-  || fail "wrong-mode gate enabled audit"
+expect_invalid_gate wrong-mode
 chmod 600 "$gate"
 : >"$MOCK_LOOM_CALLS"
 : >"$MOCK_LOOM_ARGS"
@@ -127,6 +135,35 @@ set -e
 [ "$corrupt_rc" -eq 78 ] || fail "malformed state did not fail closed: $corrupt_rc"
 [ "$(wc -l <"$MOCK_LOOM_CALLS" | tr -d ' ')" = "$calls_before" ] \
   || fail "Loom ran with malformed cursor state"
+
+# A substituted cursor cannot select an unaudited primary page. A symlink and
+# a relaxed mode fail before the wrapper reads the cursor or starts Loom.
+printf '%s\n' '{"version":1,"next_cursor":"skipped-page"}' >"$tmp/cursor-target"
+rm -f "$cursor"
+ln -s "$tmp/cursor-target" "$cursor"
+set +e
+run >"$tmp/cursor-symlink.out" 2>"$tmp/cursor-symlink.err"
+cursor_symlink_rc=$?
+set -e
+[ "$cursor_symlink_rc" -eq 78 ] || fail "symlink cursor did not fail closed"
+jq -e '.status == "error" and .command == [] and
+  (.stderr | contains("cursor file is invalid"))' \
+  "$tmp/cursor-symlink.out" >/dev/null || fail "symlink cursor result is incomplete"
+[ "$(wc -l <"$MOCK_LOOM_CALLS" | tr -d ' ')" = "$calls_before" ] \
+  || fail "Loom ran with symlink cursor"
+rm -f "$cursor"
+printf '%s\n' '{"version":1,"next_cursor":"skipped-page"}' >"$cursor"
+chmod 644 "$cursor"
+set +e
+run >"$tmp/cursor-mode.out" 2>"$tmp/cursor-mode.err"
+cursor_mode_rc=$?
+set -e
+[ "$cursor_mode_rc" -eq 78 ] || fail "wrong-mode cursor did not fail closed"
+jq -e '.status == "error" and .command == [] and
+  (.stderr | contains("cursor file is invalid"))' \
+  "$tmp/cursor-mode.out" >/dev/null || fail "wrong-mode cursor result is incomplete"
+[ "$(wc -l <"$MOCK_LOOM_CALLS" | tr -d ' ')" = "$calls_before" ] \
+  || fail "Loom ran with wrong-mode cursor"
 
 # State loss restarts the audit at the first key. It does not silently accept
 # an absent cursor as proof that the next page was already inspected.
