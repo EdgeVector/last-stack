@@ -29,6 +29,14 @@
 #   awk-match-array   macOS awk has no match(s, /re/, arr)
 #   sed-inplace       macOS sed -i needs an extension argument
 #   date-nanos        macOS date has no %N (date +%s%3N prints ...3N)
+#   stat-local-zulu   stat -t with a format ending in a LITERAL Z prints LOCAL
+#                     time and appends Z, so the value is in the exact shape
+#                     every UTC stamp on this fleet uses and is 25200s wrong.
+#                     One-directional: it always reads OLDER, so it manufactures
+#                     stalls and never hides one (measured 2026-10-03, a
+#                     13-minute-old log read as 7 hours stale and nearly became
+#                     a p1 "the refresh agent is dead" finding). TZ=UTC on the
+#                     same line is correct and passes.
 #   printf-dash       printf '- x' / printf '--- x': a format that starts with - is an option
 #   bin-path          /bin/sed, /bin/grep, the /bin temp-file tool ... do not exist on macOS (they are in /usr/bin)
 #   mktemp-suffix     an X run that is not at the END of a mktemp template never substitutes on BSD mktemp
@@ -61,8 +69,13 @@ command_text=""
 have_command=0
 quiet=0
 
+# Print the whole leading comment block, minus the shebang. A line RANGE went
+# stale the moment the header grew: `sed -n '2,36p'` stopped at zsh-mapfile, so
+# --help silently dropped zsh-word-split, home-root-scan, the escape hatch and
+# the entire Usage section. Stop at the first non-comment line instead (the same
+# fix bin/last-stack-lint-bin-authoring already carries for the same defect).
 usage() {
-  sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -76,7 +89,7 @@ while [ "$#" -gt 0 ]; do
     --quiet) quiet=1; shift ;;
     --list-rules)
       printf '%s\n' spin-wait heredoc-backticks dquote-backticks jq-optional-call jq-escaped-quote \
-        awk-match-array sed-inplace date-nanos printf-dash bin-path mktemp-suffix zsh-status zsh-mapfile \
+        awk-match-array sed-inplace date-nanos stat-local-zulu printf-dash bin-path mktemp-suffix zsh-status zsh-mapfile \
         zsh-word-split home-root-scan
       exit 0 ;;
     -h|--help) usage; exit 0 ;;
@@ -115,6 +128,7 @@ rule_slug() {
     awk-match-array) echo papercut-routine-done-when-sweep-awk-match-portability-20260923 ;;
     sed-inplace) echo papercut-macos-sed-inplace-requires-extension-20260923 ;;
     date-nanos) echo papercut-routine-zsh-date-percent-n-no-millisecond-timer-20260923 ;;
+    stat-local-zulu) echo papercut-stat-t-format-prints-local-time-with-a-literal-z-so-a-fresh-log-reads-as-hours-stale-20261003 ;;
     printf-dash) echo papercut-routine-printf-leading-dash-format-20260923 ;;
     bin-path) echo papercut-routine-hard-coded-bin-mktemp-20260923 ;;  # fix form: mktemp "$TMPDIR/x.XXXXXX"
     mktemp-suffix) echo papercut-mktemp-same-template-collides-within-one-second-20260925 ;;
@@ -151,6 +165,11 @@ rule_fix() {
     date-nanos) printf '%s\n' \
       "macOS (BSD) date has no %N, so date +%s%3N prints a literal N and the arithmetic fails." \
       "Use: gdate +%s%3N (GNU coreutils is installed), or date +%s for whole seconds." ;;
+    stat-local-zulu) printf '%s\n' \
+      "In the BSD stat -t format string, %F and %T render from the LOCAL broken-down time and a trailing Z is emitted as a LITERAL character. The result looks like UTC, parses, sorts and compares cleanly, and is 25200 seconds wrong -- always OLDER, so it manufactures stalls." \
+      "To compare ages, never format: age_s=\$(( \$(date +%s) - \$(stat -f %m -- \"\$f\") ))" \
+      "For a human-readable UTC stamp: date -u -r \"\$(stat -f %m -- \"\$f\")\" +%FT%TZ" \
+      "TZ=UTC on the same line also gives the right value and is NOT refused, but it is one missing TZ= away from the same lie; prefer date -u -r." ;;
     printf-dash) printf '%s\n' \
       "A printf format that starts with - is read as an option (bash: printf: --: invalid option)." \
       "Use: printf '%s\\n' '- item'   or   printf -- '- item\\n'" ;;
@@ -221,6 +240,15 @@ re_printf_dash='(^|[;&|({[:space:]])printf[[:space:]]+["'"'"']-'
 re_mktemp_suffix='(^|[^[:alnum:]_-])mktemp([[:space:]]+-[^[:space:]]+)*[[:space:]]+["'"'"']?[^[:space:]"'"'"'`]*XXX+[^[:space:]"'"'"'`(){}|&;<>X]'  # mktemp-ok: this is the recogniser for an mktemp call, not a call
 re_bin_path='(^|[^[:alnum:]_./-])/bin/(mk[t]emp|sed|grep|egrep|awk|find|xargs|sort|uniq|head|tail|wc|tr|cut|jq|env|dirname|basename|timeout|readlink|stat)([^[:alnum:]_-]|$)'
 re_date_nanos='(^|[^[:alnum:]_-])date[[:space:]][^;|&]*%[0-9]*N'
+# stat-local-zulu: a `stat` call whose -t format ends in a literal Z. The
+# char before that final Z must not be `%`, because `%Z` is a real strftime
+# conversion (it prints the zone NAME, honestly) and is not this defect. The
+# two quote styles are spelled as an alternation because POSIX ERE has no
+# backreferences. TZ=UTC anywhere on the line makes the value correct, so it
+# is excluded rather than refused.
+re_stat_word='(^|[^[:alnum:]_-])stat([[:space:]]|$)'
+re_stat_zulu_fmt="-t[[:space:]]+('[^']*[^%']Z'|\"[^\"]*[^%\"]Z\")"
+re_tz_utc='(^|[^[:alnum:]_-])TZ=(UTC|utc|Etc/UTC)([[:space:]]|$)'
 re_zsh_status='(^|;|&&|[|][|]|[({]|(^|[^[:alnum:]_])(do|then|else|export|local|typeset|declare))[[:space:]]*status=|(^|[^[:alnum:]_])read[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*([[:alpha:]_][[:alnum:]_]*[[:space:]]+)*status([[:space:]]|;|$)|(^|[^[:alnum:]_])(local|typeset|declare|integer)[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*status([=[:space:]]|$)|(^|[^[:alnum:]_$])for[[:space:]]+status[[:space:]]+in([[:space:]]|$)'
 re_zsh_mapfile='(^|[;&|({[:space:]])(mapfile|readarray)[[:space:]]'
 # Matches `for x in $VAR` / `for x in ${VAR}`, an unquoted bare scalar
@@ -282,6 +310,10 @@ check_command_line() {
   fi
   if [[ $line =~ $re_date_nanos ]]; then
     reject date-nanos "$line"
+  fi
+  if [[ $line =~ $re_stat_word ]] && [[ $line =~ $re_stat_zulu_fmt ]] \
+     && ! [[ $line =~ $re_tz_utc ]]; then
+    reject stat-local-zulu "$line"
   fi
   if [[ $line =~ $re_printf_dash ]]; then
     reject printf-dash "$line"

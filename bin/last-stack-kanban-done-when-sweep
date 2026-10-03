@@ -34,7 +34,11 @@ limit=25
 max=25
 board_cli="${LAST_STACK_BOARD_CLI:-}"
 eval_bin=""
-here="$(cd "$(dirname "$0")" && pwd -P)"
+# Resolve the symlink chain before taking dirname: this helper is PATH-linked
+# into ~/.local/bin, so a bare-name call leaves $0 pointing at the LINK and
+# `here` would become ~/.local/bin -- where the sibling done-when-eval below
+# does not exist. Same idiom as the other self-locating helpers in bin/.
+here="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")" && pwd -P)"
 
 usage() {
   sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'

@@ -95,7 +95,7 @@ printf '%s' "$out" | grep -q 'last-stack-locate-file' || fail "deny text must na
 
 # 2. Report mode never fails, and counts every finding.
 out="$("$LINT" --report --root "$fx" 2>&1)" || fail "--report must exit 0"
-printf '%s' "$out" | grep -q 'hard=2 nests=2 new_nests=1 retired_nests=0' || fail "report counts wrong: $out"
+printf '%s' "$out" | grep -q 'hard=2 stat_zulu=0 nests=2 new_nests=1 retired_nests=0' || fail "report counts wrong: $out"
 
 # 3. Remove the hard findings; the new nest alone still fails the gate.
 rm "$fx/bin/bad-find" "$fx/bin/bad-rglob"
@@ -111,7 +111,7 @@ printf '%s' "$out" | grep -q 'ONE language' || fail "nest deny must say one lang
 grep -q '^bin/nest-new$' "$baseline" || fail "--write-baseline must record the nest"
 grep -q '^bin/nest-old$' "$baseline" || fail "--write-baseline must keep the old nest"
 out="$("$LINT" --ci --root "$fx" 2>&1)" || fail "gate must pass once the baseline holds every nest: $out"
-printf '%s' "$out" | grep -q '^ok last-stack-lint-bin-authoring hard=0 nests=2' || fail "pass line wrong: $out"
+printf '%s' "$out" | grep -q '^ok last-stack-lint-bin-authoring hard=0 stat_zulu=0 nests=2' || fail "pass line wrong: $out"
 
 # 5. A retired nest is reported, never failed: the baseline only shrinks.
 rm "$fx/bin/nest-old"
@@ -214,5 +214,86 @@ if [ -f "$real_argv_baseline" ]; then
       && fail "$helper must not be baselined: it is the converted reference implementation"
   done
 fi
+
+# 10. The stat-local-zulu class, on its own fixture tree.
+# BSD `stat -t` renders %F/%T in the LOCAL zone and emits a trailing Z as a
+# LITERAL character, so the helper writes local time wearing a UTC marker --
+# 25200s in the past on this host. It parses, sorts and compares cleanly against
+# a real ...Z stamp, and the error is one-directional (always OLDER), so it
+# manufactures stalls and never hides one. Measured twice: six recorded
+# recurrences in last-stack-north-star-dashboard-run
+# (papercut-north-star-dashboard-html-mtime-zulu-is-local, fixed instance-only
+# 2026-09-23 with NO guard), then the class recurred in agent shell on
+# 2026-10-03 and nearly became a p1 "the refresh agent is dead" finding
+# (papercut-stat-t-format-prints-local-time-with-a-literal-z-...-20261003).
+sz="$tmp/stat-zulu-tree"
+mkdir -p "$sz/bin" "$sz/lib"
+
+# The defect, in both format spellings.
+cat >"$sz/bin/stat-lie-short" <<'EOF'
+#!/usr/bin/env bash
+mtime="$(stat -f '%Sm' -t '%FT%TZ' -- "$f")"
+EOF
+cat >"$sz/bin/stat-lie-long" <<'EOF'
+#!/usr/bin/env bash
+mtime="$(stat -f %Sm -t '%Y-%m-%dT%H:%M:%SZ' "$f")"
+EOF
+
+# TZ=UTC makes the value correct: must pass. This is the live spelling in
+# bin/last-stack-north-star-dashboard-run, so a false positive here would turn
+# the real-tree gate red.
+cat >"$sz/bin/stat-tz-utc" <<'EOF'
+#!/usr/bin/env bash
+mtime="$(TZ=UTC stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%SZ' "$f")"
+EOF
+
+# %Z is a real strftime conversion (it prints the zone NAME, honestly), not
+# this defect: must pass.
+cat >"$sz/lib/stat-zone-name.sh" <<'EOF'
+mtime="$(stat -f '%Sm' -t '%FT%T%Z' "$f")"
+EOF
+
+# The two prescribed correct forms must pass. The second is the exact string
+# the deny text prints, so this also pins that the advice does not trip the
+# guard that prints it.
+cat >"$sz/lib/stat-correct.sh" <<'EOF'
+age_s=$(( $(date +%s) - $(stat -f %m -- "$f") ))
+stamp="$(date -u -r "$(stat -f %m -- "$f")" +%FT%TZ)"
+EOF
+
+# A stated exception passes, and a comment is not a call site.
+cat >"$sz/bin/stat-hatch" <<'EOF'
+#!/usr/bin/env bash
+# stat -f '%Sm' -t '%FT%TZ' is the shape this refuses.
+printf '%s\n' "$(stat -f '%Sm' -t '%FT%TZ' "$f")"  # stat-zulu-ok: renders for a human who is told the zone
+EOF
+
+set +e
+out="$("$LINT" --ci --root "$sz" 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 1 ] || fail "a literal-Z stat format must fail the gate, got $rc: $out"
+printf '%s' "$out" | grep -q $'stat-zulu\tbin/stat-lie-short\t2' || fail "missing short-format finding: $out"
+printf '%s' "$out" | grep -q $'stat-zulu\tbin/stat-lie-long\t2' || fail "missing long-format finding: $out"
+printf '%s' "$out" | grep -q 'stat-tz-utc' && fail "TZ=UTC form must pass: $out"
+printf '%s' "$out" | grep -q 'stat-zone-name' && fail "honest %Z conversion must pass: $out"
+printf '%s' "$out" | grep -q 'stat-correct' && fail "the prescribed date -u -r form must pass: $out"
+printf '%s' "$out" | grep -q 'stat-hatch' && fail "stat-zulu-ok line must pass: $out"
+printf '%s' "$out" | grep -q 'date -u -r' || fail "deny text must name the correct form: $out"
+# The shared hard bucket's FAIL text is hard-coded to "unbounded walk(s)", so a
+# stat finding routed there would be MISREPORTED. It has its own bucket and its
+# own message; pin that the walk wording never appears for a stat-only tree.
+printf '%s' "$out" | grep -q 'unbounded walk' && fail "a stat finding must not be reported as a walk: $out"
+printf '%s' "$out" | grep -q 'LITERAL Z' || fail "deny text must name the defect: $out"
+
+# Report mode counts them and never fails.
+out="$("$LINT" --report --root "$sz" 2>&1)" || fail "--report must exit 0"
+printf '%s' "$out" | grep -q 'hard=0 stat_zulu=2' || fail "stat_zulu report count wrong: $out"
+
+# There is no baseline for this class: it is a HARD finding, so removing the
+# two offenders is the only way to green. Unlike a nest, it cannot be accepted.
+rm "$sz/bin/stat-lie-short" "$sz/bin/stat-lie-long"
+out="$("$LINT" --ci --root "$sz" 2>&1)" || fail "gate must pass once the literal-Z formats are gone: $out"
+printf '%s' "$out" | grep -q 'stat_zulu=0' || fail "pass line must carry stat_zulu=0: $out"
 
 echo "PASS last-stack-lint-bin-authoring"
