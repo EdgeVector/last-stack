@@ -21,6 +21,11 @@ export HOST_TRACK_PROBE_SKIP=1
 export PATH="$HOME/.local/bin:$tmp/bin:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 mkdir -p "$HOME/.local/bin" "$tmp/bin" "$tmp/cas"
 
+# A fixed, deliberately OLD proof date: the age the status row prints is what
+# tells a reader a pin is behind because the prover stopped, not because the
+# publish is seconds young, so the test pins a date rather than "now".
+export RESOLVE_PROVED_AT="2026-09-20T00:00:00Z"
+
 oid_one="$(printf '1%.0s' {1..40})"
 oid_two="$(printf '2%.0s' {1..40})"
 oid_three="$(printf '3%.0s' {1..40})"
@@ -61,7 +66,10 @@ if [ "\${RESOLVE_NO_ROW:-0}" = 1 ]; then
 fi
 sha="\$(jq -r --arg a "\$app" '.[\$a] // empty' "$tmp/resolve.json")"
 [ -n "\$sha" ] || { echo "error: app '\$app' is not in the next index" >&2; exit 1; }
-jq -n --arg a "\$app" --arg sha "\$sha" '{app_id:\$a, channel:"next", sha:\$sha, app_version:"1.0.0", lastdb_version:"0.23.3-1-gx", proof_run:"run-x", source:"x"}'
+jq -n --arg a "\$app" --arg sha "\$sha" --arg pa "\${RESOLVE_PROVED_AT:-}" --arg pr "\${RESOLVE_PROOF_RUN-run-x}" \
+  '{app_id:\$a, channel:"next", sha:\$sha, app_version:"1.0.0", lastdb_version:"0.23.3-1-gx", source:"x"}
+   + (if \$pa == "" then {} else {proved_at: \$pa} end)
+   + (if \$pr == "" then {} else {proof_run: \$pr} end)'
 SH
 chmod +x "$tmp/bin/lastdb"
 printf '{"demo":"%s"}\n' "$oid_one" >"$tmp/resolve.json"
@@ -139,6 +147,32 @@ printf '%s\n' "$st" | jq -e '.stale == false and .registry_pin_state == "pinned"
 # papercut-fkanban-host-track-fresh-while-main-ahead-20260923
 printf '%s\n' "$st" | jq -e --arg oid "$oid_two" '.pin_behind_oid == $oid and .stale == false' >/dev/null \
   || fail "pin behind a published head not reported, or stale moved: $st"
+# `pin_behind` alone cannot separate publish lag from a prover that stopped --
+# the two want opposite actions. The proof date and the prover that wrote it
+# are in the resolve JSON host-track already reads, so a row that reports the
+# lag must also report WHY. The whole-day outage this closes:
+# papercut-host-track-registry-pin-lags-behind-published-artifact-20260927
+printf '%s\n' "$st" | jq -e --arg t "$RESOLVE_PROVED_AT" \
+  '.registry_pin_proved_at == $t and .registry_pin_proof_run == "run-x" and (.registry_pin_proof_age_secs | type) == "number" and .registry_pin_proof_age_secs > 0' >/dev/null \
+  || fail "pin behind a head without the proof frontier that explains it: $st"
+row="$("$ROOT/bin/host-track" status demo)"
+case "$row" in
+  *"pin_proved=$RESOLVE_PROVED_AT:age="*"h:by=run-x"*) ;;
+  *) fail "text row drops the proof frontier beside pin_behind: $row" ;;
+esac
+# A resolve row that carries no proved_at must leave the fields empty rather
+# than inventing an age of "now", which would read as a fresh proof.
+st_noat="$(RESOLVE_PROVED_AT= "$ROOT/bin/host-track" status --json demo)"
+# This is also the field-shift discriminator: an EMPTY MIDDLE field is what a
+# `read`-based split collapses, so `proof_run` would land in `proved_at` here.
+printf '%s\n' "$st_noat" | jq -e '.registry_pin_proved_at == null and .registry_pin_proof_age_secs == null and .registry_pin_proof_run == "run-x"' >/dev/null \
+  || fail "a resolve row with no proved_at reported an age, or shifted proof_run into it: $st_noat"
+# An empty proof_run must not shift into proved_at: tab is IFS whitespace, so
+# a `read`-based split collapses the empty field and reports run-x's slot wrong.
+st_norun="$(RESOLVE_PROOF_RUN= "$ROOT/bin/host-track" status --json demo)"
+printf '%s\n' "$st_norun" | jq -e --arg t "$RESOLVE_PROVED_AT" \
+  '.registry_pin_proved_at == $t and .registry_pin_proof_run == null' >/dev/null \
+  || fail "an empty proof_run shifted the TSV fields: $st_norun"
 # And `freshness` must still be one of the three values the fleet branches on.
 printf '%s\n' "$st" | jq -e '. as $r | (["fresh","soft_stale","hard_broken"] | index($r.freshness)) != null' >/dev/null \
   || fail "a pin-behind row invented a new freshness value; 7 sites branch on the literals: $st"
@@ -177,6 +211,8 @@ set -e
 grep -q "no registry row proved with this LastDB build" "$tmp/norow.err" || fail "no-row message: $(cat "$tmp/norow.err")"
 st="$(RESOLVE_NO_ROW=1 "$ROOT/bin/host-track" status --json demo)"
 printf '%s\n' "$st" | jq -e '.registry_pin_state == "no-proved-row" and .stale == false' >/dev/null || fail "no-row status: $st"
+printf '%s\n' "$st" | jq -e '.registry_pin_proved_at == null and .registry_pin_proof_age_secs == null' >/dev/null \
+  || fail "a no-proved-row hold reported a proof date it does not have: $st"
 
 # 6. An app not on the index follows the channel head as before.
 publish_fixture plain "$d3" "$oid_three" $'#!/usr/bin/env bash\necho p1'
