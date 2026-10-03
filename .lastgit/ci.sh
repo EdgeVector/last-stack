@@ -265,6 +265,7 @@ ci_test tests/last-stack-hooks-guards.sh
 # blocked call. Runs in well under a second against local stubs.
 ci_test tests/last-stack-json-capture.sh
 ci_test tests/last-stack-brain-append-heartbeat.sh
+ci_test tests/last-stack-closeout-index.sh
 ci_test tests/last-stack-obs-sentry-locator.sh
 # sentry-triage Step 2/3 policy. It used to be prose in the prompt, where two
 # defects (no sample-event drop, unreachable P3 rule) minted a bad card that
