@@ -524,6 +524,67 @@ def freeze_watch_down(now):
     return None
 
 
+# Every notice this agent posts used to go out as `--kind other --system lastdbd`
+# with no severity hint, because fire() hard-coded one label for all of them. Four
+# of the eleven rules are not about lastdbd at all: fleet_freeze_watchdog_down is
+# about the routines scheduler, and the three host_* rules are about the host. On
+# 2026-10-02 the only alert on the timeline about a silenced routines watchdog read
+# `INFO other systems=lastdbd` three times, so an operator filtering the notices
+# timeline by system could not find it under routines. The rule name already knows
+# the subject; this table is where it stops being thrown away at the render site.
+#
+# severity_hint is `warn` only where the system is REFUSING work or has become
+# UNREPORTABLE — a state an operator must act on, not a threshold crossing. Every
+# pressure rule (swap, load, hog, footprint, cpu, cold-group) stays `info`,
+# because those fire on a bound being crossed and recover on their own. Disagree
+# with that criterion rather than with any single row.
+ALERT_SCOPE = {
+    "fleet_freeze_watchdog_down":      (("routinesd",), "other",   "warn"),
+    "lastdb_persist_lanes_unhealthy":  (("lastdbd",),   "other",   "warn"),
+    "node_unresponsive":               (("lastdbd",),   "other",   "warn"),
+    "lastdbd_restarted":               (("lastdbd",),   "restart", "info"),
+    "lastdb_sync_degraded":            (("lastdbd",),   "other",   "info"),
+    "lastdb_cold_group_near_cap":      (("lastdbd",),   "other",   "info"),
+    "lastdbd_footprint_high":          (("lastdbd",),   "other",   "info"),
+    "lastdbd_cpu_high":                (("lastdbd",),   "other",   "info"),
+    "host_swap_high":                  (("host",),      "other",   "info"),
+    "host_load_high":                  (("host",),      "other",   "info"),
+    "host_process_hog":                (("host",),      "other",   "info"),
+}
+# An unknown name keeps the pre-table behaviour instead of raising: an alert path
+# must never cost the sample. tests/last-stack-load-collector-notice-scope.py is
+# what refuses a rule that ships without a row here.
+ALERT_SCOPE_DEFAULT = (("lastdbd",), "other", "info")
+
+
+def alert_scope(name):
+    return ALERT_SCOPE.get(name, ALERT_SCOPE_DEFAULT)
+
+
+def headline(msg, limit=120):
+    """A one-line title cut on a word boundary, never mid-word.
+
+    `--title msg[:120]` rendered the live notices as "...plist present and va",
+    which reads as a corrupted message rather than an elided one.
+    """
+    msg = " ".join(msg.split())
+    if len(msg) <= limit:
+        return msg
+    cut = msg[:limit - 1]
+    sp = cut.rfind(" ")
+    return (cut[:sp] if sp > limit // 2 else cut).rstrip(" ,;:(") + "\u2026"
+
+
+def notice_argv(sit, name, msg):
+    """The `situations notice` argv for one alert. Pure, so the labels are testable."""
+    systems, kind, sev = alert_scope(name)
+    argv = [sit, "notice", "--title", headline(msg), "--kind", kind]
+    for s in systems:
+        argv += ["--system", s]
+    return argv + ["--severity-hint", sev,
+                   "--actor", "last-stack-load-collector", "--summary", msg]
+
+
 def fire(name, msg, now):
     rec = {"ts": iso(now), "alert": name, "message": msg}
     with open(os.path.join(DIR, "alerts.jsonl"), "a") as f:
@@ -542,10 +603,7 @@ def fire(name, msg, now):
     detach(["osascript", "-e", script])
     sit = os.path.join(HOME, ".local/bin/situations")
     if os.access(sit, os.X_OK):  # best effort: goes through LastDB, never awaited
-        detach(
-            ["/usr/bin/perl", "-e", "alarm 5; exec @ARGV", sit, "notice", "--title", msg[:120],
-             "--kind", "other", "--system", "lastdbd", "--actor", "last-stack-load-collector",
-             "--summary", msg])
+        detach(["/usr/bin/perl", "-e", "alarm 5; exec @ARGV"] + notice_argv(sit, name, msg))
 
 
 def sync_cause(v, now):
