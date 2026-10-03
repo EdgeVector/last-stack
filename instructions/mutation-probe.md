@@ -42,13 +42,23 @@ verdict for anyone to misread.
 | 2 | usage or environment error |
 | 3 | **the patch mutated nothing.** The probe is invalid and there is no verdict. Never read it as a green |
 | 4 | the restore did not return every `--target` to its original bytes. The snapshot directory is kept and printed |
+| 5 | **the patch mutated a file the helper never snapshotted.** That file is still mutated and cannot be restored; the paths are named. Checked before 3 |
 
 ### The rules
 
 1. Probe every guard in the same change that adds it. A guard that cannot fail
    reads as coverage and is worse than none.
-2. Give `--target` every file the patch touches. A mutation outside the targets
-   is invisible to the no-op check and to the restore.
+2. Give `--target` every file the patch touches, including a file the patch
+   only edits in passing. The helper snapshots and restores exactly the
+   targets, so anything else the patch writes survives the probe. It now
+   refuses that with exit 5 and names the paths, but it cannot repair them —
+   you do. Measured 2026-10-03: one probe of twelve deleted a line from a test
+   file that was not a target; the old helper answered exit 3 `mutated=no`, the
+   caller fixed the anchor as instructed, and the re-run happened on a tree
+   that no longer matched the commit
+   (`papercut-mutation-probe-leaves-an-off-target-mutation-in-the-tree-and-calls-it-no-op-20261003`).
+   The window checked is the patch only; a guard test may legitimately write
+   files, so writes made by `--test` are not off-target mutations.
 3. A probe that exits 3 is not a result. Fix the patch anchor and run it again.
 4. When a probe is unexpectedly GREEN after it mutated the file, find out which
    branch ran. Two causes are both real: the negative fixture is too weak to
@@ -76,8 +86,21 @@ verdict for anyone to misread.
    for three files at once, five minutes to unwind
    (`papercut-grep-without-f-on-shell-source-answers-zero-and-reads-as-a-destroyed-file-20261003`).
    If you want a second reader anyway, use `git status --short`, which answers
-   about the tree rather than about a regex.
-8. **An unexpected GREEN with `mutated=yes` is a reachability question, not a
+   about the tree rather than about a regex — but know its limit, measured
+   2026-10-03: the status LIST is blind to an edit of a file that was already
+   modified, because the line reads `' M path'` before and after. That is why
+   exit 5 compares a content id per dirty path and not the list. `git diff` is
+   the reader that sees it.
+8. **Exit 5 means the tree is dirty and you must repair it.** `mutated=no` and
+   `OUTSIDE --target` are different mistakes with different repairs: 3 says the
+   patch did nothing, 5 says the patch did something nobody snapshotted. Exit 5
+   is reported first for exactly that reason — exit 3's advice is "fix the
+   anchor and run it again", which on an off-target mutation is taken on a tree
+   that no longer matches the commit. Repair the named paths, then either add
+   them to `--target` or keep the patch inside the targets. Outside a git
+   worktree the check cannot run and the report says `offtarget=unchecked`;
+   that is not `none`.
+9. **An unexpected GREEN with `mutated=yes` is a reachability question, not a
    verdict on the guard.** The helper has proved the bytes changed, so the two
    live explanations are both about the code: the property is protected twice
    (item: try a COMBINED mutation that removes both protections), or a LATER
