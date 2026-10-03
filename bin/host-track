@@ -28,6 +28,8 @@ else
   REGISTRY_IS_DEFAULT=1
 fi
 STAMP_DIR="${HOST_TRACK_STAMP_DIR:-$HOME/.host-track/stamps}"
+FRONTIER_DIR="${HOST_TRACK_FRONTIER_DIR:-$HOME/.local/state/last-stack/host-track-frontier}"
+_HT_VERB="${_HT_VERB:-host-track}"
 ARTIFACT_ROOT_DEFAULT="${HOST_TRACK_ARTIFACT_ROOT:-$HOME/.lastgit/artifacts}"
 INSTALL_ROOT_DEFAULT="${HOST_TRACK_INSTALL_ROOT:-$HOME/.host-track/apps}"
 # Serialize install/refresh/rollback so concurrent launchd + post-merge + manual
@@ -77,6 +79,9 @@ Usage:
 Environment:
   HOST_TRACK_REGISTRY   Registry JSON path (default: last-stack config)
   HOST_TRACK_STAMP_DIR  Stamp directory (default: ~/.host-track/stamps)
+  HOST_TRACK_FRONTIER_DIR  Registry-frontier observation cache, written while
+                        a registry pin is holding an install
+                        (default: ~/.local/state/last-stack/host-track-frontier)
   HOST_TRACK_ARTIFACT_ROOT  LastGit artifact CAS (default: ~/.lastgit/artifacts)
   HOST_TRACK_INSTALL_ROOT   Immutable app installs (default: ~/.host-track/apps)
   HOST_TRACK_PROBE_SKIP=1   Tom-only: skip functional probe (do not use casually)
@@ -1191,6 +1196,110 @@ registry_compliance_for() {
   printf 'non_compliant\n'
 }
 
+# The build-match verdict: does the index's newest row name the build this host
+# runs? One function, because two sites ask it -- `status_json_for` renders it as
+# registry_index_build_match and frontier_observe stores it -- and a reader who
+# corrected one copy would not know the other existed.
+registry_build_match() {
+  local newest="$1" running="$2"
+  if [ -z "$newest" ] || [ -z "$running" ]; then
+    # One side of the comparison is missing, so there is no verdict. Never
+    # "no-rows": that is a positive claim about the index's contents.
+    printf 'unread\n'
+  elif [ "$newest" = "$running" ]; then
+    printf 'match\n'
+  else
+    printf 'mismatch\n'
+  fi
+}
+
+# The frontier observation cache: how a program that is NOT host-track learns
+# that a registry pin is holding this host's installs, and why.
+#
+# WHY IT IS WRITTEN FROM status_json_for, and not from the hold path in
+# artifact_desired_manifest where the refusal is printed. Measured 2026-10-03,
+# and both readings matter:
+#
+#   * `refresh_app` calls `status_json_for "$app"` for EVERY app on every tick,
+#     and `com.edgevector.host-track-refresh` runs `refresh --all` every 1200 s.
+#     So the five pin-lag fields are already computed unattended, 17 times every
+#     20 minutes, and this write costs no extra read of anything.
+#   * the rc 2 arm of artifact_desired_manifest does NOT fire during the state
+#     this cache exists to report. `routines` was undeliverable for 34 h while
+#     `lastdb app resolve routines --channel next` answered rc 0 the whole time,
+#     with the newest row proved for the running build on 2026-10-01T22:10:27Z
+#     and resolving to the oid ALREADY installed. The published head had moved
+#     past it. The last `has no registry row proved with this LastDB build`
+#     line for that app is dated 2026-10-02T00:16Z -- 124 lines per app, all
+#     from before the row landed. So the frozen state prints nothing at all,
+#     not even to the stderr log nobody reads.
+#
+# A hook on the printed refusal would therefore have been silent for exactly
+# the outage it was written for.
+# papercut-host-track-pin-lag-fields-are-rendered-to-nobody-no-classifier-or-notice-reads-them-20261003
+#
+# The file is REMOVED the moment the pin stops holding. A resolved freeze must
+# stop being reported, and no consumer should have to guess whether an old file
+# means "still held" or "nobody looked".
+#
+# first_observed_at is preserved across writes, so a consumer can tell a
+# continuous hold from a flap. Two concurrent writers (the refresh agent and a
+# hand-run) can both read before either writes, which resets it once. That is
+# the safe direction and was chosen knowingly: the consumer's predicate asks
+# whether a proof row landed AFTER the hold began, so a reset delays an alert by
+# one prover tick and can never manufacture one.
+frontier_file() {
+  printf '%s/%s.json\n' "$FRONTIER_DIR" "$1"
+}
+
+frontier_clear() {
+  local f
+  f="$(frontier_file "$1")"
+  # Guarded on existence so a healthy fleet does not spawn one `rm` per app per
+  # status call. 15 of 17 apps here are never held.
+  [ -e "$f" ] || return 0
+  rm -f "$f" 2>/dev/null || true
+}
+
+# Record that a registry pin is holding this app behind a published head. Takes
+# the fields status_json_for has already computed, so it reads nothing. Never
+# fails the caller: an unwritable cache must not break `status`.
+frontier_observe() {
+  local app="$1" running="$2" nv="$3" nat="$4" noid="$5" match="$6"
+  local f tmp first now_iso
+  f="$(frontier_file "$app")"
+  mkdir -p "$FRONTIER_DIR" 2>/dev/null || return 0
+  now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  first=""
+  if [ -f "$f" ]; then
+    first="$(jq -r '.first_observed_at // "" | select(. != "null")' "$f" 2>/dev/null || true)"
+  fi
+  [ -n "$first" ] || first="$now_iso"
+  tmp="$f.tmp.$$"
+  if jq -n \
+      --arg app "$app" \
+      --arg observer "$_HT_VERB" \
+      --arg observed_at "$now_iso" \
+      --arg first_observed_at "$first" \
+      --arg running_lastdb_version "$running" \
+      --arg index_newest_version "$nv" \
+      --arg index_newest_proved_at "$nat" \
+      --arg index_newest_oid "$noid" \
+      --arg index_build_match "$match" \
+      '{app: $app, observer: $observer, observed_at: $observed_at,
+        first_observed_at: $first_observed_at, hold: "pin-behind",
+        running_lastdb_version: ($running_lastdb_version | select(length > 0) // null),
+        index_newest_version: ($index_newest_version | select(length > 0) // null),
+        index_newest_proved_at: ($index_newest_proved_at | select(length > 0) // null),
+        index_newest_oid: ($index_newest_oid | select(length > 0) // null),
+        index_build_match: $index_build_match}' >"$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$f" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+  else
+    rm -f "$tmp" 2>/dev/null || true
+  fi
+  return 0
+}
+
 status_json_for() {
   local app="$1" json kind command_name gate gate_main host_track_raw host_track refresh_raw refresh_path
   local gate_remote gate_ref notes exec_path host_head host_head_short version gate_tip stale stamp_path
@@ -1487,24 +1596,27 @@ status_json_for() {
             registry_index_newest_version="$(cut -f1 <<<"$newest_row")"
             registry_index_newest_at="$(cut -f2 <<<"$newest_row")"
             registry_index_newest_oid="$(cut -f3 <<<"$newest_row")"
-            if [ -z "$registry_index_newest_version" ] || [ -z "$registry_lastdb_version" ]; then
-              # One side of the comparison is missing, so there is no verdict.
-              registry_index_build_match="unread"
-            elif [ "$registry_index_newest_version" = "$registry_lastdb_version" ]; then
-              # The frontier is on this host's build: its AGE is the question,
-              # and registry_pin_proof_age_secs already answers it. Deliberately
-              # NOT called `prover-stalled` here -- a pin three minutes behind a
-              # fresh publish reaches this arm too, and `status` must not label
-              # ordinary publish lag a stalled prover.
-              registry_index_build_match="match"
-            else
-              registry_index_build_match="mismatch"
-            fi
+            # `match` is deliberately NOT called `prover-stalled`: a pin three
+            # minutes behind a fresh publish reaches that arm too, and `status`
+            # must not label ordinary publish lag a stalled prover.
+            # registry_pin_proof_age_secs already carries the age.
+            registry_index_build_match="$(registry_build_match \
+              "$registry_index_newest_version" "$registry_lastdb_version")"
             ;;
           2) registry_index_build_match="no-rows" ;;
           *) registry_index_build_match="unread" ;;
         esac
       fi
+    fi
+    # Publish the observation for consumers that are not host-track. Written
+    # here because this is where the fields exist and where refresh --all
+    # already recomputes them every 1200 s; see frontier_observe.
+    if [ -n "$pin_behind_oid" ]; then
+      frontier_observe "$app" "$registry_lastdb_version" \
+        "$registry_index_newest_version" "$registry_index_newest_at" \
+        "$registry_index_newest_oid" "$registry_index_build_match"
+    else
+      frontier_clear "$app"
     fi
     # gate_head for check/stale is the published channel oid, not lastgit main.
     # Unpublished main is main_unpublished. Pickup must not wait on that lag.
@@ -4575,6 +4687,10 @@ main() {
   # For mutations that rewrite PATH / versions trees, re-exec from a temp copy
   # so self-replace of ~/.local/bin/host-track cannot unmap this process.
   maybe_reexec_for_mutation "$@"
+
+  # The frontier observation names the verb that wrote it, so a consumer
+  # reasoning about cadence is not told "refresh" by a hand-run.
+  _HT_VERB="${1:-host-track}"
 
   case "${1:-}" in
     status) shift; status_cmd "$@" ;;
