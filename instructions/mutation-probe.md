@@ -77,3 +77,15 @@ verdict for anyone to misread.
    (`papercut-grep-without-f-on-shell-source-answers-zero-and-reads-as-a-destroyed-file-20261003`).
    If you want a second reader anyway, use `git status --short`, which answers
    about the tree rather than about a regex.
+8. **An unexpected GREEN with `mutated=yes` is a reachability question, not a
+   verdict on the guard.** The helper has proved the bytes changed, so the two
+   live explanations are both about the code: the property is protected twice
+   (item: try a COMBINED mutation that removes both protections), or a LATER
+   statement neutralizes your mutation. Measured 2026-10-03 while shipping the
+   `pr-venue` identity gate: a probe wrote a field in one block and the
+   variable was `=""` initialized forty lines further down, so the
+   contamination was wiped and the assertion read as a working guard when it
+   was only statement order. `grep -n '<var>=""'` against the patch site
+   settles it in one command. Prefer moving the declaration up beside the other
+   state over leaving the protection positional — then the probe goes RED and
+   the guard is real.
