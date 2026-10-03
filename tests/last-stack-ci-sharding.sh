@@ -12,8 +12,20 @@ grep -Fq 'test_slot=$((ci_test_index % CI_SHARD_COUNT))' "$CI" || {
   echo "required CI must assign each test to exactly one shard" >&2
   exit 1
 }
-grep -Fq 'if ! wait "$shard_pid"; then shard_failed=1; failed_shards="${failed_shards} ${shard_index}"; fi' "$CI" || {
-  echo "required CI must wait for every shard and keep any failure" >&2
+# The wait loop must collect every shard's failure AND keep its exit status.
+# The status was discarded until 2026-10-03, so a signal and a red test printed
+# the same word
+# (papercut-ci-shard-exits-non-zero-with-no-failing-test-and-renders-as-a-plain-failed-20261003).
+grep -Fq 'wait "$shard_pid" || shard_rc=$?' "$CI" || {
+  echo "required CI must wait for every shard and keep its exit status" >&2
+  exit 1
+}
+grep -Fq 'failed_shards="${failed_shards} ${shard_index}"' "$CI" || {
+  echo "required CI must keep the index of every failing shard" >&2
+  exit 1
+}
+grep -Fq 'shard_rcs="${shard_rcs} ${shard_index}:${shard_rc}"' "$CI" || {
+  echo "required CI must keep each failing shard's exit status for the marker" >&2
   exit 1
 }
 grep -Fq 'if [ "$shard_failed" -ne 0 ]' "$CI" || {
@@ -24,7 +36,16 @@ grep -Fq 'echo "ci_test start: $*"' "$CI" || {
   echo "required CI must print each scheduled test path before it runs" >&2
   exit 1
 }
-grep -Fq 'echo "----- last-stack CI shard ${failed_index} FAILED -----"' "$CI" || {
+# Failing shard logs come last so the stored status tail names them, and the
+# marker above each one is produced by ci_shard_failure_marker, which separates
+# a red test from a shard that exited non-zero with nothing red in it. Its three
+# branches are asserted behaviourally in tests/last-stack-ci-shard-supervisor.sh;
+# here we only pin that the gate calls it instead of printing a bare word.
+grep -Fq 'ci_shard_failure_marker "$failed_index" "$failed_rc"' "$CI" || {
+  echo "required CI must classify each failing shard instead of printing a bare FAILED" >&2
+  exit 1
+}
+grep -Fq 'cat "$CI_SHARD_LOG_DIR/$failed_index.log"' "$CI" || {
   echo "required CI must emit failing shard logs last so the status tail names them" >&2
   exit 1
 }

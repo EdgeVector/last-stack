@@ -51,6 +51,45 @@ ci_shard_stop() {  # pid
   kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
 }
 
+# Did any test in this shard report a failure?
+#
+# A shard's only two failure paths both leave a `ci_test done: ... rc=<non-zero>`
+# line in its log: `ci_test` returns the test's status (and prints the done line
+# first), and `ci_report_failed_tests` only returns 1 after at least one such
+# line. Nothing else in a shard runs at top level. So a shard whose exit status
+# is non-zero with no such line did NOT stop on a failing test, and saying
+# "FAILED" there points the reader at a test that does not exist.
+ci_shard_has_failing_test() {  # log
+  grep -qE '^ci_test done: .* rc=[1-9][0-9]*( |$)' "$1" 2>/dev/null
+}
+
+# The marker line that introduces a failing shard's log.
+#
+# The caller holds two facts the reader never saw: the shard's exit status, and
+# whether the supervisor stopped it at the deadline. Both were discarded, so a
+# signal, a crash and a red test rendered as the same word. Three cases now:
+# stopped at the deadline (already honest before this), a real test failure, and
+# a non-zero status with no failing test -- which is the case that used to cost
+# a reader fifteen minutes of grepping a log in which every test passed.
+# papercut-ci-shard-exits-non-zero-with-no-failing-test-and-renders-as-a-plain-failed-20261003
+ci_shard_failure_marker() {  # index rc log running-at-deadline
+  local index="$1" rc="$2" log="$3" at_deadline="${4:-}"
+  case " ${at_deadline} " in
+    *" ${index} "*)
+      echo "----- last-stack CI shard ${index} STOPPED AT DEADLINE (a timeout, not a test failure; exit ${rc}) -----"
+      return 0
+      ;;
+  esac
+  if ci_shard_has_failing_test "$log"; then
+    echo "----- last-stack CI shard ${index} FAILED (exit ${rc}) -----"
+    return 0
+  fi
+  echo "----- last-stack CI shard ${index} EXITED NON-ZERO WITH NO FAILING TEST (exit ${rc}) -----"
+  echo "  no 'ci_test done: ... rc=<non-zero>' line in this shard's log, so no test in it reported a failure."
+  echo "  exit ${rc} is not a test's status: 128+N is a signal (143=SIGTERM, 137=SIGKILL). Suspect a"
+  echo "  concurrent gate run in the same tree, an outside kill, or a crash after the last test."
+}
+
 # ci_supervise_shards LOG_DIR PROGRESS_SECS DEADLINE_SECS PID...
 #   LOG_DIR/<index>.log is the log of the shard at position <index>.
 #   PROGRESS_SECS 0 disables the heartbeat; DEADLINE_SECS 0 disables the budget.

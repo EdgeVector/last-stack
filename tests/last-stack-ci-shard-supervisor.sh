@@ -149,6 +149,87 @@ grep -q 'ci_host_lock stale' "$out" || fail "a dead holder was not detected: $(c
 [ "$CI_HOST_LOCK_HELD" = "$lock" ] || fail "a stale lock was not taken over"
 ci_host_lock_release
 
+# --- Case 4: the failing-shard marker names the cause ----------------------
+# A shard whose status was non-zero with no failing test used to render as a
+# bare "FAILED", so the reader grepped a log in which every test passed. These
+# cases are hermetic on purpose: the classification reads a LOG, not a process,
+# so a crafted log is the whole fixture and the case costs no wall clock.
+# papercut-ci-shard-exits-non-zero-with-no-failing-test-and-renders-as-a-plain-failed-20261003
+logs="$TMP_ROOT/case4"
+mkdir -p "$logs"
+
+# 4a: a genuine red test.
+cat >"$logs/0.log" <<'LOG'
+ci_test start: tests/a.sh
+ci_test done: tests/a.sh rc=0 secs=1
+ci_test start: tests/b.sh
+ci_test done: tests/b.sh rc=1 secs=2
+LOG
+marker="$(ci_shard_failure_marker 0 1 "$logs/0.log" "")"
+case "$marker" in
+  *"shard 0 FAILED (exit 1)"*) ;;
+  *) fail "a red test must render as FAILED with its exit status: $marker" ;;
+esac
+case "$marker" in
+  *"NO FAILING TEST"*) fail "a red test was reported as having no failing test: $marker" ;;
+esac
+
+# 4b: non-zero status, every test green. The case the papercut measured.
+# The log also carries the three strings that made the real log misleading to
+# grep -- fixture FAIL lines and an rc=1 that is not a `ci_test done` line. A
+# classifier that greps for "FAIL" or "rc=1" anywhere passes 4a and fails here,
+# which is why the negative fixture supplies WRONG values and not absent ones.
+cat >"$logs/1.log" <<'LOG'
+ci_test start: tests/a.sh
+FAIL: north-star-lastgit-pack-blobs-b2-migration
+FAIL machine-leak: 1 new soft host-identity hit
+host-track: probe attempt 1/3 failed ... rc=1
+ci_test done: tests/a.sh rc=0 secs=1
+ci_test start: tests/b.sh
+ci_test done: tests/b.sh rc=0 secs=3
+LOG
+marker="$(ci_shard_failure_marker 1 143 "$logs/1.log" "")"
+case "$marker" in
+  *"shard 1 EXITED NON-ZERO WITH NO FAILING TEST (exit 143)"*) ;;
+  *) fail "a shard that died with no red test must say so, and name its status: $marker" ;;
+esac
+case "$marker" in
+  *"128+N is a signal"*) ;;
+  *) fail "the marker must tell the reader what a 128+N status means: $marker" ;;
+esac
+case "$marker" in
+  *"shard 1 FAILED"*) fail "a shard with no failing test still rendered as FAILED: $marker" ;;
+esac
+
+# 4c: the deadline arm wins, and it also carries the status now. A timeout must
+# never be relabelled as "no failing test" -- its log legitimately has none.
+marker="$(ci_shard_failure_marker 1 143 "$logs/1.log" " 1 ")"
+case "$marker" in
+  *"shard 1 STOPPED AT DEADLINE (a timeout, not a test failure; exit 143)"*) ;;
+  *) fail "a shard stopped at the deadline must still say timeout, with its status: $marker" ;;
+esac
+case "$marker" in
+  *"NO FAILING TEST"*) fail "a deadline stop was reclassified as no failing test: $marker" ;;
+esac
+
+# 4d: a multi-digit rc is a failing test. `rc=[1-9]` alone would be enough here,
+# but a pattern anchored on a single digit would miss rc=10 and silently move a
+# red shard into the "no failing test" class, which is the worse direction.
+cat >"$logs/2.log" <<'LOG'
+ci_test start: tests/c.sh
+ci_test done: tests/c.sh rc=10 secs=1
+LOG
+marker="$(ci_shard_failure_marker 2 10 "$logs/2.log" "")"
+case "$marker" in
+  *"shard 2 FAILED (exit 10)"*) ;;
+  *) fail "rc=10 is a failing test: $marker" ;;
+esac
+
+# 4e: the predicate on its own, both directions, so a change to the marker's
+# wording cannot hide a change to what it classifies.
+ci_shard_has_failing_test "$logs/0.log" || fail "a log with rc=1 has a failing test"
+if ci_shard_has_failing_test "$logs/1.log"; then fail "fixture FAIL text is not a failing test"; fi
+
 # --- Wiring: the gate uses the supervisor and exits 124 on a deadline ------
 CI="$ROOT/.lastgit/ci.sh"
 grep -Fq '. "$ROOT/lib/ci-shard-supervisor.sh"' "$CI" || fail "ci.sh does not source the supervisor"
@@ -157,6 +238,11 @@ grep -Fq 'exit 124' "$CI" || fail "ci.sh does not exit 124 on a deadline"
 grep -Fq 'ci_host_lock_acquire' "$CI" || fail "ci.sh does not take the host lock"
 grep -Fq 'LAST_STACK_CI_HOST_LOCK:-0' "$CI" || fail "ci.sh no longer lets a Mac host job opt into the host lock"
 grep -Fq 'echo "ci_test done: $* rc=${ci_test_rc} secs=' "$CI" || fail "ci_test does not print a done line"
+# The status `wait` produces must reach the marker. Without these two the gate
+# can keep every classification branch and still print "exit ?" for all of them,
+# or drop the marker call and fall back to a bare FAILED.
+grep -Fq 'wait "$shard_pid" || shard_rc=$?' "$CI" || fail "ci.sh discards each shard's exit status"
+grep -Fq 'ci_shard_failure_marker "$failed_index"' "$CI" || fail "ci.sh does not classify a failing shard"
 # A main push must never cancel the earlier main publish run
 # (papercut-forge-main-publish-starved-by-cancel-in-progress-20260922). Without
 # this rule a push cancels the earlier main run and host-track stops getting
