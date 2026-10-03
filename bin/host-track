@@ -457,6 +457,77 @@ artifact_paths() {
   printf '%s\t%s\t%s\t%s\n' "$artifact_app" "$channel" "$artifact_root" "$install_root"
 }
 
+# ── An abandoned install root still answers reads ───────────────────────────
+# `INSTALL_ROOT_DEFAULT/<app>` is the install root for most apps, so every
+# standing instruction for proving a merge installed greps
+# `~/.host-track/apps/<app>/current`. An app that declares its own
+# `install_root` has moved away from that path, and the move left the old tree
+# in place: complete, plausible and resolvable. It then answers reads with
+# pre-migration bytes, so the uniform check reports a delivered fix as
+# undelivered — and because that grep is the advice written down precisely
+# BECAUSE the status stamp has lied before, the more careful the reader is, the
+# more confidently it is wrong.
+#
+# Measured 2026-10-02 and again 2026-10-03 on `last-stack`: 1 of 17 apps. The
+# other 13 artifact apps have `install_root == INSTALL_ROOT_DEFAULT/<app>`, so
+# the equality test below excludes them by construction — this can never touch
+# a root an app still installs into.
+#
+# An ABSENT path fails loudly and sends the reader to `host-track status`. A
+# populated stale one fails silently and answers confidently.
+legacy_install_root_decoy() {
+  # Print the abandoned root when this app has one; return 1 when it does not.
+  local app="$1" json="$2" install_root legacy live_resolved legacy_resolved
+  [ "$(setting "$json" install_mode)" = "artifact" ] || return 1
+  IFS=$'\t' read -r _ _ _ install_root < <(artifact_paths "$app" "$json")
+  [ -n "$install_root" ] || return 1
+  legacy="$INSTALL_ROOT_DEFAULT/$app"
+  # Resolve both before comparing: a symlinked HOME (or a relative
+  # HOST_TRACK_INSTALL_ROOT) must not make one path look like two.
+  live_resolved="$(readlink -f "$install_root" 2>/dev/null || true)"
+  [ -n "$live_resolved" ] || live_resolved="$install_root"
+  legacy_resolved="$(readlink -f "$legacy" 2>/dev/null || true)"
+  [ -n "$legacy_resolved" ] || legacy_resolved="$legacy"
+  [ "$live_resolved" != "$legacy_resolved" ] || return 1
+  # Only a root that still ANSWERS a read is a decoy. A bare directory with no
+  # current/previous pointer misleads nobody, and a `versions/` tree alone is
+  # not what the standing instruction greps.
+  [ -L "$legacy/current" ] || [ -L "$legacy/previous" ] || return 1
+  printf '%s\n' "$legacy"
+}
+
+retire_legacy_install_root() {
+  # Move an abandoned root aside; never delete it. The bytes may still be
+  # wanted and absence is all the honesty this needs. Non-fatal throughout: a
+  # refresh must not die because a leftover could not be moved.
+  local app="$1" json="$2" legacy dest note stamp
+  legacy="$(legacy_install_root_decoy "$app" "$json")" || return 0
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  dest="$INSTALL_ROOT_DEFAULT/.relocated/$app-$stamp"
+  if ! mkdir -p "$INSTALL_ROOT_DEFAULT/.relocated" 2>/dev/null; then
+    printf 'host-track: %s could not create the relocation dir; abandoned install root %s still answers reads\n' \
+      "$app" "$legacy" >&2
+    return 0
+  fi
+  if ! mv "$legacy" "$dest" 2>/dev/null; then
+    printf 'host-track: %s could not retire abandoned install root %s; it still answers reads\n' \
+      "$app" "$legacy" >&2
+    return 0
+  fi
+  # A breadcrumb where the decoy used to be, so `ls` in the apps dir explains
+  # the absence instead of only showing it.
+  note="$legacy.relocated"
+  {
+    printf '%s was this app'"'"'s install root before it moved.\n' "$legacy"
+    printf 'Retired %s because it still resolved and answered reads with\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'pre-migration bytes. Contents moved to:\n  %s\n' "$dest"
+    printf 'What actually runs: read host_track in `host-track status %s`.\n' "$app"
+  } > "$note" 2>/dev/null || true
+  printf 'host-track: %s retired abandoned install root %s -> %s (it answered reads with pre-migration bytes)\n' \
+    "$app" "$legacy" "$dest" >&2
+}
+
 artifact_channel_manifest() {
   local artifact_root="$1" artifact_app="$2" channel="$3" path
   path="$artifact_root/channels/$artifact_app/$channel.json"
@@ -2232,6 +2303,7 @@ report_missing_link_targets() {
 check_cmd() {
   local app="${1:-}" status exec_path stale json install_mode artifact_problem
   local exemption_kind deployment_problem shadow_install_root requires_plan_out requires_gap
+  local legacy_decoy
   [ -n "$app" ] || die "check requires an app"
   status="$(status_json_for "$app")"
   exec_path="$(printf '%s\n' "$status" | jq -r '.exec_path // ""')"
@@ -2269,6 +2341,13 @@ check_cmd() {
     IFS=$'\t' read -r _ _ _ shadow_install_root < <(artifact_paths "$app" "$json")
     report_path_shadows "$app" "$shadow_install_root"
     report_missing_link_targets "$app" "$json" "$shadow_install_root"
+    # Reported, not failed: the app is healthy, the LEFTOVER is the liar, and
+    # the next refresh retires it. Failing here would make `check` red on every
+    # host that simply has not refreshed yet.
+    if legacy_decoy="$(legacy_install_root_decoy "$app" "$json")"; then
+      printf 'host-track: %s has an abandoned install root at %s that still resolves; it is NOT what runs (read host_track in `host-track status %s`). The next refresh retires it.\n' \
+        "$app" "$legacy_decoy" "$app" >&2
+    fi
   fi
   if [ "$stale" = "true" ]; then
     exemption_kind="$(printf '%s\n' "$status" | jq -r '.artifact_exemption.kind // ""')"
@@ -4038,6 +4117,9 @@ refresh_app() {
   # Promote a deployable main oid even when the live tree is already on channel.
   # Else LaunchAgent --force-if-stale no-ops and never catches a published tip.
   if [ "$install_mode" = "artifact" ]; then
+    # Before the promote and before the already-current fast path: a leftover
+    # root costs one stat to find and misleads every reader until it is gone.
+    retire_legacy_install_root "$app" "$json"
     artifact_promote_channel_to_main "$app" "$json" ""
   fi
   status="$(status_json_for "$app")"

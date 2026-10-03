@@ -66,3 +66,14 @@ verdict for anyone to misread.
    Make the patch assert its own anchor count (`assert s.count(old) == 1`) and
    exit non-zero otherwise — then a bad anchor is two independent errors instead
    of one silent one.
+7. **`restored=ok` IS the restore evidence. Do not re-check it by hand.** The
+   helper compares bytes against the snapshot it took, and exit 4 is the only
+   honest way for a restore to fail. A `grep` run afterwards to reassure
+   yourself is not a second opinion, it is a second chance to be wrong: a
+   single-quoted literal pattern containing `"$file"` answers 0 on a file that
+   does contain the line, because `$` is an end-of-line anchor — and a 0 there
+   reads as a probe having destroyed your source. Measured 2026-10-03, reported
+   for three files at once, five minutes to unwind
+   (`papercut-grep-without-f-on-shell-source-answers-zero-and-reads-as-a-destroyed-file-20261003`).
+   If you want a second reader anyway, use `git status --short`, which answers
+   about the tree rather than about a regex.

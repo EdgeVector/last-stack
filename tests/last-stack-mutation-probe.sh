@@ -179,6 +179,9 @@ require 'changed no byte' "$doc"
 require 'the patch mutated nothing' "$doc"
 require '--expect green' "$doc"
 require 'Put the patch in its own file' "$doc"
+# A hand `grep` after a probe is not a second opinion on the restore; it is a
+# second chance to be wrong, and it reported three destroyed files on 2026-10-03.
+require 'IS the restore evidence' "$doc"
 require "MP_START='<!-- last-stack:mutation-probe:start" "$setup"
 require "MP_END='<!-- last-stack:mutation-probe:end -->'" "$setup"
 require 'strip_managed_md_block "$file" "$MP_START" "$MP_END"' "$setup"
