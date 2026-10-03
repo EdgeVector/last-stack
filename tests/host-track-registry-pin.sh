@@ -58,6 +58,47 @@ chmod +x "$tmp/bin/lastgit"
 # absent from the table is "not in the index"; RESOLVE_NO_ROW=1 is "no row".
 cat > "$tmp/bin/lastdb" <<SH
 #!/usr/bin/env bash
+# \`--version\` is what host-track compares the index's newest row against.
+if [ "\$1" = --version ]; then
+  echo "lastdb \${STUB_LASTDB_VERSION:-0.23.3-1-gx}"; exit 0
+fi
+# \`app info\` returns the whole compat list, across ALL builds -- the read that
+# discriminates a stalled prover from a build mismatch.
+if [ "\$1" = app ] && [ "\$2" = info ]; then
+  [ "\$3" = --help ] && { echo usage; exit 0; }
+  echo "info \$*" >>"$tmp/info-calls.log"
+  [ "\${INFO_UNSUPPORTED:-0}" = 1 ] && { echo "error: unrecognized subcommand 'info'" >&2; exit 2; }
+  [ "\${INFO_FAIL:-0}" = 1 ] && { echo "error: failed to read index" >&2; exit 1; }
+  app="\$3"; shift 3
+  channel="" index=""
+  while [ "\$#" -gt 0 ]; do
+    case "\$1" in
+      --channel) channel="\$2"; shift 2 ;;
+      --index) index="\$2"; shift 2 ;;
+      *) echo "error: unexpected argument '\$1'" >&2; exit 2 ;;
+    esac
+  done
+  # The stub REFUSES a wrong channel or a wrong index. A stub that answers for
+  # any value lets the plumbing read as covered when it is not: measured on the
+  # why-stopped fixture the same day, where a channel read from the wrong column
+  # still got a good answer and its mutation probe came back green.
+  [ "\$channel" = next ] || { echo "error: no channel '\$channel'" >&2; exit 2; }
+  [ "\$index" = "\${EXPECT_INFO_INDEX:-http://forge.test/registry}" ] \
+    || { echo "error: wrong index '\$index'" >&2; exit 2; }
+  if [ "\${INFO_NO_ROWS:-0}" = 1 ]; then
+    jq -n --arg a "\$app" '{app_id:\$a, source:"x", compat:[]}'; exit 0
+  fi
+  jq -n --arg a "\$app" \
+    --arg nv "\${INFO_NEWEST_VERSION-0.23.3-1-gx}" \
+    --arg na "\${INFO_NEWEST_AT:-2026-09-29T00:00:00Z}" \
+    --arg ns "\${INFO_NEWEST_SHA:-$oid_four}" \
+    '{app_id:\$a, source:"x", compat:[
+        {app_version:"1.0.0", sha:"0000", lastdb_version:"0.23.3-0-gold",
+         proved_at:"2026-09-01T00:00:00Z", proof_run:"old-run"},
+        {app_version:"1.0.0", sha:\$ns, lastdb_version:\$nv,
+         proved_at:\$na, proof_run:("run-" + \$nv)}]}'
+  exit 0
+fi
 [ "\$1" = app ] && [ "\$2" = resolve ] || { echo unknown >&2; exit 2; }
 [ "\$3" = --help ] && { echo usage; exit 0; }
 app="\$3"
@@ -184,6 +225,112 @@ printf '%s\n' "$st" | jq -e '. as $r | (["fresh","soft_stale","hard_broken"] | i
   || fail "a pin-behind row invented a new freshness value; 7 sites branch on the literals: $st"
 "$ROOT/bin/host-track" refresh demo >/dev/null 2>&1 || true
 [ "$(demo)" = v1 ] || fail "refresh moved to an unproved commit"
+
+# 2b. A pin behind a published head is the one state where the frontier's BUILD
+#     decides the remedy, and until now nothing in `status` could express it.
+#     `registry_pin_proved_at` / `registry_pin_proof_run` come from
+#     `lastdb app resolve`, which only ever returns rows keyed to the RUNNING
+#     build, so a 32 h frontier reads identically whether the prover stopped or
+#     is proving a build this host does not run -- and those want opposite
+#     actions. Measured 2026-10-03: the commit the fleet waited nine hours for
+#     was already proved on another build.
+#     papercut-host-track-proof-run-field-is-build-filtered-so-it-can-never-expose-a-build-mismatch-20261003
+st="$(INFO_NEWEST_VERSION=0.23.3-9-gother INFO_NEWEST_AT=2026-10-02T12:00:00Z \
+  INFO_NEWEST_SHA="$oid_two" "$ROOT/bin/host-track" status --json demo)"
+printf '%s\n' "$st" | jq -e --arg oid "$oid_two" '
+  .registry_index_build_match == "mismatch"
+  and .registry_index_newest_version == "0.23.3-9-gother"
+  and .registry_index_newest_proved_at == "2026-10-02T12:00:00Z"
+  and .registry_index_newest_oid == $oid
+  and .registry_lastdb_version == "0.23.3-1-gx"' >/dev/null \
+  || fail "a frontier on another build did not report a build mismatch: $st"
+# The running build must ship WITH the newest row. Without it the newest row has
+# nothing in the same object to compare against and every consumer reaches for a
+# second tool; three did, and two did not know which tool.
+printf '%s\n' "$st" | jq -e '.registry_lastdb_version != .registry_index_newest_version' >/dev/null \
+  || fail "mismatch row reported the two builds as equal: $st"
+# Asked about the right app, on the right channel, on the app's own index. The
+# stub refuses a wrong channel or index, so this grep only sharpens the message.
+grep -q -- "info demo --channel next --index http://forge.test/registry" "$tmp/info-calls.log" \
+  || fail "app info was not asked about demo/next on the configured index: $(cat "$tmp/info-calls.log")"
+# And the text row must carry it beside pin_behind, or the only reader who sees
+# the field is one who already knew to ask for --json.
+row="$(INFO_NEWEST_VERSION=0.23.3-9-gother "$ROOT/bin/host-track" status demo)"
+case "$row" in
+  *"index_newest=mismatch:0.23.3-9-gother@"*":running=0.23.3-1-gx"*) ;;
+  *) fail "text row drops the build discriminator beside pin_behind: $row" ;;
+esac
+
+# 2c. The frontier IS on this host's build: the prover is not working on another
+#     build, so the AGE decides, and registry_pin_proof_age_secs already answers
+#     that. Deliberately NOT labelled `prover-stalled` -- a pin three minutes
+#     behind a fresh publish reaches this arm too.
+st="$("$ROOT/bin/host-track" status --json demo)"
+printf '%s\n' "$st" | jq -e '
+  .registry_index_build_match == "match"
+  and .registry_index_newest_version == .registry_lastdb_version' >/dev/null \
+  || fail "a frontier on the running build did not report a match: $st"
+
+# 2d. The read failed, or the binary has no `app info`. "I did not look" must
+#     never render as a measured answer, and no value field may be invented.
+for env_fail in INFO_FAIL=1 INFO_UNSUPPORTED=1; do
+  st="$(env "$env_fail" "$ROOT/bin/host-track" status --json demo)"
+  printf '%s\n' "$st" | jq -e '
+    .registry_index_build_match == "unread"
+    and .registry_index_newest_version == null
+    and .registry_index_newest_proved_at == null
+    and .registry_index_newest_oid == null' >/dev/null \
+    || fail "$env_fail did not report unread, or invented a newest row: $st"
+  # The row it IS about must survive: an unread discriminator is additive.
+  printf '%s\n' "$st" | jq -e --arg oid "$oid_two" \
+    '.pin_behind_oid == $oid and .registry_pin_state == "pinned" and .stale == false' >/dev/null \
+    || fail "$env_fail changed the pin row it only annotates: $st"
+done
+
+# 2e. The index was READ and holds no proved row for this app on any build.
+#     That is a different claim from "I could not read it", and collapsing the
+#     two is the defect papercut-host-track-reads-any-registry-resolve-failure-as-no-proved-row-20261002
+#     closed one level up. Do not re-introduce it one level down.
+st="$(INFO_NO_ROWS=1 "$ROOT/bin/host-track" status --json demo)"
+printf '%s\n' "$st" | jq -e '
+  .registry_index_build_match == "no-rows"
+  and .registry_index_newest_version == null' >/dev/null \
+  || fail "an empty compat list rendered as something other than no-rows: $st"
+
+# 2g. A row whose lastdb_version is empty: no verdict is possible, and the
+#     EMPTY FIRST FIELD must not shift the other two. `IFS=$'\t' read` collapses
+#     it -- tab is IFS whitespace -- so proved_at would land in the version slot
+#     and a comparison would be made against a timestamp. Hence `cut` per field,
+#     and hence this case: without it the discipline reads as covered and is not.
+st="$(INFO_NEWEST_VERSION= "$ROOT/bin/host-track" status --json demo)"
+printf '%s\n' "$st" | jq -e '
+  .registry_index_build_match == "unread"
+  and .registry_index_newest_version == null
+  and .registry_index_newest_proved_at == "2026-09-29T00:00:00Z"
+  and (.registry_index_newest_oid | length) == 40' >/dev/null \
+  || fail "an empty lastdb_version shifted the TSV fields, or produced a verdict: $st"
+
+# 2f. The healthy path pays NOTHING. The read is scoped to a pin that is behind,
+#     so a fleet with nothing behind must spawn no `app info` at all -- asserted
+#     structurally, because a cost regression here is invisible in every output.
+#     HOST_TRACK_TEST_MAIN_OID is NOT the lever here: `pin_behind_oid` compares
+#     the pin against the PUBLISHED artifact channel head, not lastgit main, so
+#     the pin has to catch up for the row to have nothing behind.
+cp "$tmp/resolve.json" "$tmp/resolve.json.bak"
+printf '{"demo":"%s"}\n' "$oid_two" >"$tmp/resolve.json"
+: >"$tmp/info-calls.log"
+st="$("$ROOT/bin/host-track" status --json demo)"
+printf '%s\n' "$st" | jq -e '
+  .pin_behind_oid == null
+  and .registry_index_build_match == null
+  and .registry_index_newest_version == null
+  and .registry_index_newest_proved_at == null
+  and .registry_index_newest_oid == null
+  and .registry_lastdb_version == null' >/dev/null \
+  || fail "a row with nothing behind carried the discriminator: $st"
+[ ! -s "$tmp/info-calls.log" ] \
+  || fail "app info was spawned for an app with nothing behind: $(cat "$tmp/info-calls.log")"
+mv "$tmp/resolve.json.bak" "$tmp/resolve.json"
 
 # 3. The proof lands for oid_two: now the host is stale and refresh installs v2.
 printf '{"demo":"%s"}\n' "$oid_two" >"$tmp/resolve.json"
@@ -314,5 +461,24 @@ printf '%s\n' "$st" | jq -e '.registry_pin_state == "not-on-index" and .stale ==
 jq '.apps[0].registry_follow = false' "$HOST_TRACK_REGISTRY" >"$tmp/r2.json" && mv "$tmp/r2.json" "$HOST_TRACK_REGISTRY"
 st="$("$ROOT/bin/host-track" status --json demo)"
 printf '%s\n' "$st" | jq -e '.registry_channel == null' >/dev/null || fail "registry_follow=false still pinned: $st"
+
+# 8. `registry_app` maps the host-track app name to the registry app id, and the
+#    newest-row read must honour it. `last-stack-why-stopped` cannot: it reads
+#    `status --json`, which does not expose the mapping, so it guesses the
+#    host-track name. The producer HAS the mapping, which is the reason the read
+#    belongs here rather than in each consumer. No app sets it today, so without
+#    this case the `reg_app` line is dead to the suite.
+jq '.apps[0].registry_follow = true | .apps[0].registry_app = "demo-reg"' "$HOST_TRACK_REGISTRY" \
+  >"$tmp/r5.json" && mv "$tmp/r5.json" "$HOST_TRACK_REGISTRY"
+printf '{"demo-reg":"%s"}\n' "$oid_one" >"$tmp/resolve.json"
+: >"$tmp/info-calls.log"
+st="$(INFO_NEWEST_VERSION=0.23.3-9-gother "$ROOT/bin/host-track" status --json demo)"
+printf '%s\n' "$st" | jq -e --arg oid "$oid_four" \
+  '.pin_behind_oid == $oid and .registry_index_build_match == "mismatch"' >/dev/null \
+  || fail "a mapped registry_app did not reach the newest-row read: $st"
+grep -q -- "info demo-reg --channel next" "$tmp/info-calls.log" \
+  || fail "app info was asked about the host-track name, not the mapped registry id: $(cat "$tmp/info-calls.log")"
+grep -q -- "info demo --channel" "$tmp/info-calls.log" \
+  && fail "app info was asked about the unmapped name: $(cat "$tmp/info-calls.log")"
 
 printf 'PASS host-track-registry-pin\n'

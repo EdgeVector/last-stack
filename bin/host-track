@@ -590,6 +590,102 @@ artifact_registry_pin_oid() {
   printf '%s\n' "$out" | jq -r '[(.sha // ""), (.proved_at // ""), (.proof_run // "")] | @tsv'
 }
 
+# The LastDB build this host runs, which is the key `lastdb app resolve` filters
+# proof rows on. Memoized: `status` walks 17 apps and the socket build does not
+# change inside one run. Empty when `lastdb` is absent or does not answer; a
+# caller must then report "I did not look", never a comparison.
+_HT_LASTDB_VERSION_READ=0
+_HT_LASTDB_VERSION=""
+artifact_lastdb_version() {
+  if [ "$_HT_LASTDB_VERSION_READ" -eq 0 ]; then
+    _HT_LASTDB_VERSION_READ=1
+    if command -v lastdb >/dev/null 2>&1; then
+      _HT_LASTDB_VERSION="$(lastdb --version 2>/dev/null | awk 'NR==1{print $NF}' || true)"
+    fi
+  fi
+  printf '%s\n' "$_HT_LASTDB_VERSION"
+}
+
+# The index's newest proof row ACROSS ALL BUILDS.
+#
+# Every other field in this section comes from `lastdb app resolve`, which
+# returns only the newest `compat` row whose `lastdb_version` names the RUNNING
+# socket build. So `registry_pin_proved_at` / `registry_pin_proof_run` describe
+# the frontier FOR THIS BUILD, and the frontier for this build can be 32 h old
+# while the index is being filled briskly for another one. A pin that is behind
+# therefore has two causes with OPPOSITE remedies and no field could tell them
+# apart:
+#
+#   - the prover stopped                          → resume it, or wait
+#   - the prover is proving a build this host does
+#     not run (a rollback, or a half-finished move) → no cadence can help;
+#     prove the running build, or finish the move
+#
+# Measured 2026-10-03T07:2xZ, on the live fleet, with this function: BOTH held
+# apps read `mismatch`, and for both the index's newest row names the EXACT oid
+# `pin_behind_oid` reports.
+#
+#   app       pin_behind    newest row                               proved
+#   brain     b703057a2615  0.23.3-2518-ge1177d41a b703057a2615      06:49:16Z
+#   routines  82f14a1ff2a5  0.23.3-2518-ge1177d41a 82f14a1ff2a5      06:49:16Z
+#   running build 0.23.3-2378-gbe41e547e, frontier for it 33 h old
+#
+# Both commits were already proved, 24 minutes before the read; only the build
+# differed. Four readers had reached the wrong remedy from the build-filtered
+# fields, including a fix shipped that same morning.
+# papercut-host-track-proof-run-field-is-build-filtered-so-it-can-never-expose-a-build-mismatch-20261003
+#
+# `lastdb app info` returns the whole `compat` list, so `max_by(.proved_at)` is
+# the true frontier. Unlike `last-stack-why-stopped`, which has to guess, this
+# function has the app's own `registry_app` mapping and `registry_index`
+# setting, so it asks about the right app on the right index.
+#
+# stdout: TAB-separated `<lastdb_version>\t<proved_at>\t<sha>`.
+# rc 0 = row printed · 1 = not applicable (no channel, or no `lastdb app info`)
+# · 2 = the index was read and holds no proved row for this app on any build
+# · 3 = the index could not be read. 2 and 3 are split for the reason rc 2 and
+# rc 3 are split in artifact_registry_pin_oid: "it holds nothing" is a claim
+# about the index, and making it without reading the index is how this whole
+# field set misled people in the first place.
+artifact_registry_index_newest() {
+  local app="$1" json="$2" channel reg_app index out row rc args
+  channel="$(artifact_registry_channel "$json")"
+  [ -n "$channel" ] || return 1
+  reg_app="$(field "$json" registry_app)"
+  [ -n "$reg_app" ] || reg_app="$app"
+  command -v lastdb >/dev/null 2>&1 || return 1
+  # Probed, not assumed: `app info` is newer than `app resolve`. An older binary
+  # must leave the fields empty, not print an error line per app per status call.
+  lastdb app info --help >/dev/null 2>&1 || return 1
+  args=(app info "$reg_app" --channel "$channel")
+  index="$(setting "$json" registry_index)"
+  [ -n "${HOST_TRACK_REGISTRY_INDEX:-}" ] && index="$HOST_TRACK_REGISTRY_INDEX"
+  if [ -n "$index" ]; then
+    # Second call for a forge-URL index, so a pin-behind app costs two extra
+    # cached fetches. Tom's `next` index is a GitHub raw URL, which this function
+    # passes straight through, so today the cost is one process.
+    index="$(registry_index_local_copy "$index" "$channel")" || return 3
+    args+=(--index "$index")
+  fi
+  set +e
+  out="$(lastdb "${args[@]}" 2>/dev/null)"
+  rc=$?
+  set -e
+  { [ "$rc" -eq 0 ] && [ -n "$out" ]; } || return 3
+  set +e
+  row="$(printf '%s\n' "$out" | jq -r '
+    (.compat // []) | map(select((.proved_at // "") != ""))
+    | if length == 0 then ""
+      else (max_by(.proved_at)
+            | [(.lastdb_version // ""), (.proved_at // ""), (.sha // "")] | @tsv)
+      end')"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || return 3
+  [ -n "$row" ] || return 2
+  printf '%s\n' "$row"
+}
+
 # Seconds since an ISO-8601 Z timestamp; empty when absent or unparseable.
 # BSD `date` first (this host), GNU second (Linux CI). Never fails the caller:
 # an unreadable timestamp must leave the age blank, not break `status`.
@@ -1110,6 +1206,8 @@ status_json_for() {
   local registry_channel registry_pin_oid registry_pin_state pin_rc registry_pin_row
   local registry_pin_proved_at registry_pin_proof_run registry_pin_proof_age
   local published_oid pin_behind_oid
+  local registry_index_newest_version registry_index_newest_at registry_index_newest_oid
+  local registry_index_build_match registry_lastdb_version newest_row newest_rc
   local registry_hold_behind registry_hold_published_digest
   local channel_path channel_row channel_order channel_previous_oid
 
@@ -1123,6 +1221,11 @@ status_json_for() {
   registry_pin_proof_age="null"
   published_oid=""
   pin_behind_oid=""
+  registry_index_newest_version=""
+  registry_index_newest_at=""
+  registry_index_newest_oid=""
+  registry_index_build_match=""
+  registry_lastdb_version=""
   registry_hold_behind="false"
   registry_hold_published_digest=""
   command_name="$(field "$json" command)"
@@ -1361,6 +1464,47 @@ status_json_for() {
           fi
           ;;
       esac
+      # A pin that is behind is the ONLY state where the frontier's build
+      # matters, so the read is scoped to it: a healthy fleet spends zero extra
+      # processes, and `status` for 17 apps with nothing behind is unchanged.
+      # `registry_lastdb_version` ships WITH the newest row and only then --
+      # without it the newest row has nothing in the same object to compare
+      # against, and every consumer reaches for a second tool. Three did, and
+      # two of them did not know which tool.
+      if [ -n "$pin_behind_oid" ]; then
+        registry_lastdb_version="$(artifact_lastdb_version)"
+        set +e
+        newest_row="$(artifact_registry_index_newest "$app" "$json" 2>/dev/null)"
+        newest_rc=$?
+        set -e
+        case "$newest_rc" in
+          0)
+            # `cut` per field, not `IFS=$'\t' read`: tab is IFS whitespace, so
+            # an empty field collapses and the rest shift left. An empty
+            # `lastdb_version` would put `proved_at` in the version slot and the
+            # comparison below would be made against a timestamp. Covered by
+            # tests/host-track-registry-pin.sh case 2g, mutation-probed.
+            registry_index_newest_version="$(cut -f1 <<<"$newest_row")"
+            registry_index_newest_at="$(cut -f2 <<<"$newest_row")"
+            registry_index_newest_oid="$(cut -f3 <<<"$newest_row")"
+            if [ -z "$registry_index_newest_version" ] || [ -z "$registry_lastdb_version" ]; then
+              # One side of the comparison is missing, so there is no verdict.
+              registry_index_build_match="unread"
+            elif [ "$registry_index_newest_version" = "$registry_lastdb_version" ]; then
+              # The frontier is on this host's build: its AGE is the question,
+              # and registry_pin_proof_age_secs already answers it. Deliberately
+              # NOT called `prover-stalled` here -- a pin three minutes behind a
+              # fresh publish reaches this arm too, and `status` must not label
+              # ordinary publish lag a stalled prover.
+              registry_index_build_match="match"
+            else
+              registry_index_build_match="mismatch"
+            fi
+            ;;
+          2) registry_index_build_match="no-rows" ;;
+          *) registry_index_build_match="unread" ;;
+        esac
+      fi
     fi
     # gate_head for check/stale is the published channel oid, not lastgit main.
     # Unpublished main is main_unpublished. Pickup must not wait on that lag.
@@ -1645,6 +1789,11 @@ status_json_for() {
     --arg registry_pin_proof_run "$registry_pin_proof_run" \
     --argjson registry_pin_proof_age_secs "$registry_pin_proof_age" \
     --arg pin_behind_oid "$pin_behind_oid" \
+    --arg registry_index_newest_version "$registry_index_newest_version" \
+    --arg registry_index_newest_at "$registry_index_newest_at" \
+    --arg registry_index_newest_oid "$registry_index_newest_oid" \
+    --arg registry_index_build_match "$registry_index_build_match" \
+    --arg registry_lastdb_version "$registry_lastdb_version" \
     --arg channel_order "$channel_order" \
     --arg channel_previous_oid "$channel_previous_oid" \
     '{
@@ -1671,6 +1820,11 @@ status_json_for() {
       registry_pin_proof_run: ($registry_pin_proof_run | select(length > 0) // null),
       registry_pin_proof_age_secs: $registry_pin_proof_age_secs,
       pin_behind_oid: ($pin_behind_oid | select(length > 0) // null),
+      registry_index_newest_version: ($registry_index_newest_version | select(length > 0) // null),
+      registry_index_newest_proved_at: ($registry_index_newest_at | select(length > 0) // null),
+      registry_index_newest_oid: ($registry_index_newest_oid | select(length > 0) // null),
+      registry_index_build_match: ($registry_index_build_match | select(length > 0) // null),
+      registry_lastdb_version: ($registry_lastdb_version | select(length > 0) // null),
       channel_order: $channel_order,
       channel_previous_oid: ($channel_previous_oid | select(length > 0) // null),
       behind_by: $behind_by,
@@ -1736,6 +1890,20 @@ status_plain_for() {
             if .registry_pin_proof_age_secs < 3600 then ((.registry_pin_proof_age_secs / 60 | floor) | tostring) + "m"
             else ((.registry_pin_proof_age_secs / 3600 | floor) | tostring) + "h" end) else "" end)
         + (if .registry_pin_proof_run then ":by=" + .registry_pin_proof_run else "" end)
+        else "-" end),
+      # The discriminator for the pair above. `pin_proved` is the frontier for
+      # the RUNNING build only, so it cannot say whether a stale frontier means
+      # a stopped prover or a prover working on a build this host does not run.
+      # `index_newest=mismatch:...` is the second case and no prover cadence can
+      # clear it; `match` means the frontier is as current as the index, and its
+      # age decides. `unread` is "I did not look" and is never rendered as a
+      # measured answer.
+      "index_newest=" + (if .registry_index_build_match then .registry_index_build_match
+        + (if .registry_index_newest_version then ":" + .registry_index_newest_version
+            + "@" + (.registry_index_newest_proved_at // "-")
+            + (if .registry_index_newest_oid then ":oid=" + (.registry_index_newest_oid[0:12]) else "" end)
+          else "" end)
+        + (if .registry_lastdb_version then ":running=" + .registry_lastdb_version else "" end)
         else "-" end),
       "channel_order=" + (.channel_order // "unknown") + (if .channel_previous_oid then ":from=" + (.channel_previous_oid[0:12]) else "" end),
       "freshness=" + (.freshness // "-"),
