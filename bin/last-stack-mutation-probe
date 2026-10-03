@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# Run ONE mutation probe: break a property on purpose, confirm the guard that
+# claims to protect it goes RED, then restore the tree to the exact bytes.
+#
+# Why this exists
+# ---------------
+# The standing rules make a mutation probe mandatory for every guard added, and
+# every pass hand-rolls the loop. Hand-rolled probes fail in ONE direction: a
+# patch whose anchor does not match the file mutates NOTHING, the guard test
+# then passes, and GREEN reads as "the guard is fine" or "the property is
+# protected twice" -- the opposite of the truth. Measured 2026-10-03 on
+# EdgeVector/last-stack: two of six probes for one new guard came back GREEN
+# because one used 6 spaces of indentation where the file carries 12, and one
+# wrote `\\\\t` in a Python string literal where the file holds one backslash.
+# Neither guard was weak; both probes had replaced nothing.
+#
+# So here a probe that changed no byte is an ERROR with its own exit code, never
+# a green. That is the whole value; the rest is what every pass already writes
+# by hand.
+# brain: papercut-no-mutation-probe-helper-so-a-no-op-probe-reads-as-a-passing-guard-20261003
+#
+# Usage
+# -----
+#   last-stack-mutation-probe --name <probe> --target <file> [--target <file>]...
+#                             --patch <command> --test <command>
+#                             [--expect red|green] [--keep-on-fail]
+#
+# --patch and --test are shell commands run with `bash -c` from the caller's
+# cwd. The patch must change at least one --target; creating a target that was
+# absent, or removing one that was present, both count as a mutation.
+#
+# A --target that is a directory is compared as a tree (every file under it).
+#
+# Exit codes
+# ----------
+#   0  the probe behaved as expected (default --expect red: the test went RED)
+#   1  the probe ran and the verdict was NOT the expected one. With the default
+#      --expect red that means the guard does NOT catch this defect.
+#   2  usage or environment error
+#   3  THE PATCH MUTATED NOTHING. The probe is invalid and there is no verdict.
+#      The test is not run. Never read this as a green.
+#   4  the restore did not return every target to its original bytes. The
+#      snapshot directory is kept and printed; repair the tree from it.
+set -euo pipefail
+
+name=""
+patch_cmd=""
+test_cmd=""
+expect="red"
+keep_on_fail=0
+targets=()
+
+die() { printf 'last-stack-mutation-probe: %s\n' "$*" >&2; exit 2; }
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --name)   [ "$#" -ge 2 ] || die "--name needs a value"; name="$2"; shift 2 ;;
+    --target) [ "$#" -ge 2 ] || die "--target needs a value"; targets+=("$2"); shift 2 ;;
+    --patch)  [ "$#" -ge 2 ] || die "--patch needs a value"; patch_cmd="$2"; shift 2 ;;
+    --test)   [ "$#" -ge 2 ] || die "--test needs a value"; test_cmd="$2"; shift 2 ;;
+    --expect) [ "$#" -ge 2 ] || die "--expect needs a value"; expect="$2"; shift 2 ;;
+    --keep-on-fail) keep_on_fail=1; shift ;;
+    -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
+    *) die "unknown option: $1" ;;
+  esac
+done
+
+[ -n "$name" ] || die "--name is required"
+[ "${#targets[@]}" -gt 0 ] || die "--target is required at least once"
+[ -n "$patch_cmd" ] || die "--patch is required"
+[ -n "$test_cmd" ] || die "--test is required"
+case "$expect" in red|green) ;; *) die "--expect must be red or green, got: $expect" ;; esac
+
+snap_dir="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-mutation-probe.XXXXXX")"
+snap_kept=0
+
+cleanup() {
+  [ "$snap_kept" -eq 1 ] || rm -rf -- "$snap_dir"
+}
+trap cleanup EXIT
+
+# Snapshot. A target is copied under <snap>/<n>/payload when it exists, and
+# recorded as absent otherwise, so creating a missing file counts as a mutation
+# and so does deleting a present one.
+index=0
+for target in "${targets[@]}"; do
+  slot="$snap_dir/$index"
+  mkdir -p "$slot"
+  printf '%s\n' "$target" > "$slot/path"
+  if [ -e "$target" ]; then
+    printf 'present\n' > "$slot/state"
+    cp -R -- "$target" "$slot/payload"
+  else
+    printf 'absent\n' > "$slot/state"
+  fi
+  index=$((index + 1))
+done
+
+# Is any target different from its snapshot right now?
+any_target_differs() {
+  local i=0 slot state path
+  while [ "$i" -lt "${#targets[@]}" ]; do
+    slot="$snap_dir/$i"
+    path="${targets[$i]}"
+    state="$(cat "$slot/state")"
+    if [ "$state" = "absent" ]; then
+      [ -e "$path" ] && return 0
+    else
+      [ -e "$path" ] || return 0
+      if [ -d "$slot/payload" ]; then
+        diff -r -- "$slot/payload" "$path" >/dev/null 2>&1 || return 0
+      else
+        [ -d "$path" ] && return 0
+        cmp -s -- "$slot/payload" "$path" || return 0
+      fi
+    fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
+restore_targets() {
+  local i=0 slot state path
+  while [ "$i" -lt "${#targets[@]}" ]; do
+    slot="$snap_dir/$i"
+    path="${targets[$i]}"
+    state="$(cat "$slot/state")"
+    # Tolerant on purpose: a restore that cannot write is reported as
+    # restored=FAILED with the snapshot kept, not as an unhandled abort under
+    # `set -e` that leaves the operator with a mutated tree and no message.
+    rm -rf -- "$path" 2>/dev/null || true
+    if [ "$state" = "present" ]; then
+      mkdir -p -- "$(dirname -- "$path")" 2>/dev/null || true
+      cp -R -- "$slot/payload" "$path" 2>/dev/null || true
+    fi
+    i=$((i + 1))
+  done
+}
+
+# 1. apply the patch
+patch_rc=0
+bash -c "$patch_cmd" || patch_rc=$?
+
+# 2. REFUSE a probe that mutated nothing. This runs before the test, so a no-op
+#    probe can never produce a verdict to misread.
+if ! any_target_differs; then
+  restore_targets
+  printf 'probe %s mutated=no verdict=NONE patch_rc=%s\n' "$name" "$patch_rc"
+  printf 'last-stack-mutation-probe: %s changed no byte of any --target; the probe is invalid, not green. Check the patch anchor (indentation and backslash escaping are the two recorded causes).\n' \
+    "$name" >&2
+  exit 3
+fi
+
+# 3. run the guard test against the mutated tree
+test_rc=0
+bash -c "$test_cmd" || test_rc=$?
+if [ "$test_rc" -eq 0 ]; then verdict="GREEN"; else verdict="RED"; fi
+
+# 4. restore, then prove the restore landed. The standing rule is not to assume
+#    it worked, so compare bytes rather than trusting cp.
+restore_targets
+restored="ok"
+if any_target_differs; then
+  restored="FAILED"
+fi
+
+printf 'probe %s mutated=yes verdict=%s expect=%s restored=%s test_rc=%s\n' \
+  "$name" "$verdict" "$(printf '%s' "$expect" | tr '[:lower:]' '[:upper:]')" "$restored" "$test_rc"
+
+if [ "$restored" = "FAILED" ]; then
+  snap_kept=1
+  printf 'last-stack-mutation-probe: %s did not restore every --target to its original bytes; snapshot kept at %s\n' \
+    "$name" "$snap_dir" >&2
+  exit 4
+fi
+
+case "$expect" in
+  red)   [ "$verdict" = "RED" ]   || { printf 'last-stack-mutation-probe: %s expected RED and the test PASSED; the guard does not catch this defect\n' "$name" >&2; [ "$keep_on_fail" -eq 0 ] || snap_kept=1; exit 1; } ;;
+  green) [ "$verdict" = "GREEN" ] || { printf 'last-stack-mutation-probe: %s expected GREEN and the test FAILED (test_rc=%s)\n' "$name" "$test_rc" >&2; [ "$keep_on_fail" -eq 0 ] || snap_kept=1; exit 1; } ;;
+esac
+
+exit 0
