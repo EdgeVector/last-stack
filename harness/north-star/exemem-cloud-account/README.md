@@ -13,7 +13,7 @@ came from the real paid account on 2026-08-30.
 ## Regenerate the evidence file
 
 ```bash
-throwaway="$(mktemp -d)"
+throwaway="$(mktemp -d "${TMPDIR:-/tmp}/exemem-cloud-account.XXXXXX")"
 cp ~/.lastdb/cloud_sync.json "$throwaway/cloud_sync.json"   # read-only copy
 EXEMEM_CLOUD_ACCOUNT_LASTDB_HOME="$throwaway" \
   harness/north-star/exemem-cloud-account/collect-live-evidence.sh \

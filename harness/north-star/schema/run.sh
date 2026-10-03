@@ -17,7 +17,9 @@ if [ -x "$capstone_dir/run.sh" ]; then
   notes="found in-repo capstone harness: $capstone_dir/run.sh"
   if [ "$MODE" = live ]; then
     set +e
-    out="$(cd "$capstone_dir" && LASTDB_HOME="$(mktemp -d)" bash ./run.sh 2>&1)"
+    # Templated: bare mktemp -d ignores TMPDIR and the routine sandbox denies
+    # the per-user temp dir it falls back to.
+    out="$(cd "$capstone_dir" && LASTDB_HOME="$(mktemp -d "${TMPDIR:-/tmp}/ns-schema-capstone.XXXXXX")" bash ./run.sh 2>&1)"
     rc=$?
     set -e
     notes="$(printf '%s\nrun.sh rc=%s\n```\n%s\n```\n' "$notes" "$rc" "$out")"
