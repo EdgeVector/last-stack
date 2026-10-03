@@ -65,6 +65,28 @@ CLASS_A_TIMEOUT_S="${LASTSTACK_WHY_STOPPED_CLASS_A_TIMEOUT_S:-8}"
 # that fires on every real freeze and on no lull.
 CLASS_G_MAX_AGE_S="${LASTSTACK_WHY_STOPPED_DISPATCH_MAX_AGE_S:-21600}"
 
+# Class G's AUTHORITATIVE dispatch source: routinesd's own daemon log. routinesd
+# writes `{"ts":"<ISO>","kind":"dispatch",...}` for every dispatch, with no
+# registry opt-in and no cooperation from the dispatched agent, so it cannot go
+# blind the way the shared heartbeat log can (see the Class G block below).
+ROUTINESD_LOG="${LASTSTACK_WHY_STOPPED_ROUTINESD_LOG:-$HOME/.routines/daemon/routinesd.err.log}"
+# How much of that log's TAIL to read. It is append-only, 133 MB on this host,
+# and must never be slurped by a 15-minute classifier. The window has to be
+# wider than the longest freeze it must still see. MEASURED against the real log
+# rather than estimated: a 16 MiB tail holds 113331 records spanning 8.7 days
+# (2026-09-24T22:36Z -> 2026-10-03T16:31Z), about 1.9 MB/day, against a worst
+# recorded freeze of 107h (4.5 days) — roughly 2x margin. Do not re-derive this
+# from the tick rate: ticks are only part of what the daemon writes, and that
+# estimate came out ~4x too generous.
+# `tail -c` seeks, so the cost is the window and not the file: 0.50s measured for
+# 16 MiB over 133 MB.
+# A window too small to reach the last dispatch yields no timestamp, which falls
+# back to the heartbeat source rather than inventing a verdict — so an undersized
+# window costs detail, never a false verdict in either direction: on a healthy
+# host any window finds a recent dispatch, and during a real freeze the heartbeat
+# source is stale too and Class G still fires.
+ROUTINESD_TAIL_BYTES="${LASTSTACK_WHY_STOPPED_ROUTINESD_TAIL_BYTES:-16777216}"
+
 # Class H threshold, in seconds: how old the registry `next`-channel proof
 # frontier may be before a pinned app waiting behind it counts as frozen.
 # Derived from the prover's own declared cadence, not chosen: the routine that
@@ -352,27 +374,98 @@ fi
 # and on 2026-09-30 the ONLY two lines in the file were those — so "newest line
 # in the file" would have reported the fleet 16h stale instead of 60h, and on a
 # day with one such line it would have reported healthy. The routinesd signature
-# is heartbeatLine()'s own shape: a leading ISO instant plus harness=, exit= and
-# dur= on the same line.
+# in the heartbeat log is heartbeatLine()'s own shape: a leading ISO instant plus
+# harness=, exit= and dur= on the same line.
+#
+# That matcher guarded a false NEGATIVE correctly and carried a false POSITIVE,
+# measured live 2026-10-03T16:1xZ: `writeHeartbeat` appends the harness= line
+# ONLY when the routine's registry entry sets `heartbeat_slug`, so the signal is
+# opt-in PER ROUTINE. With the fleet narrowed to a handful of active routines by
+# decision-2026-10-02-factory-drives-logical-resident-set-only, ZERO active
+# entries set it, and the newest harness= line froze at 2026-10-02T00:08:50Z:
+#
+#   Class G source (harness= line)              144576s ago  -> fires FROZEN
+#   routinesd's own dispatch/complete records      179s ago  -> healthy
+#
+# Class G therefore reported `scheduler freeze` on a scheduler that had
+# dispatched three minutes earlier, wrong by 40.1 hours, while routinesd read
+# `state = running`. Its own comment says this classifier must never invent a
+# freeze, and it was inventing one. The blind spot is a property of the
+# REGISTRY'S CONTENTS, not of the scheduler, and no routine's entry knows it is
+# load-bearing here — so it was latent, not broken on arrival. On 2026-10-01,
+# with 38 routines active, the same code read a true 217s. Same mechanism and
+# remedy as EdgeVector/routines PR 11 (82f14a1), which fixed the sibling arm in
+# `routines freeze-watch`; that fix cannot install here, so this is an
+# independent instance and not a copy of a delivered one.
+#
+# So take the age from TWO sources and let the NEWEST win:
+#   1. routinesd's own `"kind":"dispatch"` / `"kind":"complete"` records —
+#      authoritative, unconditional, no opt-in.
+#   2. the heartbeat log's harness= lines — corroboration, and the only source on
+#      a host whose daemon log launchd rotated away.
+# Newest-wins cannot invent liveness that neither source saw, because each
+# reports only dispatches it actually observed; so it removes the false positive
+# without buying a false negative. No usable timestamp from either still leaves
+# dispatch_age_s empty and Class G silent.
+#
+# `"kind":"tick"` MUST NEVER be matched. Through the measured 59h48m freeze the
+# daemon kept ticking `80 routines in_flight=0` and dispatched nothing; a matcher
+# that accepted ticks would read the log as fresh forever and mask the exact
+# outage this class exists to catch, while looking healthier than the old code.
+# `"kind":"coalesce-backlog"` is a backlog note, not a dispatch, and is excluded
+# for the same reason.
+
+# Same ISO-to-epoch idiom the rest of bin/ uses (89 helpers here are python3, and
+# last-stack-factory-health reads these stamps the same way). A stamp we cannot
+# parse yields empty, so Class G stays silent rather than guessing.
+_class_g_age_of() {
+  [ -n "${1:-}" ] || return 0
+  LASTSTACK_TS="$1" python3 -c 'import os; from datetime import datetime, timezone; print(int((datetime.now(timezone.utc) - datetime.fromisoformat(os.environ["LASTSTACK_TS"].replace("Z", "+00:00"))).total_seconds()))' 2>/dev/null || true
+}
+
 dispatch_age_s=""
-if [ -f "$hb" ] && [ "${CLASS_G_MAX_AGE_S}" -gt 0 ] 2>/dev/null; then
-  last_dispatch_ts="$(
-    grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z .* harness=.* exit=.* dur=' "$hb" 2>/dev/null \
-      | tail -1 | awk '{print $1}' || true
-  )"
-  if [ -n "$last_dispatch_ts" ]; then
-    # Same ISO-to-epoch idiom the rest of bin/ uses (89 helpers here are python3,
-    # and last-stack-factory-health reads these stamps the same way). A stamp we
-    # cannot parse leaves dispatch_age_s empty, so Class G stays silent rather
-    # than guessing — this classifier must never invent a freeze.
-    dispatch_age_s="$(
-      LASTSTACK_TS="$last_dispatch_ts" python3 -c 'import os; from datetime import datetime, timezone; print(int((datetime.now(timezone.utc) - datetime.fromisoformat(os.environ["LASTSTACK_TS"].replace("Z", "+00:00"))).total_seconds()))' 2>/dev/null || true
+dispatch_age_src=""
+if [ "${CLASS_G_MAX_AGE_S}" -gt 0 ] 2>/dev/null; then
+  # Source 1: routinesd's own records. The ts anchor at the start of the line
+  # also discards the partial first line `tail -c` leaves behind.
+  routinesd_ts=""
+  if [ -f "$ROUTINESD_LOG" ]; then
+    routinesd_ts="$(
+      tail -c "$ROUTINESD_TAIL_BYTES" "$ROUTINESD_LOG" 2>/dev/null \
+        | grep -E '^\{"ts":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z"' \
+        | grep -E '"kind":"(dispatch|complete)"' \
+        | tail -1 \
+        | sed -E 's/^\{"ts":"([^"]+)".*/\1/' || true
     )"
+  fi
+  # Source 2: the shared heartbeat log's routinesd-shaped lines.
+  heartbeat_ts=""
+  if [ -f "$hb" ]; then
+    heartbeat_ts="$(
+      grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z .* harness=.* exit=.* dur=' "$hb" 2>/dev/null \
+        | tail -1 | awk '{print $1}' || true
+    )"
+  fi
+
+  routinesd_age="$(_class_g_age_of "$routinesd_ts")"
+  heartbeat_age="$(_class_g_age_of "$heartbeat_ts")"
+
+  if [ -n "$routinesd_age" ]; then
+    dispatch_age_s="$routinesd_age"
+    dispatch_age_src="routinesd.err.log"
+  fi
+  if [ -n "$heartbeat_age" ] \
+     && { [ -z "$dispatch_age_s" ] || [ "$heartbeat_age" -lt "$dispatch_age_s" ] 2>/dev/null; }; then
+    dispatch_age_s="$heartbeat_age"
+    dispatch_age_src="heartbeats"
   fi
 fi
 if [ -n "$dispatch_age_s" ] && [ "$dispatch_age_s" -ge "$CLASS_G_MAX_AGE_S" ] 2>/dev/null; then
   classes+=("G")
-  detail+=("scheduler freeze: last routinesd dispatch ${dispatch_age_s}s ago (bound ${CLASS_G_MAX_AGE_S}s)")
+  # Name the source the verdict came from. Two passes that disagree about this
+  # host are otherwise indistinguishable, and the whole defect above was one
+  # source being read as if it were the other.
+  detail+=("scheduler freeze: last routinesd dispatch ${dispatch_age_s}s ago (bound ${CLASS_G_MAX_AGE_S}s, newest source ${dispatch_age_src})")
   actions+=("launchctl list com.edgevector.routinesd; routines status; check Situation fences (skip-fence in routinesd.err.log)")
 fi
 
