@@ -162,9 +162,19 @@ if [ -z "$CI_SHARD_INDEX" ]; then
 
     shard_failed=0
     failed_shards=""
+    # <index>:<status> per failing shard. `wait` already produced the status and
+    # it used to be thrown away, so a signal and a red test printed the same
+    # word. ci_shard_failure_marker needs it to tell them apart.
+    shard_rcs=""
     shard_index=0
     for shard_pid in "${shard_pids[@]}"; do
-      if ! wait "$shard_pid"; then shard_failed=1; failed_shards="${failed_shards} ${shard_index}"; fi
+      shard_rc=0
+      wait "$shard_pid" || shard_rc=$?
+      if [ "$shard_rc" -ne 0 ]; then
+        shard_failed=1
+        failed_shards="${failed_shards} ${shard_index}"
+        shard_rcs="${shard_rcs} ${shard_index}:${shard_rc}"
+      fi
       shard_index=$((shard_index + 1))
     done
     # Passing shards first, failing shards last. lastgit ci status stores a
@@ -182,10 +192,12 @@ if [ -z "$CI_SHARD_INDEX" ]; then
       shard_index=$((shard_index + 1))
     done
     for failed_index in $failed_shards; do
-      case " ${CI_SUPERVISE_RUNNING_AT_DEADLINE:-} " in
-        *" ${failed_index} "*) echo "----- last-stack CI shard ${failed_index} STOPPED AT DEADLINE (a timeout, not a test failure) -----" ;;
-        *) echo "----- last-stack CI shard ${failed_index} FAILED -----" ;;
-      esac
+      failed_rc="?"
+      for shard_rc_pair in $shard_rcs; do
+        case "$shard_rc_pair" in "${failed_index}:"*) failed_rc="${shard_rc_pair#*:}" ;; esac
+      done
+      ci_shard_failure_marker "$failed_index" "$failed_rc" \
+        "$CI_SHARD_LOG_DIR/$failed_index.log" "${CI_SUPERVISE_RUNNING_AT_DEADLINE:-}"
       cat "$CI_SHARD_LOG_DIR/$failed_index.log"
     done
     if [ "${CI_SUPERVISE_TIMED_OUT:-0}" -eq 1 ]; then
