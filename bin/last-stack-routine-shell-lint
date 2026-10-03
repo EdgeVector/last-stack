@@ -31,6 +31,7 @@
 #   date-nanos        macOS date has no %N (date +%s%3N prints ...3N)
 #   printf-dash       printf '- x' / printf '--- x': a format that starts with - is an option
 #   bin-path          /bin/sed, /bin/grep, the /bin temp-file tool ... do not exist on macOS (they are in /usr/bin)
+#   mktemp-suffix     an X run that is not at the END of a mktemp template never substitutes on BSD mktemp
 #   zsh-status        (--shell zsh only) status is read-only in zsh
 #   zsh-mapfile       (--shell zsh only) mapfile/readarray do not exist in zsh
 #   zsh-word-split    (--shell zsh only) for x in $VAR does not split; one pass over the whole string
@@ -75,8 +76,8 @@ while [ "$#" -gt 0 ]; do
     --quiet) quiet=1; shift ;;
     --list-rules)
       printf '%s\n' spin-wait heredoc-backticks dquote-backticks jq-optional-call jq-escaped-quote \
-        awk-match-array sed-inplace date-nanos printf-dash bin-path zsh-status zsh-mapfile zsh-word-split \
-        home-root-scan
+        awk-match-array sed-inplace date-nanos printf-dash bin-path mktemp-suffix zsh-status zsh-mapfile \
+        zsh-word-split home-root-scan
       exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 64 ;;
@@ -116,6 +117,7 @@ rule_slug() {
     date-nanos) echo papercut-routine-zsh-date-percent-n-no-millisecond-timer-20260923 ;;
     printf-dash) echo papercut-routine-printf-leading-dash-format-20260923 ;;
     bin-path) echo papercut-routine-hard-coded-bin-mktemp-20260923 ;;  # fix form: mktemp "$TMPDIR/x.XXXXXX"
+    mktemp-suffix) echo papercut-mktemp-same-template-collides-within-one-second-20260925 ;;
     zsh-status|zsh-mapfile) echo papercut-routine-shell-word-splitting ;;
     zsh-word-split) echo papercut-claude-zsh-for-loop-over-an-unquoted-scalar-does-not-word-split-20260926 ;;
     home-root-scan) echo papercut-codex-routines-lack-home-root-scan-guard-20260927 ;;
@@ -155,6 +157,10 @@ rule_fix() {
     bin-path) printf '%s\n' \
       "macOS keeps sed, grep, awk, find, the temp-file tool and friends in /usr/bin, not /bin." \
       "Call the tool by name or use /usr/bin/<tool>. Temp files: mktemp \"\$TMPDIR/x.XXXXXX\" (a bare call ignores TMPDIR on macOS)." ;;
+    mktemp-suffix) printf '%s\n' \
+      "BSD/macOS mktemp substitutes a run of X's only at the END of the template. With anything after it (card.XXXXXX.json) there is NO substitution: the literal name is created, so the FIRST call succeeds and every later call with that template fails 'mkstemp failed ... File exists' until someone deletes the literal file." \
+      "Put the X run last: f=\"\$(mktemp \"\${TMPDIR:-/tmp}/card.XXXXXX\")\"" \
+      "When the extension matters, take a directory: f=\"\$(mktemp -d \"\${TMPDIR:-/tmp}/card.XXXXXX\")/card.json\"" ;;
     zsh-status) printf '%s\n' \
       "zsh makes status a read-only special variable (same as \$?)." \
       "Use another name: rc, pr_state, ci_state." ;;
@@ -205,6 +211,14 @@ q="'"
 re_sed_inplace='(^|[^[:alnum:]_-])sed[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*-i[[:space:]]+([^'"$q"'"[:space:]-]|'"$q"'[^'"$q"']|"[^"]|-e[[:space:]]|-E[[:space:]])'
 re_printf_dash='(^|[;&|({[:space:]])printf[[:space:]]+["'"'"']-'
 # /bin/<tool> names below; the temp-file tool is listed as mk[t]emp (same match). XXXXXX
+# A template whose X run is followed by another TEMPLATE character never
+# substitutes on
+# BSD mktemp, so the literal name lands on disk and poisons every later call with
+# the same template. Scoped to mktemp's own argument token: the leading class
+# cannot cross a space or a quote, so an unrelated XXX elsewhere on the line
+# cannot match, and the trailing class excludes shell punctuation so an unquoted
+# template that ENDS in X's inside $( ) is not a false positive.
+re_mktemp_suffix='(^|[^[:alnum:]_-])mktemp([[:space:]]+-[^[:space:]]+)*[[:space:]]+["'"'"']?[^[:space:]"'"'"'`]*XXX+[^[:space:]"'"'"'`(){}|&;<>X]'  # mktemp-ok: this is the recogniser for an mktemp call, not a call
 re_bin_path='(^|[^[:alnum:]_./-])/bin/(mk[t]emp|sed|grep|egrep|awk|find|xargs|sort|uniq|head|tail|wc|tr|cut|jq|env|dirname|basename|timeout|readlink|stat)([^[:alnum:]_-]|$)'
 re_date_nanos='(^|[^[:alnum:]_-])date[[:space:]][^;|&]*%[0-9]*N'
 re_zsh_status='(^|;|&&|[|][|]|[({]|(^|[^[:alnum:]_])(do|then|else|export|local|typeset|declare))[[:space:]]*status=|(^|[^[:alnum:]_])read[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*([[:alpha:]_][[:alnum:]_]*[[:space:]]+)*status([[:space:]]|;|$)|(^|[^[:alnum:]_])(local|typeset|declare|integer)[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*status([=[:space:]]|$)|(^|[^[:alnum:]_$])for[[:space:]]+status[[:space:]]+in([[:space:]]|$)'
@@ -274,6 +288,9 @@ check_command_line() {
   fi
   if [[ $line =~ $re_bin_path ]]; then
     reject bin-path "$line"
+  fi
+  if [[ $line =~ $re_mktemp_suffix ]]; then
+    reject mktemp-suffix "$line"
   fi
   if [ "$shell_kind" = zsh ]; then
     if [[ $line =~ $re_zsh_status ]]; then
