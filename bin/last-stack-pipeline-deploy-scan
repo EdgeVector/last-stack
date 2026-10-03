@@ -39,6 +39,19 @@
 #      a day while the repo's real deploy, now on GitHub Actions, was green).
 set -eu
 
+# The COMPLETE status vocabulary this scanner can emit, declared in one place so
+# a consumer that gates on status has something to be checked against. Every
+# literal `pipe_status="…"` assignment and every synthesized `--repo` row below
+# must appear here, and a consumer must have an explicit verdict for each one.
+# Both directions are asserted by
+# tests/last-stack-card-closeout-deploy-gate-vocabulary.sh, so adding a status
+# without classifying it in bin/last-stack-card-closeout breaks CI instead of
+# jamming a merged card in `doing`
+# (papercut-card-closeout-deploy-gate-refuses-the-retired-status-the-scanner-now-emits-20261001:
+# `retired` was added by PR #172 and silently took the refusal arm, which made
+# the gate unsatisfiable for all four repos it covers).
+DEPLOY_SCAN_STATUSES="success failure pending unknown retired not-applicable unconfigured missing"
+
 json=0
 root="${LASTGIT_DEPLOY_ROOT:-$HOME/.lastgit}"
 pending_max_s=14400
@@ -48,18 +61,29 @@ repo_filter=""
 usage() {
   cat >&2 <<'EOF'
 usage: last-stack-pipeline-deploy-scan [--json] [--root <dir>] [--pending-max-s <seconds>] [--tail-bytes <bytes>] [--repo <name>]
+       last-stack-pipeline-deploy-scan --statuses
 
 Scans <root>/deploy-*/deploy.log for LastGit deploy-pipeline health.
 Prints human lines by default, or a JSON array with --json.
 With --repo <name>, reports only that repo and always emits exactly one row —
 synthesizing status=not-applicable (no producer for it, others configured) or
 status=unconfigured (no producers at all) when it has no deploy log.
+
+--statuses prints the complete status vocabulary this scanner can emit, one per
+line. A caller that gates on status must have an explicit verdict for each.
 EOF
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --json) json=1; shift ;;
+    # Print the declared status vocabulary, one per line, and exit. This is the
+    # contract a gating consumer is checked against; it reads this instead of
+    # grepping the source.
+    --statuses)
+      printf '%s\n' $DEPLOY_SCAN_STATUSES
+      exit 0
+      ;;
     --root)
       [ "$#" -ge 2 ] || { usage; exit 2; }
       root="$2"
