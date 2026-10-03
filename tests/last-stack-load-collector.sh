@@ -17,6 +17,12 @@ trap cleanup EXIT
 fail() {
   echo "FAIL: $*" >&2
   [ ! -f "$T/mon/collector-errors.log" ] || { echo "--- collector-errors.log" >&2; cat "$T/mon/collector-errors.log" >&2; }
+  # A bounded host-helper read that lost its race is recorded in the sample, so a
+  # failure whose real cause is an empty host sample says so here instead of
+  # sending the reader to the node.
+  ls "$T/mon"/load-*.jsonl >/dev/null 2>&1 && {
+    echo "--- last sample .host.degraded: $(tail -n 1 "$T/mon"/load-*.jsonl | jq -c '.host.degraded // "none"')" >&2
+  }
   ls -la "$T/mon" >&2 2>/dev/null || true
   exit 1
 }
@@ -54,16 +60,50 @@ export PATH="$T/hostbin:$PATH"
 last_field() { tail -n 1 "$T/mon"/load-*.jsonl | jq -r "$1"; }
 
 # 1. no socket -> state down, still writes a full host sample
+#
+# `ps` runs under a 3s bound and the stub below is a /bin/sh spawn, so on a loaded
+# runner that read can lose its race and leave `top` empty. That is an environment
+# condition, not a product defect, and it used to red this gate with an assertion
+# that blamed the node (papercut-last-stack-load-collector-sh-fails-under-host-load-
+# on-a-pristine-tree-with-a-misleading-assertion-20261002). Retry the lost race, and
+# when it persists, fail with the reason the sample now records. State is reset
+# before each attempt so a retry cannot push an alert counter over its threshold and
+# break case 4's "no alert yet" assertion.
 export LOAD_MON_LASTDB="$T/lastdb-ok"
-"$BIN" sample
+sample_with_host_top() {
+  local i
+  for i in 1 2 3; do
+    printf '{}' >"$T/mon/.state.json" 2>/dev/null || true
+    "$BIN" sample
+    [ "$(last_field '.host.top | length')" -gt 0 ] && return 0
+  done
+  return 1
+}
+mkdir -p "$T/mon"
+sample_with_host_top || fail "host sample top is empty after 3 passes; degraded reads: $(last_field '(.host.degraded // "none - nothing recorded a lost race, so this is a real gap") | tojson')"
 [ "$(last_field .node.status.state)" = "down" ] || fail "no socket should be down"
-[ "$(last_field '.host.top | length')" -gt 0 ] || fail "host sample must not depend on the node"
 
 # 1b. ps/sysctl/lastdb not runnable (sandboxed runner): still a sample, never a gap
 PY="$(command -v python3)"
 PATH="$T/nopath" LOAD_MON_LASTDB=lastdb-missing "$PY" "$BIN" sample
 [ "$(last_field .node.status.state)" = "down" ] || fail "sample must be written with no runnable helpers"
 [ ! -s "$T/mon/collector-errors.log" ] || fail "missing helpers are not collector errors"
+# ... but they must not be silent either: an empty top has to say why.
+[ "$(last_field '.host.degraded.ps')" = "not runnable" ] || fail "an unrunnable ps must be named in the sample, got: $(last_field '.host.degraded // "nothing"')"
+
+# 1c. a bounded host read that hits its DEADLINE is recorded, not discarded.
+# This is the condition that reds this gate under load; it is reproduced here with
+# a stub that is slower than the 3s bound instead of by waiting for a loaded host.
+mkdir -p "$T/slowbin"
+printf '%s\n' '#!/bin/sh' 'sleep 4' 'printf "%s\\n" "123 1.0 1024 fixture-worker"' >"$T/slowbin/ps"
+cp "$T/hostbin/sysctl" "$T/slowbin/sysctl"
+chmod +x "$T/slowbin/ps" "$T/slowbin/sysctl"
+printf '{}' >"$T/mon/.state.json"  # this case is about the sample field, not an alert
+PATH="$T/slowbin:$PATH" "$BIN" sample
+[ "$(last_field '.host.top | length')" = "0" ] || fail "a ps slower than its bound cannot produce a top"
+[ "$(last_field '.host.degraded.ps')" = "deadline after 3s" ] || fail "a deadlined ps read must name its bound, got: $(last_field '.host.degraded // "nothing"')"
+[ ! -s "$T/mon/collector-errors.log" ] || fail "a bounded read losing its race is a sample field, not a collector error"
+"$BIN" report --minutes 5 | grep -q "degraded host reads" || fail "report must surface a degraded host read; an empty top is not an idle host"
 
 # 2. healthy node -> ok, ops rows parsed and sorted by count
 python3 "$FAKE" "$S/n.sock" ok & FAKE_PID=$!
@@ -86,19 +126,28 @@ python3 "$FAKE" "$S/n.sock" hang & FAKE_PID=$!
 for _ in 1 2 3 4 5 6 7 8 9 10; do [ -S "$S/n.sock" ] && break; sleep 0.2; done
 export LOAD_MON_LASTDB="$T/lastdb-hang" LOAD_MON_ALERT_NODE_CONSEC=2
 printf '{}' >"$T/mon/.state.json"  # earlier passes left a bad-pass count
+# The claims in 4 and 5 are about what THIS pass does, so they count rows rather
+# than read the whole alert history. Reading the history made them inherit every
+# earlier case: cases 1 and 1b are 2 down passes against the default NODE_CONSEC=3,
+# which left one pass of headroom, so any extra non-ok pass above fired
+# node_unresponsive and red "one bad pass must not alert" on a loaded runner.
+alert_rows() { [ -e "$T/mon/alerts.jsonl" ] && wc -l <"$T/mon/alerts.jsonl" | tr -d ' ' || echo 0; }
+ALERTS0="$(alert_rows)"
 START=$SECONDS
 "$BIN" sample
 ELAPSED=$((SECONDS - START))
 [ "$ELAPSED" -le 6 ] || fail "pass took ${ELAPSED}s under a hung node; the deadline is not hard"
 [ "$(last_field .node.status.state)" = "busy" ] || fail "hung node should be busy"
 [ "$(last_field .node.ops.state)" = "busy" ] || fail "hung CLI should be busy"
-[ ! -e "$T/mon/alerts.jsonl" ] || fail "one bad pass must not alert (threshold 2)"
+[ "$(alert_rows)" = "$ALERTS0" ] || fail "one bad pass must not alert (threshold 2)"
 
 # 5. second bad pass alerts; third is inside the cooldown and does not repeat it
 "$BIN" sample
-[ "$(jq -r .alert "$T/mon/alerts.jsonl")" = "node_unresponsive" ] || fail "second bad pass should alert"
+[ "$(tail -n 1 "$T/mon/alerts.jsonl" | jq -r .alert)" = "node_unresponsive" ] || fail "second bad pass should alert"
+[ "$(alert_rows)" = "$((ALERTS0 + 1))" ] || fail "second bad pass should add exactly one alert"
+ALERTS1="$(alert_rows)"
 "$BIN" sample
-[ "$(wc -l <"$T/mon/alerts.jsonl" | tr -d ' ')" = "1" ] || fail "cooldown should suppress a repeat alert"
+[ "$(alert_rows)" = "$ALERTS1" ] || fail "cooldown should suppress a repeat alert"
 kill "$FAKE_PID"; wait "$FAKE_PID" 2>/dev/null || true; FAKE_PID=""
 
 # 5b. vitals: footprint and sync-degraded alerts fire from /api/status vitals
@@ -126,7 +175,10 @@ printf '#!/bin/sh\nfor a in "$@"; do case "$a" in @*) cp "${a#@}" "%s/curl.body"
 printf '{}' >"$T/mon/.state.json"
 LOAD_MON_SENTRY=1 LOAD_MON_CURL="$T/curl" LOAD_MON_SENTRY_DSN="https://abc123@o1.ingest.sentry.io/42" \
   LOAD_MON_ALERT_LOAD1=0 LOAD_MON_ALERT_LOAD_CONSEC=1 "$BIN" sample
-for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$T/curl.body" ] && break; sleep 0.2; done
+# Wait on the LAST file the fake curl writes, not the first: it copies the body and
+# only then writes the args, so waiting on the body and grepping the args is a race
+# that a loaded runner loses.
+for _ in $(seq 1 100); do [ -s "$T/curl.args" ] && [ -s "$T/curl.body" ] && break; sleep 0.2; done
 grep -q "https://o1.ingest.sentry.io/api/42/envelope/" "$T/curl.args" || fail "sentry envelope URL wrong"
 grep -q "sentry_key=abc123" "$T/curl.args" || fail "sentry key missing"
 sed -n 3p "$T/curl.body" | jq -e '.tags.alert == "host_load_high"' >/dev/null || fail "sentry event should carry the alert name"

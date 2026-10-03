@@ -168,16 +168,37 @@ def run(argv, timeout):
         return None, ""
 
 
+def helper_read(argv, bound, label, degraded):
+    """A bounded host-helper read whose DEGRADED outcome is recorded, not discarded.
+
+    `run()` already distinguishes a deadline (rc None) from "could not run" (127),
+    and every caller here used to throw both away — so a `ps` that lost its race
+    left `top` empty with nothing anywhere saying why, in the fixture and in
+    production alike. An empty `top` then reads as an idle host. The reason goes in
+    the sample itself (rotated with it) rather than in collector-errors.log, which
+    is never rotated and whose contract is "a section raised an exception".
+    """
+    rc, out = run(argv, bound)
+    if rc is None:
+        degraded[label] = "deadline after %gs" % bound
+    elif rc == 127:
+        degraded[label] = "not runnable"
+    elif rc != 0:
+        degraded[label] = "rc=%s" % rc
+    return out
+
+
 def host_sample():
     h = {"ncpu": os.cpu_count()}
+    degraded = {}
     try:
         h["load"] = [round(x, 2) for x in os.getloadavg()]
     except OSError:
         h["load"] = None
-    rc, out = run(["sysctl", "-n", "vm.swapusage"], 3)
+    out = helper_read(["sysctl", "-n", "vm.swapusage"], 3, "sysctl", degraded)
     m = re.search(r"used = ([0-9.]+)M", out or "")
     h["swap_used_mb"] = int(float(m.group(1))) if m else None
-    rc, out = run(["ps", "-Ao", "pid=,%cpu=,rss=,comm="], 3)
+    out = helper_read(["ps", "-Ao", "pid=,%cpu=,rss=,comm="], 3, "ps", degraded)
     rows = []
     for line in (out or "").splitlines():
         parts = line.split(None, 3)
@@ -194,7 +215,8 @@ def host_sample():
     h["lastdbd_other"] = []
     cands = [r for r in rows if os.path.basename(r[3]) == "lastdbd"]
     if cands:
-        rc, out = run(["ps", "-o", "pid=,command=", "-p", ",".join(str(r[0]) for r in cands)], 3)
+        out = helper_read(["ps", "-o", "pid=,command=", "-p", ",".join(str(r[0]) for r in cands)],
+                          3, "ps_cmd", degraded)
         cmd = {}
         for line in (out or "").splitlines():
             a, _, b = line.strip().partition(" ")
@@ -207,6 +229,8 @@ def host_sample():
                 h["lastdbd_other"].append({"pid": p, "cpu": c, "rss_mb": r, "data_dir": dd.group(1)})
             elif h["lastdbd"] is None:
                 h["lastdbd"] = {"pid": p, "cpu": c, "rss_mb": r}
+    if degraded:
+        h["degraded"] = degraded
     return h
 
 
@@ -861,6 +885,13 @@ def report(minutes, as_json):
         srt = sorted(ms)
         out["status_ms"] = {"p50": srt[len(srt) // 2], "p95": srt[min(len(srt) - 1, int(len(srt) * 0.95))], "max": srt[-1]}
     n = max(len(recs), 1)
+    # A sample whose bounded `ps` read lost its race has an empty top, which is
+    # indistinguishable from an idle host unless the report says so.
+    deg = {}
+    for r in recs:
+        for label, why in (r["host"].get("degraded") or {}).items():
+            deg["%s %s" % (label, why)] = deg.get("%s %s" % (label, why), 0) + 1
+    out["degraded_host_reads"] = deg or None
     out["cpu_by_process"] = sorted(
         ([name, round(sum(v) / n, 1), max(v)] for name, v in cpu_by_proc.items()),
         key=lambda x: x[1], reverse=True)[:8]
@@ -918,6 +949,9 @@ def report(minutes, as_json):
         print("file writes/s by root (fs-event sources, %ds):" % out["writes"]["seconds"])
         for root, rate, top in out["writes"]["roots"]:
             print("  %-44s %8.2f  %s" % (root.replace(HOME, "~"), rate, " ".join("%s=%d" % (k, c) for k, c in top)))
+    if out["degraded_host_reads"]:
+        print("degraded host reads: %s  (an empty top is a lost race, not an idle host)"
+              % json.dumps(out["degraded_host_reads"], sort_keys=True))
     print("host CPU by process (avg%, max%):")
     for name, avg, mx in out["cpu_by_process"]:
         print("  %-28s %6.1f %6.1f" % (name, avg, mx))
