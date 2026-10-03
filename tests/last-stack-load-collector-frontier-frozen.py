@@ -16,9 +16,16 @@ The predicate is deliberately NOT "the frontier is old". After a LastDB version
 change every pinned app legitimately holds until the prover writes a row for the
 new build, which can be most of a day; alerting through that window every half
 hour is noise an operator learns to ignore. The discriminator is that the prover
-produced a row for a DIFFERENT build WHILE this app was already held — proof it
+produced a row for a DIFFERENT build AFTER it last served this host — proof it
 is alive and will never serve this host. That needs no age threshold and cannot
 disagree with Class H, which fires on age because it had no second side.
+
+"AFTER it last served this host" is `running_build_proved_at`, the index's own
+frontier for the running build. It was first written as `first_observed_at`,
+which is when host-track created the observation FILE, and that silenced the
+rule on its first real freeze: the cache was installed 34 h in, so the newest
+row predated it and both held apps were skipped. Cases 6a-6e are that shape.
+papercut-frontier-frozen-compares-the-newest-row-against-the-detectors-own-install-date-20261003
 """
 import importlib.machinery, importlib.util, json, os, tempfile, time
 
@@ -47,7 +54,11 @@ def write(app, **over):
          "index_newest_version": "0.23.3-2518-ge1177d41a",
          "index_newest_proved_at": z(-1800),
          "index_newest_oid": "82f14a1ff2a59ad0b20dd2aca2c5ac65cf8f9055",
-         "index_build_match": "mismatch"}
+         "index_build_match": "mismatch",
+         # The index's own frontier for the RUNNING build: when the prover last
+         # served this host. Present in the default shape because it is present
+         # in production, so every case below exercises the arm the fleet runs.
+         "running_build_proved_at": z(-172800)}
     o.update(over)
     os.makedirs(FDIR, exist_ok=True)
     with open(os.path.join(FDIR, app + ".json"), "w") as f:
@@ -107,10 +118,74 @@ assert lc.frontier_frozen(NOW) is None, "no-rows rendered as a build mismatch"
 #    hold, so nothing has been proved for another build since this app was
 #    held. This is the case an age threshold gets wrong, and the whole reason
 #    the predicate compares two timestamps instead of one against a bound.
+#    `running_build_proved_at` is absent here, so this is also the FALLBACK
+#    arm: an observation written by a host-track that predates the field, or a
+#    running build the index has never proved, where first_observed_at is the
+#    only origin there is.
 clear()
-write("routines", index_newest_proved_at=z(-9000))  # before first_observed_at
+write("routines", index_newest_proved_at=z(-9000),  # before first_observed_at
+      running_build_proved_at=None)
 assert lc.frontier_frozen(NOW) is None, \
     "a row proved BEFORE the hold began counted as the prover working past us"
+
+# 6a. THE LIVE 2026-10-03 SHAPE, and the regression this file exists to hold.
+#     The detector is YOUNGER than the hold: first_observed_at 08:53:35Z against
+#     a newest row proved 06:49:16Z, because the cache was installed 34 h into a
+#     freeze that began 2026-10-01T22:10Z. Comparing against first_observed_at
+#     skips the app and `held` comes back empty, which is how this rule stayed
+#     silent for the whole 9 h it had been installed, during the exact freeze it
+#     was written for. The registry's own frontier for the running build is two
+#     days old and is the origin that answers correctly.
+clear()
+write("routines",
+      first_observed_at=z(-600),          # the detector is 10 min old
+      index_newest_proved_at=z(-1800),    # the row predates the detector
+      running_build_proved_at=z(-172800))
+why = lc.frontier_frozen(NOW)
+assert why, "a hold OLDER than the detector was reported as healthy"
+assert "routines" in why, why
+# And the verdict must name the origin it rests on, or two passes that disagree
+# are indistinguishable.
+assert z(-172800) in why, "the message does not name the frontier it compared against: %s" % why
+assert "moved past this host" in why, why
+
+# 6b. The wrong-value negative for the same arm: the frontier is present and the
+#     newest row is OLDER than it, so the prover has NOT moved past this host.
+#     An absent field would only exercise the fallback, which is a different
+#     branch -- the negative has to supply a wrong value, not no value.
+clear()
+write("routines", index_newest_proved_at=z(-172800), running_build_proved_at=z(-600))
+assert lc.frontier_frozen(NOW) is None, \
+    "a row proved BEFORE the running build's own frontier counted as moving past us"
+
+# 6c. Equal is not past. The prover served this host in the same write; one
+#     more proof row for another build is what makes the hold permanent.
+clear()
+write("routines", index_newest_proved_at=z(-1800), running_build_proved_at=z(-1800))
+assert lc.frontier_frozen(NOW) is None, "an equal frontier was read as the prover moving past us"
+
+# 6d. The frontier arm must not be reachable through the fallback: with the
+#     frontier present and NEWER than the row, a stale first_observed_at that
+#     would have fired under the old predicate must not fire now. This is the
+#     one direction where the fix could have made the rule louder than before,
+#     and it must not.
+clear()
+write("routines", first_observed_at=z(-999999),
+      index_newest_proved_at=z(-172800), running_build_proved_at=z(-600))
+assert lc.frontier_frozen(NOW) is None, \
+    "an old first_observed_at overrode a frontier that says the prover still serves us"
+
+# 6e. Mixed basis across apps during a rollout: one observation carries the
+#     field and one does not. Both are held, both are named, and the message
+#     reports the frontier it did compare against rather than the weaker origin.
+clear()
+write("routines", first_observed_at=z(-600), index_newest_proved_at=z(-1800),
+      running_build_proved_at=z(-172800))
+write("brain", first_observed_at=z(-7200), index_newest_proved_at=z(-1800),
+      running_build_proved_at=None)
+why = lc.frontier_frozen(NOW)
+assert why and "brain,routines" in why, "a mixed-basis rollout dropped a held app: %s" % why
+assert z(-172800) in why and "moved past this host" in why, why
 
 # 7. A stale observation is not evidence about the present. Past the bound the
 #    writer is not running, and this rule must not keep an old verdict alive.

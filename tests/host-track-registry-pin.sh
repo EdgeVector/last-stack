@@ -360,6 +360,32 @@ jq -e --arg oid "$oid_two" '
   and (.observed_at | test("^20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$"))
   and .first_observed_at == .observed_at' "$obs" >/dev/null \
   || fail "frontier observation is missing a field a consumer needs: $(cat "$obs")"
+# running_build_proved_at is the frontier for the RUNNING build -- when the
+# prover last served this host -- and it is the origin the consumer compares the
+# newest row against. first_observed_at cannot serve: it is when host-track
+# created this FILE, so it silences the consumer on every hold older than the
+# cache. Measured 2026-10-03T18:1xZ, the cache was written 34 h into a freeze and
+# the newest row predated it for both held apps, so the one alert for that freeze
+# reported nothing. It must be the SAME value --json renders as
+# registry_pin_proved_at, or the two readers disagree about the same question.
+# papercut-frontier-frozen-compares-the-newest-row-against-the-detectors-own-install-date-20261003
+jq -e --arg t "$RESOLVE_PROVED_AT" '.running_build_proved_at == $t' "$obs" >/dev/null \
+  || fail "the observation drops the running build's own frontier: $(cat "$obs")"
+[ "$(jq -r .running_build_proved_at "$obs")" = "$(printf '%s\n' "$st" | jq -r .registry_pin_proved_at)" ] \
+  || fail "the observation and --json disagree on the running build's frontier"
+
+# 2h-bis. A resolve row carrying no proved_at must write NULL, never a
+#         substitute and never "now": the consumer falls back to
+#         first_observed_at on null, and an invented value would read as the
+#         prover having served this host at a moment it did not.
+rm -rf "$tmp/frontier"
+RESOLVE_PROVED_AT= INFO_NEWEST_VERSION=0.23.3-9-gother INFO_NEWEST_AT=2026-10-02T12:00:00Z \
+  INFO_NEWEST_SHA="$oid_two" "$ROOT/bin/host-track" status --json demo >/dev/null
+jq -e '.running_build_proved_at == null and .index_build_match == "mismatch"' "$obs" >/dev/null \
+  || fail "an absent pin frontier was invented in the observation: $(cat "$obs")"
+# Restore the firing shape for the cases below.
+INFO_NEWEST_VERSION=0.23.3-9-gother INFO_NEWEST_AT=2026-10-02T12:00:00Z \
+  INFO_NEWEST_SHA="$oid_two" "$ROOT/bin/host-track" status --json demo >/dev/null
 # The verdict in the file and the verdict in --json must be the SAME answer, or
 # two readers of the same question disagree. One `registry_build_match` helper
 # serves both sites for exactly this reason.

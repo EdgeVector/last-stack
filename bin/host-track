@@ -1315,10 +1315,31 @@ registry_build_match() {
 #
 # first_observed_at is preserved across writes, so a consumer can tell a
 # continuous hold from a flap. Two concurrent writers (the refresh agent and a
-# hand-run) can both read before either writes, which resets it once. That is
-# the safe direction and was chosen knowingly: the consumer's predicate asks
-# whether a proof row landed AFTER the hold began, so a reset delays an alert by
-# one prover tick and can never manufacture one.
+# hand-run) can both read before either writes, which resets it once.
+#
+# WHAT first_observed_at IS NOT. It is when host-track first WROTE this file,
+# which is when this cache was installed -- not when the hold began. Those are
+# the same number only while the observer is older than the hold, and this
+# comment asserted they were the same thing. Measured 2026-10-03T18:1xZ: the
+# cache was first written at 08:53:35Z (routines) and 09:17:12Z (brain), 34 h
+# into a freeze that began 2026-10-01T22:10Z, so for both held apps the index's
+# newest row (06:49:16Z) PREDATED `first_observed_at`. The consumer's predicate
+# skipped both, `held` came back empty, and the one alert written for that
+# freeze stayed silent for the whole 9 h it had been installed.
+# papercut-frontier-frozen-compares-the-newest-row-against-the-detectors-own-install-date-20261003
+#
+# So running_build_proved_at ships too: the index's own frontier FOR THE RUNNING
+# BUILD (`registry_pin_proved_at`, already computed at the call site, no extra
+# read). It marks when the prover last served THIS host, which is a fact about
+# the registry and is true however young this cache is. A consumer should
+# compare the newest row against that, and fall back to first_observed_at only
+# when the index has never proved the running build at all.
+#
+# A reset of first_observed_at is still the safe direction -- it can only delay
+# an alert, never manufacture one -- but "delays it by one prover tick" was also
+# wrong: the delay is until the prover writes AGAIN, and this rule exists for
+# holds a prover can never clear. It is unbounded. running_build_proved_at does
+# not reset, which is the half that fixes it.
 frontier_file() {
   printf '%s/%s.json\n' "$FRONTIER_DIR" "$1"
 }
@@ -1336,7 +1357,7 @@ frontier_clear() {
 # the fields status_json_for has already computed, so it reads nothing. Never
 # fails the caller: an unwritable cache must not break `status`.
 frontier_observe() {
-  local app="$1" running="$2" nv="$3" nat="$4" noid="$5" match="$6"
+  local app="$1" running="$2" nv="$3" nat="$4" noid="$5" match="$6" run_proved="${7:-}"
   local f tmp first now_iso
   f="$(frontier_file "$app")"
   mkdir -p "$FRONTIER_DIR" 2>/dev/null || return 0
@@ -1357,8 +1378,10 @@ frontier_observe() {
       --arg index_newest_proved_at "$nat" \
       --arg index_newest_oid "$noid" \
       --arg index_build_match "$match" \
+      --arg running_build_proved_at "$run_proved" \
       '{app: $app, observer: $observer, observed_at: $observed_at,
         first_observed_at: $first_observed_at, hold: "pin-behind",
+        running_build_proved_at: ($running_build_proved_at | select(length > 0) // null),
         running_lastdb_version: ($running_lastdb_version | select(length > 0) // null),
         index_newest_version: ($index_newest_version | select(length > 0) // null),
         index_newest_proved_at: ($index_newest_proved_at | select(length > 0) // null),
@@ -1685,7 +1708,8 @@ status_json_for() {
     if [ -n "$pin_behind_oid" ]; then
       frontier_observe "$app" "$registry_lastdb_version" \
         "$registry_index_newest_version" "$registry_index_newest_at" \
-        "$registry_index_newest_oid" "$registry_index_build_match"
+        "$registry_index_newest_oid" "$registry_index_build_match" \
+        "$registry_pin_proved_at"
     else
       frontier_clear "$app"
     fi
