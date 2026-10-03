@@ -45,6 +45,9 @@ Env (defaults):
   LOAD_MON_ALERT_COOLDOWN_SEC  1800
   LOAD_MON_ALERT_FREEZE_WATCH_CONSEC 2   passes with the routines fleet-freeze
                                        watchdog not producing checks
+  LOAD_MON_ALERT_DISPATCH_FROZEN_CONSEC 2  passes with routinesd not dispatching
+                                       inside the watchdog's bound AND no live
+                                       watchdog to report it
   LOAD_MON_ALERT_FRONTIER_CONSEC 2     passes with host-track holding an install
                                        on a registry pin that cannot clear
   LOAD_MON_FRONTIER_DIR                host-track's frontier observation cache
@@ -188,6 +191,28 @@ FRONTIER_DIR = os.environ.get(
 # not silence the alert and a dead writer does not keep it alive.
 FRONTIER_MAX_OBS_AGE = envf("LOAD_MON_FRONTIER_MAX_OBS_AGE_SEC", 3600)
 FRONTIER_CONSEC = int(envf("LOAD_MON_ALERT_FRONTIER_CONSEC", 2))
+# The scheduler freeze ITSELF, as opposed to the absence of the watchdog that
+# reports it. `freeze_watch_down` says, in its own alert text, "while it is down,
+# a scheduler freeze is reported by nothing" — and `watchdog_latch_hazard`, four
+# lines in, already measures the dispatch age from routinesd's own records and
+# throws it away in the one branch where the freeze is REAL. So this agent has
+# held the number the whole time and reported a different fact.
+#
+# Nine dispatch gaps over the watchdog's bound are recorded in this host's own
+# routinesd.err.log between 2026-07-13 and 2026-10-03: 9.3h, 105.7h, 12.3h,
+# 30.9h, 8.9h, 14.3h, 59.8h, 19.0h. Through the 19.0h one (2026-10-02T00:08Z to
+# 19:08Z) the watchdog was launchctl-disabled from 00:44:45Z, so the fleet was
+# frozen AND unwatched, and the only thing this agent said was "the agent is
+# launchctl-disabled, `launchctl enable` then bootstrap it".
+DISPATCH_FROZEN_CONSEC = int(envf("LOAD_MON_ALERT_DISPATCH_FROZEN_CONSEC", 2))
+# Any routinesd record's timestamp, whatever its kind. Used ONLY to lower-bound
+# the dispatch age when the tail window holds no dispatch record at all: if the
+# window reaches back to T and contains no dispatch, the newest dispatch is at
+# least now-T old. Measured 2026-10-03: the 2 MiB tail covers 51.6 h of this log
+# (15496 records, one 19 h freeze inside that span), against a 6 h bound — ample
+# normally, and still short of the 105.7 h episode above, which is exactly the
+# longest one and the one a freeze detector must not go quiet on.
+FW_ANY_TS_RE = re.compile(r'"ts":"(\d{4}-\d{2}-\d{2}T[0-9:.]+Z)"')
 NOTIFY = os.environ.get("LOAD_MON_NOTIFY", "1") != "0"
 PHONE = os.environ.get("LOAD_MON_PHONE", "1" if NOTIFY else "0") != "0"
 RA = os.environ.get("LOAD_MON_RA", os.path.join(HOME, ".local/bin/ra"))
@@ -597,6 +622,21 @@ def newest_epoch(text, pattern):
     return best
 
 
+def oldest_epoch(text, pattern):
+    """The oldest epoch among a pattern's capture-group-1 timestamps, or None.
+
+    How far back the tail window actually reaches. `dispatch_frozen` uses it to
+    lower-bound the dispatch age when the window holds no dispatch record, so a
+    freeze longer than the window cannot read as "cannot tell".
+    """
+    best = None
+    for m in pattern.finditer(text):
+        t = epoch_z(m.group(1))
+        if t is not None and (best is None or t < best):
+            best = t
+    return best
+
+
 def watchdog_latch_hazard(now):
     """Why enabling the disabled watchdog right now would silence it, or None.
 
@@ -830,6 +870,78 @@ def frontier_frozen(now):
                int(obs_age)))
 
 
+def dispatch_frozen(now, watchdog_down):
+    """The routine fleet has stopped dispatching and no live watchdog says so.
+
+    Returns the message, or None. `watchdog_down` is `freeze_watch_down`'s answer
+    for this pass, reused rather than recomputed so the two rules cannot disagree
+    and so the pass still pays for only one launchctl read.
+
+    WHY THIS LIVES HERE. The fleet-freeze watchdog is the detector for this
+    condition, and it cannot report its own absence — which is the whole reason
+    `freeze_watch_down` exists. But `freeze_watch_down` reports the ABSENCE and
+    not the CONDITION, and its own alert text says so out loud: "while it is
+    down, a scheduler freeze is reported by nothing". That sentence has been
+    true and shipped. Meanwhile `watchdog_latch_hazard` reads routinesd's own
+    dispatch records on every pass and, in the one branch where the freeze is
+    real, returns None — correctly for its own question, and discarding the
+    measurement. So the number has been in hand the whole time and the fact was
+    never published.
+
+    THE GATE IS "NOBODY LIVE IS WATCHING", and it is taken from the sibling
+    rather than re-derived:
+
+      * plist absent  -> the watchdog was never installed, so nothing reports a
+        freeze; this rule is the only surface. `freeze_watch_down` returns None
+        here because an uninstalled optional agent is not a fault — that is a
+        statement about the WATCHDOG, not about the fleet.
+      * `watchdog_down` set -> disabled, booted out or silent; nothing reports.
+      * plist present and `watchdog_down` None -> the watchdog is live and
+        producing checks. It owns this verdict and this rule stays quiet, so an
+        operator never gets two notices for one freeze.
+
+    AGE, AND WHY AN ABSENT RECORD IS NOT "CANNOT TELL". The tail window is
+    bounded (2 MiB) because routinesd.err.log measured 133 MB. When the window
+    holds a dispatch record the age is exact. When it holds none, the window
+    still proves something: it reaches back to its own oldest record, and it
+    contains no dispatch, so the newest dispatch is AT LEAST that old. That
+    lower bound fires when it already exceeds the bound and otherwise answers
+    None. Without this arm the rule would go quiet on precisely the longest
+    episodes: the window covers 51.6 h of this log and the worst recorded gap is
+    105.7 h, so the 2026-07-25 freeze would have read as "cannot tell" from hour
+    52 onward — a freeze detector that gives up as the freeze gets worse.
+
+    `kind` must be dispatch/complete and never `tick`: through the 59h48m freeze
+    the daemon kept ticking `80 routines in_flight=0` and dispatched nothing, so
+    a matcher that accepted ticks would read the log as fresh forever. The tick
+    lines are still useful here, but only through FW_ANY_TS_RE as window reach.
+
+    The one genuine "cannot tell" is a tail with no parseable record at all — an
+    absent, empty or rotated log. That answers None, and it is the only silence
+    this rule can produce while the fleet is unwatched.
+    """
+    if os.path.exists(FW_PLIST) and not watchdog_down:
+        return None
+    text = tail_text(FW_DAEMON_LOG, FW_TAIL_BYTES)
+    dispatch = newest_epoch(text, FW_DISPATCH_RE)
+    if dispatch is not None:
+        age, exact, newest = now - dispatch, True, iso(dispatch)
+    else:
+        reach = oldest_epoch(text, FW_ANY_TS_RE)
+        if reach is None:
+            return None
+        age, exact, newest = now - reach, False, "none in the window since %s" % iso(reach)
+    if age <= FW_DISPATCH_BOUND:
+        return None
+    watcher = watchdog_down or ("the watchdog is not installed on this host (no %s)" % FW_PLIST)
+    return ("the routine fleet has not dispatched for %ds (bound %ds, newest dispatch %s)%s and "
+            "no fleet-freeze watchdog is live to report it: %s. Read `routines freeze-watch` for "
+            "the full verdict, then bootstrap routinesd or restore the watchdog"
+            % (int(age), int(FW_DISPATCH_BOUND), newest,
+               "" if exact else " -- a LOWER BOUND: the tail window holds no dispatch record",
+               watcher))
+
+
 # Every notice this agent posts used to go out as `--kind other --system lastdbd`
 # with no severity hint, because fire() hard-coded one label for all of them. Four
 # of the eleven rules are not about lastdbd at all: fleet_freeze_watchdog_down is
@@ -845,6 +957,7 @@ def frontier_frozen(now):
 # because those fire on a bound being crossed and recover on their own. Disagree
 # with that criterion rather than with any single row.
 ALERT_SCOPE = {
+    "fleet_dispatch_frozen":           (("routinesd",), "other",   "warn"),
     "fleet_freeze_watchdog_down":      (("routinesd",), "other",   "warn"),
     "registry_delivery_frozen":        (("host-track",), "other",  "warn"),
     "lastdb_persist_lanes_unhealthy":  (("lastdbd",),   "other",   "warn"),
@@ -958,10 +1071,16 @@ def evaluate_alerts(rec, now):
     st["hog_name"] = hog_name
     fw_why = guarded(lambda: freeze_watch_down(now), None)
     st["fw_down"] = st.get("fw_down", 0) + 1 if fw_why else 0
+    dispatch_why = guarded(lambda: dispatch_frozen(now, fw_why), None)
+    st["dispatch_frozen"] = st.get("dispatch_frozen", 0) + 1 if dispatch_why else 0
     frozen_why = guarded(lambda: frontier_frozen(now), None)
     st["frontier_frozen"] = st.get("frontier_frozen", 0) + 1 if frozen_why else 0
     last = st.setdefault("last_alert", {})
     checks = [
+        # Before the watchdog's absence, because the freeze is the thing an
+        # operator acts on and the absence is why they had not heard about it.
+        ("fleet_dispatch_frozen", st["dispatch_frozen"] >= DISPATCH_FROZEN_CONSEC,
+         "the routine fleet is FROZEN for %d passes: %s" % (st["dispatch_frozen"], dispatch_why)),
         ("fleet_freeze_watchdog_down", st["fw_down"] >= FW_CONSEC,
          "the routines fleet-freeze watchdog is not running for %d passes: %s "
          "(while it is down, a scheduler freeze is reported by nothing)"
