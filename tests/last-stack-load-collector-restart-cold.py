@@ -3,6 +3,15 @@
 import importlib.machinery, importlib.util, os, sys, tempfile
 
 root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+# Isolate from this host's real state before the module loads. Two alert rules
+# read it directly -- freeze_watch_down the launchd plist, frontier_frozen
+# host-track's observation cache -- and this file asserts `not fired` for an
+# unrelated rule, so either one firing turns it red on a host where its
+# condition is genuinely true. Each has its own coverage:
+# tests/last-stack-load-collector-freeze-watch-liveness.py and
+# tests/last-stack-load-collector-frontier-frozen.py.
+os.environ["LOAD_MON_FREEZE_WATCH_PLIST"] = "/nonexistent/freeze-watch.plist"
+os.environ["LOAD_MON_FRONTIER_DIR"] = "/nonexistent/frontier-observations"
 loader = importlib.machinery.SourceFileLoader("lc", os.path.join(root, "bin", "last-stack-load-collector"))
 spec = importlib.util.spec_from_loader("lc", loader)
 lc = importlib.util.module_from_spec(spec)

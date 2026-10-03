@@ -304,8 +304,9 @@ you would have promoted is papercut while a driving feature exists.
      (highest live pressure or missing terminal), never for `done`/`archived`.
 
    Standing rule: no `Kind: tracker` / umbrella as terminal proof; no date-only
-   `DONE-WHEN` as NS completion; no empty validation mint. Design:
-   [[design-north-star-completion-contract]].
+   `DONE-WHEN` as NS completion; no empty validation mint. Those three clauses
+   ARE the completion contract; the design record that used to carry them does
+   not resolve.
 
    **Product-grade proof harnesses (when they exist):** prefer terminal cards
    whose VERIFY is `last-stack-north-star-proof <north-star-slug>` (offline

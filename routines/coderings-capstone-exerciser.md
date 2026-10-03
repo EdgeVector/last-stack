@@ -16,7 +16,7 @@ mutations outside declared isolation).
 ## Portal model (won't-undo)
 
 `~/code/edgevector/<repo>` is a **portal**, not a product checkout — no `.git`,
-no source (see `concepts-edgevector-run-dev-state-board`). Before grepping or
+no source (see `instructions/run-dev-state-board.md`). Before grepping or
 running scripts against a configured repo path, **prove it is live** with
 `last-stack-portal-live-checkout`. That helper either:
 

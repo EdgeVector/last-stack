@@ -52,8 +52,8 @@ difficulty matrix). Never `routines-profile apply grok-default-20260818`.
 2. Pickup shards `last-stack-fkanban-pickup` + `-w2`… are deliberate
    parallelism, not duplicates. Do not collapse them. Do **not** resume
    `-w4`/`-w5`/`-w6` unless Tom asked. Resuming `-w3` is allowed when
-   pickup-ready is high **and** w3's last window was useful, matching
-   `reference-pickup-worker-credit-calibration-20260809`.
+   pickup-ready is high **and** w3's last window was useful. Those two
+   conditions are the whole rule; the calibration record is gone.
 3. Do not resume a paused routine whose `prompt_path` is missing.
 4. **Matrix:** non-smoke routines should be `difficulty = fast|normal|hard`
    with **no** `harness`/`model`/`pin`. Smokes stay `pin = true` on their

@@ -11,6 +11,11 @@ corpus moved out from under them and nothing noticed.
 
 papercut-shipped-prose-cites-brain-slugs-that-do-not-resolve-20260926
 
+The prefixes checked are the brain's whole record-type vocabulary (CITED_TYPES).
+That matters for reading the output: a `dangling 0` is only as broad as this
+table, and while the table held four of the eleven types, `dangling 0` read as
+"no dangling citations" and meant "none among papercut/sop/decision/preference".
+
 Deliberately NOT a merge gate. A required gate here would make CI depend on the
 brain node being reachable, so a busy node would turn a correct PR red. This is
 a periodic checker: the papercut-reconciler routine already runs every few hours
@@ -44,14 +49,58 @@ from typing import Iterable
 # Prefix -> the `--type` that `brain get` needs for it. A point get is the
 # authoritative reader here: enumeration under-reports on this store, so an
 # absence taken from a listing would be a false positive.
+#
+# This set is the brain CLI's OWN record-type vocabulary -- the ten `<type> new`
+# commands `brain help` prints, plus `papercut`, which is its own subcommand. It
+# is deliberately the whole vocabulary and not a shortlist: this table has been
+# widened twice before, once per prefix someone noticed, and each widening made
+# the checker report a batch of dangling citations that had been invisible while
+# it answered `dangling 0`. Measured 2026-10-03 when the last seven types were
+# added, against prose nothing else had changed:
+#
+#     root                 dangling before   dangling after
+#     ~/.last-stack             16               24
+#     ~/code/edgevector          2                6
+#
+# Three of the four newly-found workspace citations are records the workspace
+# CLAUDE.md names as mandatory reading before any work starts.
+#
+# `concepts` is an alias, not a type. This host's prose cites concept records
+# under both `concept-` and `concepts-`, and both spellings resolve for some
+# records, so the extractor has to accept the plural and the point get has to
+# ask for the singular type.
 CITED_TYPES = {
     "papercut": "papercut",
     "decision": "decision",
     "sop": "sop",
     "preference": "preference",
+    "design": "design",
+    "task": "task",
+    "concept": "concept",
+    "concepts": "concept",
+    "reference": "reference",
+    "agent": "agent",
+    "project": "project",
+    "spike": "spike",
 }
 
-TOKEN_RE = re.compile(r"(?<![A-Za-z0-9-])(" + "|".join(CITED_TYPES) + r")-[a-z0-9][a-z0-9-]*")
+# Longest prefix first. Defensive only, and measured as such 2026-10-03: Python
+# backtracks across an alternation, so `concept|concepts` already matches the
+# plural and reverting the sort leaves every case green. It is kept because the
+# order is what a reader checks first when a plural prefix misbehaves, not
+# because anything depends on it.
+#
+# `/` joins the lookbehind because a token after a slash is a PATH SEGMENT, not
+# a citation: `https://thelastdb.com/docs/agent-access-model` is a URL, not a
+# dangling `agent` record. Measured over both roots 2026-10-03 -- every
+# slash-preceded token was a path segment and none was a citation -- so this
+# needs no allowlist, the same shape as the one-character-past-the-token rule
+# for generator prefixes below.
+TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9/-])("
+    + "|".join(sorted(CITED_TYPES, key=len, reverse=True))
+    + r")-[a-z0-9][a-z0-9-]*"
+)
 
 # Prose lives in these places and nowhere else. Named, not searched: a walk over
 # an install or state root resolves into unpruned artifact version trees.

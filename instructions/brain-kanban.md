@@ -13,8 +13,7 @@ the CLI below is the fallback and uses the SAME verbs.
 ### RUN / DEV / STATE / BOARD (won't-undo — 2026-07-23)
 
 **Product code only in DEV worktrees.** Shared install trees are RUN/STATE, not
-git homes. Full map: `instructions/run-dev-state-board.md` and brain
-`concepts-edgevector-run-dev-state-board`.
+git homes. Full map: `instructions/run-dev-state-board.md`.
 
 | | |
 |--|--|

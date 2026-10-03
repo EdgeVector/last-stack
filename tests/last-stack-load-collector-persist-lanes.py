@@ -10,6 +10,11 @@ os.environ["LOAD_MON_DIR"] = tempfile.mkdtemp()
 # fired`. A unit test of another rule must not depend on that. The rule has its
 # own coverage in tests/last-stack-load-collector-freeze-watch-liveness.py.
 os.environ["LOAD_MON_FREEZE_WATCH_PLIST"] = "/nonexistent/freeze-watch.plist"
+# Same again for the rule shipped 2026-10-03: frontier_frozen reads host-track's
+# real observation cache, so registry_delivery_frozen fires here on any host that
+# is holding an install. Its own coverage is
+# tests/last-stack-load-collector-frontier-frozen.py.
+os.environ["LOAD_MON_FRONTIER_DIR"] = "/nonexistent/frontier-observations"
 loader = importlib.machinery.SourceFileLoader("lc", os.path.join(root, "bin", "last-stack-load-collector"))
 spec = importlib.util.spec_from_loader("lc", loader)
 lc = importlib.util.module_from_spec(spec)
