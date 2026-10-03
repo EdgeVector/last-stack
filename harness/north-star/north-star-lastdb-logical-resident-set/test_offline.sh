@@ -82,6 +82,11 @@ while [ "\$#" -gt 0 ]; do
     *) exit 2 ;;
   esac
 done
+if [ -f "\$(dirname "\$0")/../../Cargo.toml" ]; then
+  printf 'cargo_root=yes\n' >>"$log"
+else
+  printf 'cargo_root=no\n' >>"$log"
+fi
 if [ -n "\$home" ]; then
   if [ -e "\$home/cloud_sync.json" ] || [ -e "\$home/cloud_sync.json.extra" ]; then
     printf 'cloud=present\n' >>"$log"
@@ -108,6 +113,7 @@ add_all_pieces() {
   mkdir -p "$src/fold_db/scripts" "$src/fold_db/crates/core/src/resident"
   cp "$script" "$src/$PIECE_SCRIPT"
   chmod +x "$src/$PIECE_SCRIPT"
+  printf '[workspace]\n' >"$src/Cargo.toml"
   printf 'range\n' >"$src/$PIECE_RANGE"
   printf 'set\n' >"$src/$PIECE_SET"
 }
@@ -408,6 +414,9 @@ fi
 [ -f "$LOG" ] || fail "live pass did not run the copy proof"
 /usr/bin/grep -F -q -- "--home $COPY" "$LOG" || fail "live pass home arg"
 /usr/bin/grep -F -q -- "--report " "$LOG" || fail "live pass report arg"
+# The copy proof runs cargo from its repo root; a lone extracted script
+# has no Cargo.toml above it and can never pass on a real home.
+/usr/bin/grep -F -q "cargo_root=yes" "$LOG" || fail "live pass ran the script outside a full Fold tree"
 rm -f "$LOG"
 
 PROOF="$WORK/proof-live-fail"

@@ -19,6 +19,13 @@
 # the origin/main lookup.
 # LOGICAL_RESIDENT_SET_COPY_HOME supplies an existing copy in live mode.
 # The harness still refuses a home under ~/.lastdb or ~/.folddb.
+#
+# Live mode extracts the WHOLE Fold tree at the resolved commit, not only
+# the copy proof script: the script runs `cargo test -p fold_db` from its
+# own repo root, so a lone script fails with "could not find Cargo.toml"
+# and the proof can never pass. CARGO_TARGET_DIR defaults to a directory
+# inside the scratch dir so the build is removed with it; set
+# LOGICAL_RESIDENT_SET_CARGO_TARGET_DIR to reuse a build across runs.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd -P)"
@@ -225,13 +232,15 @@ run_copy_proof() {
   [ ! -L "$copy" ] || finish FAIL "The harness refuses a symlink home."
   script="$TMP/fold/$PIECE_SCRIPT"
   mkdir -p "$TMP/fold"
-  if ! fold_git archive "$RESOLVED" "$PIECE_SCRIPT" | tar -x -C "$TMP/fold"; then
-    finish FAIL "The harness could not extract the copy proof script."
+  if ! fold_git archive "$RESOLVED" | tar -x -C "$TMP/fold"; then
+    finish FAIL "The harness could not extract the Fold tree."
   fi
   [ -f "$script" ] || finish FAIL "The copy proof script did not extract."
+  [ -f "$TMP/fold/Cargo.toml" ] || finish FAIL "The extracted Fold tree has no Cargo.toml."
   child_report="$TMP/child-report.md"
   set +e
-  bash "$script" --home "$copy" --report "$child_report" >"$TMP/child.out" 2>"$TMP/child.err"
+  CARGO_TARGET_DIR="${LOGICAL_RESIDENT_SET_CARGO_TARGET_DIR:-$TMP/target}" \
+    bash "$script" --home "$copy" --report "$child_report" >"$TMP/child.out" 2>"$TMP/child.err"
   child_rc=$?
   set -e
   child_line=""
