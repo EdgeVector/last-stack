@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# last-stack-why-stopped — zero-LLM Class A–F factory freeze classifier.
+# last-stack-why-stopped — zero-LLM Class A–H factory freeze classifier.
 #
 # Answers "why did shipping stop?" in one line. Optionally runs Class A heal
 # and Class F unattached-outcome heal.
@@ -14,6 +14,9 @@
 #      or ready queue with no in-flight work (factory looks healthy, ships nothing)
 #   G  scheduler freeze — routinesd has dispatched nothing for hours, so no other
 #      class is even measurable (every downstream signal reads "idle but healthy")
+#   H  delivery frozen — the registry proof frontier has not advanced and at
+#      least one pinned app has merged past it, so a green published artifact
+#      cannot reach this host
 #
 # Usage:
 #   last-stack-why-stopped [--json] [--heal] [--quiet]
@@ -60,6 +63,18 @@ CLASS_A_TIMEOUT_S="${LASTSTACK_WHY_STOPPED_CLASS_A_TIMEOUT_S:-8}"
 # ARE multi-hour freezes (9.5h to 107h). 6h is therefore the smallest bound
 # that fires on every real freeze and on no lull.
 CLASS_G_MAX_AGE_S="${LASTSTACK_WHY_STOPPED_DISPATCH_MAX_AGE_S:-21600}"
+
+# Class H threshold, in seconds: how old the registry `next`-channel proof
+# frontier may be before a pinned app waiting behind it counts as frozen.
+# Derived from the prover's own declared cadence, not chosen: the routine that
+# writes these proof rows is `llms-txt-install-smoke`
+# (`rrule = FREQ=DAILY;BYHOUR=13;BYMINUTE=15`, `timeout_min = 45`), so the
+# largest age a punctual prover can produce is one day plus one run, 24h45m
+# (89100s). 30h leaves ~5h of margin over that and therefore cannot fire while
+# the prover is running on time; it fires once a full daily cycle has been
+# missed. The 2026-10-01T22:10Z frontier was 31.4h old when this class was
+# written, with brain and routines both merged past it.
+CLASS_H_MAX_PROOF_AGE_S="${LASTSTACK_WHY_STOPPED_PIN_PROOF_MAX_AGE_S:-108000}"
 
 classes=()
 detail=()
@@ -360,6 +375,78 @@ if [ -n "$dispatch_age_s" ] && [ "$dispatch_age_s" -ge "$CLASS_G_MAX_AGE_S" ] 2>
   actions+=("launchctl list com.edgevector.routinesd; routines status; check Situation fences (skip-fence in routinesd.err.log)")
 fi
 
+# --- Class H: delivery frozen (registry proof frontier stale, apps waiting) ---
+# `host-track` has computed `pin_behind_oid` since 2026-09-26 and the proof-row
+# fields since 2026-10-03, and until now its own renderer was the only reader
+# (papercut-host-track-pin-lag-fields-are-rendered-to-nobody-no-classifier-or-notice-reads-them-20261003).
+# From 2026-10-01T22:10Z the six `next`-pinned apps sat on one 31h-old proof
+# frontier, and brain and routines had merged past it -- EdgeVector/routines
+# PR 9 and PR 11, both fixes to the only out-of-fleet fleet-freeze watchdog,
+# could not reach this host. Two separate papercut-resolver passes found that
+# by hand because no program said it.
+#
+# Class A deliberately cannot reach this: it gates on hard_broken/hard_stale and
+# a frozen frontier renders `soft_stale`, which it excludes on purpose (see
+# design-last-stack-class-a-atomic-install-soft-stale). That exclusion is right
+# for its own reason -- the install IS current with the newest pair anyone
+# proved -- and it left this condition in nobody's hands.
+#
+# Both conditions are required. A pinned app with a stale frontier and nothing
+# merged past it is genuinely current and not a stoppage; an app that merged
+# minutes ago is waiting for an ordinary prover run. The two cannot mask each
+# other: a merge sets `pin_behind_oid` without touching the age, and a prover
+# run clears both.
+#
+# Only `registry_pin_state=pinned` counts. `unreadable` means host-track could
+# not read the index at all, which is "I did not look", never "nothing to see";
+# `no-proved-row` and `not-on-index` leave the age empty and so stay silent here
+# too. This classifier must never invent a freeze.
+#
+# Cost: `host-track status --json` with no app resolves the registry index for
+# every pinned app over the network and measured 9.9-10.6s on this host, which is
+# inside the existing run-to-run spread of this helper (14-27s unpatched). It is
+# affordable here, on a two-hourly classifier, and it is NOT affordable on the
+# load collector's per-sample path -- which is why the notice half of
+# papercut-host-track-pin-lag-fields-are-rendered-to-nobody-no-classifier-or-notice-reads-them-20261003
+# needs a cached frontier first and is deliberately not done here. The host-track
+# stamps under ~/.host-track/stamps/ carry no pin or proof fields, so there is no
+# cheap local source today.
+pin_frozen_apps=""
+pin_frozen_age=""
+pin_frozen_run=""
+if have_cmd "$HOST_TRACK_BIN" && command -v jq >/dev/null 2>&1 \
+  && [ "${CLASS_H_MAX_PROOF_AGE_S}" -gt 0 ] 2>/dev/null; then
+  ht_all="$("$HOST_TRACK_BIN" status --json 2>/dev/null || true)"
+  if [ -n "$ht_all" ]; then
+    # One row per blocked app: name, age, proof run. Printing the INPUTS the
+    # verdict used is what lets two passes that disagree be told apart.
+    pin_rows="$(
+      printf '%s\n' "$ht_all" | jq -r --argjson maxage "$CLASS_H_MAX_PROOF_AGE_S" '
+        (if type=="array" then . else [.] end)
+        | map(select(
+            (.registry_pin_state // "") == "pinned"
+            and ((.pin_behind_oid // "") | tostring) != ""
+            and ((.pin_behind_oid // null) != null)
+            and ((.registry_pin_proof_age_secs // null) != null)
+            and ((.registry_pin_proof_age_secs | tonumber?) // -1) >= $maxage
+          ))
+        | map([(.app // "?"), ((.registry_pin_proof_age_secs|tostring)), (.registry_pin_proof_run // "-")] | @tsv)
+        | .[]
+      ' 2>/dev/null || true
+    )"
+    if [ -n "$pin_rows" ]; then
+      pin_frozen_apps="$(printf '%s\n' "$pin_rows" | awk -F'\t' '{printf "%s%s", sep, $1; sep=","} END{print ""}')"
+      pin_frozen_age="$(printf '%s\n' "$pin_rows" | awk -F'\t' 'NR==1{print $2}')"
+      pin_frozen_run="$(printf '%s\n' "$pin_rows" | awk -F'\t' 'NR==1{print $3}')"
+    fi
+  fi
+fi
+if [ -n "$pin_frozen_apps" ]; then
+  classes+=("H")
+  detail+=("delivery frozen: registry next-channel proof frontier ${pin_frozen_age}s old (bound ${CLASS_H_MAX_PROOF_AGE_S}s, newest proof ${pin_frozen_run}); merged past it and undeliverable: ${pin_frozen_apps}")
+  actions+=("host-track status --json | jq -r '.[]|select(.pin_behind_oid)|[.app,.registry_pin_proof_age_secs]|@tsv'; the prover that writes proof rows is routine llms-txt-install-smoke - resume it or accept the posture (operator call, not a heal this fleet runs)")
+fi
+
 # Deduplicate classes while preserving order
 seen=""
 uniq=()
@@ -376,7 +463,7 @@ classes=("${uniq[@]+"${uniq[@]}"}")
 if [ "${#classes[@]}" -eq 0 ]; then
   classes=("none")
   if [ "${#detail[@]}" -eq 0 ]; then
-    detail+=("no Class A–G freeze detected; factory may be idle or healthy")
+    detail+=("no Class A–H freeze detected; factory may be idle or healthy")
   fi
   if [ "${#actions[@]}" -eq 0 ]; then
     actions+=("kanban pickup lanes; factory-health")
