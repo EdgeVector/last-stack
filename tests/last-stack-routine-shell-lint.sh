@@ -252,6 +252,71 @@ expect 0 zsh zsh-word-split-positional-ok <<'EOF'
 for arg in "$@"; do echo "$arg"; done
 EOF
 
+# --- mktemp-suffix ------------------------------------------------------------
+# BSD mktemp substitutes a run of X's only at the END of the template. The suffix
+# form creates the LITERAL name, so the first call succeeds and every later call
+# with that template fails until someone deletes it -- measured 2026-10-03, see
+# papercut-mktemp-same-template-collides-within-one-second-20260925. Both
+# recorded instances were written as agent commands, which is this guard's surface.
+expect 2 bash mktemp-suffix-json <<'EOF'
+f=$(mktemp "$TMPDIR/card.XXXXXX.json")
+EOF
+expect 2 bash mktemp-suffix-recorded-instance <<'EOF'
+out=$(mktemp "${TMPDIR:-/tmp}/cardx.XXXXXX.json")
+EOF
+expect 2 bash mktemp-suffix-unquoted <<'EOF'
+mktemp /tmp/card.XXXXXX.json
+EOF
+expect 2 bash mktemp-suffix-after-flags <<'EOF'
+mktemp -t card.XXXXXX.json
+EOF
+expect 2 zsh mktemp-suffix-dir-form <<'EOF'
+D=$(mktemp -d "$TMPDIR/probe.XXXXXX.d")
+EOF
+expect 0 bash mktemp-x-at-end-ok <<'EOF'
+f=$(mktemp "${TMPDIR:-/tmp}/card.XXXXXX")
+EOF
+expect 0 bash mktemp-dir-x-at-end-ok <<'EOF'
+D=$(mktemp -d "$TMPDIR/probe.XXXXXX")
+EOF
+expect 0 bash mktemp-unquoted-x-at-end-ok <<'EOF'
+mktemp /tmp/card.XXXXXX
+EOF
+# The matcher is scoped to mktemp's own argument token: the character class cannot
+# cross a space or a quote, so an unrelated X run elsewhere on the line is not a
+# match. A whole-line matcher would reject this, which is the false-positive class
+# that makes a fleet-wide guard worse than none.
+expect 0 bash mktemp-unrelated-xxx-after-ok <<'EOF'
+D=$(mktemp -d "$T/x.XXXXXX") && echo XXXy
+EOF
+expect 0 bash mktemp-unrelated-xxx-before-ok <<'EOF'
+echo XXXy; mktemp -d "$T/a.XXXXXX"
+EOF
+expect 0 bash mktemp-no-template-ok <<'EOF'
+mktemp -d
+EOF
+# An UNQUOTED template inside $( ) ends at the closing paren, not at a quote. The
+# first draft of this rule excluded only whitespace and quotes after the X run, so
+# it rejected both of these -- and both are correct, shipped agent prose
+# (routines/lastdb-refcount-audit.md, skills/app-identity-dogfood/SKILL.md). The
+# repo's own hooks-guards test is what caught it. Shell punctuation after the X run
+# means the run IS at the end.
+expect 0 bash mktemp-unquoted-cmdsub-ok <<'EOF'
+work="$(mktemp -d /private/tmp/lastdb-refcount-audit.XXXXXX)"
+EOF
+expect 0 bash mktemp-unquoted-cmdsub-bare-ok <<'EOF'
+WORK=$(mktemp -d /tmp/appident-dogfood.XXXXXX)
+EOF
+expect 0 bash mktemp-semicolon-after-ok <<'EOF'
+tmp=$(mktemp -d "$TMPDIR/x.XXXXXX"); echo "$tmp"
+EOF
+expect 0 bash mktemp-pipe-after-ok <<'EOF'
+mktemp -d $TMPDIR/x.XXXXXX | head -1
+EOF
+expect 0 bash mktemp-suffix-escape <<'EOF'
+f=$(mktemp "$T/c.XXXXXX.json")  # shell-lint-ok: deliberate literal path
+EOF
+
 # --- home-root-scan -----------------------------------------------------------
 expect 2 bash home-root-find-path-first <<'EOF'
 find "$HOME" -maxdepth 4 -name "feature_catalog.toml"

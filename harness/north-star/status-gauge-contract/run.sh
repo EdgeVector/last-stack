@@ -84,7 +84,11 @@ run_live_contract_probe() {
   fi
 
   local payload
-  payload="$(mktemp "${TMPDIR:-/tmp}/status-gauge-contract.XXXXXX.json")"
+  # The X run must be LAST. BSD mktemp does not substitute
+  # "status-gauge-contract.XXXXXX.json"; it creates that literal name in a SHARED
+  # TMPDIR, and the next call collides -- under `set -e` that aborts the whole
+  # terminal proof with mktemp's stderr as the only clue.
+  payload="$(mktemp "${TMPDIR:-/tmp}/status-gauge-contract.XXXXXX")"
   if ! curl -fsS --unix-socket "$sock" -H 'Host: localhost' http://x/api/status >"$payload"; then
     rm -f "$payload"
     fail_gate "live endpoint contract (GET /api/status failed on isolated socket)"

@@ -225,7 +225,9 @@ UH="$(curl -fsS --unix-socket "$SOCK" -H "Host: localhost" -H "X-LastDB-Client: 
 [ -n "$UH" ] && [ "$UH" != "null" ] || fail_red "$LASTDBD_BIN" "candidate has no auto-identity"
 
 # Load schemas (tolerate optional failures; require LastgitCiStatus by hash).
-LOAD_BODY="$(mktemp "$NODE_DIR/load-XXXXXX.json")"
+# The X run must be LAST: BSD mktemp does not substitute "load-XXXXXX.json" and
+# would create that literal name, so every later call collides.
+LOAD_BODY="$(mktemp "$NODE_DIR/load-XXXXXX")"
 jq -c '{schemas:[.schemas[]]}' "$SCHEMA_MAP" >"$LOAD_BODY"
 # Wait for full sock (schema load API)
 for _ in $(seq 1 40); do
