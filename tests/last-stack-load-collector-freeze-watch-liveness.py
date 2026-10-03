@@ -23,6 +23,19 @@ os.environ["LOAD_MON_FREEZE_WATCH_PLIST"] = plist
 os.environ["LOAD_MON_FREEZE_WATCH_LOG"] = log
 os.environ["LOAD_MON_LAUNCHCTL"] = fake
 os.environ["LOAD_MON_FREEZE_WATCH_INTERVAL_SEC"] = "900"
+# The latch-hazard check added 2026-10-03 reads the installed routines binary and
+# two scheduler logs, and its real defaults are live host paths. What actually
+# isolates THIS file from them is `now = 10 ** 7` below: every age it computes
+# against a real log is negative, so the hazard reads "not blind" and returns
+# None, and every case here exercises the plain "keep the enable advice" arm.
+# These three overrides are belt-and-braces for a future case that wants a real
+# clock. They are deliberately NOT presented as tested: a mutation probe removing
+# all three comes back GREEN, because the fake clock alone is sufficient. Do not
+# read that green as the hazard check being unreachable -- its matrix is
+# tests/last-stack-load-collector-watchdog-latch-hazard.py, which uses time.time().
+os.environ["LOAD_MON_ROUTINES_BIN"] = os.path.join(tmp, "absent-routines")
+os.environ["LOAD_MON_ROUTINESD_LOG"] = os.path.join(tmp, "absent-routinesd.err.log")
+os.environ["LOAD_MON_HEARTBEAT_LOG"] = os.path.join(tmp, "absent-heartbeats.log")
 
 loader = importlib.machinery.SourceFileLoader("lc", os.path.join(root, "bin", "last-stack-load-collector"))
 spec = importlib.util.spec_from_loader("lc", loader)

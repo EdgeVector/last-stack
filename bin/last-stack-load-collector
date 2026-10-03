@@ -130,6 +130,42 @@ FW_LOG = os.environ.get(
 FW_INTERVAL = envf("LOAD_MON_FREEZE_WATCH_INTERVAL_SEC", 900)
 FW_CONSEC = int(envf("LOAD_MON_ALERT_FREEZE_WATCH_CONSEC", 2))
 LAUNCHCTL = os.environ.get("LOAD_MON_LAUNCHCTL", "/bin/launchctl")
+# Re-enabling a disabled watchdog is the right repair only when the installed
+# watchdog would then be RIGHT. There is a fourth state freeze_watch_down did not
+# name: disabled, and the installed build computes a false `dispatch-stale`.
+# Measured 2026-10-03T10:23Z, read-only, against the build host-track has
+# installed (f8b51b5):
+#
+#   routines freeze-watch -> FROZEN dispatch-stale dispatch_age=123258s bound=21600s
+#   routinesd.err.log     -> "kind":"dispatch" 472s earlier
+#
+# That build infers scheduler liveness from `harness=` lines in the heartbeat log,
+# which writeHeartbeat appends only for routines whose registry entry sets
+# heartbeat_slug — 0 of the 3 active routines do. A false `dispatch-stale` and a
+# real one share the episode key `frozen:dispatch-stale`, and decideSurfacing
+# returns `none` once a key is notified, so enabling the watchdog in this state
+# posts ONE wrong notice and then surfaces a genuine dispatch freeze with
+# nothing, permanently. This agent had prescribed exactly that, every 30 s, for
+# 3595 passes.
+# papercut-freeze-watch-dispatch-staleness-reads-an-opt-in-heartbeat-signal-20261002
+# EdgeVector/routines PR 11 (merge 82f14a1) takes dispatch liveness from
+# routinesd's own records as well, which removes the false positive. The
+# discriminator is that fix's own function name, the grep the papercut prescribes.
+FW_TWO_SOURCE_MARK = os.environ.get("LOAD_MON_FREEZE_WATCH_FIX_MARK", "newestDaemonDispatchAt")
+FW_ROUTINES_BIN = os.environ.get(
+    "LOAD_MON_ROUTINES_BIN", os.path.join(HOME, ".host-track/apps/routines/current/dist/routines"))
+FW_DAEMON_LOG = os.environ.get(
+    "LOAD_MON_ROUTINESD_LOG", os.path.join(HOME, ".routines/daemon/routinesd.err.log"))
+FW_HEARTBEAT_LOG = os.environ.get(
+    "LOAD_MON_HEARTBEAT_LOG", os.path.join(HOME, ".last-stack/logs/routine-heartbeats.log"))
+# The bound the installed watchdog itself uses for condition A. Read from env so a
+# watchdog that retunes it does not leave this agent judging against a dead number.
+FW_DISPATCH_BOUND = envf("LOAD_MON_FREEZE_WATCH_DISPATCH_BOUND_SEC", 21600)
+# Both logs are append-only and large: routinesd.err.log measured 133 MB on
+# 2026-10-03. Seek the tail, never read the file — the same mistake tailBytes made
+# in the watchdog, where a 15-minute agent pulled 136 MB through memory to look at
+# the end of it.
+FW_TAIL_BYTES = int(envf("LOAD_MON_FREEZE_WATCH_TAIL_BYTES", 1 << 21))
 # The registry delivery frontier. `host-track refresh` decides, every 1200 s,
 # whether a pinned app can be installed; when the registry index holds no row
 # proved on the build this host runs, it holds the install and prints one line
@@ -518,14 +554,128 @@ def launchctl_text(args):
     return (out.stdout or b"").decode("utf-8", "replace")
 
 
+def tail_text(path, nbytes=None):
+    """The last nbytes of a file, decoded. Seeks; never reads the whole file.
+
+    Returns "" on any failure. A partial first line is expected and harmless:
+    every caller matches whole lines or whole JSON records anchored on their own
+    delimiters, so a truncated head simply does not match.
+    """
+    want = FW_TAIL_BYTES if nbytes is None else nbytes
+    try:
+        with open(path, "rb") as fh:
+            size = os.fstat(fh.fileno()).st_size
+            if size > want:
+                fh.seek(size - want)
+            return fh.read(want).decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+# routinesd writes one JSON record per dispatch, unconditionally, with no registry
+# opt-in. `kind` MUST be one of dispatch/complete and never `tick`: through the
+# 59h48m freeze the daemon kept ticking `80 routines in_flight=0` and dispatched
+# nothing, so a matcher that accepted ticks would read that log as fresh forever
+# and mask the exact outage this is about.
+FW_DISPATCH_RE = re.compile(r'"ts":"([^"]+)","kind":"(?:dispatch|complete)"')
+# The heartbeat log's liveness shape, as the installed watchdog matches it: a
+# leading ISO timestamp plus harness=, exit= and dur=. Other producers write
+# timestamp-first lines there without those tokens and the watchdog rejects them,
+# so this agent must reject them too or it would judge against a signal the
+# watchdog cannot see.
+FW_HEARTBEAT_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}T[0-9:.]+Z)\b.*?\bharness=.*?\bexit=.*?\bdur=", re.M)
+
+
+def newest_epoch(text, pattern):
+    """The newest epoch among a pattern's capture-group-1 timestamps, or None."""
+    best = None
+    for m in pattern.finditer(text):
+        t = epoch_z(m.group(1))
+        if t is not None and (best is None or t > best):
+            best = t
+    return best
+
+
+def watchdog_latch_hazard(now):
+    """Why enabling the disabled watchdog right now would silence it, or None.
+
+    Returns the reason as one sentence, or None when enabling is the right repair.
+
+    Two conditions, and both are needed:
+
+      A. the installed watchdog is SINGLE-SOURCE — its binary does not carry the
+         two-source fix, so its dispatch arm sees only the heartbeat log; and
+      B. that one source is BLIND right now — routinesd's own log shows a
+         dispatch inside the watchdog's bound while the heartbeat log's newest
+         liveness line is outside it.
+
+    B alone is not enough and must not be used alone: the heartbeat log stays
+    opt-in after the fix, so B holds indefinitely on this host and a rule keyed on
+    it would never stop firing. A alone is not enough either — a single-source
+    watchdog on a host whose heartbeat log is fresh computes the right answer.
+
+    Every "cannot tell" answer is None, which keeps the plain enable advice:
+    an unreadable binary (no host-track install of routines), an unreadable or
+    quiet daemon log (the fleet may really be frozen, and then enabling IS the
+    repair). Inverting a correct repair on a guess is worse than not inverting it.
+
+    Order is cheapest-first: two tail seeks before a scan of the 62 MB binary, so
+    a host whose heartbeat log is fresh never pays for the scan.
+    """
+    dispatch = newest_epoch(tail_text(FW_DAEMON_LOG), FW_DISPATCH_RE)
+    if dispatch is None or now - dispatch > FW_DISPATCH_BOUND:
+        return None
+    beat = newest_epoch(tail_text(FW_HEARTBEAT_LOG), FW_HEARTBEAT_RE)
+    if beat is not None and now - beat <= FW_DISPATCH_BOUND:
+        return None
+    if not single_source_watchdog():
+        return None
+    return ("routinesd dispatched %ds ago (bound %ds) but the heartbeat log the installed "
+            "watchdog reads has no liveness line for %s, so enabling it NOW posts one false "
+            "frozen:dispatch-stale, latches notifiedEpisode and leaves a real dispatch freeze "
+            "surfaced by nothing. Do NOT enable yet: install EdgeVector/routines 82f14a1 "
+            "(PR 11) first, confirm with `routines freeze-watch` printing OK, then enable"
+            % (int(now - dispatch), int(FW_DISPATCH_BOUND),
+               "ever" if beat is None else "%ds" % int(now - beat)))
+
+
+def single_source_watchdog():
+    """True when the installed watchdog's dispatch arm reads only the heartbeat log.
+
+    False when the binary carries the two-source fix AND when it cannot be read —
+    an unreadable binary is not evidence of a defect, and this answer only ever
+    suppresses advice.
+    """
+    try:
+        with open(FW_ROUTINES_BIN, "rb") as fh:
+            mark, keep = FW_TWO_SOURCE_MARK.encode(), b""
+            while True:
+                chunk = fh.read(1 << 20)
+                if not chunk:
+                    return True
+                if mark in keep + chunk:
+                    return False
+                keep = chunk[-len(mark):]
+    except OSError:
+        return False
+
+
 def freeze_watch_down(now):
     """Why the fleet-freeze watchdog is not producing checks, or None if it is.
 
-    Three distinct causes with three different repairs, so each one is named:
-    `launchctl disable` (re-enable), booted out (bootstrap), and loaded but not
-    writing (read the plist and the err log). Absent plist is NOT a fault — the
-    watchdog is optional and this must not alert on a host that never installed
-    it. Reads two files and launchctl; no node, no daemon, no board, matching the
+    Four distinct causes with four different repairs, so each one is named:
+    `launchctl disable` (re-enable), booted out (bootstrap), loaded but not
+    writing (read the plist and the err log), and disabled while the installed
+    build would compute a FALSE freeze (do not enable — see
+    watchdog_latch_hazard). The fourth repair is the opposite of the first, which
+    is why naming the cause is not enough: this agent prescribed `launchctl
+    enable` for 3595 consecutive passes in a state where acting on it would have
+    silenced the only out-of-fleet freeze detector for good.
+
+    Absent plist is NOT a fault — the watchdog is optional and this must not alert
+    on a host that never installed it. Reads four files, launchctl and the
+    installed watchdog's own bytes; no node, no daemon, no board, matching the
     watchdog's own contract.
     """
     if not os.path.exists(FW_PLIST):
@@ -535,6 +685,14 @@ def freeze_watch_down(now):
     if disabled:
         m = re.search(r'"%s"\s*=>\s*(\w+)' % re.escape(FW_LABEL), disabled)
         if m and m.group(1) == "disabled":
+            hazard = watchdog_latch_hazard(now)
+            if hazard:
+                # The imperative leads, because headline() cuts this at 120
+                # characters and the notice TITLE is what gets skimmed. Written
+                # the natural way round ("the agent is launchctl-disabled ... and
+                # must STAY disabled") the title rendered byte-identical to the
+                # harmful version and only the body disagreed with it.
+                return "DO NOT ENABLE yet (launchctl-disabled): %s" % hazard
             return ("the agent is launchctl-disabled (plist present and valid); "
                     "`launchctl enable gui/%d/%s` then bootstrap it" % (uid, FW_LABEL))
     listing = launchctl_text(["list"])
@@ -796,14 +954,27 @@ def iso(t):
 
 
 def epoch_z(ts):
-    """Epoch seconds from an ISO-8601 Z timestamp, or None. Never raises."""
+    """Epoch seconds from an ISO-8601 Z timestamp, or None. Never raises.
+
+    Fractional seconds are accepted. They are ISO-8601 and the docstring always
+    claimed the whole format, but the only pattern was "%Y-%m-%dT%H:%M:%SZ", so
+    every millisecond timestamp parsed as None. Both of this host's scheduler
+    logs write them — routinesd's records and the heartbeat log's liveness lines
+    are all `...:16.498Z` — and a None reads to every caller as "cannot tell",
+    which is silence, not an error. Found 2026-10-03 while adding
+    watchdog_latch_hazard, whose two sources were therefore both unreadable.
+    Widening can only turn a None into a number, so no caller that already worked
+    changes; what it can do is arm a rule that was quietly dead.
+    """
     if not isinstance(ts, str) or not ts:
         return None
-    try:
-        return dt.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=dt.timezone.utc).timestamp()
-    except ValueError:
-        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ"):
+        try:
+            return dt.datetime.strptime(ts, fmt).replace(
+                tzinfo=dt.timezone.utc).timestamp()
+        except ValueError:
+            continue
+    return None
 
 
 def rotate(now):
