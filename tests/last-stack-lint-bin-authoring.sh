@@ -95,7 +95,7 @@ printf '%s' "$out" | grep -q 'last-stack-locate-file' || fail "deny text must na
 
 # 2. Report mode never fails, and counts every finding.
 out="$("$LINT" --report --root "$fx" 2>&1)" || fail "--report must exit 0"
-printf '%s' "$out" | grep -q 'hard=2 stat_zulu=0 nests=2 new_nests=1 retired_nests=0' || fail "report counts wrong: $out"
+printf '%s' "$out" | grep -q 'hard=2 stat_zulu=0 host_paths=0 nests=2 new_nests=1 retired_nests=0' || fail "report counts wrong: $out"
 
 # 3. Remove the hard findings; the new nest alone still fails the gate.
 rm "$fx/bin/bad-find" "$fx/bin/bad-rglob"
@@ -111,7 +111,7 @@ printf '%s' "$out" | grep -q 'ONE language' || fail "nest deny must say one lang
 grep -q '^bin/nest-new$' "$baseline" || fail "--write-baseline must record the nest"
 grep -q '^bin/nest-old$' "$baseline" || fail "--write-baseline must keep the old nest"
 out="$("$LINT" --ci --root "$fx" 2>&1)" || fail "gate must pass once the baseline holds every nest: $out"
-printf '%s' "$out" | grep -q '^ok last-stack-lint-bin-authoring hard=0 stat_zulu=0 nests=2' || fail "pass line wrong: $out"
+printf '%s' "$out" | grep -q '^ok last-stack-lint-bin-authoring hard=0 stat_zulu=0 host_paths=0 nests=2' || fail "pass line wrong: $out"
 
 # 5. A retired nest is reported, never failed: the baseline only shrinks.
 rm "$fx/bin/nest-old"
@@ -295,5 +295,67 @@ printf '%s' "$out" | grep -q 'hard=0 stat_zulu=2' || fail "stat_zulu report coun
 rm "$sz/bin/stat-lie-short" "$sz/bin/stat-lie-long"
 out="$("$LINT" --ci --root "$sz" 2>&1)" || fail "gate must pass once the literal-Z formats are gone: $out"
 printf '%s' "$out" | grep -q 'stat_zulu=0' || fail "pass line must carry stat_zulu=0: $out"
+
+# ---------------------------------------------------------------------------
+# Rule 5: a host-state default that bypasses the file's own host_path() helper.
+#
+# Scope is the point of the rule: it fires only on files that DEFINE host_path(,
+# so adopting the helper opts a program in and an unrelated helper can never be
+# flagged. The negative cases below are what make that claim testable.
+# papercut-load-collector-alert-rules-read-real-host-state-with-no-hermetic-switch-so-each-new-rule-breaks-the-count-fixtures-20261003
+hp="$tmp/host-path-tree"
+mkdir -p "$hp/bin"
+
+# An adopter with the defect, in both spellings that occur in real code: the
+# default on the same line, and the default on the continuation line.
+cat >"$hp/bin/adopter-leaks" <<'PY_EOF'
+#!/usr/bin/env python3
+import os
+HOME = os.path.expanduser("~")
+def host_path(env_name, default):
+    return os.environ.get(env_name) or default
+SAME_LINE = os.environ.get("APP_PLIST", os.path.join(HOME, "Library/LaunchAgents/x.plist"))
+NEXT_LINE = os.environ.get(
+    "APP_LOG", os.path.join(HOME, ".routines/daemon/routinesd.err.log"))
+GOOD = host_path("APP_CACHE", os.path.join(HOME, ".local/state/cache"))
+HATCH = os.environ.get("APP_DIR", os.path.join(HOME, ".local/state/d"))  # host-path-ok: a writable dir, not a read
+PY_EOF
+
+# A NON-adopter with byte-identical defaults. It must stay silent: a program
+# that has not adopted the switch is out of scope, and a rule that flagged this
+# would fire on most helpers in bin/.
+cat >"$hp/bin/non-adopter" <<'PY_EOF'
+#!/usr/bin/env python3
+import os
+HOME = os.path.expanduser("~")
+SAME_LINE = os.environ.get("APP_PLIST", os.path.join(HOME, "Library/LaunchAgents/x.plist"))
+PY_EOF
+chmod +x "$hp/bin/adopter-leaks" "$hp/bin/non-adopter"
+
+set +e
+out="$("$LINT" --ci --root "$hp" 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 1 ] || fail "a host-state default bypassing host_path must fail the gate, got $rc: $out"
+printf '%s' "$out" | grep -q $'bin/adopter-leaks\t6' || fail "missing same-line finding: $out"
+printf '%s' "$out" | grep -q $'bin/adopter-leaks\t7' || fail "missing continuation-line finding: $out"
+printf '%s' "$out" | grep -q 'non-adopter' && fail "a file that has not adopted host_path is out of scope: $out"
+printf '%s' "$out" | grep -q 'APP_CACHE' && fail "a host_path() call must pass: $out"
+printf '%s' "$out" | grep -q 'APP_DIR' && fail "a host-path-ok line must pass: $out"
+# Same concern the stat-zulu block pins: the shared hard bucket's FAIL text says
+# "unbounded walk(s)", so a rule-5 finding routed there would be MISREPORTED and
+# send the reader looking for a walk. It has its own bucket and message.
+printf '%s' "$out" | grep -q 'unbounded walk' && fail "a host-path finding must not be reported as a walk: $out"
+printf '%s' "$out" | grep -q 'host_path(' || fail "deny text must name the correct form: $out"
+
+out="$("$LINT" --report --root "$hp" 2>&1)" || fail "--report must exit 0"
+printf '%s' "$out" | grep -q 'host_paths=2' || fail "host_paths report count wrong: $out"
+
+# HARD, so there is no baseline: routing them through the helper is the only
+# way to green.
+sed -i '' 's/^SAME_LINE = os\.environ\.get(/SAME_LINE = host_path(/' "$hp/bin/adopter-leaks"
+sed -i '' 's/^NEXT_LINE = os\.environ\.get(/NEXT_LINE = host_path(/' "$hp/bin/adopter-leaks"
+out="$("$LINT" --ci --root "$hp" 2>&1)" || fail "gate must pass once both go through host_path: $out"
+printf '%s' "$out" | grep -q 'host_paths=0' || fail "pass line must carry host_paths=0: $out"
 
 echo "PASS last-stack-lint-bin-authoring"

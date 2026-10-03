@@ -35,30 +35,30 @@ chmod +x "$T/lastdb-hang" "$T/lastdb-ok"
 export LOAD_MON_ALERT_SWAP_MB=999999999 LOAD_MON_ALERT_LOAD1=999999 LOAD_MON_ALERT_HOG_PCT=999999
 export LOAD_MON_WRITES=0  # a fixture must not scan the real home; 6b turns it on for a temp root
 export LOAD_MON_DATA_ROOT="$T/nodata" LOAD_MON_NOTIFY=0 LOAD_MON_DEADLINE_SEC=1 LOAD_MON_DIR="$T/mon" LOAD_MON_SOCKET="$S/n.sock"
-# Same rule as LOAD_MON_WRITES above, for the fleet-freeze watchdog assertion:
-# freeze_watch_down reads ~/Library/LaunchAgents by default, so on a host whose
-# watchdog is down the fleet_freeze_watchdog_down rule fires and every alert
-# COUNT in this fixture is off by one. Point it at a path under $T that does not
-# exist (an absent plist is deliberately not a fault). That rule has its own
-# coverage in tests/last-stack-load-collector-freeze-watch-liveness.py.
-export LOAD_MON_FREEZE_WATCH_PLIST="$T/no-freeze-watch.plist"
-# And the SECOND rule with the same shape, shipped 2026-10-03: frontier_frozen
-# reads host-track's real observation cache under ~/.local/state, so on a host
-# that is actually holding an install -- which this one has been for 46 hours --
-# registry_delivery_frozen fires and the same COUNTS are off by one. Measured on
-# a pristine `git archive` of main: all three load-collector fixtures went red
-# locally while GitHub ci-required stayed green, because a runner has no
-# observation cache. A gate that is red for every agent on this host and green
-# on the runner teaches the fleet to ignore its own gate.
-export LOAD_MON_FRONTIER_DIR="$T/no-frontier-observations"
+# Same rule as LOAD_MON_WRITES above, for every alert rule that reads this
+# host's real state -- launchd plists, host-track's observation caches, the
+# routines daemon's logs. ONE switch, not a knob per rule.
+#
+# The previous shape was a knob per rule plus the allowlist loop below, and it
+# did not hold. Two rules were isolated here by hand, each after it had already
+# broken this fixture's alert COUNTS, and the loop could only check the knobs
+# somebody had remembered to add to it. Measured 2026-10-03 on main tip
+# 514043dd8 with both knobs set and the loop passing: evaluate_alerts was still
+# opening this host's live 133 MB ~/.routines/daemon/routinesd.err.log through a
+# third knob, and the collector turned out to have SEVEN such defaults. The
+# counts here were green only because the scheduler happened to be dispatching.
+# CI never saw any of it -- a runner has no launchd plist, no observation cache
+# and no daemon log -- so the gate was red for agents on this host and green on
+# the runner, which is how a fleet learns to ignore its own gate.
+#
+# papercut-load-collector-alert-rules-read-real-host-state-with-no-hermetic-switch-so-each-new-rule-breaks-the-count-fixtures-20261003
+export LOAD_MON_HERMETIC=1
 [ "$LOAD_MON_NOTIFY" = "0" ] && [ "$LOAD_MON_DEADLINE_SEC" = "1" ] || { echo "test env must keep NOTIFY=0 (a fixture must never post to live Situations)" >&2; exit 1; }
-for knob in LOAD_MON_FREEZE_WATCH_PLIST LOAD_MON_FRONTIER_DIR; do
-  eval "v=\${$knob-}"
-  case "$v" in
-    "$T"/*) ;;
-    *) echo "test env must keep $knob under \$T (a fixture must never read this host's real launchd or host-track state)" >&2; exit 1 ;;
-  esac
-done
+# The switch replaces the per-knob allowlist that used to live here. It is one
+# assertion that covers every host-state read, present and future, instead of a
+# list that silently passes the knob nobody added to it.
+[ "${LOAD_MON_HERMETIC:-}" = "1" ] || { echo "test env must keep LOAD_MON_HERMETIC=1 (a fixture must never read this host's real launchd, host-track or routines state)" >&2; exit 1; }
+
 
 # The host sample must not depend on node access or host-tool permissions.
 # Supply deterministic host helpers because some runners deny their real ps and

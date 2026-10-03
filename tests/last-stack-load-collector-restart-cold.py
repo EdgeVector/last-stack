@@ -3,15 +3,13 @@
 import importlib.machinery, importlib.util, os, sys, tempfile
 
 root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-# Isolate from this host's real state before the module loads. Two alert rules
-# read it directly -- freeze_watch_down the launchd plist, frontier_frozen
-# host-track's observation cache -- and this file asserts `not fired` for an
-# unrelated rule, so either one firing turns it red on a host where its
-# condition is genuinely true. Each has its own coverage:
-# tests/last-stack-load-collector-freeze-watch-liveness.py and
-# tests/last-stack-load-collector-frontier-frozen.py.
-os.environ["LOAD_MON_FREEZE_WATCH_PLIST"] = "/nonexistent/freeze-watch.plist"
-os.environ["LOAD_MON_FRONTIER_DIR"] = "/nonexistent/frontier-observations"
+# Isolate from this host's real state with ONE switch. Per-rule knobs were the
+# previous shape and they do not hold: two rules were isolated by hand here after
+# each broke this fixture, and a third was still reading this host's live
+# routinesd.err.log with both of them set. An explicit knob still wins over the
+# switch, so a fixture that wants one crafted input keeps setting just that one.
+# papercut-load-collector-alert-rules-read-real-host-state-with-no-hermetic-switch-so-each-new-rule-breaks-the-count-fixtures-20261003
+os.environ["LOAD_MON_HERMETIC"] = "1"
 loader = importlib.machinery.SourceFileLoader("lc", os.path.join(root, "bin", "last-stack-load-collector"))
 spec = importlib.util.spec_from_loader("lc", loader)
 lc = importlib.util.module_from_spec(spec)
