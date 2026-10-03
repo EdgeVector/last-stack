@@ -279,6 +279,54 @@ reference and the report is not written.
 Point-get the slug back (`brain get closeout-<YYYYMMDD>-<short-kebab>`) before
 calling the report written. Listing it in chat is not a write.
 
+### Then publish the slug, or the next pass cannot find it
+
+A closeout slug carries the AUTHOR'S OWN wall clock, and nothing indexes "the
+newest closeout for routine R". So a later pass that wants this report has to
+GUESS the time component — and a guess that misses returns a stale closeout
+that reads exactly like a current one. `brain list` is refused as a census by a
+PreToolUse hook and is not getting a completeness contract; `brain ask` ranks by
+relevance, not recency; `linked_from` only helps when the newest closeout
+happened to link a record the reader already picked. Measured on two
+consecutive passes on 2026-10-03: each one built a plan from a stale open list,
+between them they probed about thirty-five slug spellings, and each was sent at
+a unit its predecessor had already closed `verified` hours before
+(`papercut-no-stable-pointer-to-a-routines-newest-closeout-so-a-pass-guesses-slugs-and-reads-a-stale-open-list-20261003`).
+
+**A recurring routine's close-out therefore ends by recording its slug** in a
+fixed, point-readable index — one slug per routine, `closeout-index-<routine>`:
+
+```bash
+last-stack-closeout-index record <routine> closeout-<YYYYMMDD>-<short-kebab>
+```
+
+Skip it for a one-off session closeout that no later pass will look for; it is
+required for anything with a NEXT pass.
+
+**Reading it is the first step of the next pass**, and it is one point get with
+no guessing. The RECORD is the durable interface, so this works even where the
+helper is not installed:
+
+```bash
+brain get closeout-index-<routine> --type reference    # newest first, no helper
+```
+
+With the helper, the same answer as one line:
+
+```bash
+last-stack-closeout-index latest <routine>     # the newest closeout slug
+brain get "$(last-stack-closeout-index latest <routine>)" --type reference
+last-stack-closeout-index list <routine>       # the retained history, newest first
+```
+
+Exit codes are deliberately distinct, because collapsing them sends the reader
+back to guessing: **3** means there is no index yet (bootstrap it by recording
+one), **4** means the index may exist but could not be read — retry, never
+treat it as absent. For the same reason `record` refuses a body that carries no
+`## Closeouts, newest first` marker instead of rewriting it: `brain put`
+replaces a whole body, and a record this tool did not write is not its to
+replace.
+
 **If a real DECISION was settled** (a call someone made — a chosen approach, an
 outcome, a gate cleared), also record it as its own **`decision` record** so it
 lands in the queryable decision ledger (`brain get <slug> --type decision`;

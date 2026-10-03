@@ -218,6 +218,14 @@
           "target": "$HOME/.local/bin/last-stack-card-closeout"
         },
         {
+          "source": "bin/last-stack-closeout-index",
+          "target": "$HOME/.local/bin/last-stack-closeout-index"
+        },
+        {
+          "source": "bin/last-stack-legacy-residue-probe",
+          "target": "$HOME/.local/bin/last-stack-legacy-residue-probe"
+        },
+        {
           "source": "bin/last-stack-forge-api",
           "target": "$HOME/.local/bin/last-stack-forge-api"
         },
