@@ -29,6 +29,7 @@ export RESOLVE_PROVED_AT="2026-09-20T00:00:00Z"
 oid_one="$(printf '1%.0s' {1..40})"
 oid_two="$(printf '2%.0s' {1..40})"
 oid_three="$(printf '3%.0s' {1..40})"
+oid_four="$(printf '4%.0s' {1..40})"
 export HOST_TRACK_TEST_MAIN_OID="$oid_one"
 
 cat > "$tmp/bin/lastgit" <<'SH'
@@ -63,6 +64,10 @@ app="\$3"
 echo "resolve \$*" >>"$tmp/resolve-calls.log"
 if [ "\${RESOLVE_NO_ROW:-0}" = 1 ]; then
   echo "error: no next row for app '\$app' was proved with lastdb 0.23.3-1-gx; run \\\`brew upgrade lastdb\\\`" >&2; exit 1
+fi
+# "I could not ask", not "the answer was no": a real unreadable-index failure.
+if [ "\${RESOLVE_UNREADABLE:-0}" = 1 ]; then
+  echo "error: failed to read /nope/next.json: No such file or directory (os error 2)" >&2; exit 1
 fi
 sha="\$(jq -r --arg a "\$app" '.[\$a] // empty' "$tmp/resolve.json")"
 [ -n "\$sha" ] || { echo "error: app '\$app' is not in the next index" >&2; exit 1; }
@@ -119,6 +124,7 @@ publish_fixture() {
 }
 
 d1="$(printf 'a%.0s' {1..64})"; d2="$(printf 'b%.0s' {1..64})"; d3="$(printf 'c%.0s' {1..64})"
+d4="$(printf 'd%.0s' {1..64})"
 
 # 1. Pinned install: channel head is oid_one, resolve says oid_one.
 publish_fixture demo "$d1" "$oid_one" $'#!/usr/bin/env bash\necho v1'
@@ -213,6 +219,89 @@ st="$(RESOLVE_NO_ROW=1 "$ROOT/bin/host-track" status --json demo)"
 printf '%s\n' "$st" | jq -e '.registry_pin_state == "no-proved-row" and .stale == false' >/dev/null || fail "no-row status: $st"
 printf '%s\n' "$st" | jq -e '.registry_pin_proved_at == null and .registry_pin_proof_age_secs == null' >/dev/null \
   || fail "a no-proved-row hold reported a proof date it does not have: $st"
+
+# Publish a head the install is NOT on, so a hold has real lag to report. Both
+# hold arms must report it identically; without this the two arms agree
+# trivially and a parity assertion below cannot fail.
+publish_fixture demo "$d4" "$oid_four" $'#!/usr/bin/env bash\necho v3'
+export HOST_TRACK_TEST_MAIN_OID="$oid_four"
+st="$(RESOLVE_NO_ROW=1 "$ROOT/bin/host-track" status --json demo)"
+printf '%s\n' "$st" | jq -e --arg oid "$oid_four" \
+  '.registry_pin_state == "no-proved-row" and .pin_behind_oid == $oid and .freshness == "soft_stale" and .stale == false' >/dev/null \
+  || fail "a no-proved-row hold stopped naming the published head it is behind: $st"
+
+# 5b. The index could not be READ: hold, and say so. `no-proved-row` is a claim
+#     about what the index contains; making it without reading the index sends
+#     the next reader to the prover routine instead of to the node or the
+#     network. Holding is correct in both cases, so only the label differs --
+#     which is exactly why this survived: the install behaves, the operator is
+#     misled. papercut-host-track-reads-any-registry-resolve-failure-as-no-proved-row-20261002
+set +e
+RESOLVE_UNREADABLE=1 "$ROOT/bin/host-track" refresh --force demo >/dev/null 2>"$tmp/unread.err"
+rc=$?
+set -e
+[ "$rc" -eq 75 ] || fail "unreadable index did not hold (rc=$rc): $(cat "$tmp/unread.err")"
+grep -q "registry index could not be read" "$tmp/unread.err" \
+  || fail "unreadable index did not say so: $(cat "$tmp/unread.err")"
+grep -q "no registry row proved with this LastDB build" "$tmp/unread.err" \
+  && fail "an unread index claimed the registry proved nothing: $(cat "$tmp/unread.err")"
+[ "$(demo)" = v2 ] || fail "unreadable-index hold changed the install"
+st="$(RESOLVE_UNREADABLE=1 "$ROOT/bin/host-track" status --json demo)"
+printf '%s\n' "$st" | jq -e '.registry_pin_state == "unreadable"' >/dev/null \
+  || fail "an unreadable index rendered some other state: $st"
+# Holding must not read as staleness, or `refresh` and force-fresh-if-stale
+# restage on every tick of a network blip.
+printf '%s\n' "$st" | jq -e '.stale == false' >/dev/null \
+  || fail "an unreadable index made the host stale: $st"
+printf '%s\n' "$st" | jq -e '. as $r | (["fresh","soft_stale","hard_broken"] | index($r.freshness)) != null' >/dev/null \
+  || fail "an unreadable index invented a new freshness value: $st"
+# Splitting rc 3 out of rc 2 must change the LABEL and nothing else. Measured
+# while writing this: the first version of the split dropped the lag reporting
+# from the new arm, and the live row went no-proved-row/soft_stale ->
+# unreadable/FRESH -- silently un-fixing
+# papercut-host-track-status-renders-stale-false-fresh-when-gate-head-is-unreadable-20261001
+# for the unreadable half, with the whole suite green. Assert parity, not the
+# literal, so the next split cannot lose it either.
+no_row="$(RESOLVE_NO_ROW=1 "$ROOT/bin/host-track" status --json demo)"
+unread="$st"
+for f in pin_behind_oid freshness stale gate_head; do
+  a="$(printf '%s\n' "$no_row" | jq -r --arg f "$f" '.[$f] | tostring')"
+  b="$(printf '%s\n' "$unread" | jq -r --arg f "$f" '.[$f] | tostring')"
+  [ "$a" = "$b" ] || fail "hold arms disagree on $f: no-proved-row=$a unreadable=$b"
+done
+# And the two must stay distinguishable on the one field that IS the fix.
+printf '%s\n' "$no_row" | jq -e '.registry_pin_state == "no-proved-row"' >/dev/null \
+  || fail "the no-proved-row answer stopped being reported as itself: $no_row"
+
+# 5c. The index FETCH fails (the forge-URL arm of registry_index_local_copy).
+#     Same class as 5b one level up: a failed curl used to become rc 2, which
+#     the renderer labels `no-proved-row`. Hermetic -- `curl` is stubbed and the
+#     URL is never dialled; without this case the `|| return 3` on the fetch is
+#     unreachable from the suite and reads as coverage it does not have.
+cat > "$tmp/bin/curl" <<'SH'
+#!/usr/bin/env bash
+echo "curl: (7) Failed to connect" >&2
+exit 7
+SH
+chmod +x "$tmp/bin/curl"
+jq '.apps[0].registry_index = "http://127.0.0.1:3300/registry"' "$HOST_TRACK_REGISTRY" >"$tmp/r3.json" \
+  && mv "$tmp/r3.json" "$HOST_TRACK_REGISTRY"
+set +e
+"$ROOT/bin/host-track" refresh --force demo >/dev/null 2>"$tmp/fetch.err"
+rc=$?
+set -e
+[ "$rc" -eq 75 ] || fail "a failed index fetch did not hold (rc=$rc): $(cat "$tmp/fetch.err")"
+grep -q "registry index could not be read" "$tmp/fetch.err" \
+  || fail "a failed index fetch did not say the index was unreadable: $(cat "$tmp/fetch.err")"
+grep -q "no registry row proved with this LastDB build" "$tmp/fetch.err" \
+  && fail "a failed index fetch claimed the registry proved nothing: $(cat "$tmp/fetch.err")"
+st="$("$ROOT/bin/host-track" status --json demo)"
+printf '%s\n' "$st" | jq -e '.registry_pin_state == "unreadable" and .stale == false' >/dev/null \
+  || fail "a failed index fetch rendered the wrong state, or made the host stale: $st"
+[ "$(demo)" = v2 ] || fail "a failed index fetch changed the install"
+rm "$tmp/bin/curl"
+jq '.apps[0].registry_index = "http://forge.test/registry"' "$HOST_TRACK_REGISTRY" >"$tmp/r4.json" \
+  && mv "$tmp/r4.json" "$HOST_TRACK_REGISTRY"
 
 # 6. An app not on the index follows the channel head as before.
 publish_fixture plain "$d3" "$oid_three" $'#!/usr/bin/env bash\necho p1'

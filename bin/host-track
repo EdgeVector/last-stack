@@ -521,8 +521,24 @@ registry_index_local_copy() {
 
 # stdout: TAB-separated `<proved commit>\t<proved_at>\t<proof_run>`.
 # rc 0 = pinned · 1 = not applicable (no channel, no `lastdb app resolve`, app
-# not on the index) · 2 = no row proved with this node (the caller holds the
-# current install).
+# not on the index) · 2 = the index was read and holds no row proved with this
+# node · 3 = the index could not be read at all. The caller holds the current
+# install on both 2 and 3; they differ only in what they claim to know.
+#
+# rc 2 and rc 3 were one code until 2026-10-03. Every `lastdb app resolve`
+# failure that was not "is not in the ... index" became rc 2, which the status
+# renderer labels `no-proved-row` -- a positive claim about what the index
+# CONTAINS, made when the index was never read. Measured: a node timeout, a
+# failed index fetch and a signature mismatch all rendered `no-proved-row`, and
+# that label sends the next reader to the prover routine instead of to the node
+# or the network. papercut-host-track-reads-any-registry-resolve-failure-as-no-proved-row-20261002
+#
+# The no-proved-row arm matches POSITIVELY on the CLI's own wording, confirmed
+# in the shipped binary (`strings ~/.lastdb/current/lastdb` carries
+# `' was proved with lastdb ` and ` row for app '`). Everything else falls to 3.
+# Failing toward 3 is the safe direction: if the wording changes, a genuine
+# no-proved-row degrades to "I could not tell", which overstates uncertainty
+# instead of inventing certainty.
 #
 # The two extra fields answer WHY a pin is behind, which `pin_behind_oid` alone
 # cannot. A pin behind a head published five minutes ago is publish lag: wait.
@@ -546,7 +562,8 @@ artifact_registry_pin_oid() {
   index="$(setting "$json" registry_index)"
   [ -n "${HOST_TRACK_REGISTRY_INDEX:-}" ] && index="$HOST_TRACK_REGISTRY_INDEX"
   if [ -n "$index" ]; then
-    index="$(registry_index_local_copy "$index" "$channel")" || return 2
+    # A failed fetch of the index is the unreadable case by definition.
+    index="$(registry_index_local_copy "$index" "$channel")" || return 3
     args+=(--index "$index")
   fi
   set +e
@@ -556,7 +573,18 @@ artifact_registry_pin_oid() {
   if [ "$rc" -ne 0 ]; then
     case "$out" in
       *"is not in the"*"index"*) return 1 ;;
-      *) printf 'host-track: %s registry: %s\n' "$app" "$(printf '%s\n' "$out" | grep -v '^note:' | tail -n1)" >&2; return 2 ;;
+      # The index answered: it holds no row proved with this build.
+      *"was proved with lastdb"*)
+        printf 'host-track: %s registry: %s\n' "$app" "$(printf '%s\n' "$out" | grep -v '^note:' | tail -n1)" >&2
+        return 2 ;;
+      # Anything else is "I could not ask", not "the answer was no". The binary
+      # also carries an `' is not in the registry` wording that `app resolve`
+      # did not emit on 0.23.3-2378; it is deliberately NOT matched as rc 1,
+      # because rc 1 falls back to the artifact channel head and would install
+      # an unproved commit on a string nobody could reproduce.
+      *)
+        printf 'host-track: %s registry unreadable: %s\n' "$app" "$(printf '%s\n' "$out" | grep -v '^note:' | tail -n1)" >&2
+        return 3 ;;
     esac
   fi
   printf '%s\n' "$out" | jq -r '[(.sha // ""), (.proved_at // ""), (.proof_run // "")] | @tsv'
@@ -604,6 +632,12 @@ artifact_desired_manifest() {
       ;;
     2)
       printf 'host-track: %s has no registry row proved with this LastDB build; holding current\n' "$app" >&2
+      return 75
+      ;;
+    3)
+      # Same action as rc 2, different claim: holding is right either way, and
+      # the operator needs to know which question was actually answered.
+      printf 'host-track: %s registry index could not be read; holding current\n' "$app" >&2
       return 75
       ;;
   esac
@@ -1257,6 +1291,32 @@ status_json_for() {
           fi
           ;;
         1) registry_pin_state="not-on-index" ;;
+        3)
+          # `unreadable` is not a weaker `no-proved-row`; it is a different
+          # claim. gate_head/channel_oid are cleared the same way, because an
+          # index we could not read names no desired commit either.
+          registry_pin_state="unreadable"
+          channel_digest=""
+          channel_oid=""
+          # And it reports lag the same way, for the same reason. Clearing
+          # channel_oid hides the lag from every field that reads it, which is
+          # the whole defect
+          # papercut-host-track-status-renders-stale-false-fresh-when-gate-head-is-unreadable-20261001
+          # closed for the rc 2 hold. Measured on the live fleet while
+          # splitting this code out of rc 2: `routines` against a nonexistent
+          # index went `no-proved-row`/`soft_stale` -> `unreadable`/`fresh`,
+          # so the split silently un-fixed that record for the unreadable half.
+          # The before/after is what caught it; the suite was green.
+          if [ -n "$published_oid" ]; then
+            registry_hold_published_digest="$(artifact_manifest_digest_for_oid \
+              "$artifact_root" "$artifact_app" "$published_oid" 2>/dev/null || true)"
+            if [ -n "$registry_hold_published_digest" ] \
+               && [ "$registry_hold_published_digest" != "$installed_digest" ]; then
+              pin_behind_oid="$published_oid"
+              registry_hold_behind="true"
+            fi
+          fi
+          ;;
         2)
           registry_pin_state="no-proved-row"
           # No clearing of the proof fields here: rc 1 and rc 2 both return
@@ -1332,7 +1392,11 @@ status_json_for() {
     # A registry hold is a decision, not an unknown: the live install is the
     # newest pair anyone proved for this node, so it is current.
     case "$registry_pin_state" in
-      no-proved-row|pinned-unpublished)
+      no-proved-row|pinned-unpublished|unreadable)
+        # `unreadable` holds for the same reason `no-proved-row` does: the live
+        # install is the newest pair anyone proved for this node. Omitting it
+        # here would leave `stale` null and make `refresh` and
+        # force-fresh-if-stale restage on every tick of a network blip.
         if [ -L "$install_root/current" ]; then stale="false"; fi
         ;;
     esac
