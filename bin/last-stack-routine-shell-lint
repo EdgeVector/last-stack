@@ -52,6 +52,21 @@
 #                     until now (only the Claude Code hook did) — that gap is
 #                     why the same stall recurred in loom review, disk-reclaim
 #                     and feature-prove.
+#   piped-count-false-zero  a pipeline whose PRODUCER is a path under $HOME and
+#                     whose consumer collapses the stream to a count or a boolean
+#                     (grep -c / grep -q / wc -l). When the path does not exist
+#                     the producer exits 127, stdout is empty, and the count is
+#                     0 -- the same answer as "the symbol is absent". The error
+#                     is one-directional: a missing producer can only LOWER the
+#                     count, so the shape manufactures "the fix never shipped"
+#                     and can never manufacture "it shipped" (measured
+#                     2026-10-03: the preceding resolver pass recorded a
+#                     baseline of 0 for an install proof whose producer path did
+#                     not exist, while the fix was installed and the real tree
+#                     answered 6). $HOME paths specifically, because install
+#                     roots, canary trees and artifact version dirs come and go
+#                     with delivery state; /usr/bin, /bin and /opt/homebrew are
+#                     excluded, and CLAUDE.md tells agents to call /usr/bin/grep.
 #
 # Text inside a heredoc body is data, so only heredoc-backticks looks there.
 # Escape hatch: put "shell-lint-ok: <reason>" anywhere in the command.
@@ -90,7 +105,7 @@ while [ "$#" -gt 0 ]; do
     --list-rules)
       printf '%s\n' spin-wait heredoc-backticks dquote-backticks jq-optional-call jq-escaped-quote \
         awk-match-array sed-inplace date-nanos stat-local-zulu printf-dash bin-path mktemp-suffix zsh-status zsh-mapfile \
-        zsh-word-split home-root-scan
+        zsh-word-split home-root-scan piped-count-false-zero
       exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 64 ;;
@@ -135,6 +150,7 @@ rule_slug() {
     zsh-status|zsh-mapfile) echo papercut-routine-shell-word-splitting ;;
     zsh-word-split) echo papercut-claude-zsh-for-loop-over-an-unquoted-scalar-does-not-word-split-20260926 ;;
     home-root-scan) echo papercut-codex-routines-lack-home-root-scan-guard-20260927 ;;
+    piped-count-false-zero) echo papercut-piped-count-from-a-home-path-producer-answers-zero-when-the-path-is-absent-20261003 ;;
   esac
 }
 
@@ -193,6 +209,11 @@ rule_fix() {
       "macOS treats \$HOME/Desktop, \$HOME/Documents, \$HOME/Downloads and the Photos library as protected. A routine agent runs under routinesd, so the walk raises a privacy prompt attributed to \`routines\` and BLOCKS until a human clicks it." \
       "Name the root you actually need: find \"\$HOME/code\" -maxdepth 4 -name '<what>'   or   find \"\$HOME/.routines\" \"\$HOME/.last-stack\" \"\$HOME/.fkanban\" -maxdepth 4 -name '<what>'" \
       "If you truly need the whole tree, prune the protected folders and say why: find \"\$HOME\" -maxdepth 4 \\( -path \"\$HOME/Desktop\" -o -path \"\$HOME/Documents\" -o -path \"\$HOME/Downloads\" -o -path \"\$HOME/Pictures\" -o -path \"\$HOME/Movies\" -o -path \"\$HOME/Music\" -o -path \"\$HOME/Library\" \\) -prune -o -print 2>/dev/null   # home-scan-ok: <reason>" ;;
+    piped-count-false-zero) printf '%s\n' \
+      "The producer is a path under \$HOME, so it may not exist: an install root, a canary tree, an artifact version dir or a worktree all come and go with delivery state. When it is absent the producer exits 127, stdout is EMPTY, and grep -c answers 0 / grep -q and wc -l answer as if nothing matched. That is the SAME answer as the symbol being absent, so the verdict silently inverts -- and only ever toward 'not delivered'." \
+      "Capture the producer's own exit code, then count from the file: <path> --flags > out 2> err; echo \"rc=\$?\"; grep -c <sym> out" \
+      "Or assert the path first: [ -x <path> ] || { echo MISSING; exit 1; }" \
+      "To prove a merge installed, count from the resolved tree -- grep -c <sym> \"\$(readlink -f ~/.last-stack/bin/<cmd>)\" -- because a missing FILE makes grep itself exit 2 and say so, where a missing PRODUCER says nothing." ;;
   esac
 }
 
@@ -285,6 +306,26 @@ re_home_anchor='(^|[;&|(]|&& |\| |(^|[^[:alnum:]_])(do|then|else|elif)[[:space:]
 # EITHER side of the (optionally quoted) home token so both orders match.
 re_home_root_scan="${re_home_anchor}[[:space:]]*(sudo[[:space:]]+)?(time[[:space:]]+)?${re_home_scanner_words}([[:space:]]+-[^[:space:]]+)*[[:space:]]+[\"']?${home}[\"']?([[:space:]]+-[^[:space:]]+)*([[:space:]]|[;&|)]|/\\*|\$)"
 re_home_protected="${home}/(Desktop|Documents|Downloads|Pictures|Movies|Music)"
+# piped-count-false-zero: a $HOME-path producer feeding a counting filter.
+# Runs on the home-NORMALIZED line, so ~/x, $HOME/x, ${HOME}/x and the literal
+# path are one regex (same helper home-root-scan uses).
+#
+# The producer is either the path itself (`~/.local/bin/x --flag | grep -c y`)
+# or the path as an executor's argument (`bash ~/.local/bin/x | grep -c y`,
+# `strings ~/.host-track/apps/a/canary/dist/b | grep -c y`). The executor list
+# is deliberately only INTERPRETERS AND BINARY READERS: `cat`/`head`/`tail` of a
+# data file is a different hazard (read the rc -- items 110/164) and is common
+# and legitimate, so it is not refused here.
+#
+# `[^|]*` between the path and the pipe keeps the path's command as the
+# IMMEDIATE producer of the counted stream, so the match cannot span an
+# intervening stage. `jq . f | bash ~/x | grep -c y` DOES match (anchored at the
+# first pipe, `bash ~/x` is the producer feeding the count), and
+# `jq . f | cat ~/g | grep -c y` does not, because at every anchor the next
+# token is either a PATH command (`jq`, `grep`) or a non-executor (`cat`).
+re_piped_count_exec='(bash|sh|zsh|strings|python3|python|perl|ruby|node|bun)[[:space:]]+'
+re_piped_count_sink='(grep[[:space:]]+(-[[:alnum:]]*[cq][[:alnum:]]*|--count|--quiet|--silent)|wc[[:space:]]+-l)'
+re_piped_count="${re_home_anchor}[[:space:]]*(${re_piped_count_exec})?[\"']?${home}/[^|]*\|[[:space:]]*${re_piped_count_sink}"
 
 check_command_line() {
   local line="$1"
@@ -335,11 +376,19 @@ check_command_line() {
       reject zsh-word-split "$line"
     fi
   fi
-  if [ -n "$home" ] && [ "$home_scan_escaped" -eq 0 ]; then
+  if [ -n "$home" ]; then
     local hline
     hline="$(normalize_home_line "$line")"
-    if [[ $hline =~ $re_home_root_scan ]] || [[ $hline =~ $re_home_protected ]]; then
-      reject home-root-scan "$line"
+    # home-root-scan honors its own older escape phrase; piped-count-false-zero
+    # does NOT -- it is a different defect, so it takes only the generic
+    # "shell-lint-ok:" hatch that `reject` already enforces for every rule.
+    if [ "$home_scan_escaped" -eq 0 ]; then
+      if [[ $hline =~ $re_home_root_scan ]] || [[ $hline =~ $re_home_protected ]]; then
+        reject home-root-scan "$line"
+      fi
+    fi
+    if [[ $hline =~ $re_piped_count ]]; then
+      reject piped-count-false-zero "$line"
     fi
   fi
 }
