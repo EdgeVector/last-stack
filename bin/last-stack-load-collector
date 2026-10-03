@@ -83,8 +83,52 @@ import time
 import uuid
 
 HOME = os.path.expanduser("~")
-DIR = os.environ.get("LOAD_MON_DIR", os.path.join(HOME, ".local/state/last-stack/load-monitor"))
-SOCK = os.environ.get("LOAD_MON_SOCKET", os.path.join(HOME, ".lastdb/data/folddb.sock"))
+
+# ONE switch for every READ of this host's real state: launchd's plists,
+# host-track's observation caches, the routines daemon's logs. A fixture sets
+# LOAD_MON_HERMETIC=1 and every such default answers a path that does not exist.
+#
+# Why a switch and not a knob per rule. Two alert rules shipped reading real host
+# state, and each was isolated by hand, in three fixtures, AFTER it broke them.
+# Both knobs already existed the second time, so the knob was never the missing
+# mechanism -- the REQUIREMENT to set it was. Measured 2026-10-03 on main tip
+# 514043dd8, with both documented knobs set exactly as all three fixtures set
+# them: evaluate_alerts still opened this host's real 133 MB
+# ~/.routines/daemon/routinesd.err.log, because a THIRD knob nobody had
+# enumerated feeds watchdog_latch_hazard. The fixtures were green only because
+# the scheduler happened to be dispatching at the time; a frozen fleet would have
+# turned them red for every agent on this host while CI stayed green, since a
+# runner has no such log. A gate that is red locally and green on the runner
+# teaches the fleet to ignore its own gate.
+#
+# "Absent" is the right hermetic answer and costs no rule any new logic: an
+# absent plist, an absent observation cache and an absent log are each ALREADY
+# deliberately not a fault in the rule that reads them.
+#
+# Scope is reads. A writable path (LOAD_MON_DIR) must stay a real directory, so
+# it does not come through here and says so on its own line.
+# papercut-load-collector-alert-rules-read-real-host-state-with-no-hermetic-switch-so-each-new-rule-breaks-the-count-fixtures-20261003
+HERMETIC = os.environ.get("LOAD_MON_HERMETIC", "") not in ("", "0")
+HERMETIC_ROOT = "/nonexistent/last-stack-load-collector-hermetic"
+
+
+def host_path(env_name, default):
+    """Resolve a read of this host's real state.
+
+    An explicit env value always wins, so a fixture can still hand one rule a
+    crafted plist or log. The switch neutralizes only the DEFAULT, which is the
+    thing a new rule gets for free and a fixture cannot know to override.
+    """
+    v = os.environ.get(env_name)
+    if v:
+        return v
+    if HERMETIC:
+        return os.path.join(HERMETIC_ROOT, env_name)
+    return default
+
+
+DIR = os.environ.get("LOAD_MON_DIR", os.path.join(HOME, ".local/state/last-stack/load-monitor"))  # host-path-ok: a writable state dir, not a read; a nonexistent default would break the writer this collector exists to be
+SOCK = host_path("LOAD_MON_SOCKET", os.path.join(HOME, ".lastdb/data/folddb.sock"))
 LASTDB = os.environ.get("LOAD_MON_LASTDB", "lastdb")
 
 
@@ -125,10 +169,10 @@ COLD_WARN_PCT = envf("LOAD_MON_ALERT_COLD_GROUP_PCT", 90)
 # own absence, so the assertion has to come from here: this agent is outside that
 # family and stayed enabled through the window.
 FW_LABEL = os.environ.get("LOAD_MON_FREEZE_WATCH_LABEL", "com.edgevector.routines-freeze-watch")
-FW_PLIST = os.environ.get(
+FW_PLIST = host_path(
     "LOAD_MON_FREEZE_WATCH_PLIST",
     os.path.join(HOME, "Library/LaunchAgents", FW_LABEL + ".plist"))
-FW_LOG = os.environ.get(
+FW_LOG = host_path(
     "LOAD_MON_FREEZE_WATCH_LOG", os.path.join(HOME, ".routines/daemon/freeze-watch.out.log"))
 FW_INTERVAL = envf("LOAD_MON_FREEZE_WATCH_INTERVAL_SEC", 900)
 FW_CONSEC = int(envf("LOAD_MON_ALERT_FREEZE_WATCH_CONSEC", 2))
@@ -155,11 +199,11 @@ LAUNCHCTL = os.environ.get("LOAD_MON_LAUNCHCTL", "/bin/launchctl")
 # routinesd's own records as well, which removes the false positive. The
 # discriminator is that fix's own function name, the grep the papercut prescribes.
 FW_TWO_SOURCE_MARK = os.environ.get("LOAD_MON_FREEZE_WATCH_FIX_MARK", "newestDaemonDispatchAt")
-FW_ROUTINES_BIN = os.environ.get(
+FW_ROUTINES_BIN = host_path(
     "LOAD_MON_ROUTINES_BIN", os.path.join(HOME, ".host-track/apps/routines/current/dist/routines"))
-FW_DAEMON_LOG = os.environ.get(
+FW_DAEMON_LOG = host_path(
     "LOAD_MON_ROUTINESD_LOG", os.path.join(HOME, ".routines/daemon/routinesd.err.log"))
-FW_HEARTBEAT_LOG = os.environ.get(
+FW_HEARTBEAT_LOG = host_path(
     "LOAD_MON_HEARTBEAT_LOG", os.path.join(HOME, ".last-stack/logs/routine-heartbeats.log"))
 # The bound the installed watchdog itself uses for condition A. Read from env so a
 # watchdog that retunes it does not leave this agent judging against a dead number.
@@ -184,7 +228,7 @@ FW_TAIL_BYTES = int(envf("LOAD_MON_FREEZE_WATCH_TAIL_BYTES", 1 << 21))
 # paid for the resolve. No node, no network, no launchctl — same contract as
 # freeze_watch_down.
 # papercut-host-track-pin-lag-fields-are-rendered-to-nobody-no-classifier-or-notice-reads-them-20261003
-FRONTIER_DIR = os.environ.get(
+FRONTIER_DIR = host_path(
     "LOAD_MON_FRONTIER_DIR", os.path.join(HOME, ".local/state/last-stack/host-track-frontier"))
 # An observation older than this is not evidence about the present. 3600 s is
 # three ticks of the 1200 s host-track-refresh agent, so one missed tick does
@@ -215,7 +259,7 @@ DISPATCH_FROZEN_CONSEC = int(envf("LOAD_MON_ALERT_DISPATCH_FROZEN_CONSEC", 2))
 FW_ANY_TS_RE = re.compile(r'"ts":"(\d{4}-\d{2}-\d{2}T[0-9:.]+Z)"')
 NOTIFY = os.environ.get("LOAD_MON_NOTIFY", "1") != "0"
 PHONE = os.environ.get("LOAD_MON_PHONE", "1" if NOTIFY else "0") != "0"
-RA = os.environ.get("LOAD_MON_RA", os.path.join(HOME, ".local/bin/ra"))
+RA = host_path("LOAD_MON_RA", os.path.join(HOME, ".local/bin/ra"))
 SENTRY = os.environ.get("LOAD_MON_SENTRY", "1" if NOTIFY else "0") != "0"
 CURL = os.environ.get("LOAD_MON_CURL", "/usr/bin/curl")
 DSN_SLUG = "obs-sentry-dsn-lastdb-mini"
@@ -324,7 +368,7 @@ def host_sample():
 
 def cold_group_max(data_root=None):
     """Largest keep_small group dir in bytes, from stat only (about 20 files). Never raises."""
-    root = os.path.join(data_root or os.environ.get("LOAD_MON_DATA_ROOT") or os.path.join(HOME, ".lastdb/data/data"), "keep_small")
+    root = os.path.join(data_root or host_path("LOAD_MON_DATA_ROOT", os.path.join(HOME, ".lastdb/data/data")), "keep_small")
     best = None
     try:
         for shard in os.scandir(root):
@@ -488,7 +532,7 @@ def save_state(st):
 def tool_env():
     """Child env with the user tool dirs on PATH. launchd PATH has no ~/.bun/bin, so
     `ra` (exec bun) exited 127 and no phone alert ever left the host (2026-09-30)."""
-    extra = os.environ.get("LOAD_MON_EXTRA_PATH", os.path.join(HOME, ".bun/bin") + ":" + os.path.join(HOME, ".local/bin"))
+    extra = os.environ.get("LOAD_MON_EXTRA_PATH", os.path.join(HOME, ".bun/bin") + ":" + os.path.join(HOME, ".local/bin"))  # host-path-ok: a PATH prefix handed to child processes, not a path this collector reads
     env = dict(os.environ)
     env["PATH"] = extra + ":" + env.get("PATH", "/usr/bin:/bin")
     return env
@@ -1202,7 +1246,12 @@ def log_error(e):
         pass
 
 
-WRITE_ROOTS = [r for r in os.environ.get("LOAD_MON_WRITE_ROOTS", ":".join(
+# The write-activity scan roots. Found by the host_path lint rule rather than by
+# hand -- it is a READ of this host's real directories and was the SEVENTH such
+# default, two more than the record that prompted the switch had enumerated.
+# Under the switch this collapses to one nonexistent root, so the scan finds
+# nothing, which is the same answer LOAD_MON_WRITES=0 already gives a fixture.
+WRITE_ROOTS = [r for r in host_path("LOAD_MON_WRITE_ROOTS", ":".join(
     os.path.join(HOME, x) for x in (".lastdb", ".fkanban/worktrees", ".local/state/last-stack",
                                     ".routines", ".cache/edgevector-git"))).split(":") if r]
 WRITE_BUDGET = envf("LOAD_MON_WRITE_BUDGET_SEC", 60)  # whole detached scan, all roots

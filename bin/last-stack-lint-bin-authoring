@@ -41,6 +41,24 @@
 #            environment on this host) and `last_stack_forge_curl_auth_config`
 #            (a 0600 `curl -K` config file). A line that genuinely needs argv
 #            states why: `# argv-token-ok: <reason>`.
+#   5. HARD  a READ of this host's real state whose default bypasses the file's
+#            own `host_path()` helper. Once a program routes host-state reads
+#            through one switch, a knob that goes straight to
+#            `os.environ.get(NAME, os.path.join(HOME, ...))` is invisible to
+#            that switch, so a fixture cannot isolate from it and nobody finds
+#            out until an alert count moves. This rule only applies to files
+#            that DEFINE `host_path(`, so adopting the helper is what opts a
+#            program in -- it never fires on an unrelated helper. Two alert
+#            rules in bin/last-stack-load-collector shipped this way; both
+#            documented knobs were already set in all three fixtures when the
+#            second one landed, and a THIRD unenumerated knob was still opening
+#            this host's real 133 MB routinesd.err.log during every fixture run
+#            (measured 2026-10-03 on main tip 514043dd8). CI stayed green
+#            because a runner has no such log, so the gate was red only for
+#            agents on this host -- which teaches the fleet to ignore its gate.
+#            A default that is genuinely not a read of host state says why:
+#            `# host-path-ok: <reason>`.
+#            papercut-load-collector-alert-rules-read-real-host-state-with-no-hermetic-switch-so-each-new-rule-breaks-the-count-fixtures-20261003
 #
 # Ground truth: brain papercut-agent-zero-llm-cli-bash-python-heredoc-rglob
 # (filed 2026-08-02). The bounded replacement for a walk is
@@ -127,6 +145,11 @@ ARGV_TOKEN_RE='extraHeader=Authorization|-H[[:space:]]*["'"'"']?Authorization:'
 STAT_ZULU_RE="-t[[:space:]]+('[^']*[^%']Z'|\"[^\"]*[^%\"]Z\")"
 STAT_WORD_RE='(^|[^[:alnum:]_-])stat([[:space:]]|$)'
 TZ_UTC_RE='(^|[^[:alnum:]_-])TZ=(UTC|utc|Etc/UTC)([[:space:]]|$)'
+# Rule 5: a host-state default that bypasses host_path(). Only files that DEFINE
+# the helper are in scope. `os.environ.get(` and its HOME-rooted default sit on
+# different lines in the commonest spelling, so awk joins the statement (the
+# opener plus up to two continuation lines) and matches the joined text.
+HOST_PATH_ADOPTER_RE='def[[:space:]]+host_path\('
 
 tmpdir="$(mktemp -d "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack-lint-bin-authoring.XXXXXX")"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -134,10 +157,12 @@ hard="$tmpdir/hard.tsv"
 nests="$tmpdir/nests.txt"
 argv_tokens="$tmpdir/argv-tokens.txt"
 stat_zulu="$tmpdir/stat-zulu.tsv"
+host_paths="$tmpdir/host-paths.tsv"
 : >"$hard"
 : >"$nests"
 : >"$argv_tokens"
 : >"$stat_zulu"
+: >"$host_paths"
 
 # Files in scope: every regular file directly under bin/, lib/, hooks/ and
 # skills/*/scripts/. A bounded listing, on purpose.
@@ -201,6 +226,31 @@ while IFS= read -r file; do
         printf 'stat-zulu\t%s\t%s\t%s\n' "$rel" "$lineno" "$(printf '%s' "$content" | tr -s '[:space:]' ' ' | cut -c1-160)" >>"$stat_zulu"
       done || true
 
+  # Hard 4: in a file that has adopted host_path(), a host-state default that
+  # goes around it. Scoped to adopters so it cannot fire on an unrelated helper.
+  if grep -qE "$HOST_PATH_ADOPTER_RE" "$file" 2>/dev/null; then
+    awk '
+      /^[[:space:]]*#/ { next }
+      {
+        stmt = $0; n = NR
+        if (stmt ~ /os\.environ\.get\(/) {
+          # Join continuations so a default on the next line is seen.
+          while (stmt !~ /host-path-ok:/ && split(stmt, a, /\(/) - 1 > split(stmt, b, /\)/) - 1) {
+            if ((getline nxt) <= 0) break
+            stmt = stmt " " nxt
+          }
+          if (stmt ~ /os\.path\.join\(HOME|os\.path\.expanduser\(/ && stmt !~ /host-path-ok:/) {
+            gsub(/[[:space:]]+/, " ", stmt)
+            print n "\t" substr(stmt, 1, 160)
+          }
+        }
+      }
+    ' "$file" 2>/dev/null \
+      | while IFS=$'\t' read -r lineno content; do
+          printf '%s\t%s\t%s\n' "$rel" "$lineno" "$content" >>"$host_paths"
+        done || true
+  fi
+
   # Soft: an auth header on a child process's argv.
   if grep -nE "$ARGV_TOKEN_RE" "$file" 2>/dev/null \
     | grep -v 'argv-token-ok:' \
@@ -223,8 +273,10 @@ sort -u "$hard" -o "$hard"
 sort -u "$nests" -o "$nests"
 sort -u "$argv_tokens" -o "$argv_tokens"
 sort -u "$stat_zulu" -o "$stat_zulu"
+sort -u "$host_paths" -o "$host_paths"
 hard_count="$(wc -l <"$hard" | tr -d ' ')"
 stat_zulu_count="$(wc -l <"$stat_zulu" | tr -d ' ')"
+host_path_count="$(wc -l <"$host_paths" | tr -d ' ')"
 nest_count="$(wc -l <"$nests" | tr -d ' ')"
 argv_token_count="$(wc -l <"$argv_tokens" | tr -d ' ')"
 
@@ -282,11 +334,12 @@ new_count="$(wc -l <"$new_nests" | tr -d ' ')"
 retired_count="$(wc -l <"$retired_nests" | tr -d ' ')"
 
 if [ "$MODE" = "report" ]; then
-  echo "bin-authoring report root=$ROOT hard=$hard_count stat_zulu=$stat_zulu_count nests=$nest_count new_nests=$new_count retired_nests=$retired_count argv_tokens=$argv_token_count new_argv_tokens=$new_argv_count retired_argv_tokens=$retired_argv_count"
+  echo "bin-authoring report root=$ROOT hard=$hard_count stat_zulu=$stat_zulu_count host_paths=$host_path_count nests=$nest_count new_nests=$new_count retired_nests=$retired_count argv_tokens=$argv_token_count new_argv_tokens=$new_argv_count retired_argv_tokens=$retired_argv_count"
   [ "$hard_count" -eq 0 ] || { echo "-- hard (kind path line content)"; cat "$hard"; }
   [ "$stat_zulu_count" -eq 0 ] || { echo "-- stat local-zulu (kind path line content)"; cat "$stat_zulu"; }
   [ "$nest_count" -eq 0 ] || { echo "-- nests"; cat "$nests"; }
   [ "$retired_count" -eq 0 ] || { echo "-- retired nests (run --write-baseline)"; cat "$retired_nests"; }
+  [ "$host_path_count" -eq 0 ] || { echo "-- host-state defaults bypassing host_path()"; cat "$host_paths"; }
   [ "$argv_token_count" -eq 0 ] || { echo "-- argv token headers"; cat "$argv_tokens"; }
   [ "$retired_argv_count" -eq 0 ] || { echo "-- retired argv token headers (run --write-baseline)"; cat "$retired_argv_tokens"; }
   exit 0
@@ -300,6 +353,16 @@ if [ "$hard_count" -ne 0 ]; then
   echo "Use bin/last-stack-locate-file (env var, fixed candidates, bounded roots), or find ... -maxdepth N," >&2
   echo "or state the bound on the line: # walk-ok: <reason>" >&2
   cat "$hard" >&2
+fi
+if [ "$host_path_count" -ne 0 ]; then
+  status=1
+  echo "FAIL last-stack-lint-bin-authoring: $host_path_count host-state default(s) bypass host_path()." >&2
+  echo "This file routes reads of the host's real state through one switch so a fixture can isolate from" >&2
+  echo "them. A default taken straight from os.environ.get(NAME, os.path.join(HOME, ...)) is invisible to" >&2
+  echo "that switch: no fixture can turn it off, and nobody finds out until an alert count moves on the one" >&2
+  echo "host that has the files, while CI stays green." >&2
+  echo "Use host_path(NAME, default), or say why it is not a read: # host-path-ok: <reason>" >&2
+  cat "$host_paths" >&2
 fi
 if [ "$stat_zulu_count" -ne 0 ]; then
   status=1
@@ -329,6 +392,6 @@ if [ "$new_argv_count" -ne 0 ]; then
   echo "The baseline at $ARGV_TOKEN_BASELINE_PATH only shrinks; it is not the place for a new site." >&2
 fi
 if [ "$status" -eq 0 ]; then
-  echo "ok last-stack-lint-bin-authoring hard=0 stat_zulu=0 nests=$nest_count baseline=$(wc -l <"$baseline" | tr -d ' ') retired=$retired_count argv_tokens=$argv_token_count argv_baseline=$(wc -l <"$argv_baseline" | tr -d ' ') argv_retired=$retired_argv_count"
+  echo "ok last-stack-lint-bin-authoring hard=0 stat_zulu=0 host_paths=0 nests=$nest_count baseline=$(wc -l <"$baseline" | tr -d ' ') retired=$retired_count argv_tokens=$argv_token_count argv_baseline=$(wc -l <"$argv_baseline" | tr -d ' ') argv_retired=$retired_argv_count"
 fi
 exit "$status"
