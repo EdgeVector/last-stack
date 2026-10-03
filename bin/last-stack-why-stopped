@@ -55,6 +55,7 @@ export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 CLASS_A_HEAL_BIN="${LASTSTACK_CLASS_A_HEAL_BIN:-last-stack-class-a-heal}"
 HOST_TRACK_BIN="${LASTSTACK_WHY_STOPPED_HOST_TRACK_BIN:-host-track}"
 KANBAN_BIN="${LASTSTACK_WHY_STOPPED_KANBAN_BIN:-kanban}"
+LASTDB_BIN="${LASTSTACK_WHY_STOPPED_LASTDB_BIN:-lastdb}"
 CLASS_A_TIMEOUT_S="${LASTSTACK_WHY_STOPPED_CLASS_A_TIMEOUT_S:-8}"
 # Class G threshold, in seconds. Derived from the real gap distribution over
 # 18085 routinesd dispatches / 79 days on this host (2026-07-14 to 2026-10-01):
@@ -414,6 +415,13 @@ fi
 pin_frozen_apps=""
 pin_frozen_age=""
 pin_frozen_run=""
+pin_frozen_first=""
+pin_frozen_channel=""
+pin_frozen_behind=""
+pin_newest_version=""
+pin_newest_at=""
+pin_newest_oid=""
+pin_running_version=""
 if have_cmd "$HOST_TRACK_BIN" && command -v jq >/dev/null 2>&1 \
   && [ "${CLASS_H_MAX_PROOF_AGE_S}" -gt 0 ] 2>/dev/null; then
   ht_all="$("$HOST_TRACK_BIN" status --json 2>/dev/null || true)"
@@ -430,7 +438,8 @@ if have_cmd "$HOST_TRACK_BIN" && command -v jq >/dev/null 2>&1 \
             and ((.registry_pin_proof_age_secs // null) != null)
             and ((.registry_pin_proof_age_secs | tonumber?) // -1) >= $maxage
           ))
-        | map([(.app // "?"), ((.registry_pin_proof_age_secs|tostring)), (.registry_pin_proof_run // "-")] | @tsv)
+        | map([(.app // "?"), ((.registry_pin_proof_age_secs|tostring)), (.registry_pin_proof_run // "-"),
+               (.registry_channel // "-"), (.pin_behind_oid // "-")] | @tsv)
         | .[]
       ' 2>/dev/null || true
     )"
@@ -438,24 +447,95 @@ if have_cmd "$HOST_TRACK_BIN" && command -v jq >/dev/null 2>&1 \
       pin_frozen_apps="$(printf '%s\n' "$pin_rows" | awk -F'\t' '{printf "%s%s", sep, $1; sep=","} END{print ""}')"
       pin_frozen_age="$(printf '%s\n' "$pin_rows" | awk -F'\t' 'NR==1{print $2}')"
       pin_frozen_run="$(printf '%s\n' "$pin_rows" | awk -F'\t' 'NR==1{print $3}')"
+      pin_frozen_first="$(printf '%s\n' "$pin_rows" | awk -F'\t' 'NR==1{print $1}')"
+      pin_frozen_channel="$(printf '%s\n' "$pin_rows" | awk -F'\t' 'NR==1{print $4}')"
+      pin_frozen_behind="$(printf '%s\n' "$pin_rows" | awk -F'\t' 'NR==1{print $5}')"
     fi
   fi
 fi
+# Which of the two causes is this? Both render an identical stale frontier, and
+# they have OPPOSITE remedies, so the class is useless without the discriminator.
+#
+# Proof rows are keyed on (app, lastdb_version). `lastdb app resolve` — the call
+# host-track makes — returns the newest row whose `lastdb_version` names the
+# RUNNING socket build, so the frontier can be 32h old while the index is being
+# filled briskly on another build. Measured 2026-10-03T06:1xZ: the newest row on
+# the index for `routines` was proved at 04:42Z, 1.5h old, for commit
+# 82f14a1ff2a5 — the exact oid `pin_behind_oid` reported — and keyed to
+# 0.23.3-2518-ge1177d41a, while the primary ran 0.23.3-2378-gbe41e547e. The fix
+# the fleet had waited nine hours for was already proved; only the build differed.
+#
+# The field that discriminates is therefore the index's newest row across ALL
+# builds, which `lastdb app resolve` can never return and `lastdb app info` does.
+# Three earlier passes read the frontier, concluded "the prover is paused, resume
+# it", and were wrong about the remedy for exactly this reason.
+#
+# Measurements carried forward from #203, which named this mechanism correctly:
+# the GitHub `registry-proof` workflow runs on cron 7,37, its Mac signer
+# LaunchAgent sits OUTSIDE the routines fleet with 65 runs at exit 0, and the tap
+# PR it opened merged 6/6 green -- so an operator told only to resume a prover
+# finds one already running every half hour and concludes this class is broken.
+# The held set also only GROWS in this state: an app that merges past the frontier
+# converts to held and never converts back, measured 1 -> 3 apps in seven hours.
+#
+# Do NOT discriminate on the proof run id. It carries the build it proved, and
+# resolve only ever returns rows for the running build, so that comparison is
+# equal whenever this class fires at all. A 2026-10-03 draft shipped nowhere
+# because it keyed on that field.
+#
+# Cost: one extra `lastdb app info` per run, for the FIRST blocked app only, and
+# only when the class already fired. Zero in the healthy case.
+#
+# `lastdb app info` takes the registry app id. No entry in config/host-track/apps.json
+# sets `registry_app` today, so the host-track app name is the registry id for all
+# six pinned apps (checked 2026-10-03), and `status --json` does not expose the
+# mapping. A future rename makes the read fail, which falls to the `unknown` arm
+# below and prints the command rather than a wrong cause -- never a wrong verdict.
+if [ -n "$pin_frozen_apps" ] && have_cmd "$LASTDB_BIN" && command -v jq >/dev/null 2>&1; then
+  pin_running_version="$("$LASTDB_BIN" --version 2>/dev/null | awk 'NR==1{print $NF}')"
+  if [ -n "$pin_frozen_first" ] && [ "$pin_frozen_channel" != "-" ]; then
+    pin_info="$("$LASTDB_BIN" app info "$pin_frozen_first" --channel "$pin_frozen_channel" 2>/dev/null || true)"
+    if [ -n "$pin_info" ]; then
+      pin_newest_row="$(
+        printf '%s\n' "$pin_info" | jq -r '
+          (.compat // []) | map(select((.proved_at // "") != ""))
+          | if length == 0 then empty
+            else (max_by(.proved_at)
+                  | [(.lastdb_version // "-"), (.proved_at // "-"), (.sha // "-")] | @tsv)
+            end
+        ' 2>/dev/null || true
+      )"
+      if [ -n "$pin_newest_row" ]; then
+        pin_newest_version="$(printf '%s\n' "$pin_newest_row" | awk -F'\t' 'NR==1{print $1}')"
+        pin_newest_at="$(printf '%s\n' "$pin_newest_row" | awk -F'\t' 'NR==1{print $2}')"
+        pin_newest_oid="$(printf '%s\n' "$pin_newest_row" | awk -F'\t' 'NR==1{print $3}')"
+      fi
+    fi
+  fi
+fi
+
 if [ -n "$pin_frozen_apps" ]; then
   classes+=("H")
-  detail+=("delivery frozen: registry next-channel proof frontier ${pin_frozen_age}s old (bound ${CLASS_H_MAX_PROOF_AGE_S}s, newest proof ${pin_frozen_run}); merged past it and undeliverable: ${pin_frozen_apps}")
-  # COMPARE THE BUILDS FIRST. Proof rows are keyed on (app, lastdb_version) and
-  # `lastdb app resolve` returns the newest row matching the RUNNING socket build,
-  # so a frontier can be advancing briskly on a build that runs nowhere here and
-  # this class still fires. Measured 2026-10-03: `registry-proof` ran every 30
-  # minutes (cron 7,37) and its Mac signer had 65 clean runs, while the host sat
-  # 31h behind, because every fresh row was keyed to 0.23.3-2518-ge1177d41a and the
-  # primary had been rolled back to 0.23.3-2378-gbe41e547e. An operator told only
-  # to "resume the prover" there finds a prover already running every half hour and
-  # concludes this detector is broken. The held set also GROWS in that state: each
-  # app that merges converts to held and never converts back, 1 -> 3 apps in seven
-  # hours. Cause and remedies: papercut-host-track-registry-pin-lags-behind-published-artifact-20260927
-  actions+=("compare builds BEFORE resuming anything: the proof run id above ends in the lastdb build it proved, and 'lastdb --version' is the running one - if they differ the frontier is advancing on a build this host does not run (a rollback), and no prover cadence can clear it; then: host-track status --json | jq -r '.[]|select(.pin_behind_oid)|[.app,.registry_pin_proof_age_secs,.registry_pin_proof_run]|@tsv'; remedies, all operator calls: re-prove the RUNNING build (registry-proof workflow_dispatch with an explicit lastdb_release), or resume routine llms-txt-install-smoke which proves whatever the socket reports, or finish/abandon the pending upgrade")
+  h_detail="delivery frozen: registry next-channel proof frontier ${pin_frozen_age}s old (bound ${CLASS_H_MAX_PROOF_AGE_S}s, newest proof ${pin_frozen_run}); merged past it and undeliverable: ${pin_frozen_apps}"
+  if [ -n "$pin_newest_version" ] && [ -n "$pin_running_version" ] \
+    && [ "$pin_newest_version" != "$pin_running_version" ]; then
+    # Build mismatch. The prover is working; it is proving a build this host does
+    # not run, so no cadence and no resume can clear the frontier.
+    h_detail="${h_detail}; cause=build-mismatch: newest index row for ${pin_frozen_first} is ${pin_newest_version} proved ${pin_newest_at}, this host runs ${pin_running_version}"
+    if [ "$pin_newest_oid" = "$pin_frozen_behind" ] && [ "$pin_newest_oid" != "-" ]; then
+      h_detail="${h_detail} (that row IS the oid ${pin_frozen_first} is behind on, so the commit is already proved -- only the build differs)"
+    fi
+    actions+=("cause is a BUILD MISMATCH, not a paused prover: the index's newest row for ${pin_frozen_first} is ${pin_newest_version} (proved ${pin_newest_at}) and this host runs ${pin_running_version}, and proof rows are keyed on (app, lastdb_version) - resuming a prover cannot clear it. Read it yourself: ${LASTDB_BIN} app info ${pin_frozen_first} --channel ${pin_frozen_channel} | jq 'max_by(.proved_at)'. Remedies, all operator calls: prove the RUNNING build (registry-proof workflow_dispatch with an explicit lastdb_release ${pin_running_version}), or finish the pending move of this host to ${pin_newest_version}, or accept the posture")
+  elif [ -n "$pin_newest_version" ]; then
+    # The index holds nothing newer on ANY build, so the prover itself is stopped.
+    h_detail="${h_detail}; cause=prover-stalled: the index's newest row for ${pin_frozen_first} on ANY build is ${pin_newest_version} proved ${pin_newest_at}, which is this host's build"
+    actions+=("cause is a STALLED PROVER: the index holds no newer row for ${pin_frozen_first} on any build, so nothing is being proved - resume routine llms-txt-install-smoke (it proves whatever the socket reports) or accept the posture; then: host-track status --json | jq -r '.[]|select(.pin_behind_oid)|[.app,.registry_pin_proof_age_secs,.registry_pin_proof_run]|@tsv'")
+  else
+    # "I did not look" must never render as a measured cause.
+    h_detail="${h_detail}; cause=unknown (index newest row not read)"
+    actions+=("cause UNKNOWN - read the index's newest row across ALL builds before resuming anything, because a frontier can be stale only for the build this host runs: ${LASTDB_BIN} app info ${pin_frozen_first} --channel ${pin_frozen_channel} | jq 'max_by(.proved_at)' and compare its lastdb_version against '${LASTDB_BIN} --version'. If they differ no prover cadence can clear it; if they match, resume routine llms-txt-install-smoke")
+  fi
+  detail+=("$h_detail")
 fi
 
 # Deduplicate classes while preserving order
