@@ -59,7 +59,38 @@ cat >"$tmp/bin/kanban" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' '{"ready":0,"counts":{},"cards":[]}'
 SH
-chmod +x "$tmp/bin/heal" "$tmp/bin/host-track" "$tmp/bin/kanban"
+
+# A `lastdb` whose two answers are set per case: the running build, and the
+# newest index row across ALL builds. Those two values are the whole Class H
+# cause discriminator, so every case states both. `CLASS_H_INFO_RC` makes
+# `app info` fail, which is the "I did not look" case.
+cat >"$tmp/bin/lastdb" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version) printf 'lastdb %s\n' "$CLASS_H_RUNNING_VERSION"; exit 0 ;;
+  app)
+    [ "${CLASS_H_INFO_RC:-0}" = "0" ] || exit "$CLASS_H_INFO_RC"
+    # The channel is part of what is under test: an index row is per channel, so
+    # a stub that answers for any channel lets a caller passing the wrong value
+    # (or a row field read from the wrong column) pass as covered.
+    got_channel=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --channel) got_channel="${2:-}"; shift ;; esac
+      shift
+    done
+    [ "$got_channel" = "${CLASS_H_WANT_CHANNEL:-next}" ] || {
+      printf 'stub lastdb: channel %s is not %s\n' "$got_channel" "${CLASS_H_WANT_CHANNEL:-next}" >&2
+      exit 1; }
+    jq -n --arg v "$CLASS_H_NEWEST_VERSION" --arg at "$CLASS_H_NEWEST_AT" \
+      --arg sha "$CLASS_H_NEWEST_OID" \
+      '{app_id:"stub",compat:[
+         {lastdb_version:"0.23.3-0001-gold",proved_at:"2026-09-01T00:00:00Z",sha:"0000000000000000000000000000000000000000"},
+         {lastdb_version:$v,proved_at:$at,sha:$sha}]}'
+    exit 0 ;;
+esac
+exit 1
+SH
+chmod +x "$tmp/bin/heal" "$tmp/bin/host-track" "$tmp/bin/kanban" "$tmp/bin/lastdb"
 
 # A punctual routinesd dispatch, so Class G stays silent and only H is in play.
 ts_now="$(python3 -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"))')"
@@ -70,6 +101,12 @@ run_why() {
   LASTSTACK_CLASS_A_HEAL_BIN="$tmp/bin/heal" \
   LASTSTACK_WHY_STOPPED_HOST_TRACK_BIN="$tmp/bin/host-track" \
   LASTSTACK_WHY_STOPPED_KANBAN_BIN="$tmp/bin/kanban" \
+  LASTSTACK_WHY_STOPPED_LASTDB_BIN="$tmp/bin/lastdb" \
+  CLASS_H_RUNNING_VERSION="${CLASS_H_RUNNING_VERSION:-0.23.3-2378-gbe41e547e}" \
+  CLASS_H_NEWEST_VERSION="${CLASS_H_NEWEST_VERSION:-0.23.3-2518-ge1177d41a}" \
+  CLASS_H_NEWEST_AT="${CLASS_H_NEWEST_AT:-2026-10-03T04:42:49Z}" \
+  CLASS_H_NEWEST_OID="${CLASS_H_NEWEST_OID:-cbc3e5ae880c4fd4716f01f8d0956f67e1b10ce8}" \
+  CLASS_H_INFO_RC="${CLASS_H_INFO_RC:-0}" \
   LASTSTACK_WHY_STOPPED_NO_HEARTBEAT=1 \
   LAST_STACK_HEARTBEATS_PATH="$hb" \
     "$bin" --json --quiet
@@ -85,9 +122,9 @@ has_class_h() {
 # Case 1 — the measured incident, verbatim field values.
 cat > "$rows" <<'JSON'
 [
- {"app":"brain","registry_pin_state":"pinned","pin_behind_oid":"cbc3e5ae880c4fd4716f01f8d0956f67e1b10ce8","registry_pin_proof_age_secs":113122,"registry_pin_proof_run":"llms-smoke-20261001T221045Z"},
- {"app":"routines","registry_pin_state":"pinned","pin_behind_oid":"82f14a1ff2a5","registry_pin_proof_age_secs":113125,"registry_pin_proof_run":"llms-smoke-20261001T221045Z"},
- {"app":"situations","registry_pin_state":"pinned","pin_behind_oid":null,"registry_pin_proof_age_secs":113123,"registry_pin_proof_run":"llms-smoke-20261001T221045Z"},
+ {"app":"brain","registry_pin_state":"pinned","registry_channel":"next","pin_behind_oid":"cbc3e5ae880c4fd4716f01f8d0956f67e1b10ce8","registry_pin_proof_age_secs":113122,"registry_pin_proof_run":"llms-smoke-20261001T221045Z"},
+ {"app":"routines","registry_pin_state":"pinned","registry_channel":"next","pin_behind_oid":"82f14a1ff2a5","registry_pin_proof_age_secs":113125,"registry_pin_proof_run":"llms-smoke-20261001T221045Z"},
+ {"app":"situations","registry_pin_state":"pinned","registry_channel":"next","pin_behind_oid":null,"registry_pin_proof_age_secs":113123,"registry_pin_proof_run":"llms-smoke-20261001T221045Z"},
  {"app":"last-stack","registry_pin_state":"not-on-index","pin_behind_oid":null}
 ]
 JSON
@@ -109,16 +146,67 @@ printf '%s\n' "$out" | grep -q '113122' \
 printf '%s\n' "$out" | grep -q 'llms-smoke-20261001T221045Z' \
   || fail "Class H must print the proof run that set the frontier, got: $out"
 
-# The ACTION must send the reader to compare builds before resuming anything. Proof
-# rows are keyed on (app, lastdb_version), so this class fires while the prover runs
-# every 30 minutes if the fresh rows are keyed to a build the host does not run.
-# Measured 2026-10-03: registry-proof on cron 7,37 with 65 clean signer runs, host
-# 31h behind, every new row keyed to a rolled-back build. An action that names only
-# "resume the prover" sends that operator to a prover that is already running.
-printf '%s\n' "$out" | grep -q 'compare builds' \
-  || fail "Class H action must tell the reader to compare the proved build against the running one, got: $out"
-printf '%s\n' "$out" | grep -q 'lastdb --version' \
-  || fail "Class H action must name how to read the running build, got: $out"
+# The CAUSE must be measured, not assumed. Proof rows are keyed on
+# (app, lastdb_version) and `lastdb app resolve` — the call host-track makes —
+# only ever returns a row for the RUNNING build, so a 32h frontier and a prover
+# proving every 30 minutes are the same picture. Measured 2026-10-03T06:1xZ: the
+# newest index row for `routines` was 1.5h old, for the exact oid `pin_behind_oid`
+# reported, keyed to 0.23.3-2518-ge1177d41a while the host ran 0.23.3-2378-gbe41e547e.
+# Three passes read this class and prescribed "resume the prover", which cannot
+# clear a build mismatch.
+printf '%s\n' "$out" | grep -q 'cause=build-mismatch' \
+  || fail "Class H must name the cause when the index's newest row is on another build, got: $out"
+printf '%s\n' "$out" | grep -q '0.23.3-2518-ge1177d41a' \
+  || fail "Class H must print the build the index is advancing on, got: $out"
+printf '%s\n' "$out" | grep -q '0.23.3-2378-gbe41e547e' \
+  || fail "Class H must print the build this host runs, got: $out"
+printf '%s\n' "$out" | grep -q 'app info' \
+  || fail "Class H must name the one command that reads across builds, got: $out"
+# `resolve` cannot answer this and `app info` can; sending the reader to the
+# prover is the wrong remedy for this cause and is what cost three passes.
+printf '%s\n' "$out" | grep -q 'resume routine llms-txt-install-smoke' \
+  && fail "a build mismatch must NOT prescribe resuming the prover, got: $out"
+# Case 1's first blocked app is brain, and the stub's newest sha IS brain's
+# pin_behind_oid: the commit the host is waiting for is already proved, on the
+# other build. That sentence is the one an operator acts on.
+printf '%s\n' "$out" | grep -q 'already proved' \
+  || fail "when the newest row IS the oid we are behind on, Class H must say so, got: $out"
+
+# Case 1b — the SAME frozen rows with the index's newest row on the RUNNING
+# build. Nothing is being proved for anyone, so the prover really is stopped and
+# the remedy inverts. Per-field negative on the only field that changed.
+out="$(CLASS_H_NEWEST_VERSION="0.23.3-2378-gbe41e547e" run_why)"
+has_class_h "$out" || fail "a stalled prover is still a delivery freeze, got: $out"
+printf '%s\n' "$out" | grep -q 'cause=prover-stalled' \
+  || fail "an index with nothing newer on any build is a stalled prover, got: $out"
+printf '%s\n' "$out" | grep -q 'resume routine llms-txt-install-smoke' \
+  || fail "a stalled prover must prescribe resuming the prover, got: $out"
+printf '%s\n' "$out" | grep -q 'build-mismatch' \
+  && fail "the running build and the newest build agree; this is not a mismatch, got: $out"
+
+# Case 1c — `lastdb app info` failed. "I did not look" must never render as a
+# measured cause, and the reader must be handed the command.
+out="$(CLASS_H_INFO_RC="1" run_why)"
+has_class_h "$out" || fail "an unread index does not un-freeze delivery, got: $out"
+printf '%s\n' "$out" | grep -q 'cause=unknown' \
+  || fail "an unread newest row must render as unknown, got: $out"
+printf '%s\n' "$out" | grep -q 'app info' \
+  || fail "the unknown arm must name the command that answers it, got: $out"
+printf '%s\n' "$out" | grep -q 'build-mismatch' \
+  && fail "an unread index must not claim a build mismatch, got: $out"
+printf '%s\n' "$out" | grep -q 'prover-stalled' \
+  && fail "an unread index must not claim a stalled prover, got: $out"
+
+# Case 1d — per-field negative on the newest row's SHA alone. Same mismatch, a
+# newest row for a DIFFERENT commit than the one we are behind on: the build is
+# still the cause, but nothing says the wanted commit is proved.
+out="$(CLASS_H_NEWEST_OID="dead00000000000000000000000000000000beef" run_why)"
+printf '%s\n' "$out" | grep -q 'cause=build-mismatch' \
+  || fail "the cause is unchanged when only the proved commit differs, got: $out"
+printf '%s\n' "$out" | grep -q 'already proved' \
+  && fail "a newest row for another commit must not claim our commit is proved, got: $out"
+
+out="$(run_why)"
 
 # An app that is current with the frontier is not blocked and must not be listed.
 printf '%s\n' "$out" | grep -q 'situations' \
