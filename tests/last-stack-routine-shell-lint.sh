@@ -434,6 +434,94 @@ expect 0 bash home-root-home-scan-ok-escape <<'EOF'
 find "$HOME" -maxdepth 4 \( -path "$HOME/Desktop" -o -path "$HOME/Downloads" \) -prune -o -print 2>/dev/null  # home-scan-ok: full audit
 EOF
 
+# --- piped-count-false-zero ---------------------------------------------------
+# A pipeline whose PRODUCER is a path under $HOME, feeding a filter that
+# collapses the stream to a count or a boolean. When the path does not exist the
+# producer exits 127, stdout is EMPTY, and grep -c answers 0 -- the same answer
+# as "the symbol is absent". The error is one-directional: a missing producer
+# can only LOWER the count, so the shape manufactures "the fix never shipped"
+# and can never manufacture "it shipped".
+#
+# Measured 2026-10-03: the preceding papercut-resolver pass prescribed
+#   bash ~/.local/bin/last-stack-routine-shell-lint --list-rules | grep -c stat-local-zulu
+# as the proof PR 212 installed and recorded "it reads 0 before this change --
+# measured, not predicted". That path has never existed; the rule WAS installed
+# and the resolved tree answered 6. Both the baseline and the post-fix reading
+# came from the same absent producer, so they agreed at 0 and the before/after
+# table looked like a clean negative baseline.
+expect 2 bash piped-count-exact-recorded-case <<'EOF'
+bash ~/.local/bin/last-stack-routine-shell-lint --list-rules | grep -c stat-local-zulu
+EOF
+# The canary-tree form that resolver protocol items 29 and 135 prescribe, on a
+# path item 45 separately documents as intermittently absent while host-track
+# re-stages it. Those two notes combine into exactly this defect.
+expect 2 bash piped-count-canary-strings <<'EOF'
+strings ~/.host-track/apps/loom/canary/dist/loom | grep -c newSymbol
+EOF
+# The path IS the command (no executor word).
+expect 2 bash piped-count-bare-path-producer <<'EOF'
+~/.local/bin/host-track status | grep -c main_unpublished
+EOF
+expect 2 bash piped-count-wc-l-sink <<'EOF'
+bash "$HOME/.last-stack/bin/last-stack-why-stopped" --json | wc -l
+EOF
+expect 2 bash piped-count-grep-q-sink <<'EOF'
+"${HOME}/.local/state/last-stack/artifacts/current/bin/x" --flag | grep -q sym
+EOF
+expect 2 bash piped-count-after-semicolon <<'EOF'
+cd /tmp; bash $HOME/.last-stack/bin/x --y | grep -c sym
+EOF
+# THE PRESCRIBED FIX FORM. The deny message prints this, so the rule must not
+# refuse the advice it gives (the stat-local-zulu block pins the same property).
+expect 0 bash piped-count-fix-form-rc-capture-ok <<'EOF'
+bash "$HOME/.local/bin/x" --flag > out 2> err; echo "rc=$?"; grep -c sym out
+EOF
+# Counting from a resolved FILE is the other prescribed form: a missing file
+# makes grep itself exit 2 and say so, where a missing producer says nothing.
+expect 0 bash piped-count-file-arg-ok <<'EOF'
+grep -c sym "$(readlink -f ~/.last-stack/bin/last-stack-routine-shell-lint)"
+EOF
+# A producer resolved from PATH is not this rule: jq, git, rg and a PATH command
+# name do not come and go with delivery state.
+expect 0 bash piped-count-path-producer-ok <<'EOF'
+jq -r '.rows[].slug' /tmp/f.json | grep -c foo
+EOF
+expect 0 bash piped-count-host-track-on-path-ok <<'EOF'
+host-track status | grep -c main_unpublished
+EOF
+# A $HOME path as some OTHER command's argument is not a $HOME producer.
+expect 0 bash piped-count-home-path-as-argument-ok <<'EOF'
+rg -n 'sym' ~/.last-stack/bin | wc -l
+EOF
+expect 0 bash piped-count-git-c-home-repo-ok <<'EOF'
+git -C ~/code/edgevector/last-stack log --oneline | wc -l
+EOF
+expect 0 bash piped-count-ls-worktrees-ok <<'EOF'
+ls ~/.fkanban/worktrees/ | wc -l
+EOF
+# cat/head/tail of a DATA file under $HOME is a different hazard (read the rc)
+# and is common and legitimate, so the executor list excludes it deliberately.
+expect 0 bash piped-count-cat-data-file-ok <<'EOF'
+cat ~/.last-stack/logs/routine-heartbeats.log | grep -c ERROR
+EOF
+# A non-counting sink keeps the stream, so a missing producer shows up.
+expect 0 bash piped-count-jq-sink-ok <<'EOF'
+bash ~/.local/bin/x --flag | jq -r .
+EOF
+# System paths are excluded on purpose: CLAUDE.md tells agents to call
+# /usr/bin/grep, and /usr/bin, /bin and /opt/homebrew do not move with a deploy.
+expect 0 bash piped-count-usr-bin-producer-ok <<'EOF'
+/usr/bin/grep -rn sym /opt/homebrew/bin | wc -l
+EOF
+expect 0 bash piped-count-shell-lint-ok-escape <<'EOF'
+bash ~/.local/bin/x --list | grep -c sym   # shell-lint-ok: [ -x ] asserted on the line above
+EOF
+# This rule is NOT the home-root scanner, so it must not inherit that rule's
+# older escape phrase. home-scan-ok silences home-root-scan only.
+expect 2 bash piped-count-home-scan-ok-does-not-silence <<'EOF'
+bash ~/.local/bin/x --list | grep -c sym   # home-scan-ok: unrelated
+EOF
+
 # --- escape hatch and usage --------------------------------------------------
 expect 0 bash escape-hatch <<'EOF'
 sed -i 's/a/b/' f   # shell-lint-ok: GNU sed on the PC
