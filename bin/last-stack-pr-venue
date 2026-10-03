@@ -63,11 +63,71 @@ default_slug="$repo_name"
 ci_context="ci-required"
 venue=""
 reason=""
+# Declared once here, not beside the gate that sets them. These two belong to
+# the retired-venue gate alone; the foreign-root gate reports through its own
+# `ignored_root*` fields. Initializing them later would silently wipe anything
+# written before that point, which reads as a working guard and is only
+# statement order -- a mutation probe caught exactly that.
+ignored_venue=""
+ignored_venue_source=""
 
-repo_config() {
+# A repo root may answer only for the repo it IDENTIFIES. Nothing downstream
+# re-checks this, so a root that is a checkout of something else -- or of nothing
+# at all -- used to supply the venue, the slug, the CI context and the comparison
+# ref for ANY repo it was asked about. The install root did exactly that for four
+# repos it is not a checkout of.
+#
+# Requiring a git checkout would be wrong: measured 2026-10-03, of the 57
+# directories under ~/code/edgevector, 49 are portal STUBS with no `.git`, 41
+# carry a marker, and 36 are BOTH -- and reading those 36 markers is the
+# intended, load-bearing path. So accept EITHER signal, local and network-free:
+#
+#   * the root's own basename equals the repo name -- this is what keeps every
+#     portal stub working, git or not; or
+#   * the root is a git checkout and some remote URL's path basename (minus
+#     `.git`) equals the repo name -- this is what keeps worktrees working, whose
+#     directory names are `<repo>-kanban-<slug>`, and what lets a root whose
+#     directory is named differently from its repo still answer for it
+#     (measured: ~/code/edgevector/edgevector-org-github remotes EdgeVector/.github).
+#
+# A git repo with no remotes falls back to the basename test, so it is never
+# refused for naming itself correctly.
+# papercut-pr-venue-root-marker-answers-for-a-repo-the-root-is-not-a-checkout-of-20261001
+root_identifies_repo=""
+if [ -n "$repo_root" ]; then
+  root_identifies_repo=no
+  if [ "$(basename -- "$repo_root")" = "$repo_name" ]; then
+    root_identifies_repo=yes
+  elif git -C "$repo_root" rev-parse --show-toplevel >/dev/null 2>&1; then
+    root_remotes="$(git -C "$repo_root" remote 2>/dev/null || true)"
+    for root_remote in $root_remotes; do
+      root_remote_url="$(git -C "$repo_root" remote get-url "$root_remote" 2>/dev/null || true)"
+      root_remote_url="${root_remote_url##*/}"
+      if [ "${root_remote_url%.git}" = "$repo_name" ]; then
+        root_identifies_repo=yes
+        break
+      fi
+    done
+  fi
+fi
+
+repo_config_raw() {
   key="$1"
   if [ -n "$repo_root" ] && git -C "$repo_root" rev-parse --show-toplevel >/dev/null 2>&1; then
     git -C "$repo_root" config --get "$key" 2>/dev/null || true
+  fi
+}
+
+# Every root-derived read goes through this one gate. Adding a fourth door that
+# reads $repo_root without it is the defect above, returning.
+repo_config() {
+  [ "$root_identifies_repo" = yes ] || return 0
+  repo_config_raw "$1"
+}
+
+root_marker_raw() {
+  if [ -n "$repo_root" ] && [ -f "$repo_root/.last-stack/pr-venue" ]; then
+    sed -n '1{s/[[:space:]]*$//;p;}' "$repo_root/.last-stack/pr-venue"
   fi
 }
 
@@ -81,6 +141,10 @@ remote_ref_exists() {
 
 canonical_compare_ref() {
   [ -n "$repo_root" ] || return 0
+  # A foreign root's HEAD, upstream and origin/main are a DIFFERENT repo's refs,
+  # and `origin/main` is equally plausible for both -- so an ungated answer here
+  # sends a local-ahead check to compare against the wrong repo and looks right.
+  [ "$root_identifies_repo" = yes ] || return 0
   git -C "$repo_root" rev-parse --show-toplevel >/dev/null 2>&1 || return 0
 
   branch="$(git -C "$repo_root" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
@@ -119,6 +183,36 @@ normalize_venue() {
   esac
 }
 
+# The refused root stays VISIBLE, the same principle the retired-venue gate
+# below follows: stdout carries a venue the caller can act on, and what was
+# refused goes to stderr and into --json. Kept in its OWN fields rather than
+# reusing ignored_venue, because that gate masks this defect's worst instance
+# (the install root's `lastgit` marker) and conflating the two would re-mask it.
+#
+# Reported only when the root actually carried a value, so an ordinary default
+# resolution against a foreign root stays quiet. The raw string is reported
+# unnormalized on purpose: a foreign root's garbage marker must not exit 2.
+ignored_root=""
+ignored_root_venue=""
+ignored_root_venue_source=""
+if [ -n "$repo_root" ] && [ "$root_identifies_repo" != yes ]; then
+  for root_door in git-config:laststack.pr-venue git-config:laststack.prVenue marker:.last-stack/pr-venue; do
+    case "$root_door" in
+      git-config:*) root_door_value="$(repo_config_raw "${root_door#git-config:}")" ;;
+      *)            root_door_value="$(root_marker_raw)" ;;
+    esac
+    if [ -n "$root_door_value" ]; then
+      ignored_root="$repo_root"
+      ignored_root_venue="$root_door_value"
+      ignored_root_venue_source="${root_door#marker:}"
+      break
+    fi
+  done
+  if [ -n "$ignored_root" ]; then
+    echo "LAST_STACK_PR_VENUE: ignoring venue '$ignored_root_venue' from $ignored_root_venue_source: root $repo_root does not identify $repo (its basename is not '$repo_name', and it names no remote that does). Pass that repo's own root, or omit the root." >&2
+  fi
+fi
+
 venue="$(normalize_venue "$(repo_config laststack.pr-venue)")"
 if [ -n "$venue" ]; then
   reason="git-config:laststack.pr-venue"
@@ -131,8 +225,8 @@ if [ -z "$venue" ]; then
   fi
 fi
 
-if [ -z "$venue" ] && [ -n "$repo_root" ] && [ -f "$repo_root/.last-stack/pr-venue" ]; then
-  marker="$(sed -n '1{s/[[:space:]]*$//;p;}' "$repo_root/.last-stack/pr-venue")"
+if [ -z "$venue" ] && [ "$root_identifies_repo" = yes ] && [ -f "$repo_root/.last-stack/pr-venue" ]; then
+  marker="$(root_marker_raw)"
   venue="$(normalize_venue "$marker")"
   if [ -n "$venue" ]; then
     reason=".last-stack/pr-venue"
@@ -154,8 +248,6 @@ fi
 # `lastdb:///` and archived Forgejo remotes are still present and pushable in
 # stale trees -- so an always-wrong stdout value was a trap, not visibility.
 # papercut-portal-pr-venue-stubs-still-say-lastgit-20260923
-ignored_venue=""
-ignored_venue_source=""
 if [ "$venue" = "lastgit" ] && [ "${LAST_STACK_LASTGIT_ENABLED:-}" != "1" ]; then
   ignored_venue="lastgit"
   ignored_venue_source="$reason"
@@ -219,6 +311,14 @@ fi
 
 compare_ref="$(canonical_compare_ref)"
 
+# "" when no root was passed -- there is nothing to validate, which is a
+# different statement from a root that was checked and refused.
+case "$root_identifies_repo" in
+  yes) root_identifies_repo_json=true ;;
+  no)  root_identifies_repo_json=false ;;
+  *)   root_identifies_repo_json="" ;;
+esac
+
 if [ "$mode" = json ]; then
   jq -n \
     --arg repo "$repo" \
@@ -230,10 +330,18 @@ if [ "$mode" = json ]; then
     --arg compare_ref "$compare_ref" \
     --arg ignored_venue "$ignored_venue" \
     --arg ignored_venue_source "$ignored_venue_source" \
-    '{repo:$repo, repo_root:$repo_root, venue:$venue, lastgit_slug:$lastgit_slug, ci_context:$ci_context, reason:$reason, compare_ref:$compare_ref, ignored_venue:$ignored_venue, ignored_venue_source:$ignored_venue_source}'
+    --arg root_identifies_repo "$root_identifies_repo_json" \
+    --arg ignored_root "$ignored_root" \
+    --arg ignored_root_venue "$ignored_root_venue" \
+    --arg ignored_root_venue_source "$ignored_root_venue_source" \
+    '{repo:$repo, repo_root:$repo_root, venue:$venue, lastgit_slug:$lastgit_slug, ci_context:$ci_context, reason:$reason, compare_ref:$compare_ref, ignored_venue:$ignored_venue, ignored_venue_source:$ignored_venue_source, root_identifies_repo:$root_identifies_repo, ignored_root:$ignored_root, ignored_root_venue:$ignored_root_venue, ignored_root_venue_source:$ignored_root_venue_source}'
 elif [ "$mode" = compare_ref ]; then
   if [ -z "$compare_ref" ]; then
-    echo "LAST_STACK_PR_VENUE: no comparison ref found for $repo" >&2
+    if [ -n "$repo_root" ] && [ "$root_identifies_repo" != yes ]; then
+      echo "LAST_STACK_PR_VENUE: refusing a comparison ref for $repo: root $repo_root does not identify it, so its refs belong to another repo" >&2
+    else
+      echo "LAST_STACK_PR_VENUE: no comparison ref found for $repo" >&2
+    fi
     exit 1
   fi
   printf '%s\n' "$compare_ref"
