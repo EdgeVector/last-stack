@@ -13,7 +13,22 @@
 #            quoting, env flags and argparse, and every draft is a partial
 #            script. New helpers use ONE language. Existing nests are held in
 #            config/bin-authoring-baseline.tsv and may only shrink.
-#   3. HARD  an auth header built onto a child process's ARGV: a
+#   3. HARD  a `stat -t` format that ends in a LITERAL Z. BSD stat renders %F
+#            and %T from the LOCAL broken-down time and emits a trailing Z as a
+#            literal character, so the helper writes a stamp in the exact shape
+#            every UTC timestamp on this fleet uses, 25200s in the past. It
+#            parses, sorts and compares cleanly, and it is one-directional:
+#            always OLDER, so it manufactures stalls and never hides one. In a
+#            SHIPPED helper that becomes a scheduled false incident rather than
+#            one agent's wasted five minutes -- it already did, six recorded
+#            times, in last-stack-north-star-dashboard-run
+#            (papercut-north-star-dashboard-html-mtime-zulu-is-local, fixed
+#            instance-only 2026-09-23 with no guard, then the class recurred in
+#            agent shell on 2026-10-03). `%Z` is a real strftime conversion and
+#            is not this defect; `TZ=UTC` on the same line makes the value
+#            correct and passes. Prefer `date -u -r`. A line that genuinely
+#            wants it states why: `# stat-zulu-ok: <reason>`.
+#   4. HARD  an auth header built onto a child process's ARGV: a
 #            `git -c http.<base>.extraHeader=Authorization: ...` word, or a
 #            `curl -H "Authorization: ..."` word. `ps aux` lists argv to every
 #            local account, so those publish the Forge token machine-wide for the
@@ -103,15 +118,26 @@ NEST_RE='python3?[[:space:]]+-[[:space:]]*<<'
 # the environment, and `header = "Authorization: ..."` written into a curl -K
 # config file) do not match, on purpose.
 ARGV_TOKEN_RE='extraHeader=Authorization|-H[[:space:]]*["'"'"']?Authorization:'
+# A stat -t format ending in a literal Z. The char before the final Z must not
+# be `%` (that is the honest %Z zone-name conversion). Both quote styles are
+# spelled out because POSIX ERE has no backreferences.
+# NOTE: this pattern begins with `-`, so it MUST be passed as `grep -e "$STAT_ZULU_RE"`.
+# Without -e, BSD grep reads it as an option, exits 2 with a usage error that
+# 2>/dev/null hides, and the guard silently never fires (caught by its own test).
+STAT_ZULU_RE="-t[[:space:]]+('[^']*[^%']Z'|\"[^\"]*[^%\"]Z\")"
+STAT_WORD_RE='(^|[^[:alnum:]_-])stat([[:space:]]|$)'
+TZ_UTC_RE='(^|[^[:alnum:]_-])TZ=(UTC|utc|Etc/UTC)([[:space:]]|$)'
 
 tmpdir="$(mktemp -d "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack-lint-bin-authoring.XXXXXX")"
 trap 'rm -rf "$tmpdir"' EXIT
 hard="$tmpdir/hard.tsv"
 nests="$tmpdir/nests.txt"
 argv_tokens="$tmpdir/argv-tokens.txt"
+stat_zulu="$tmpdir/stat-zulu.tsv"
 : >"$hard"
 : >"$nests"
 : >"$argv_tokens"
+: >"$stat_zulu"
 
 # Files in scope: every regular file directly under bin/, lib/, hooks/ and
 # skills/*/scripts/. A bounded listing, on purpose.
@@ -162,6 +188,19 @@ while IFS= read -r file; do
         printf 'find\t%s\t%s\t%s\n' "$rel" "$lineno" "$(printf '%s' "$content" | tr -s '[:space:]' ' ' | cut -c1-160)" >>"$hard"
       done || true
 
+  # Hard 3: a stat -t format ending in a literal Z (local time wearing a UTC
+  # marker). TZ=UTC on the same line makes it correct, so it is excluded.
+  grep -nE -e "$STAT_ZULU_RE" "$file" 2>/dev/null \
+    | grep -E "$STAT_WORD_RE" \
+    | grep -vE "$TZ_UTC_RE" \
+    | grep -v 'stat-zulu-ok:' \
+    | grep -vE '^[0-9]+:[[:space:]]*#' \
+    | while IFS= read -r hit; do
+        lineno="${hit%%:*}"
+        content="${hit#*:}"
+        printf 'stat-zulu\t%s\t%s\t%s\n' "$rel" "$lineno" "$(printf '%s' "$content" | tr -s '[:space:]' ' ' | cut -c1-160)" >>"$stat_zulu"
+      done || true
+
   # Soft: an auth header on a child process's argv.
   if grep -nE "$ARGV_TOKEN_RE" "$file" 2>/dev/null \
     | grep -v 'argv-token-ok:' \
@@ -183,7 +222,9 @@ done < <(list_targets)
 sort -u "$hard" -o "$hard"
 sort -u "$nests" -o "$nests"
 sort -u "$argv_tokens" -o "$argv_tokens"
+sort -u "$stat_zulu" -o "$stat_zulu"
 hard_count="$(wc -l <"$hard" | tr -d ' ')"
+stat_zulu_count="$(wc -l <"$stat_zulu" | tr -d ' ')"
 nest_count="$(wc -l <"$nests" | tr -d ' ')"
 argv_token_count="$(wc -l <"$argv_tokens" | tr -d ' ')"
 
@@ -241,8 +282,9 @@ new_count="$(wc -l <"$new_nests" | tr -d ' ')"
 retired_count="$(wc -l <"$retired_nests" | tr -d ' ')"
 
 if [ "$MODE" = "report" ]; then
-  echo "bin-authoring report root=$ROOT hard=$hard_count nests=$nest_count new_nests=$new_count retired_nests=$retired_count argv_tokens=$argv_token_count new_argv_tokens=$new_argv_count retired_argv_tokens=$retired_argv_count"
+  echo "bin-authoring report root=$ROOT hard=$hard_count stat_zulu=$stat_zulu_count nests=$nest_count new_nests=$new_count retired_nests=$retired_count argv_tokens=$argv_token_count new_argv_tokens=$new_argv_count retired_argv_tokens=$retired_argv_count"
   [ "$hard_count" -eq 0 ] || { echo "-- hard (kind path line content)"; cat "$hard"; }
+  [ "$stat_zulu_count" -eq 0 ] || { echo "-- stat local-zulu (kind path line content)"; cat "$stat_zulu"; }
   [ "$nest_count" -eq 0 ] || { echo "-- nests"; cat "$nests"; }
   [ "$retired_count" -eq 0 ] || { echo "-- retired nests (run --write-baseline)"; cat "$retired_nests"; }
   [ "$argv_token_count" -eq 0 ] || { echo "-- argv token headers"; cat "$argv_tokens"; }
@@ -258,6 +300,16 @@ if [ "$hard_count" -ne 0 ]; then
   echo "Use bin/last-stack-locate-file (env var, fixed candidates, bounded roots), or find ... -maxdepth N," >&2
   echo "or state the bound on the line: # walk-ok: <reason>" >&2
   cat "$hard" >&2
+fi
+if [ "$stat_zulu_count" -ne 0 ]; then
+  status=1
+  echo "FAIL last-stack-lint-bin-authoring: $stat_zulu_count stat -t format(s) end in a LITERAL Z." >&2
+  echo "BSD stat renders %F/%T in the LOCAL zone and emits a trailing Z as a literal character, so the" >&2
+  echo "helper writes local time wearing a UTC marker -- 25200s in the past, always OLDER, which" >&2
+  echo "manufactures stalls. In a shipped helper that is a scheduled false incident." >&2
+  echo "Use: date -u -r \"\$(stat -f %m -- \"\$f\")\" +%FT%TZ   (or compare epochs and never format)" >&2
+  echo "TZ=UTC on the same line passes. If a line genuinely wants this, state why: # stat-zulu-ok: <reason>" >&2
+  cat "$stat_zulu" >&2
 fi
 if [ "$new_count" -ne 0 ]; then
   status=1
@@ -277,6 +329,6 @@ if [ "$new_argv_count" -ne 0 ]; then
   echo "The baseline at $ARGV_TOKEN_BASELINE_PATH only shrinks; it is not the place for a new site." >&2
 fi
 if [ "$status" -eq 0 ]; then
-  echo "ok last-stack-lint-bin-authoring hard=0 nests=$nest_count baseline=$(wc -l <"$baseline" | tr -d ' ') retired=$retired_count argv_tokens=$argv_token_count argv_baseline=$(wc -l <"$argv_baseline" | tr -d ' ') argv_retired=$retired_argv_count"
+  echo "ok last-stack-lint-bin-authoring hard=0 stat_zulu=0 nests=$nest_count baseline=$(wc -l <"$baseline" | tr -d ' ') retired=$retired_count argv_tokens=$argv_token_count argv_baseline=$(wc -l <"$argv_baseline" | tr -d ' ') argv_retired=$retired_argv_count"
 fi
 exit "$status"

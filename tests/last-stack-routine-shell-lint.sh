@@ -41,6 +41,70 @@ expect 0 bash dd-dev-zero-ok <<'EOF'
 dd if=/dev/zero of=blob bs=1k count=1
 EOF
 
+# --- usage completeness ------------------------------------------------------
+# usage() printed a fixed LINE RANGE (`sed -n '2,36p'`), which went stale the
+# moment the header grew: --help silently stopped at zsh-mapfile, dropping
+# zsh-word-split, home-root-scan, the escape-hatch paragraph and the ENTIRE
+# Usage/Exit section -- 13 of 16 rules documented, 0 occurrences of "Usage:".
+# A rule nobody can read from --help is a rule agents keep breaking, so pin
+# this structurally rather than trusting the next range edit. Same defect and
+# same awk fix as bin/last-stack-lint-bin-authoring already carries.
+help_out="$tmp/help.txt"
+"$LINT" --help >"$help_out" 2>"$tmp/help.err"
+[ -s "$tmp/help.err" ] && { echo "FAIL [usage] --help wrote to stderr" >&2; fail=1; }
+grep -q '^Usage:' "$help_out" || { echo "FAIL [usage] --help must print the Usage section" >&2; fail=1; }
+grep -q 'shell-lint-ok:' "$help_out" || { echo "FAIL [usage] --help must print the escape hatch" >&2; fail=1; }
+grep -q '^Exit:' "$help_out" || { echo "FAIL [usage] --help must print the exit codes" >&2; fail=1; }
+while IFS= read -r rule; do
+  [ -n "$rule" ] || continue
+  grep -q "^  $rule " "$help_out" \
+    || { echo "FAIL [usage] --list-rules names $rule but --help does not document it" >&2; fail=1; }
+done < <("$LINT" --list-rules)
+
+# --- stat-local-zulu ---------------------------------------------------------
+# BSD `stat -t` renders %F/%T in the LOCAL zone and emits a trailing Z as a
+# LITERAL character, so the value is in the exact shape every UTC stamp on this
+# fleet uses and is 25200s in the past. Always OLDER, so it manufactures stalls
+# and never hides one: on 2026-10-03 a 13-minute-old log read as 7 hours stale
+# and nearly became a p1 "the refresh agent is dead" finding.
+expect 2 bash stat-zulu-short <<'EOF'
+m=$(stat -f '%Sm' -t '%FT%TZ' -- "$f")
+EOF
+expect 2 bash stat-zulu-long <<'EOF'
+stat -f %Sm -t '%Y-%m-%dT%H:%M:%SZ' f
+EOF
+expect 2 bash stat-zulu-double-quoted <<'EOF'
+stat -t "%FT%TZ" -f '%Sm' f
+EOF
+# TZ=UTC makes the value correct and is not refused (it IS the live spelling in
+# bin/last-stack-north-star-dashboard-run).
+expect 0 bash stat-zulu-tz-utc-ok <<'EOF'
+TZ=UTC stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%SZ' "$f"
+EOF
+# %Z is a real strftime conversion printing the zone NAME: honest, not this bug.
+expect 0 bash stat-zulu-zone-name-ok <<'EOF'
+stat -f '%Sm' -t '%FT%T%Z' f
+EOF
+# Both prescribed correct forms. The second is the exact text the deny message
+# prints, so this pins that the advice does not trip the rule that gives it.
+expect 0 bash stat-zulu-epoch-ok <<'EOF'
+age_s=$(( $(date +%s) - $(stat -f %m -- "$f") ))
+EOF
+expect 0 bash stat-zulu-date-u-r-ok <<'EOF'
+stamp="$(date -u -r "$(stat -f %m -- "$f")" +%FT%TZ)"
+EOF
+# A format that does not end in Z is not this rule.
+expect 0 bash stat-zulu-no-suffix-ok <<'EOF'
+stat -f '%Sm' -t '%FT%T' f
+EOF
+# No `stat` on the line: another tool's -t flag must not match.
+expect 0 bash stat-zulu-other-tool-ok <<'EOF'
+lastgit status -t 'xZ'
+EOF
+expect 0 bash stat-zulu-hatch <<'EOF'
+stat -f '%Sm' -t '%FT%TZ' f  # shell-lint-ok: rendering for a human who is told the zone
+EOF
+
 # --- heredoc-backticks -------------------------------------------------------
 expect 2 bash heredoc-unquoted-backticks <<'OUTER'
 cat > "$f" <<EOF

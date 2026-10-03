@@ -102,6 +102,18 @@
           "target": "$HOME/.local/bin/last-stack-prose-citation-check"
         },
         {
+          "source": "bin/last-stack-mutation-probe",
+          "target": "$HOME/.local/bin/last-stack-mutation-probe"
+        },
+        {
+          "source": "bin/last-stack-locate-file",
+          "target": "$HOME/.local/bin/last-stack-locate-file"
+        },
+        {
+          "source": "bin/last-stack-kanban-done-when-sweep",
+          "target": "$HOME/.local/bin/last-stack-kanban-done-when-sweep"
+        },
+        {
           "source": "bin/last-stack-pipeline-stuck-papercut-file",
           "target": "$HOME/.local/bin/last-stack-pipeline-stuck-papercut-file"
         },
