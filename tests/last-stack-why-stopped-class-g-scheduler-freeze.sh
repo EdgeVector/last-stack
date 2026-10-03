@@ -22,6 +22,12 @@ bash -n "$bin"
 
 mkdir -p "$tmp/bin"
 hb="$tmp/heartbeats.log"
+# routinesd's own daemon log. Cases 1-5 below leave this file ABSENT on purpose:
+# they exercise the heartbeat source alone, which is what a host whose daemon log
+# launchd rotated away actually has. Without this seam they would read the LIVE
+# /Users/<me>/.routines/daemon/routinesd.err.log, whose freshness would make
+# every "must be Class G" case pass or fail on the state of the real host.
+dlog="$tmp/routinesd.err.log"
 
 cat >"$tmp/bin/heal" <<'SH'
 #!/usr/bin/env bash
@@ -61,7 +67,22 @@ run_why() {
   LASTSTACK_WHY_STOPPED_KANBAN_BIN="$tmp/bin/kanban" \
   LASTSTACK_WHY_STOPPED_NO_HEARTBEAT=1 \
   LAST_STACK_HEARTBEATS_PATH="$hb" \
+  LASTSTACK_WHY_STOPPED_ROUTINESD_LOG="$dlog" \
     "$bin" --json --quiet
+}
+
+# One routinesd daemon record of the given kind, `age_s` seconds old, in
+# routinesd's own JSON-lines shape.
+routinesd_record() {
+  local kind="$1" age_s="$2"
+  local ts
+  ts="$(AGE="$age_s" python3 -c 'import os; from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc) - timedelta(seconds=int(os.environ["AGE"]))).strftime("%Y-%m-%dT%H:%M:%S.000Z"))')"
+  case "$kind" in
+    tick)    printf '{"ts":"%s","kind":"tick","detail":"81 routines in_flight=0 unspawned=0 stagger=60000ms"}\n' "$ts" ;;
+    dispatch) printf '{"ts":"%s","kind":"dispatch","id":"some-routine","detail":"codex/gpt-5.6-luna"}\n' "$ts" ;;
+    complete) printf '{"ts":"%s","kind":"complete","id":"some-routine","detail":"exit=0 run=/tmp/r"}\n' "$ts" ;;
+    coalesce) printf '{"ts":"%s","kind":"coalesce-backlog","id":"some-routine","detail":"since=2026-10-01T21:48:00.000Z"}\n' "$ts" ;;
+  esac
 }
 
 classes_of() {
@@ -122,5 +143,71 @@ out="$(run_why)"
 if has_class_g "$out"; then
   fail "an unparseable stamp must not assert a freeze, got: $out"
 fi
+
+# ---------------------------------------------------------------------------
+# Cases 6-10 pin the SOURCE of the age, which is what produced a live false
+# FROZEN on 2026-10-03: the heartbeat harness= line is written only for registry
+# entries that set `heartbeat_slug`, zero active entries set it, and the line
+# froze 40.1h before routinesd's own records did.
+# ---------------------------------------------------------------------------
+
+# Case 6 — the measured defect. routinesd dispatched 179s ago; the heartbeat
+# harness= line is 144576s old. Must be SILENT. These are the live numbers.
+#
+# The heartbeat fixture must carry a WRONG value, not an absent one: with an
+# empty heartbeat log Case 4 already keeps Class G quiet, so the branch that
+# decides this case would never be reached and a mutation probe would stay green.
+printf '%s' "$(routinesd_line 144576)" > "$hb"
+routinesd_record dispatch 179 > "$dlog"
+out="$(run_why)"
+if has_class_g "$out"; then
+  fail "a fresh routinesd dispatch must outrank a 40h-stale heartbeat line, got: $out"
+fi
+
+# Case 7 — the freeze this class exists for is still caught when BOTH sources
+# are stale. Newest-wins must not become never-fires.
+printf '%s' "$(routinesd_line 215310)" > "$hb"
+routinesd_record dispatch 215310 > "$dlog"
+out="$(run_why)"
+has_class_g "$out" || fail "both sources stale must still be Class G, got: $out"
+
+# Case 8 — ticks must NEVER count. Through the measured 59h48m freeze the daemon
+# kept ticking `80 routines in_flight=0` and dispatched nothing, so a matcher
+# that accepted ticks would read this log as fresh forever and mask the exact
+# outage Class G catches — looking healthier than the code it replaced.
+#
+# Again a wrong value, not an absent one: the ticks here are 10s old, well inside
+# the bound, so accepting them flips the verdict.
+{ routinesd_record dispatch 215310; routinesd_record tick 30; routinesd_record tick 10; } > "$dlog"
+printf '%s' "$(routinesd_line 215310)" > "$hb"
+out="$(run_why)"
+has_class_g "$out" || fail "fresh ticks must not refresh dispatch age, got: $out"
+
+# Case 9 — `coalesce-backlog` is a backlog note, not a dispatch, and is excluded
+# for the same reason as a tick. It is written when the daemon NOTICES overdue
+# work, which is exactly what a wedged scheduler keeps doing.
+{ routinesd_record dispatch 215310; routinesd_record coalesce 10; } > "$dlog"
+printf '%s' "$(routinesd_line 215310)" > "$hb"
+out="$(run_why)"
+has_class_g "$out" || fail "a fresh coalesce-backlog note must not refresh dispatch age, got: $out"
+
+# Case 10 — `complete` counts. It is written per finished dispatch and is the
+# newest record on a healthy host between dispatches, so excluding it would
+# report a freeze in every ordinary gap.
+printf '%s' "$(routinesd_line 215310)" > "$hb"
+routinesd_record complete 200 > "$dlog"
+out="$(run_why)"
+if has_class_g "$out"; then
+  fail "a fresh complete record must count as dispatch liveness, got: $out"
+fi
+
+# Case 11 — the verdict must name which source it came from. Two passes that
+# disagree about this host are otherwise indistinguishable, and the whole defect
+# above was one source being read as if it were the other.
+printf '%s' "$(routinesd_line 215310)" > "$hb"
+routinesd_record dispatch 215310 > "$dlog"
+out="$(run_why)"
+printf '%s\n' "$out" | grep -q 'newest source routinesd.err.log' \
+  || fail "Class G must name the source its age came from, got: $out"
 
 printf 'ok last-stack-why-stopped-class-g-scheduler-freeze\n'
