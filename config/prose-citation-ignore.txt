@@ -12,3 +12,7 @@
 # Adding either here would hide a real citation the day the detection changes.
 
 papercut-p0-active  prose in routines/pipeline-health.md naming the p0-active STATE of the ledger, not a record: "a p0 for each one made `papercut-p0-active` ...".
+
+design-in-flight  English prose in routines/kanban-watch.md, not a record: "Avoid speculative refactors, churn, anything design-in-flight."
+design-first-with-a-reasonable-default  English prose in routines/program-driver.md, not a record: "design-first-with-a-reasonable-default -> DRIVE IT". Both of these surfaced the day `design-` joined CITED_TYPES, and both are hyphenated adjectives rather than slugs, which no structural rule distinguishes from a citation.
+reference-fleet-performance-log  a conditional WRITE TARGET in routines/fleet-performance.md step 4, not a citation: the prose itself says "or append to `reference-fleet-performance-log` if it exists", so its absence is already handled where it is named and reporting it tells the reader nothing.

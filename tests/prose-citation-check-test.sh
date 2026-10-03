@@ -174,9 +174,79 @@ run_check "$R" "$TMP/v11"
   || bad "case11 preference dangling: slugs '$(slugs dangling)'"
 note "case11 preference dangling rc=$(rc) slug=$(slugs dangling)"
 
+# ------------- case 12: the table covers the brain's WHOLE type vocabulary.
+# This is the structural half. CITED_TYPES was widened twice before, once per
+# prefix someone happened to notice (case 11 is the second one), and each time
+# the checker had been answering `dangling 0` over a subset while real dangling
+# citations in the uncovered prefixes were invisible. Pin the whole vocabulary
+# so the third partial set cannot ship: these are the ten `<type> new` commands
+# `brain help` prints, plus `papercut`, which is its own subcommand.
+#
+# Not derived from `brain help` at run time on purpose: this case must pass on a
+# CI runner with no brain installed, which is also why the checker is not a
+# merge gate. If brain gains a type, this list is the one place to widen.
+expected_types='agent concept decision design papercut preference project reference sop spike task'
+actual_types="$(python3 - "$CHECK" <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+block = re.search(r"CITED_TYPES = \{(.*?)\}", src, re.S).group(1)
+print(" ".join(sorted(set(re.findall(r'"[a-z-]+":\s*"([a-z-]+)"', block)))))
+PY
+)"
+[ "$actual_types" = "$expected_types" ] \
+  || bad "case12 vocabulary: CITED_TYPES maps to '$actual_types', expected '$expected_types'"
+note "case12 vocabulary ok: $actual_types"
+
+# ----- case 13: a dangling citation in each prefix added 2026-10-03 is caught.
+# One case per newly covered prefix, each with a slug that LOOKS exactly like a
+# real citation, because the failure these reproduce is silence: before the
+# widening every one of these read as `dangling 0`.
+for pfx in design task concept reference agent project spike; do
+  R="$TMP/r13-$pfx"; make_root "$R" "Ground truth: ${pfx}-gone-from-the-store-20260901 covers it."
+  printf '%s-gone-from-the-store-20260901=missing\n' "$pfx" > "$TMP/v13"
+  run_check "$R" "$TMP/v13"
+  [ "$(rc)" = 1 ] || bad "case13 $pfx: rc $(rc) != 1"
+  [ "$(slugs dangling)" = "${pfx}-gone-from-the-store-20260901" ] \
+    || bad "case13 $pfx: slugs '$(slugs dangling)'"
+done
+note "case13 seven new prefixes caught"
+
+# ------------- case 14: `concepts-` is accepted and point-got as type `concept`.
+# This host's prose cites concept records under both spellings. The plural is not
+# a type, so a naive prefix==type mapping asks `brain get --type concepts` and
+# that is not the question. The negative half is the one that matters: the typed
+# get must be the SINGULAR, so the stub answers `ok` only for the typed form and
+# a wrong type would have to fall back to the typeless retry.
+R="$TMP/r14"; make_root "$R" 'READ FIRST: concepts-the-canonical-model is the model.'
+printf 'concepts-the-canonical-model:yes=ok\nconcepts-the-canonical-model:no=missing\n' > "$TMP/v14"
+run_check "$R" "$TMP/v14"
+[ "$(rc)" = 0 ] || bad "case14 concepts alias: rc $(rc) != 0 (dangling=$(slugs dangling))"
+[ "$(count dangling)" = 0 ] || bad "case14 concepts alias: a plural-spelled concept citation was called dead"
+# The load-bearing assertion, and NOT the two above it. Dropping the alias makes
+# the plural token fail to EXTRACT, so the report is empty and rc is 0: measured
+# 2026-10-03, the mutation probe for the alias came back GREEN until this line
+# existed. An invisible citation and a resolved one are the same number
+# everywhere except here.
+[ "$(field checked)" = 1 ] \
+  || bad "case14 concepts alias: checked=$(field checked) != 1; the plural token was never extracted, not resolved"
+note "case14 concepts alias rc=$(rc) checked=$(field checked)"
+
+# ------------- case 15: a token after a `/` is a PATH SEGMENT, not a citation.
+# `https://thelastdb.com/docs/agent-access-model` is a URL in the workspace
+# CLAUDE.md. Measured over both prose roots 2026-10-03: every slash-preceded
+# token was a path segment and none was a citation. The fixture supplies a WRONG
+# value rather than an absent one -- the slug resolves nowhere and the stub is
+# told so -- so the only way this case passes is the lookbehind.
+R="$TMP/r15"; make_root "$R" 'Mirror: https://thelastdb.com/docs/agent-access-model and docs/design-some-page-here.'
+printf 'agent-access-model=missing\ndesign-some-page-here=missing\n' > "$TMP/v15"
+run_check "$R" "$TMP/v15"
+[ "$(rc)" = 0 ] || bad "case15 path segment: rc $(rc) != 0 (dangling=$(slugs dangling))"
+[ "$(count dangling)" = 0 ] || bad "case15 path segment: a URL path segment was reported as a dangling record"
+note "case15 path segment rc=$(rc)"
+
 rm -rf -- "$TMP"
 if [ "$fail" -ne 0 ]; then
   echo "prose-citation-check guard: FAILED" >&2
   exit 1
 fi
-echo "ok prose-citation-check guard: 11 cases"
+echo "ok prose-citation-check guard: 15 cases"

@@ -5,7 +5,8 @@ shared install trees. Those paths are for *running* the fleet; they go stale
 or are symlink mazes. **Code changes only in an isolated worktree** from a
 portal (`./bin/wt start …`) or `git worktree` on the venue main.
 
-Full durable copy: brain `concepts-edgevector-run-dev-state-board`.
+This file IS the durable copy. It used to defer to a brain record for the full
+map; that record no longer resolves, so the pointer is gone and the map is here.
 
 ## Four buckets
 

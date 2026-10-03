@@ -42,11 +42,23 @@ export LOAD_MON_DATA_ROOT="$T/nodata" LOAD_MON_NOTIFY=0 LOAD_MON_DEADLINE_SEC=1 
 # exist (an absent plist is deliberately not a fault). That rule has its own
 # coverage in tests/last-stack-load-collector-freeze-watch-liveness.py.
 export LOAD_MON_FREEZE_WATCH_PLIST="$T/no-freeze-watch.plist"
+# And the SECOND rule with the same shape, shipped 2026-10-03: frontier_frozen
+# reads host-track's real observation cache under ~/.local/state, so on a host
+# that is actually holding an install -- which this one has been for 46 hours --
+# registry_delivery_frozen fires and the same COUNTS are off by one. Measured on
+# a pristine `git archive` of main: all three load-collector fixtures went red
+# locally while GitHub ci-required stayed green, because a runner has no
+# observation cache. A gate that is red for every agent on this host and green
+# on the runner teaches the fleet to ignore its own gate.
+export LOAD_MON_FRONTIER_DIR="$T/no-frontier-observations"
 [ "$LOAD_MON_NOTIFY" = "0" ] && [ "$LOAD_MON_DEADLINE_SEC" = "1" ] || { echo "test env must keep NOTIFY=0 (a fixture must never post to live Situations)" >&2; exit 1; }
-case "${LOAD_MON_FREEZE_WATCH_PLIST-}" in
-  "$T"/*) ;;
-  *) echo "test env must keep LOAD_MON_FREEZE_WATCH_PLIST under \$T (a fixture must never read the real LaunchAgents)" >&2; exit 1 ;;
-esac
+for knob in LOAD_MON_FREEZE_WATCH_PLIST LOAD_MON_FRONTIER_DIR; do
+  eval "v=\${$knob-}"
+  case "$v" in
+    "$T"/*) ;;
+    *) echo "test env must keep $knob under \$T (a fixture must never read this host's real launchd or host-track state)" >&2; exit 1 ;;
+  esac
+done
 
 # The host sample must not depend on node access or host-tool permissions.
 # Supply deterministic host helpers because some runners deny their real ps and

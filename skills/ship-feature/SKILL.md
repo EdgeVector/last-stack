@@ -33,8 +33,7 @@ allowed-tools:
 
 The user hands you a feature and wants confidence it **works**. They do **not**
 want to sit and monitor. Since 2026-08-26 the engine for this is **loom's
-`ship-feature` v4 graph** (brain: `north-star-factory-on-loom`,
-`design-loom-agent-orchestrator` § "Factory on loom"):
+`ship-feature` v4 graph**. The graph below is the contract:
 
 ```
 DESIGN → APPROVE (human gate, hard park)
