@@ -719,17 +719,47 @@ def frontier_frozen(now):
     daily prover writes a row for the new build, which can be most of a day, and
     alerting through that window every 30 minutes is noise an operator learns to
     ignore. The discriminator is that the prover produced a row for a DIFFERENT
-    build WHILE this app was already held:
+    build AFTER it last served this host:
 
-        index_build_match == "mismatch"  and  index_newest_proved_at > first_observed_at
+        index_build_match == "mismatch"  and  index_newest_proved_at > ORIGIN
 
     A benign post-upgrade wait ends when a row for the running build appears, so
     it reads `match` and never fires. A prover that is briskly filling the index
     for a build this host does not run will never serve this host, no matter how
     long anyone waits — that needs an operator, and it is true the moment the
-    second timestamp passes the first. So this rule needs no age threshold and
+    newest row passes ORIGIN. So this rule needs no age threshold and
     cannot disagree with `last-stack-why-stopped` Class H, which fires on age
     because it had no second side to compare against.
+
+    ORIGIN IS THE REGISTRY FRONTIER FOR THE RUNNING BUILD, NOT first_observed_at.
+    `running_build_proved_at` is the newest row the index ever proved ON the build
+    this host runs, so it marks when the prover last served this host. That is a
+    fact about the registry and holds however young this detector is.
+
+    `first_observed_at` marks when host-track first WROTE the observation file,
+    which is when this cache was installed. Using it as ORIGIN silences the rule
+    on every hold older than the detector, and that is not a corner case: it is
+    how this rule met its first real freeze. Measured 2026-10-03T18:1xZ:
+
+        routines  first_observed_at 08:53:35Z   newest row proved 06:49:16Z
+        brain     first_observed_at 09:17:12Z   newest row proved 06:49:16Z
+
+    The freeze began 2026-10-01T22:10Z and the cache was installed 34 h into it,
+    so `proved <= first` skipped BOTH held apps, `held` came back empty, and this
+    rule reported nothing for the whole 9 h it had been installed, during the
+    exact freeze it was written for, with the merged fix for the fleet's only
+    freeze watchdog among the held commits. Three resolver passes read that
+    silence as correct.
+
+    The failure is one-directional and self-renewing: it can only stay quiet when
+    it should speak, and `first_observed_at` resets whenever the observation file
+    is removed, so any state prune re-silences a live freeze.
+    papercut-frontier-frozen-compares-the-newest-row-against-the-detectors-own-install-date-20261003
+
+    The fallback to `first_observed_at` is kept for an observation written by a
+    host-track that predates `running_build_proved_at`, and for a running build
+    the index has never proved at all: there no frontier exists, and the
+    observation is the only origin there is.
 
     An ABSENT directory is not a fault: nothing is held, or no host-track that
     writes observations is installed yet. A STALE observation is not evidence
@@ -742,6 +772,11 @@ def frontier_frozen(now):
         return None
     held, newest_ver, newest_at, newest_oid, running, oldest = [], None, None, None, None, None
     obs_age = None
+    # Which origin each app's newest row was actually compared against, so the
+    # message can name the input its verdict depended on and not only the
+    # verdict. Two apps can take different arms during a rollout, while one
+    # observation file still predates `running_build_proved_at`.
+    run_proved_at, basis = None, set()
     for name in names:
         try:
             with open(os.path.join(FRONTIER_DIR, name)) as fh:
@@ -756,8 +791,18 @@ def frontier_frozen(now):
             continue
         if now - observed > FRONTIER_MAX_OBS_AGE:
             continue
-        if proved <= first:
+        # Prefer the registry fact. `first_observed_at` is a valid origin only
+        # while this detector is older than the hold, and it was not.
+        run_proved = epoch_z(o.get("running_build_proved_at"))
+        if run_proved is None:
+            origin, kind = first, "observation"
+        else:
+            origin, kind = run_proved, "frontier"
+        if proved <= origin:
             continue
+        basis.add(kind)
+        if run_proved is not None:
+            run_proved_at = o.get("running_build_proved_at")
         held.append(o.get("app") or name[:-5])
         newest_ver = o.get("index_newest_version") or newest_ver
         newest_at = o.get("index_newest_proved_at") or newest_at
@@ -767,13 +812,22 @@ def frontier_frozen(now):
         obs_age = now - observed if obs_age is None else min(obs_age, now - observed)
     if not held:
         return None
+    # Two passes that disagree are indistinguishable unless the row prints the
+    # input it compared against.
+    if "frontier" in basis and run_proved_at:
+        why = ("that row postdates the index's own frontier for the running build (%s), so the "
+               "prover has moved past this host" % run_proved_at)
+    else:
+        why = ("that row landed after host-track first recorded the hold, so the prover is "
+               "working past this host")
     return ("host-track is holding installs for %s: the next-channel registry index has no row "
             "proved on the build this host runs (%s), while its newest row is %s proved %s and "
             "names %s -- the exact commit these apps are held behind. A prover filling the index "
             "for another build will never serve this host: prove the running build, or finish the "
-            "move. Held since %s; observed by host-track %ds ago"
+            "move. %s. Held since %s (first recorded); observed by host-track %ds ago"
             % (",".join(sorted(held)), running or "unknown", newest_ver or "unknown",
-               newest_at or "unknown", (newest_oid or "unknown")[:12], iso(oldest), int(obs_age)))
+               newest_at or "unknown", (newest_oid or "unknown")[:12], why, iso(oldest),
+               int(obs_age)))
 
 
 # Every notice this agent posts used to go out as `--kind other --system lastdbd`
