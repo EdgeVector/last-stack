@@ -113,6 +113,31 @@ token`, then `lastsecrets://github-token` (unattended, locked keychain).
   `registry_pin_state=no-proved-row`, not stale). Apps not on the index keep
   following their artifact channel head.
 
+### Reading a pin that is behind
+
+Proof rows are keyed on `(app, lastdb_version)`, and `lastdb app resolve` returns
+only the newest row for the build the host runs. So `registry_pin_proved_at` and
+`registry_pin_proof_run` describe the frontier **for this build**, and a frontier
+can be a day old while the index is filled briskly for another build. The two
+causes have opposite remedies, so `status` reports the discriminator next to the
+lag, for a pin that is behind only:
+
+| field | meaning |
+|---|---|
+| `registry_lastdb_version` | the build this host runs, which `resolve` filters on |
+| `registry_index_newest_version` | the build of the index's newest row for this app, across ALL builds |
+| `registry_index_newest_proved_at` / `_oid` | when that row was proved, and the commit it proves |
+| `registry_index_build_match` | `match` · `mismatch` · `no-rows` · `unread` |
+
+`mismatch` means the prover is working on a build this host does not run: no
+cadence change and no resume can clear it. Prove the running build, or finish the
+move to the newer one. `match` means the frontier is as current as the index, so
+`registry_pin_proof_age_secs` decides whether the prover stopped. `unread` means
+the read failed and no cause was measured. When
+`registry_index_newest_oid == pin_behind_oid`, the commit the host is waiting for
+is **already proved** and only the build differs — measured on `brain` and
+`routines` on 2026-10-03, both held 33 h on a commit proved 24 minutes earlier.
+
 ## Terminal proof
 
 `last-stack-north-star-app-registry-release-loop-proof` writes
