@@ -60,8 +60,11 @@ last_stack_lastdb_json() {
       ;;
   esac
 
-  tmp_headers="$(mktemp)"
-  tmp_body="$(mktemp)"
+  # Bare mktemp ignores TMPDIR and lands in DARWIN_USER_TEMP_DIR, which the
+  # routine sandboxes deny; this lib is sourced by last-stack-deliver-status
+  # and last-stack-publish-status, both of which run from routines.
+  tmp_headers="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack-http-hdr.XXXXXX")"
+  tmp_body="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack-http-body.XXXXXX")"
   # shellcheck disable=SC2064
   trap "rm -f '$tmp_headers' '$tmp_body'" RETURN
 
