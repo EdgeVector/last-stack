@@ -138,6 +138,40 @@ the read failed and no cause was measured. When
 is **already proved** and only the build differs — measured on `brain` and
 `routines` on 2026-10-03, both held 33 h on a commit proved 24 minutes earlier.
 
+### Who tells you, without being asked
+
+Every field above renders to `host-track status` and nothing else used to read
+any of them, so the freeze reached whoever happened to look. Two readers now do.
+
+`last-stack-why-stopped` Class H fires when the frontier for the running build
+is older than 30 h and an app has merged past it. It is the fuller verdict, and
+it is dispatched by the routines fleet — so it is silent exactly when the fleet
+is paused, which is the posture that produced the 34 h freeze on 2026-10-03.
+
+`last-stack-load-collector` is a LaunchAgent and runs every 30 s regardless of
+the fleet, so it carries the live surface. It cannot afford a 10 s
+`host-track status --json`, so it reads an observation file instead:
+
+| | |
+|---|---|
+| Written by | `status_json_for`, whenever a pin is holding an install. `refresh_app` calls it for every app, and the `host-track-refresh` agent runs `refresh --all` every 1200 s, so the file is kept current unattended at no extra cost |
+| Where | `~/.local/state/last-stack/host-track-frontier/<app>.json` (`HOST_TRACK_FRONTIER_DIR`) |
+| Holds | the five fields above, plus `observed_at`, `first_observed_at`, and the verb that wrote it |
+| Removed | the moment the pin stops holding, so a stale file never reads as a live freeze |
+
+The notice (`registry_delivery_frozen`, `--system host-track`, severity `warn`)
+fires on `index_build_match == mismatch` **and** an index row proved AFTER the
+hold began. That second clause is the whole point: after a LastDB version change
+every pinned app legitimately holds until the prover writes a row for the new
+build, and an age threshold calls that benign wait a freeze. A row proved for
+another build while this app is already held is proof the prover is alive and
+will never serve this host, which no amount of waiting fixes.
+
+Cold start: `first_observed_at` begins when the file is first written, so a
+freeze already in progress when the observation starts needs one more prover
+row before the notice fires. On this fleet the GitHub `registry-proof` workflow
+runs at `cron: 7,37`, so that is under half an hour.
+
 ## Terminal proof
 
 `last-stack-north-star-app-registry-release-loop-proof` writes

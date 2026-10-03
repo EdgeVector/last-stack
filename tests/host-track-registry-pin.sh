@@ -6,6 +6,9 @@
 #     and `pin_behind_oid` names it so the wait is legible instead of `fresh`
 #   - no proved row → the host HOLDS its current install (refresh returns 75)
 #   - an app not on the index falls back to the channel head as before
+#   - a pin that is holding an install publishes a frontier OBSERVATION file,
+#     so a consumer that is not host-track can report the freeze; it clears
+#     when the pin catches up, and a healthy fleet writes nothing
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -17,6 +20,7 @@ fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 export HOME="$tmp/home"
 export HOST_TRACK_REGISTRY="$tmp/registry.json"
 export HOST_TRACK_STAMP_DIR="$tmp/stamps"
+export HOST_TRACK_FRONTIER_DIR="$tmp/frontier"
 export HOST_TRACK_PROBE_SKIP=1
 export PATH="$HOME/.local/bin:$tmp/bin:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 mkdir -p "$HOME/.local/bin" "$tmp/bin" "$tmp/cas"
@@ -331,6 +335,78 @@ printf '%s\n' "$st" | jq -e '
 [ ! -s "$tmp/info-calls.log" ] \
   || fail "app info was spawned for an app with nothing behind: $(cat "$tmp/info-calls.log")"
 mv "$tmp/resolve.json.bak" "$tmp/resolve.json"
+
+# 2h. A held pin publishes the observation that makes the freeze readable by a
+#     program which is not host-track. Every pin-lag field renders to host-track's
+#     own TSV and --json and NOTHING on this host reads either: measured, 54
+#     occurrences in bin/host-track and zero elsewhere, while `brain` and
+#     `routines` sat undeliverable for 34 h with the fleet-freeze watchdog fix
+#     among the commits held. The one live consumer (last-stack-load-collector,
+#     a LaunchAgent) cannot afford a 10 s `host-track status --json`, so the
+#     observation is written by whoever already paid for the resolve.
+#     papercut-host-track-pin-lag-fields-are-rendered-to-nobody-no-classifier-or-notice-reads-them-20261003
+obs="$tmp/frontier/demo.json"
+rm -rf "$tmp/frontier"
+st="$(INFO_NEWEST_VERSION=0.23.3-9-gother INFO_NEWEST_AT=2026-10-02T12:00:00Z \
+  INFO_NEWEST_SHA="$oid_two" "$ROOT/bin/host-track" status --json demo)"
+[ -f "$obs" ] || fail "a held pin wrote no frontier observation"
+jq -e --arg oid "$oid_two" '
+  .app == "demo" and .hold == "pin-behind" and .observer == "status"
+  and .index_build_match == "mismatch"
+  and .index_newest_version == "0.23.3-9-gother"
+  and .index_newest_proved_at == "2026-10-02T12:00:00Z"
+  and .index_newest_oid == $oid
+  and .running_lastdb_version == "0.23.3-1-gx"
+  and (.observed_at | test("^20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$"))
+  and .first_observed_at == .observed_at' "$obs" >/dev/null \
+  || fail "frontier observation is missing a field a consumer needs: $(cat "$obs")"
+# The verdict in the file and the verdict in --json must be the SAME answer, or
+# two readers of the same question disagree. One `registry_build_match` helper
+# serves both sites for exactly this reason.
+[ "$(jq -r .index_build_match "$obs")" = "$(printf '%s\n' "$st" | jq -r .registry_index_build_match)" ] \
+  || fail "the observation and --json disagree on the build match"
+
+# 2i. first_observed_at survives a later observation while observed_at advances.
+#     Without that a consumer cannot tell a continuous hold from a flap, and the
+#     hold duration resets to zero on every tick of whoever writes it.
+first_before="$(jq -r .first_observed_at "$obs")"
+sleep 1
+INFO_NEWEST_VERSION=0.23.3-9-gother INFO_NEWEST_AT=2026-10-02T12:00:00Z \
+  INFO_NEWEST_SHA="$oid_two" "$ROOT/bin/host-track" status --json demo >/dev/null
+jq -e --arg f "$first_before" '.first_observed_at == $f and .observed_at > $f' "$obs" >/dev/null \
+  || fail "a second observation reset first_observed_at: $(cat "$obs")"
+
+# 2j. The hold ends: the file is REMOVED, not merely left to go stale. A consumer
+#     must never have to guess whether an old file means "still held" or "nobody
+#     looked", which is this record's own complaint one level down.
+cp "$tmp/resolve.json" "$tmp/resolve.json.bak2"
+printf '{"demo":"%s"}\n' "$oid_two" >"$tmp/resolve.json"
+"$ROOT/bin/host-track" status --json demo >/dev/null
+[ ! -e "$obs" ] || fail "the observation survived the pin catching up: $(cat "$obs")"
+mv "$tmp/resolve.json.bak2" "$tmp/resolve.json"
+
+# 2k. The healthy path writes NOTHING -- no file and no directory. Asserted
+#     structurally for the same reason as 2f: a write on every status call for
+#     every app would be invisible in every output.
+rm -rf "$tmp/frontier"
+printf '{"demo":"%s"}\n' "$oid_two" >"$tmp/resolve.json.tmp"
+cp "$tmp/resolve.json" "$tmp/resolve.json.bak3"
+mv "$tmp/resolve.json.tmp" "$tmp/resolve.json"
+"$ROOT/bin/host-track" status --json demo >/dev/null
+[ ! -d "$tmp/frontier" ] || fail "a healthy app created the frontier cache: $(ls -a "$tmp/frontier")"
+mv "$tmp/resolve.json.bak3" "$tmp/resolve.json"
+
+# 2l. The hold is real even when its CAUSE could not be read, so the observation
+#     is still written -- with `unread`, never `mismatch`. A consumer gating on
+#     `mismatch` then stays silent about a cause nobody measured, while a reader
+#     can still see that the app is held.
+rm -rf "$tmp/frontier"
+INFO_FAIL=1 "$ROOT/bin/host-track" status --json demo >/dev/null
+[ -f "$obs" ] || fail "an unreadable index suppressed the observation of a real hold"
+jq -e '.index_build_match == "unread" and .index_newest_version == null
+       and .hold == "pin-behind"' "$obs" >/dev/null \
+  || fail "an unread cause was recorded as a measured one: $(cat "$obs")"
+rm -rf "$tmp/frontier"
 
 # 3. The proof lands for oid_two: now the host is stale and refresh installs v2.
 printf '{"demo":"%s"}\n' "$oid_two" >"$tmp/resolve.json"

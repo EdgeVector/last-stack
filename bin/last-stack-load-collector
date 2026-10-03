@@ -45,6 +45,11 @@ Env (defaults):
   LOAD_MON_ALERT_COOLDOWN_SEC  1800
   LOAD_MON_ALERT_FREEZE_WATCH_CONSEC 2   passes with the routines fleet-freeze
                                        watchdog not producing checks
+  LOAD_MON_ALERT_FRONTIER_CONSEC 2     passes with host-track holding an install
+                                       on a registry pin that cannot clear
+  LOAD_MON_FRONTIER_DIR                host-track's frontier observation cache
+  LOAD_MON_FRONTIER_MAX_OBS_AGE_SEC 3600  an observation older than this is not
+                                       evidence about the present
   LOAD_MON_FREEZE_WATCH_LABEL          launchd label to assert (default
                                        com.edgevector.routines-freeze-watch)
   LOAD_MON_FREEZE_WATCH_PLIST          its plist; absent => not installed, no alert
@@ -125,6 +130,28 @@ FW_LOG = os.environ.get(
 FW_INTERVAL = envf("LOAD_MON_FREEZE_WATCH_INTERVAL_SEC", 900)
 FW_CONSEC = int(envf("LOAD_MON_ALERT_FREEZE_WATCH_CONSEC", 2))
 LAUNCHCTL = os.environ.get("LOAD_MON_LAUNCHCTL", "/bin/launchctl")
+# The registry delivery frontier. `host-track refresh` decides, every 1200 s,
+# whether a pinned app can be installed; when the registry index holds no row
+# proved on the build this host runs, it holds the install and prints one line
+# to a stderr log nobody reads. Measured 2026-10-03: 124 such lines per held
+# app, six apps, while `brain` and `routines` sat undeliverable for 34 h with
+# the fix for the fleet-freeze watchdog among the commits it was holding. No
+# notice, no situation and no live classifier said so — every consumer of
+# `last-stack-why-stopped`, which gained a class for it that morning, is among
+# the 78 paused routines. This agent is a LaunchAgent and is running, so it is
+# the only live surface left.
+#
+# The read is one small local JSON file per held app, written by whoever already
+# paid for the resolve. No node, no network, no launchctl — same contract as
+# freeze_watch_down.
+# papercut-host-track-pin-lag-fields-are-rendered-to-nobody-no-classifier-or-notice-reads-them-20261003
+FRONTIER_DIR = os.environ.get(
+    "LOAD_MON_FRONTIER_DIR", os.path.join(HOME, ".local/state/last-stack/host-track-frontier"))
+# An observation older than this is not evidence about the present. 3600 s is
+# three ticks of the 1200 s host-track-refresh agent, so one missed tick does
+# not silence the alert and a dead writer does not keep it alive.
+FRONTIER_MAX_OBS_AGE = envf("LOAD_MON_FRONTIER_MAX_OBS_AGE_SEC", 3600)
+FRONTIER_CONSEC = int(envf("LOAD_MON_ALERT_FRONTIER_CONSEC", 2))
 NOTIFY = os.environ.get("LOAD_MON_NOTIFY", "1") != "0"
 PHONE = os.environ.get("LOAD_MON_PHONE", "1" if NOTIFY else "0") != "0"
 RA = os.environ.get("LOAD_MON_RA", os.path.join(HOME, ".local/bin/ra"))
@@ -524,6 +551,73 @@ def freeze_watch_down(now):
     return None
 
 
+def frontier_frozen(now):
+    """Apps whose install host-track is holding on a registry pin that cannot clear.
+
+    Returns a message describing the held set, or None.
+
+    The predicate is NOT "the frontier is old". An old frontier is ambiguous:
+    after a LastDB version change every pinned app legitimately holds until the
+    daily prover writes a row for the new build, which can be most of a day, and
+    alerting through that window every 30 minutes is noise an operator learns to
+    ignore. The discriminator is that the prover produced a row for a DIFFERENT
+    build WHILE this app was already held:
+
+        index_build_match == "mismatch"  and  index_newest_proved_at > first_observed_at
+
+    A benign post-upgrade wait ends when a row for the running build appears, so
+    it reads `match` and never fires. A prover that is briskly filling the index
+    for a build this host does not run will never serve this host, no matter how
+    long anyone waits — that needs an operator, and it is true the moment the
+    second timestamp passes the first. So this rule needs no age threshold and
+    cannot disagree with `last-stack-why-stopped` Class H, which fires on age
+    because it had no second side to compare against.
+
+    An ABSENT directory is not a fault: nothing is held, or no host-track that
+    writes observations is installed yet. A STALE observation is not evidence
+    either way and is skipped — but it is skipped per app, so one wedged file
+    cannot silence a held sibling.
+    """
+    try:
+        names = sorted(f for f in os.listdir(FRONTIER_DIR) if f.endswith(".json"))
+    except OSError:
+        return None
+    held, newest_ver, newest_at, newest_oid, running, oldest = [], None, None, None, None, None
+    obs_age = None
+    for name in names:
+        try:
+            with open(os.path.join(FRONTIER_DIR, name)) as fh:
+                o = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(o, dict) or o.get("index_build_match") != "mismatch":
+            continue
+        observed, first = epoch_z(o.get("observed_at")), epoch_z(o.get("first_observed_at"))
+        proved = epoch_z(o.get("index_newest_proved_at"))
+        if observed is None or first is None or proved is None:
+            continue
+        if now - observed > FRONTIER_MAX_OBS_AGE:
+            continue
+        if proved <= first:
+            continue
+        held.append(o.get("app") or name[:-5])
+        newest_ver = o.get("index_newest_version") or newest_ver
+        newest_at = o.get("index_newest_proved_at") or newest_at
+        newest_oid = o.get("index_newest_oid") or newest_oid
+        running = o.get("running_lastdb_version") or running
+        oldest = first if oldest is None else min(oldest, first)
+        obs_age = now - observed if obs_age is None else min(obs_age, now - observed)
+    if not held:
+        return None
+    return ("host-track is holding installs for %s: the next-channel registry index has no row "
+            "proved on the build this host runs (%s), while its newest row is %s proved %s and "
+            "names %s -- the exact commit these apps are held behind. A prover filling the index "
+            "for another build will never serve this host: prove the running build, or finish the "
+            "move. Held since %s; observed by host-track %ds ago"
+            % (",".join(sorted(held)), running or "unknown", newest_ver or "unknown",
+               newest_at or "unknown", (newest_oid or "unknown")[:12], iso(oldest), int(obs_age)))
+
+
 # Every notice this agent posts used to go out as `--kind other --system lastdbd`
 # with no severity hint, because fire() hard-coded one label for all of them. Four
 # of the eleven rules are not about lastdbd at all: fleet_freeze_watchdog_down is
@@ -540,6 +634,7 @@ def freeze_watch_down(now):
 # with that criterion rather than with any single row.
 ALERT_SCOPE = {
     "fleet_freeze_watchdog_down":      (("routinesd",), "other",   "warn"),
+    "registry_delivery_frozen":        (("host-track",), "other",  "warn"),
     "lastdb_persist_lanes_unhealthy":  (("lastdbd",),   "other",   "warn"),
     "node_unresponsive":               (("lastdbd",),   "other",   "warn"),
     "lastdbd_restarted":               (("lastdbd",),   "restart", "info"),
@@ -651,12 +746,17 @@ def evaluate_alerts(rec, now):
     st["hog_name"] = hog_name
     fw_why = guarded(lambda: freeze_watch_down(now), None)
     st["fw_down"] = st.get("fw_down", 0) + 1 if fw_why else 0
+    frozen_why = guarded(lambda: frontier_frozen(now), None)
+    st["frontier_frozen"] = st.get("frontier_frozen", 0) + 1 if frozen_why else 0
     last = st.setdefault("last_alert", {})
     checks = [
         ("fleet_freeze_watchdog_down", st["fw_down"] >= FW_CONSEC,
          "the routines fleet-freeze watchdog is not running for %d passes: %s "
          "(while it is down, a scheduler freeze is reported by nothing)"
          % (st["fw_down"], fw_why)),
+        ("registry_delivery_frozen", st["frontier_frozen"] >= FRONTIER_CONSEC,
+         "registry delivery frozen for %d passes: %s"
+         % (st["frontier_frozen"], frozen_why)),
         ("lastdb_cold_group_near_cap", st["cold_hot"] >= 2,
          "keep_small group %s is %s MB of the %d MB cold-load cap (>= %d%%): the node refuses to load it over the cap"
          % (cold and cold["group"], cold and cold["bytes"] // 1048576, COLD_CAP_BYTES // 1048576, COLD_WARN_PCT)),
@@ -695,6 +795,17 @@ def iso(t):
     return dt.datetime.fromtimestamp(t, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def epoch_z(ts):
+    """Epoch seconds from an ISO-8601 Z timestamp, or None. Never raises."""
+    if not isinstance(ts, str) or not ts:
+        return None
+    try:
+        return dt.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=dt.timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
 def rotate(now):
     cutoff = now - RETAIN_DAYS * 86400
     files = sorted(f for f in os.listdir(DIR) if re.fullmatch(r"(load|writes)-\d{8}\.jsonl", f))
@@ -711,26 +822,27 @@ def rotate(now):
 
 
 def guarded(fn, fallback):
-    """One failing section must not cost the whole sample; log it and go on."""
-    try:
-        return fn()
-    except Exception as e:
-        fallback = dict(fallback)
-        fallback["error"] = "%s: %s" % (type(e).__name__, e)
-        try:
-            with open(os.path.join(DIR, "collector-errors.log"), "a") as f:
-                f.write("%s %s %s\n" % (iso(time.time()), fn.__name__, fallback["error"]))
-        except OSError:
-            pass
-        return fallback
+    """A failing section becomes an "error" field; the sample is still written.
 
+    The fallback is returned UNCHANGED when it is not a dict. It used to be
+    `dict(fallback)` unconditionally, and two call sites pass a non-dict —
+    `guarded(lambda: freeze_watch_down(now), None)` passes None — so a raise
+    inside those sections made `dict(None)` raise TypeError out of the except
+    block, killing `evaluate_alerts` and silently dropping EVERY alert for that
+    pass. Probed against the installed binary 2026-10-03: `guarded(boom, None)`
+    raised `TypeError: 'NoneType' object is not iterable`, where
+    `guarded(boom, {})` returned `{'error': ...}` as documented. A guard that
+    raises is worse than no guard, because the call site reads as protected.
 
-def guarded(fn, fallback):
-    """A failing section becomes an "error" field; the sample is still written."""
+    There were also two definitions of this function, identical in purpose; the
+    second shadowed the first, whose richer error log was dead code. Merged.
+    """
     try:
         return fn()
     except Exception as e:
         log_error(e)
+        if not isinstance(fallback, dict):
+            return fallback
         out = dict(fallback)
         out["error"] = "%s: %s" % (type(e).__name__, e)
         return out
