@@ -109,6 +109,17 @@ printf '%s\n' "$out" | grep -q '113122' \
 printf '%s\n' "$out" | grep -q 'llms-smoke-20261001T221045Z' \
   || fail "Class H must print the proof run that set the frontier, got: $out"
 
+# The ACTION must send the reader to compare builds before resuming anything. Proof
+# rows are keyed on (app, lastdb_version), so this class fires while the prover runs
+# every 30 minutes if the fresh rows are keyed to a build the host does not run.
+# Measured 2026-10-03: registry-proof on cron 7,37 with 65 clean signer runs, host
+# 31h behind, every new row keyed to a rolled-back build. An action that names only
+# "resume the prover" sends that operator to a prover that is already running.
+printf '%s\n' "$out" | grep -q 'compare builds' \
+  || fail "Class H action must tell the reader to compare the proved build against the running one, got: $out"
+printf '%s\n' "$out" | grep -q 'lastdb --version' \
+  || fail "Class H action must name how to read the running build, got: $out"
+
 # An app that is current with the frontier is not blocked and must not be listed.
 printf '%s\n' "$out" | grep -q 'situations' \
   && fail "an app with no pin_behind_oid is current and must not be listed, got: $out"

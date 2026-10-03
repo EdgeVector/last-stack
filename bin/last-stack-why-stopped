@@ -444,7 +444,18 @@ fi
 if [ -n "$pin_frozen_apps" ]; then
   classes+=("H")
   detail+=("delivery frozen: registry next-channel proof frontier ${pin_frozen_age}s old (bound ${CLASS_H_MAX_PROOF_AGE_S}s, newest proof ${pin_frozen_run}); merged past it and undeliverable: ${pin_frozen_apps}")
-  actions+=("host-track status --json | jq -r '.[]|select(.pin_behind_oid)|[.app,.registry_pin_proof_age_secs]|@tsv'; the prover that writes proof rows is routine llms-txt-install-smoke - resume it or accept the posture (operator call, not a heal this fleet runs)")
+  # COMPARE THE BUILDS FIRST. Proof rows are keyed on (app, lastdb_version) and
+  # `lastdb app resolve` returns the newest row matching the RUNNING socket build,
+  # so a frontier can be advancing briskly on a build that runs nowhere here and
+  # this class still fires. Measured 2026-10-03: `registry-proof` ran every 30
+  # minutes (cron 7,37) and its Mac signer had 65 clean runs, while the host sat
+  # 31h behind, because every fresh row was keyed to 0.23.3-2518-ge1177d41a and the
+  # primary had been rolled back to 0.23.3-2378-gbe41e547e. An operator told only
+  # to "resume the prover" there finds a prover already running every half hour and
+  # concludes this detector is broken. The held set also GROWS in that state: each
+  # app that merges converts to held and never converts back, 1 -> 3 apps in seven
+  # hours. Cause and remedies: papercut-host-track-registry-pin-lags-behind-published-artifact-20260927
+  actions+=("compare builds BEFORE resuming anything: the proof run id above ends in the lastdb build it proved, and 'lastdb --version' is the running one - if they differ the frontier is advancing on a build this host does not run (a rollback), and no prover cadence can clear it; then: host-track status --json | jq -r '.[]|select(.pin_behind_oid)|[.app,.registry_pin_proof_age_secs,.registry_pin_proof_run]|@tsv'; remedies, all operator calls: re-prove the RUNNING build (registry-proof workflow_dispatch with an explicit lastdb_release), or resume routine llms-txt-install-smoke which proves whatever the socket reports, or finish/abandon the pending upgrade")
 fi
 
 # Deduplicate classes while preserving order
