@@ -129,24 +129,39 @@ assert_safe_skill_links() {
   done
 }
 
+# The registration is keyed on the SCRIPT PATH, never on the whole command
+# string. The command carries a trailing `  # <notice>` comment, so keying the
+# replace on the full string means editing that comment here orphans the entry
+# already in settings.json and appends a second one beside it: same script,
+# both armed, both spawned on every matching tool call. Measured 2026-10-04 on
+# this host — unsafe-inline-json.sh (48 ms) and no-home-root-scan.sh (30 ms)
+# each ran TWICE per Bash call, 78 ms of pure duplicate per call, because their
+# notice text had been reworded after they were first registered. Brain:
+# papercut-setup-upsert-pretool-hook-keys-the-replace-on-the-comment-so-rewording-it-duplicates-the-hook-20261004
 upsert_pretool_hook() {
   local settings="$1"
   local matcher="$2"
   local command="$3"
   local timeout="$4"
-  local tmp
+  local script tmp
+  # Everything up to the first whitespace: the script path the harness runs.
+  script="${command%%[[:space:]]*}"
   tmp="$(mktemp)"
   jq \
     --arg matcher "$matcher" \
     --arg command "$command" \
+    --arg script "$script" \
     --argjson timeout "$timeout" '
+      def same_script:
+        (.command // "") as $c
+        | $c == $script or ($c | startswith($script + " "));
       .hooks //= {}
       | .hooks.PreToolUse //= []
       | .hooks.PreToolUse =
         (if any(.hooks.PreToolUse[]?; .matcher == $matcher) then
           [.hooks.PreToolUse[] |
             if .matcher == $matcher then
-              .hooks = (((.hooks // []) | map(select(.command != $command))) + [{
+              .hooks = (((.hooks // []) | map(select(same_script | not))) + [{
                 type: "command",
                 command: $command,
                 timeout: $timeout
@@ -168,7 +183,6 @@ upsert_pretool_hook() {
     ' "$settings" > "$tmp"
   mv "$tmp" "$settings"
 }
-
 remove_pretool_hook_by_script() {
   # Strip every PreToolUse command entry whose command references the given
   # script name, dropping matcher groups left empty.
@@ -275,6 +289,19 @@ install_claude_hooks() {
     "$hooks_dir/routine-shell-lint.sh  # deny known-bad shell shapes (spin wait, heredoc backticks, jq 1.7 syntax, macOS awk/sed, zsh status); prints the fix" \
     5
 
+  # LastDB is Dynamo-style and has no scan, so `list` has no completeness
+  # contract. This hook is the wall: prose in CLAUDE.md never held, because an
+  # agent defaults to a census read, hits the papercut and re-learns it next
+  # session. Registered on BOTH live matchers - the Bash spelling of the verb
+  # and the MCP spelling - because a deny on one is a silent pass on the other.
+  # Escape hatch: '# census-ok: <reason>'.
+  upsert_pretool_hook "$settings" "Bash" \
+    "$hooks_dir/no-list-as-census.sh  # LastDB has no scan: deny brain list/count, situations list --all, unscoped/full-body kanban list; escape hatch '# census-ok: <reason>'" \
+    5
+  upsert_pretool_hook "$settings" "mcp__brain__brain_list" \
+    "$hooks_dir/no-list-as-census.sh  # same rule on the MCP spelling of the banned verb" \
+    5
+
   for tool in \
     mcp__brain__brain_get \
     mcp__brain__brain_search \
@@ -285,7 +312,7 @@ install_claude_hooks() {
     upsert_permission_allow "$settings" "$tool"
   done
 
-  echo "  claude hooks: unsafe-inline-json.sh + no-home-root-scan.sh + no-unbounded-workspace-walk.sh + routine-shell-lint.sh (inline parsing guard; home-root/TCC walk guard; workspace walk guard; shell shape guard; read-before-edit retired)"
+  echo "  claude hooks: unsafe-inline-json.sh + no-home-root-scan.sh + no-unbounded-workspace-walk.sh + routine-shell-lint.sh + no-list-as-census.sh (inline parsing guard; home-root/TCC walk guard; workspace walk guard; shell shape guard; no-scan census guard on Bash + the brain_list MCP verb; read-before-edit retired)"
   echo "  claude permissions: brain MCP get/search/list/ask/put"
 }
 
