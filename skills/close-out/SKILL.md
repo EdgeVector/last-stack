@@ -182,11 +182,24 @@ every brain slug it cites before the PR:
 
 ```bash
 last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
-"$last_stack/bin/last-stack-prose-citation-check" --root "$WT" --changed-since origin/main
+"$last_stack/bin/last-stack-prose-citation-check" --root "$WT" --changed-since origin/main --one-hop
 ```
 
-Scoped to the diff, so it is a few point gets (about 1 s, against 29 s for the
-whole root) and it can only fail on prose this change touched.
+Scoped to the diff, so it is a few point gets and it can only fail on prose this
+change touched. Measured 2026-10-04 in this repo: 0.11 s when the change touches
+no prose at all, 2.3 s over an 11-file prose delta, 13.0 s with `--one-hop` over
+that same delta (against 29 s for the whole root).
+
+`--one-hop` also point-gets every `[[target]]` inside the records this change's
+prose cites. A record you point a reader at, which then points them at nothing,
+is the same failure one level down, and the prose extractor can never see it: it
+only matches a token that starts with one of the eleven record types, so an
+untyped record name is invisible to it. Measured 2026-10-04 one hop from the
+installed prose: **23 of 67 targets did not resolve**, four of them inside
+`sop-edgevector-portals` and four inside `sop-feature-ship-loop` --- SOPs
+CLAUDE.md tells every agent to read first. A `HOP-DANGLING` row is a finding
+about a record, not about your change: fix it if it is yours, otherwise report
+it and ship.
 
 - **0** -- every citation resolves. Done.
 - **1** -- `DANGLING <slug>`: the slug does not point-get, with or without
