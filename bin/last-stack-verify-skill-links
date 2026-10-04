@@ -85,6 +85,79 @@ fi
 # Resolve the canonical real path of the source skills tree once.
 SKILLS_SRC_REAL="$(cd "$SKILLS_SRC" && pwd -P)"
 
+# ── The installer's transient rule, which this verifier must share ────────────
+# `setup`'s _link_or_copy COPIES a SKILL.md instead of symlinking it when the
+# source tree is transient — a git worktree under .fkanban/worktrees, which is
+# reaped. A symlink into such a tree dangles, and setup's own
+# assert_safe_skill_links refuses one outright.
+#
+# This verifier had no notion of that rule, so on every worktree-sourced run it
+# read each deliberate copy as "a foreign installer claimed skill name" and then
+# "repaired" it into exactly the dangling link the installer had avoided — a
+# hazard assert_safe_skill_links never sees, because it runs over the COPY
+# (setup:873) before this guard creates the symlink (setup:1058). Measured
+# 2026-10-04 on last-stack main 9e3c6ffa7: 39 COLLISION lines and 39 repairs
+# re-pointing ~/.claude/skills into a reapable worktree, per setup run.
+# Brain: papercut-last-stack-setup-claude-permissions-test-var-private-var-collision-20260923
+SOURCE_TOP=""
+SOURCE_WORKTREES=""
+SOURCE_TOP_LOADED=0
+
+is_transient_source() {
+  local target="$1"
+  case "$target" in
+    "$HOME/.kanban/worktrees"/*|*/.kanban/worktrees/*) return 0 ;;
+    "$HOME/.fkanban/worktrees"/*|*/.fkanban/worktrees/*) return 0 ;;
+  esac
+
+  if [ "$SOURCE_TOP_LOADED" -eq 0 ]; then
+    SOURCE_TOP="$(git -C "$SOURCE_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$SOURCE_TOP" ]; then
+      SOURCE_WORKTREES="$(git -C "$SOURCE_TOP" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10)}')"
+    fi
+    SOURCE_TOP_LOADED=1
+  fi
+  [ -n "$SOURCE_TOP" ] || return 1
+
+  local wt
+  while IFS= read -r wt; do
+    [ -n "$wt" ] || continue
+    [ "$wt" = "$SOURCE_TOP" ] && continue
+    case "$target" in
+      "$wt"/*) return 0 ;;
+    esac
+  done <<< "$SOURCE_WORKTREES"
+
+  return 1
+}
+
+SOURCE_TRANSIENT=0
+if is_transient_source "$SKILLS_SRC_REAL"; then
+  SOURCE_TRANSIENT=1
+fi
+
+# Place one file the way the installer would: a copy under a transient source,
+# a symlink otherwise. Mirrors setup's _link_or_copy.
+_place() {
+  if [ "$SOURCE_TRANSIENT" -eq 1 ]; then
+    cp -f "$1" "$2"
+  else
+    ln -snf "$1" "$2"
+  fi
+}
+
+# Is the installed SKILL.md already the state this host should have? Canonically
+# that is a link resolving to $want; under a transient source it is a regular
+# file whose content matches the source, because the installer copies there.
+is_canonical_state() {
+  local skill_md="$1" src_md="$2" want="$3"
+  if [ "$SOURCE_TRANSIENT" -eq 1 ]; then
+    [ -f "$skill_md" ] && [ ! -L "$skill_md" ] && cmp -s "$skill_md" "$src_md"
+    return
+  fi
+  [ "$(resolved_target "$skill_md")" = "$want" ]
+}
+
 skill_name_for() {
   # Prefer the frontmatter `name:` (matches how setup registers), fall back to
   # the directory basename.
@@ -124,7 +197,7 @@ repair_skill() {
   mkdir -p "$target"
   # Remove whatever is sitting at SKILL.md (foreign symlink, copied file, or dir).
   rm -rf "$target/SKILL.md"
-  ln -snf "$src_dir/SKILL.md" "$target/SKILL.md"
+  _place "$src_dir/SKILL.md" "$target/SKILL.md"
   # Mirror sidecar files (helper scripts, references/) exactly like setup does.
   base="${src_dir%/}"
   find "$base" -type f ! -name SKILL.md | while IFS= read -r src; do
@@ -132,7 +205,7 @@ repair_skill() {
     dest="$target/$rel"
     mkdir -p "$(dirname "$dest")"
     rm -rf "$dest"
-    ln -snf "$src" "$dest"
+    _place "$src" "$dest"
   done
 }
 
@@ -153,14 +226,20 @@ for dir in "${DIRS[@]}"; do
     want="$SKILLS_SRC_REAL/$name/SKILL.md"
     checked=$((checked + 1))
 
+    src_md="${skill_dir%/}/SKILL.md"
     got="$(resolved_target "$skill_md")"
-    if [ "$got" = "$want" ]; then
+    if is_canonical_state "$skill_md" "$src_md" "$want"; then
       continue
     fi
 
     drift=$((drift + 1))
     if [ -z "$got" ]; then
       echo "DRIFT: $skill_md is missing (Last Stack skill '$name' not registered here)" >&2
+    elif [ "$SOURCE_TRANSIENT" -eq 1 ] && [ -L "$skill_md" ]; then
+      # The hazard this guard used to CREATE: a link into a reapable worktree.
+      echo "DRIFT: $skill_md -> $got (link into a transient source tree; a transient source must be copied)" >&2
+    elif [ "$SOURCE_TRANSIENT" -eq 1 ]; then
+      echo "DRIFT: $skill_md is a stale copy of the transient source $src_md" >&2
     else
       # A resolved target OUTSIDE the Last Stack tree is a name collision — most
       # likely another installer (e.g. gstack) claimed this skill name.
@@ -175,11 +254,15 @@ for dir in "${DIRS[@]}"; do
     fi
 
     if repair_skill "${skill_dir%/}" "$target"; then
-      now="$(resolved_target "$skill_md")"
-      if [ "$now" = "$want" ]; then
-        echo "  repaired: $skill_md -> $want"
+      if is_canonical_state "$skill_md" "$src_md" "$want"; then
+        if [ "$SOURCE_TRANSIENT" -eq 1 ]; then
+          echo "  repaired: $skill_md <- copy of $src_md"
+        else
+          echo "  repaired: $skill_md -> $want"
+        fi
         repaired=$((repaired + 1))
       else
+        now="$(resolved_target "$skill_md")"
         echo "  FAILED to repair: $skill_md (still -> ${now:-<missing>})" >&2
         failed=$((failed + 1))
       fi

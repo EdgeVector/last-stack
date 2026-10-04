@@ -776,6 +776,7 @@ ci_test tests/last-stack-shared-checkout-guard.sh
 ci_test tests/last-stack-ship-pipeline-gap-snapshot.sh
 ci_test tests/last-stack-update-check.sh
 ci_test tests/last-stack-verify-skill-links.sh
+ci_test tests/last-stack-verify-skill-links-transient-source.sh
 ci_test tests/machine-hygiene-empty-globs.sh
 
 # Sentry credentials must remain usable when the login keychain is locked.
