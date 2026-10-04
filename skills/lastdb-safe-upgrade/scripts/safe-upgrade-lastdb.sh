@@ -20,6 +20,12 @@
 #      resident_key_count within resident_key_budget and the purge runs.
 #      There is no byte footprint bar: a GiB line does not measure a
 #      key-count eviction (Tom, 2026-10-04). There is no skip.
+#      AND the HARD-DELETE BAR on the candidate's copy: a scratch kanban
+#      card is written and hard-deleted (kanban rm), and every /api/status
+#      sample in a bounded window after it keeps
+#      status.resident.persist_lane_failures and deferred_persist_failed at
+#      0 (incident 2026-10-04: f362b8e72 failed live on a card delete after
+#      every copy bar was GREEN). There is no skip.
 #      LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1 is set on the candidate copy
 #      only and is not installed on the primary.
 #      AND the CANDIDATE CLASS BAR (incident 2026-08-01): refuse Cargo
@@ -268,6 +274,8 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/probe-copy-guards.sh"
 # shellcheck source=key-cap-bar-checks.sh
 . "$_SCRIPT_DIR/key-cap-bar-checks.sh"
+# shellcheck source=hard-delete-bar-checks.sh
+. "$_SCRIPT_DIR/hard-delete-bar-checks.sh"
 # shellcheck source=live-lastdb-env.sh
 . "$_SCRIPT_DIR/live-lastdb-env.sh"
 # shellcheck source=dev-photograph-stamp-gate.sh
@@ -1140,7 +1148,7 @@ stop_probe_node() {
 # identity-ready. Hot = median after settle + one discarded warmup. Write is
 # hot-only. Writes cand/base metric files with lat_cold_* / lat_hot_* keys.
 probe_like_to_like_metrics() {
-  local cand_bin="$1" base_bin="$2" cand_out="$3" base_out="$4"
+  local cand_bin="$1" base_bin="$2" cand_out="$3" base_out="$4" hd_out="${5:-}"
   local c_copy b_copy c_pid b_pid c_sock b_sock c_blog b_blog c_boot b_boot
   local max_rss rss i
   local c_cold_pt=-1 b_cold_pt=-1 c_cold_sc=-1 b_cold_sc=-1
@@ -1316,8 +1324,14 @@ probe_like_to_like_metrics() {
   log "candidate metrics: boot_s=${c_boot} peak_rss_mb=${max_rss} cold_point_ms=${c_cold_pt} cold_scan_ms=${c_cold_sc} hot_point_ms=${c_hot_pt} hot_scan_ms=${c_hot_sc} hot_write_ms=${c_hot_wr}"
   log "baseline metrics: boot_s=${b_boot:--} cold_point_ms=${b_cold_pt} cold_scan_ms=${b_cold_sc} hot_point_ms=${b_hot_pt} hot_scan_ms=${b_hot_sc} hot_write_ms=${b_hot_wr}"
 
-  stop_probe_node "$c_pid" "$c_copy" "$c_blog"
+  # The hard-delete bar runs last on the candidate node, after every timed
+  # read, so its write and purge do not touch the latency numbers. The
+  # baseline node is not needed for it.
   stop_probe_node "$b_pid" "$b_copy" "$b_blog"
+  if [ -n "$hd_out" ]; then
+    probe_hard_delete_bar "$c_copy" "$c_sock" "$c_pid" "$hd_out" || true
+  fi
+  stop_probe_node "$c_pid" "$c_copy" "$c_blog"
   return 0
 }
 
@@ -2122,7 +2136,8 @@ if [ "$LAT_SKIP" != "1" ]; then
 fi
 log "latency: like-to-like cold+hot probe (candidate first identity, baseline sibling CoW)"
 set +e
-probe_like_to_like_metrics "$CANDIDATE_BIN" "$BASELINE_BIN" "$CAND_METRICS" "$BASE_METRICS"
+HD_PROOF="$WORK/hard-delete-proof.json"
+probe_like_to_like_metrics "$CANDIDATE_BIN" "$BASELINE_BIN" "$CAND_METRICS" "$BASE_METRICS" "$HD_PROOF"
 CAND_METRICS_RC=$?
 set -e
 PROBE_RSS_MB="$(metric_val "$CAND_METRICS" peak_rss_mb)"
@@ -2288,6 +2303,21 @@ if [ "$KC_RC" -ne 0 ]; then
   exit 1
 fi
 log "$KC_RECEIPT"
+set +e
+HD_RECEIPT="$(hard_delete_bar_eval "$HD_PROOF" 2>&1)"
+HD_RC=$?
+set -e
+if [ "$HD_RC" -ne 0 ]; then
+  log "$HD_RECEIPT"
+  echo ""
+  echo "VERDICT: RED"
+  echo "REASON: candidate $CAND_VER fails the hard-delete bar — a kanban card hard delete on the CoW copy must leave status.resident.persist_lane_failures and deferred_persist_failed at 0 (incident 2026-10-04: fold f362b8e72 passed every other copy bar, then failed live with persist-lane-failure from a card delete)"
+  echo "HARDDELETE: $HD_RECEIPT"
+  echo "BACKUP: $BACKUP  (kept; primary NOT upgraded)"
+  echo "NEXT:   do NOT live-upgrade. There is no skip flag. Read the candidate boot log for the persist-lane error. Brain: papercut-safe-upgrade-probe-runs-no-hard-delete-so-a-purge-lane-defect-reaches-the-primary-20261004."
+  exit 1
+fi
+log "$HD_RECEIPT"
 log "row-count bar GREEN: point cand=${CAND_ROWS_POINT}(base ${BASE_ROWS_POINT}) scan cand=${CAND_ROWS_SCAN}(base ${BASE_ROWS_SCAN})"
 log "probe GREEN for candidate $CAND_VER (data-plane + RSS peak_mb=${PROBE_RSS_MB} + cold_point/scan=${CAND_LAT_COLD_POINT_MS}/${CAND_LAT_COLD_SCAN_MS}ms hot_point/scan/write=${CAND_LAT_POINT_MS}/${CAND_LAT_SCAN_MS}/${CAND_LAT_WRITE_MS}ms)"
 
@@ -2301,6 +2331,7 @@ if [ "$PROBE_ONLY" -eq 1 ]; then
   echo "LATENCY: cold_point=${CAND_LAT_COLD_POINT_MS}ms(base ${BASE_LAT_COLD_POINT_MS}ms) cold_scan=${CAND_LAT_COLD_SCAN_MS}ms(base ${BASE_LAT_COLD_SCAN_MS}ms) hot_point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) hot_scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) hot_write=${CAND_LAT_WRITE_MS}ms(base ${BASE_LAT_WRITE_MS}ms) boot=${CAND_BOOT_SECS}s(base ${BASE_BOOT_SECS:-?}s)"
   echo "ROWCOUNT: point cand=${CAND_ROWS_POINT}(base ${BASE_ROWS_POINT}) scan cand=${CAND_ROWS_SCAN}(base ${BASE_ROWS_SCAN})"
   echo "KEYCAP:  ${KC_RECEIPT:-unset}"
+  echo "HARDDELETE: ${HD_RECEIPT:-unset}"
   echo "NEXT:    run last-stack-safe-upgrade-loom --candidate $CANDIDATE_BIN --source-git-oid <full-fold-commit>"
   exit 0
 fi
