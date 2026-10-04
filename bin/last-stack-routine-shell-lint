@@ -301,10 +301,36 @@ re_home_scanner_words='(find|fd|du|ncdu|tree|rg|ag|grep|ls|wc|shasum)'
 # agents write constantly (measured: both slipped through an earlier draft
 # anchored only on ;&|( / && / ||).
 re_home_anchor='(^|[;&|(]|&& |\| |(^|[^[:alnum:]_])(do|then|else|elif)[[:space:]])'
+# The home token's quotes must BALANCE. An optional quote on each side
+# (`[\"']?${home}[\"']?`) also accepts an UNBALANCED opening quote, so a
+# quoted REGEX PATTERN that merely contains the home path read as a path
+# argument: `grep -nE '$HOME|needle' a.sh b.sh` matched, because
+# normalize_home_line rewrites $HOME inside the quotes and the alternation
+# `|` that follows satisfies the trailing [;&|)] as if it were a shell pipe.
+# No walk: the files are named. Measured three times in one agent pass.
+# Brain: papercut-home-root-scan-matcher-assumes-scanner-flags-path-so-it-rejects-a-quoted-pattern-and-misses-grep-r-home-20261004
+re_home_token="(\"${home}\"|'${home}'|${home})"
+
 # `find <path> <expr>` puts the path BEFORE its flags (the common, natural
 # form); du/ls/rg/grep put flags before the path. Allow optional flags on
 # EITHER side of the (optionally quoted) home token so both orders match.
-re_home_root_scan="${re_home_anchor}[[:space:]]*(sudo[[:space:]]+)?(time[[:space:]]+)?${re_home_scanner_words}([[:space:]]+-[^[:space:]]+)*[[:space:]]+[\"']?${home}[\"']?([[:space:]]+-[^[:space:]]+)*([[:space:]]|[;&|)]|/\\*|\$)"
+re_home_root_scan="${re_home_anchor}[[:space:]]*(sudo[[:space:]]+)?(time[[:space:]]+)?${re_home_scanner_words}([[:space:]]+-[^[:space:]]+)*[[:space:]]+${re_home_token}([[:space:]]+-[^[:space:]]+)*([[:space:]]|[;&|)]|/\\*|\$)"
+# grep/rg/ag take their pattern POSITIONALLY, so the natural spelling of the
+# hazard puts a non-flag token between the scanner and the path, and the
+# flags-only regex above never saw it: `grep -rn needle "$HOME"` and
+# `rg -n needle "$HOME"` both PASSED while `find "$HOME" -name x` was
+# rejected. That is the costlier direction -- a recursive grep of $HOME is
+# precisely what raises the macOS TCC prompt and blocks an unattended run,
+# and these two scanners are the ones agents reach for.
+#
+# Exactly ONE non-flag token is allowed, quoted or bare. Only the
+# pattern-taking scanners get this: find/du/ls/wc put the path where the
+# regex above already expects it, and widening them would let a path
+# argument that merely PRECEDES the home token satisfy the pattern slot.
+re_home_pattern_scanners='(rg|ag|grep|egrep|fgrep)'
+re_home_pattern_arg="(\"[^\"]*\"|'[^']*'|[^-[:space:]][^[:space:]]*)"
+re_home_root_scan_pattern="${re_home_anchor}[[:space:]]*(sudo[[:space:]]+)?(time[[:space:]]+)?${re_home_pattern_scanners}([[:space:]]+-[^[:space:]]+)*[[:space:]]+${re_home_pattern_arg}[[:space:]]+${re_home_token}([[:space:]]+-[^[:space:]]+)*([[:space:]]|[;&|)]|/\*|$)"
+
 re_home_protected="${home}/(Desktop|Documents|Downloads|Pictures|Movies|Music)"
 # piped-count-false-zero: a $HOME-path producer feeding a counting filter.
 # Runs on the home-NORMALIZED line, so ~/x, $HOME/x, ${HOME}/x and the literal
@@ -383,7 +409,9 @@ check_command_line() {
     # does NOT -- it is a different defect, so it takes only the generic
     # "shell-lint-ok:" hatch that `reject` already enforces for every rule.
     if [ "$home_scan_escaped" -eq 0 ]; then
-      if [[ $hline =~ $re_home_root_scan ]] || [[ $hline =~ $re_home_protected ]]; then
+      if [[ $hline =~ $re_home_root_scan ]] \
+        || [[ $hline =~ $re_home_root_scan_pattern ]] \
+        || [[ $hline =~ $re_home_protected ]]; then
         reject home-root-scan "$line"
       fi
     fi

@@ -24,6 +24,26 @@ expect() {
   fi
 }
 
+# The suite HANGS instead of failing when $LINT cannot start. Found by a
+# mutation probe that moved a regex variable below its first use, so the lint
+# died at source time under `set -u`: every expect case then returns rc=1,
+# which should be ~30 instant FAIL lines, and instead the suite ran past 90s
+# with EMPTY stdout while stderr repeated the unbound-variable message. The
+# probe sat for over ten minutes and was killed, so it produced no verdict at
+# all -- and a CI shard would burn its ~2803s deadline the same way, showing
+# the operator a timeout rather than the error already in stderr.
+#
+# The blocking case is not yet identified (expect feeds a heredoc, which is a
+# file and cannot block), so this does not diagnose the hang. It removes the
+# class: refuse to run the suite at all against a binary that cannot answer a
+# trivial command.
+# Brain: papercut-routine-shell-lint-fixture-suite-hangs-instead-of-failing-when-the-lint-binary-cannot-start-20261004
+if ! printf 'echo hi' | "$LINT" --shell bash --quiet >/dev/null 2>"$tmp/startup.err"; then
+  echo "FAIL [startup] $LINT exits non-zero on a trivial command; the suite cannot run against it" >&2
+  sed -n '1,5p' "$tmp/startup.err" >&2
+  exit 1
+fi
+
 # --- spin-wait ---------------------------------------------------------------
 expect 2 bash spin-basic <<'EOF'
 while ! grep -q done f; do read -t 20 < /dev/zero; done
@@ -409,6 +429,60 @@ EOF
 expect 0 bash home-root-unrelated-home-mention-ok <<'EOF'
 if [ -d "$HOME/code" ]; then find "$workspace" -maxdepth 3 -name x; fi
 EOF
+# The matcher used to model a command as `<scanner> <flags...> <path>`, and
+# was wrong in BOTH directions because real commands are not that shape.
+# Brain: papercut-home-root-scan-matcher-assumes-scanner-flags-path-so-it-rejects-a-quoted-pattern-and-misses-grep-r-home-20261004
+#
+# False POSITIVE: the home token was wrapped in an OPTIONAL quote on each
+# side, so an UNBALANCED opening quote was accepted and a quoted REGEX
+# PATTERN containing the home path read as a path argument -- the `|` that
+# follows an alternation satisfied the trailing [;&|)] as if it were a pipe.
+# The files are named explicitly; nothing is walked. Hit three times in one
+# agent pass. The negative fixtures must carry the `|`, because without it
+# the branch is never reached (an absent value proves nothing).
+expect 0 bash home-root-dquoted-pattern-named-files-ok <<'EOF'
+grep -nE "$HOME|~/" a.sh b.sh
+EOF
+expect 0 bash home-root-squoted-pattern-named-files-ok <<'EOF'
+grep -nE '$HOME|needle' a.sh
+EOF
+expect 0 bash home-root-pattern-naming-scoped-path-ok <<'EOF'
+grep -rn "$HOME/code" a.sh
+EOF
+#
+# False NEGATIVE, and the costlier half: grep/rg/ag take their pattern
+# POSITIONALLY, so the natural spelling of the hazard put a non-flag token
+# between the scanner and the path and the flags-only regex never saw it.
+# A recursive grep of $HOME is exactly what raises the macOS TCC prompt and
+# blocks an unattended run until a human clicks it. All four of these PASSED
+# before 2026-10-04 while `find "$HOME" -name x` was correctly rejected.
+expect 2 bash home-root-grep-r-pattern-then-home <<'EOF'
+grep -rn needle "$HOME"
+EOF
+expect 2 bash home-root-grep-r-pattern-then-tilde <<'EOF'
+grep -rn needle ~
+EOF
+expect 2 bash home-root-rg-pattern-then-home <<'EOF'
+rg -n needle "$HOME"
+EOF
+expect 2 bash home-root-rg-no-flags-then-home <<'EOF'
+rg needle "$HOME"
+EOF
+expect 2 bash home-root-grep-squoted-pattern-then-home <<'EOF'
+grep -rn 'need le' "$HOME"
+EOF
+# The widening must not reach a BOUNDED path, which is the whole point of the
+# guard's advice line.
+expect 0 bash home-root-grep-r-pattern-scoped-ok <<'EOF'
+grep -rn needle "$HOME/code"
+EOF
+expect 0 bash home-root-rg-maxdepth-scoped-ok <<'EOF'
+rg --max-depth 2 needle "$HOME/code"
+EOF
+expect 0 bash home-root-grep-named-files-ok <<'EOF'
+grep -n needle a.sh b.sh
+EOF
+
 expect 2 bash home-root-while-do-find <<'EOF'
 while true; do find "$HOME" -maxdepth 2 -name x; break; done
 EOF
