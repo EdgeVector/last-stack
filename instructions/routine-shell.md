@@ -15,7 +15,7 @@ fix, and the command does not run.
 | heredoc-backticks | `<<EOF` runs the backticks in a Markdown body | `cat > "$f" <<'EOF'`, then `--body "$(cat "$f")"` |
 | dquote-backticks | `--body "...`x`..."` runs `x` | the same body file, or single quotes |
 | jq-optional-call | host jq 1.7.1 rejects `match(..)?.string` and `(.a)?.b` | `try (match("re").string) catch ""` |
-| jq-escaped-quote | `\"` inside `\( )` is a jq syntax error | `[.slug, .status, (.severity // "-")] \| @tsv` |
+| jq-escaped-quote | `\"` inside `\( )` is a jq syntax error | `[.slug, .status, (.severity // "-"), .title] \| @tsv` |
 | awk-match-array | macOS awk has no `match(s, /re/, arr)` | `sed -n 's/^KEY:[[:space:]]*//p' file` |
 | sed-inplace | macOS `sed -i` takes the next word as an extension | `sed -i '' 's/a/b/' file` |
 | date-nanos | macOS `date` has no `%N` | `gdate +%s%3N` |

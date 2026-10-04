@@ -42,9 +42,18 @@ status. You keep the error text AND the parser gets clean JSON.
 
 ```bash
 last-stack-json-capture /tmp/sit.json -- situations list --json
-jq -r '.[] | [.slug, .status, (.severity // "-")] | @tsv' /tmp/sit.json
+jq -r '.[] | [.slug, .status, (.severity // "-"), .title] | @tsv' /tmp/sit.json
 cat /tmp/sit.json.err        # the stderr you wanted, on its own
 ```
+
+Keep `.title` in that projection. A Situation **slug is immutable** and a
+Situation **body gets amended**, so the slug is the least current field in the
+row — and a projection without the title shows the agent nothing else. Measured
+2026-10-04 on the one active Situation on this host: the slug read
+`lastdb-brain-cleanout-use-gbrain-20260923` while its own summary had said
+"the instruction to read and write knowledge in gbrain is withdrawn ... Do not
+read, write or sync gbrain" since 2026-09-26. Three surfaces, three messages,
+and the projection showed only the retracted one.
 
 The helper is on `~/.local/bin`. A sandbox shell can lose `$PATH`; name the
 install path when it does:
