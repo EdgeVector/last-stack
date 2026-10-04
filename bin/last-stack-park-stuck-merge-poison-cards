@@ -19,7 +19,7 @@ json=0
 skip_point_read=0
 
 usage() {
-  cat >&2 <<'EOF'
+  cat <<'EOF'
 usage: last-stack-park-stuck-merge-poison-cards [--board-cli kanban]
                                                [--dry-run] [--json]
                                                [--skip-point-read]
@@ -40,7 +40,7 @@ while [ "$#" -gt 0 ]; do
     --json) json=1; shift ;;
     --skip-point-read) skip_point_read=1; shift ;;
     -h|--help) usage; exit 0 ;;
-    *) echo "unknown arg: $1" >&2; usage; exit 2 ;;
+    *) echo "unknown arg: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
 

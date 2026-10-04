@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  cat >&2 <<'EOF'
+  cat <<'EOF'
 Usage: last-stack-launchd-path-audit [--fix] [--reload] [--dir <launchagents-dir>]
 
 Scan com.edgevector.*.plist launchd agents for EnvironmentVariables:PATH
@@ -34,7 +34,7 @@ while [ $# -gt 0 ]; do
     --reload) reload=1 ;;
     --dir) dir="${2:?--dir requires a path}"; shift ;;
     -h|--help) usage; exit 0 ;;
-    *) echo "last-stack-launchd-path-audit: unknown argument: $1" >&2; usage; exit 2 ;;
+    *) echo "last-stack-launchd-path-audit: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
   shift
 done

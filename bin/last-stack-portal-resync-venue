@@ -17,7 +17,7 @@ MIRRORS_TSV="${LAST_STACK_GITHUB_MIRRORS_TSV:-$HOME/.lastgit/github-mirrors.tsv}
 PORTALS_ROOT="${LAST_STACK_PORTALS_ROOT:-$HOME/code/edgevector}"
 
 usage() {
-  cat >&2 <<'EOF'
+  cat <<'EOF'
 Usage: last-stack-portal-resync-venue [--fix] [--portal <dir> | --sweep]
 
 Detect (default) or heal (--fix) stale .portal/remote, .portal/venue, and
@@ -50,7 +50,7 @@ while [ $# -gt 0 ]; do
       ;;
     *)
       echo "last-stack-portal-resync-venue: unknown arg: $1" >&2
-      usage
+      usage >&2
       exit 2
       ;;
   esac

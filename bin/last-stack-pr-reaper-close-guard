@@ -74,7 +74,7 @@ git_dir=""
 no_fetch=0
 
 usage() {
-  cat >&2 <<'EOF'
+  cat <<'EOF'
 usage: last-stack-pr-reaper-close-guard --venue auto|github --repo <slug> --pr <n> [--json]
                                         [--pr-json PATH] [--head-check-json PATH]
                                         [--base-check-json PATH] [--compare-json PATH]
@@ -130,11 +130,11 @@ while [ "$#" -gt 0 ]; do
     --head-check-json) head_check_json_path="${2:-}"; shift 2 ;;
     --base-check-json) base_check_json_path="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
-    *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
+    *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
-[ -n "$repo" ] || { echo "--repo is required" >&2; usage; exit 2; }
+[ -n "$repo" ] || { echo "--repo is required" >&2; usage >&2; exit 2; }
 # Accept the owner/name form every other forge helper takes. The API paths and
 # mirror paths below add the owner themselves, so `--repo EdgeVector/fold` read
 # /repos/EdgeVector/EdgeVector/fold/... and came back `cr-unreadable` for a
@@ -147,7 +147,7 @@ if [ -z "$venue" ]; then
   venue="auto"
 fi
 if [ "$venue" = "auto" ]; then
-  [ -n "$pr_number" ] || { echo "--pr is required with --venue auto" >&2; usage; exit 2; }
+  [ -n "$pr_number" ] || { echo "--pr is required with --venue auto" >&2; usage >&2; exit 2; }
   if [ -z "$pr_venue_bin" ]; then
     pr_venue_bin="$(dirname "$0")/last-stack-pr-venue"
     [ -x "$pr_venue_bin" ] || pr_venue_bin="$(command -v last-stack-pr-venue 2>/dev/null || true)"
@@ -163,8 +163,8 @@ if [ "$venue" = "auto" ]; then
   esac
 fi
 case "$venue" in
-  forgejo|github) [ -n "$pr_number" ] || { echo "--pr is required with --venue $venue" >&2; usage; exit 2; }; cr_id="#$pr_number" ;;
-  *) echo "--venue must be github, forgejo or auto" >&2; usage; exit 2 ;;
+  forgejo|github) [ -n "$pr_number" ] || { echo "--pr is required with --venue $venue" >&2; usage >&2; exit 2; }; cr_id="#$pr_number" ;;
+  *) echo "--venue must be github, forgejo or auto" >&2; usage >&2; exit 2 ;;
 esac
 command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 2; }
 

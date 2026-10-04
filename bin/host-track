@@ -64,7 +64,7 @@ maybe_reexec_for_mutation() {
 }
 
 usage() {
-  cat >&2 <<'EOF'
+  cat <<'EOF'
 Usage:
   host-track status [--json] [--stale] [app]
   host-track which [--json] <app>

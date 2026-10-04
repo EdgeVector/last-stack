@@ -2,7 +2,7 @@
 set -u
 
 usage() {
-  cat >&2 <<'EOF'
+  cat <<'EOF'
 usage: last-stack-sccache-health [--json]
 
 Reports whether the local sccache disk cache still earns the wrapper it costs.
@@ -22,15 +22,14 @@ Tunables:
   LAST_STACK_SCCACHE_ERROR_PERCENT     degraded write-error threshold, default 50
   LAST_STACK_SCCACHE_MIN_SAMPLE        compiles needed before degraded, default 50
 EOF
-  exit 2
 }
 
 format=text
 case "${1:-}" in
   "") ;;
   --json) format=json ;;
-  -h|--help) usage ;;
-  *) usage ;;
+  -h|--help) usage; exit 0 ;;
+  *) usage >&2; exit 2 ;;
 esac
 
 threshold="${LAST_STACK_SCCACHE_FULL_PERCENT:-99}"

@@ -20,7 +20,7 @@ proof_path_explicit=0
 json_out=0
 
 usage() {
-  cat >&2 <<'EOF'
+  cat <<'EOF'
 Usage:
   last-stack-artifact-host-track-proof [--fleet] [--json] [--registry <path>] [--proof <path>]
 

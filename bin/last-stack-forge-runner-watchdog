@@ -50,7 +50,7 @@ NO_REVIVE=0
 FORCE_PAGE=0
 
 usage() {
-  cat <<'EOF' >&2
+  cat <<'EOF'
 usage: last-stack-forge-runner-watchdog [--dry-run] [--no-revive] [--force-page]
 
 Checks that every CI runner lane is LIVE (not merely configured), revives a
@@ -71,7 +71,7 @@ while [ "$#" -gt 0 ]; do
     --no-revive) NO_REVIVE=1; shift ;;
     --force-page) FORCE_PAGE=1; shift ;;
     -h|--help) usage; exit 0 ;;
-    *) usage; exit 2 ;;
+    *) usage >&2; exit 2 ;;
   esac
 done
 
