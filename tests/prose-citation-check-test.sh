@@ -33,7 +33,15 @@ for a in "$@"; do [ "$a" = "--type" ] && typed=yes; done
 verdict="$(sed -n "s/^${slug}:${typed}=//p" "$BRAIN_STUB_VERDICTS" | head -1)"
 [ -n "$verdict" ] || verdict="$(sed -n "s/^${slug}=//p" "$BRAIN_STUB_VERDICTS" | head -1)"
 case "$verdict" in
-  ok)        echo "[${slug}]"; exit 0 ;;
+  ok)        echo "[${slug}]"
+             # The one-hop mode reads the BODY, which the `ok` line alone has
+             # never carried. A body line is `slug|text`; `\n` becomes a newline.
+             if [ -n "${BRAIN_STUB_BODIES:-}" ] && [ -f "$BRAIN_STUB_BODIES" ]; then
+               sed -n "s/^${slug}|//p" "$BRAIN_STUB_BODIES" | head -1 \
+                 | sed 's/\\n/\
+/g'
+             fi
+             exit 0 ;;
   missing)   echo "error: No papercut: ${slug}" >&2
              echo "hint:  No papercut with that slug. Drop --type ..." >&2; exit 1 ;;
   transient) echo "error: node did not respond within 30000ms" >&2; exit 1 ;;
@@ -56,6 +64,7 @@ make_root() {
 run_check() {
   local root="$1" verdicts="$2"; shift 2
   BRAIN_STUB_VERDICTS="$verdicts" \
+  BRAIN_STUB_BODIES="${BRAIN_STUB_BODIES:-}" \
   PROSE_CITATION_BRAIN_BIN="$TMP/stub/brain" \
     "$CHECK" --root "$root" --json "$@" > "$TMP/out.json" 2> "$TMP/out.err"
   echo $? > "$TMP/out.rc"
@@ -320,9 +329,93 @@ grep -q -- '--changed-since' "$ROOT/skills/close-out/SKILL.md" \
   || bad "case19 live caller: close-out must use the per-change mode, not a 29 s full-root sweep"
 note "case19 live caller ok"
 
+# ------------- case 20: a dangling [[target]] INSIDE a cited record is caught.
+# The prose extractor can only see a token that starts with one of the eleven
+# CITED_TYPES, so an untyped record name a SOP links onward to is invisible to it
+# forever. Measured 2026-10-04 one hop from this install's prose: 25 of 70
+# [[targets]] did not resolve, and `dogfood-registry`, `open-decisions` and
+# `new-repositories-default-to-lastgit` are among them -- none of which any
+# prefix table can reach.
+R="$TMP/r20"; make_root "$R" 'Read sop-the-one-that-exists-20260101 first.'
+printf 'sop-the-one-that-exists-20260101=ok\ndogfood-registry=missing\n' > "$TMP/v20"
+printf 'sop-the-one-that-exists-20260101|The index is [[dogfood-registry]].\n' > "$TMP/b20"
+BRAIN_STUB_BODIES="$TMP/b20" run_check "$R" "$TMP/v20" --one-hop
+[ "$(rc)" = 1 ] || bad "case20 one hop: rc $(rc) != 1; the hop finding did not reach the exit code"
+[ "$(slugs hop_dangling)" = "dogfood-registry" ] \
+  || bad "case20 one hop: hop_dangling '$(slugs hop_dangling)'"
+# What was EXAMINED, not only what was found: a hop over zero records reports
+# `hop_dangling 0` and reads exactly like a corpus whose links all resolve.
+[ "$(field hop_sources)" = 1 ] \
+  || bad "case20 one hop: hop_sources=$(field hop_sources) != 1; no record body was read"
+[ "$(field hop_targets)" = 1 ] \
+  || bad "case20 one hop: hop_targets=$(field hop_targets) != 1; the [[target]] was not extracted"
+note "case20 one hop rc=$(rc) sources=$(field hop_sources) targets=$(field hop_targets)"
+
+# ------------- case 21: the hop is OPT-IN, and its absence is reported.
+# It costs one brain get per cited record plus one per distinct target, which the
+# per-change pre-PR caller cannot afford on the full root. A default nobody
+# measured is the mistake this repo has already made in the other direction, so
+# the method line has to SAY the hop did not run.
+BRAIN_STUB_BODIES="$TMP/b20" run_check "$R" "$TMP/v20"
+[ "$(rc)" = 0 ] || bad "case21 opt-in: rc $(rc) != 0; the hop ran without --one-hop"
+[ "$(field hop_targets)" = None ] \
+  || bad "case21 opt-in: hop_targets=$(field hop_targets); a skipped hop must be None, not 0"
+python3 -c "import json,sys; m=json.load(open(sys.argv[1]))['method']; sys.exit(0 if 'NO hop' in m else 1)" "$TMP/out.json" \
+  || bad "case21 opt-in: the method line does not say the hop was skipped"
+note "case21 opt-in rc=$(rc) hop_targets=$(field hop_targets)"
+
+# ------------- case 22: the measured non-citations are REFUSED and reported.
+# Inside `[[ ]]` a token is a citation by construction -- except where the body
+# quotes a shell snippet. All three non-citations in the 2026-10-04 measurement
+# were shape, not semantics: `[[ -n "$repo" ]]`, `[[:space:]]` and an ellipsis
+# placeholder. A memory-file name is the fourth: records do link to those, they
+# live under ~/.claude, and 0 of the 164 slugs that resolved contained an
+# underscore. Refused, and REPORTED -- a silent drop is how a narrow gate reads
+# as a clean one.
+R="$TMP/r22"; make_root "$R" 'Read sop-with-shell-snippets-20260101 first.'
+printf 'sop-with-shell-snippets-20260101=ok\n' > "$TMP/v22"
+printf 'sop-with-shell-snippets-20260101|Guard with [[ -n "$repo" ]] and strip [[:space:]] then see [[north-star-\xe2\x80\xa6]] and [[feedback_always_file_papercuts]].\n' > "$TMP/b22"
+BRAIN_STUB_BODIES="$TMP/b22" run_check "$R" "$TMP/v22" --one-hop
+[ "$(rc)" = 0 ] || bad "case22 refused shapes: rc $(rc) != 0; a shell snippet was read as a citation"
+[ "$(field hop_targets)" = 0 ] \
+  || bad "case22 refused shapes: hop_targets=$(field hop_targets) != 0"
+[ "$(count hop_refused)" = 4 ] \
+  || bad "case22 refused shapes: hop_refused=$(count hop_refused) != 4; the refusals must be reported, not dropped"
+note "case22 refused shapes rc=$(rc) refused=$(count hop_refused)"
+
+# ------------- case 23: a busy node on a hop target is unknown, NOT dangling.
+# Case 3 one level down. The hop runs 70+ extra point reads against a node this
+# host regularly has under backpressure, so it is the likeliest place for a
+# transient to be misread as an absent record.
+R="$TMP/r23"; make_root "$R" 'Read sop-links-to-a-busy-one-20260101 first.'
+printf 'sop-links-to-a-busy-one-20260101=ok\nsome-busy-target=transient\n' > "$TMP/v23"
+printf 'sop-links-to-a-busy-one-20260101|See [[some-busy-target]].\n' > "$TMP/b23"
+BRAIN_STUB_BODIES="$TMP/b23" run_check "$R" "$TMP/v23" --one-hop
+[ "$(rc)" = 3 ] || bad "case23 hop transient: rc $(rc) != 3"
+[ "$(count hop_dangling)" = 0 ] \
+  || bad "case23 hop transient: reported $(count hop_dangling) hop_dangling; a busy node is not an absent record"
+[ "$(count hop_unknown)" = 1 ] \
+  || bad "case23 hop transient: hop_unknown=$(count hop_unknown) != 1"
+note "case23 hop transient rc=$(rc) hop_unknown=$(count hop_unknown)"
+
+# ------------- case 24: the HOP has a live caller too.
+# Case 19 for the one-hop mode. The mode is opt-in, so a caller that does not
+# pass the flag leaves it exactly where the full-root sweep already sits: shipped,
+# installed, correct and never run. The per-change source set is only the records
+# the change itself points a reader at, and it was measured at 0.11 s when the
+# change touches no prose and 13.0 s over an 11-file prose delta.
+# The flag must be on the INVOCATION line, not merely somewhere in the file. The
+# first version of this case grepped the whole document and stayed GREEN when the
+# flag was removed from the command, because the paragraph that EXPLAINS --one-hop
+# still mentions it. A wiring guard that matches its own rationale text certifies
+# nothing (last-stack-routine-shell-lint hit the same shape on 2026-10-03).
+grep -q -- 'last-stack-prose-citation-check".*--one-hop' "$ROOT/skills/close-out/SKILL.md" \
+  || bad "case24 live hop caller: close-out does not pass --one-hop on the line that runs the checker, so the hop never executes"
+note "case24 live hop caller ok"
+
 rm -rf -- "$TMP"
 if [ "$fail" -ne 0 ]; then
   echo "prose-citation-check guard: FAILED" >&2
   exit 1
 fi
-echo "ok prose-citation-check guard: 19 cases"
+echo "ok prose-citation-check guard: 24 cases"

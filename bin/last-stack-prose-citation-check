@@ -11,6 +11,13 @@ corpus moved out from under them and nothing noticed.
 
 papercut-shipped-prose-cites-brain-slugs-that-do-not-resolve-20260926
 
+With --one-hop it also point-gets every `[[target]]` inside the records that
+prose cites. That is one level down and a different extractor: inside `[[ ]]` a
+token is a citation by construction, so the hop needs no type vocabulary and
+catches the untyped record names (`open-decisions`, `dogfood-registry`) that the
+prefix table can never reach. Measured 2026-10-04 one hop from the installed
+prose: 23 of 67 targets did not resolve.
+
 The prefixes checked are the brain's whole record-type vocabulary (CITED_TYPES).
 That matters for reading the output: a `dangling 0` is only as broad as this
 table, and while the table held four of the eleven types, `dangling 0` read as
@@ -117,6 +124,29 @@ TOKEN_RE = re.compile(
     + "|".join(sorted(CITED_TYPES, key=len, reverse=True))
     + r")-[a-z0-9][a-z0-9-]*"
 )
+
+# A `[[target]]` inside a brain record body is a citation BY CONSTRUCTION, so the
+# one-hop extractor needs no type vocabulary and no path-segment lookbehind. That
+# is why this surface is worth checking at all: the prose extractor can only find
+# a token that starts with one of the eleven CITED_TYPES, so an untyped record
+# name (`open-decisions`, `dogfood-registry`, `north-star-...`) is invisible to it
+# forever, and those are exactly the links a SOP uses to point a reader onward.
+#
+# Measured 2026-10-04 over the 71 records that this install's prose cites, one hop:
+#
+#     distinct [[targets]]     70
+#     resolve                  44
+#     DO NOT RESOLVE           25   (36%)
+#
+# The three non-citations in that 70 were all shape, not semantics: `-n "$repo"`
+# and `:space:` come from `[[ -n "$repo" ]]` and `[[:space:]]` in shell snippets
+# quoted inside record bodies, and `north-star-...` is an ellipsis placeholder in
+# prose. WIKI_SLUG_RE refuses all three and needs no allowlist. It also refuses a
+# memory-file reference such as `[[feedback_always_file_papercuts]]`: records do
+# link to those, they are files under ~/.claude and not brain records, and 0 of
+# the 164 slugs that resolved in that measurement contained an underscore.
+WIKILINK_RE = re.compile(r"\[\[([^\[\]|]{1,200}?)(?:\|[^\[\]]*)?\]\]")
+WIKI_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 # Prose lives in these places and nowhere else. Named, not searched: a walk over
 # an install or state root resolves into unpruned artifact version trees.
@@ -343,6 +373,58 @@ def resolve(token: str) -> tuple[str, str]:
     return "missing", detail
 
 
+def fetch_record(token: str) -> tuple[str, str]:
+    """('ok'|'missing'|'unknown', record text). The body, which get_once drops."""
+    proc = subprocess.run(
+        [brain_bin(), "get", token], text=True, capture_output=True, check=False
+    )
+    if proc.returncode == 0:
+        return "ok", proc.stdout
+    last = ((proc.stderr or "") + " " + (proc.stdout or "")).strip()
+    if any(signal in last.lower() for signal in TRANSIENT_SIGNALS):
+        return "unknown", ""
+    if MISSING_RE.search(last):
+        return "missing", ""
+    return "unknown", ""
+
+
+def collect_wikilinks(sources: list[str]) -> tuple[dict[str, list[str]], list[dict]]:
+    """[[target]] -> the record slugs that link to it, plus the refused shapes.
+
+    The refusals are RETURNED, not dropped. A hop that silently narrows reports
+    `hop_dangling 0` and reads like a clean corpus, which is the same failure
+    --changed-since has an exit-2 branch for.
+    """
+    links: dict[str, list[str]] = {}
+    refused: list[dict] = []
+    seen_refused: set[tuple[str, str]] = set()
+    for slug in sources:
+        state, text = fetch_record(slug)
+        if state != "ok":
+            continue
+        for match in WIKILINK_RE.finditer(text):
+            target = match.group(1).strip()
+            if not WIKI_SLUG_RE.match(target):
+                key = (target, slug)
+                if key not in seen_refused:
+                    seen_refused.add(key)
+                    refused.append(
+                        {
+                            "target": target[:80],
+                            "linked_from": slug,
+                            "reason": "not a brain slug shape (shell snippet, path, "
+                            "memory-file name or prose placeholder)",
+                        }
+                    )
+                continue
+            if target == slug:
+                continue
+            links.setdefault(target, [])
+            if slug not in links[target]:
+                links[target].append(slug)
+    return links, refused
+
+
 def main(argv: Iterable[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="last-stack-prose-citation-check",
@@ -366,6 +448,17 @@ def main(argv: Iterable[str]) -> int:
             "check only the prose files that differ from REF (merge-base vs the "
             "working tree, plus untracked files). This is the per-change mode a "
             "pre-PR caller uses; it CANNOT see a citation in prose you did not touch."
+        ),
+    )
+    parser.add_argument(
+        "--one-hop",
+        action="store_true",
+        help=(
+            "also point-get every [[target]] inside the records this prose cites. "
+            "Opt-in: it costs one brain get per cited record plus one per distinct "
+            "target, which the per-change pre-PR caller cannot afford on the full "
+            "root. It composes with --changed-since, and there the source set is "
+            "only the records the change itself points a reader at."
         ),
     )
     parser.add_argument("--json", action="store_true", help="machine-readable report on stdout")
@@ -444,6 +537,21 @@ def main(argv: Iterable[str]) -> int:
         elif state == "unknown":
             unknown.append(row)
 
+    hop_sources = [row["slug"] for row in checked if row["state"] == "ok"]
+    hop_links: dict[str, list[str]] = {}
+    hop_refused: list[dict] = []
+    hop_dangling: list[dict] = []
+    hop_unknown: list[dict] = []
+    if args.one_hop:
+        hop_links, hop_refused = collect_wikilinks(hop_sources)
+        for target in sorted(hop_links):
+            state, detail = get_once([brain_bin(), "get", target])
+            row = {"slug": target, "linked_from": hop_links[target], "detail": detail}
+            if state == "missing":
+                hop_dangling.append(row)
+            elif state == "unknown":
+                hop_unknown.append(row)
+
     report = {
         "root": str(root),
         "scope": scope,
@@ -456,11 +564,27 @@ def main(argv: Iterable[str]) -> int:
         "dangling": dangling,
         "unknown": unknown,
         "skipped_rows": skipped,
+        "one_hop": args.one_hop,
+        "hop_sources": len(hop_sources) if args.one_hop else None,
+        "hop_targets": len(hop_links) if args.one_hop else None,
+        "hop_resolved": (
+            len(hop_links) - len(hop_dangling) - len(hop_unknown) if args.one_hop else None
+        ),
+        "hop_dangling": hop_dangling,
+        "hop_unknown": hop_unknown,
+        "hop_refused": hop_refused,
         "method": (
             "point-get per cited slug via `brain get <slug> --type <type>`; "
             "a transient node error is reported as unknown after 3 attempts, never as dangling; "
             "tokens naming a file under bin/tests/lib/hooks and tokens in the ignore file are skipped; "
             f"scanned {scope}"
+            + (
+                "; one hop: every [[target]] inside the cited records, point-got "
+                "untyped, with non-slug shapes reported as hop_refused rather than dropped"
+                if args.one_hop
+                else "; NO hop: a [[target]] inside a cited record is NOT checked "
+                "(pass --one-hop)"
+            )
         ),
     }
 
@@ -476,12 +600,26 @@ def main(argv: Iterable[str]) -> int:
             print(f"DANGLING {row['slug']}  cited_in={','.join(row['cited_in'])}")
         for row in unknown:
             print(f"UNKNOWN  {row['slug']}  {row['detail']}")
+        if args.one_hop:
+            print(
+                f"one hop: records {report['hop_sources']}  targets {report['hop_targets']}  "
+                f"resolved {report['hop_resolved']}  dangling {len(hop_dangling)}  "
+                f"unknown {len(hop_unknown)}  refused {len(hop_refused)}"
+            )
+            for row in hop_dangling:
+                print(
+                    f"HOP-DANGLING {row['slug']}  linked_from={','.join(row['linked_from'])}"
+                )
+            for row in hop_unknown:
+                print(f"HOP-UNKNOWN  {row['slug']}  {row['detail']}")
         print(f"scope: {scope}")
         print(f"method: {report['method']}")
 
-    if dangling:
+    # A detector that renders a finding and exits 0 is the defect this repo keeps
+    # filing against other people's tools, so the hop counts toward the status.
+    if dangling or hop_dangling:
         return 1
-    if unknown:
+    if unknown or hop_unknown:
         return 3
     return 0
 
