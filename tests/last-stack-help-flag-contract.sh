@@ -232,13 +232,26 @@ fi
 # static fact: nothing about it depends on ordering or reachability, which is
 # what sank the static reachability rule the top of this file rejects.
 #
-# Measured on main fc1eb9d9a988 before the fix. The predicate selected 19
-# helpers, and all 19 were then EXECUTED: every one printed 0 bytes on stdout
-# and its whole usage on stderr. Zero false positives, so there is no opt-out
-# list — the same bar the two rules above meet. One of the 19,
-# last-stack-sccache-health, also exited 2, which is this file's PRIMARY class
+# TWO shapes, because the first draft of this rule promised more than it
+# matched. It read "a help arm must not route usage to stderr" and implemented
+# only the DELEGATING form — an arm calling a usage function. An arm that echoes
+# to stderr itself was outside the pattern and inside the sentence, which is the
+# asymmetry that makes a passing gate worse than none. So the rule reads the
+# arm's OWN body, from the arm to its terminating `;;`, as well as the body of
+# the function it calls.
+#
+# Measured on main fc1eb9d9a988 before the fix: 20 helpers, 19 delegating and 1
+# inline. All 20 were then EXECUTED on both flags — every one printed 0 bytes on
+# stdout and its whole usage on stderr. Zero false positives, so there is no
+# opt-out list, the same bar the two rules above meet.
+#
+# TWO of the 20 also exited 2, which is this file's PRIMARY class
 # (papercut-last-stack-kanban-file-pr-help-exits-2, five recurrences) living
-# unseen in an unenrolled helper.
+# unseen in unenrolled helpers: last-stack-sccache-health, whose `usage()`
+# carried its own `exit 2`, and last-stack-routine-observer-gate, whose arm was
+# `""|-h|--help)` — one arm serving the no-argument error and the help flags at
+# once, so help could only ever exit the way an error does. That one is the
+# inline shape, and it is why the widening was not cosmetic.
 #
 # The fix the rule asks for is a stream, not a bare `cat`: 18 of the 19 call
 # the same `usage` from their argument-error path too, so dropping `>&2` from
@@ -261,6 +274,8 @@ for f in "$BIN_DIR"/* "$ROOT/setup"; do
       { line[NR] = $0 }
       END {
         fn = ""
+        armline = 0
+        armtail = ""
         for (i = 1; i <= NR; i++) {
           if (line[i] ~ /(-h\|--help|--help\|-h)[[:space:]]*\)/) {
             rest = line[i]
@@ -269,8 +284,19 @@ for f in "$BIN_DIR"/* "$ROOT/setup"; do
             # the arm may wrap, putting the call on the next line
             while (rest == "" && j < NR) { j++; rest = line[j]; sub(/^[[:space:]]+/, "", rest) }
             if (match(rest, /^[A-Za-z_][A-Za-z0-9_]*/)) fn = substr(rest, 1, RLENGTH)
+            armline = i
+            armtail = line[i]
+            sub(/^.*(-h\|--help|--help\|-h)[[:space:]]*\)/, "", armtail)
             break
           }
+        }
+        if (armline == 0) exit 1
+        # The arm may write to stderr itself instead of delegating. Its own
+        # body runs from the arm to the terminating `;;`.
+        for (i = armline; i <= NR; i++) {
+          seg = (i == armline) ? armtail : line[i]
+          if (seg ~ />&2/) exit 0
+          if (seg ~ /;;/) break
         }
         if (fn == "") exit 1
         start = 0
