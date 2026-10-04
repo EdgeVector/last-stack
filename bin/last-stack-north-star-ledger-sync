@@ -288,6 +288,20 @@ def hydrate_milestones_by_show(
     return recovered
 
 
+PRIMARY_PROOF_RE = re.compile(
+    r"^PRIMARY_PROOF:[ \t]*\d{4}-\d{2}-\d{2}[ \t]+\S", re.MULTILINE
+)
+
+
+def has_primary_proof(body: str) -> bool:
+    """True only when the North Star body carries a dated PRIMARY_PROOF line.
+
+    Tom, 2026-10-04: a North Star is done only when the outcome is proven on
+    the primary. Card state, merged PRs, and copy-home runs do not count.
+    """
+    return bool(body and PRIMARY_PROOF_RE.search(body))
+
+
 def parse_terminal_card(body: str) -> str:
     if not body:
         return ""
@@ -708,8 +722,11 @@ def plan_ns(
                     if str(m.get("state") or "").lower() in NONTERMINAL_MS
                 ]
                 if not open_after and not nonterm:
-                    plan.mark_ns_done = True
-                    plan.notes.append("eligible_mark_ns_done")
+                    if has_primary_proof(body):
+                        plan.mark_ns_done = True
+                        plan.notes.append("eligible_mark_ns_done")
+                    else:
+                        plan.notes.append("blocked_no_primary_proof")
                 else:
                     if open_after:
                         plan.notes.append(
@@ -1243,6 +1260,35 @@ B
     assert not any(
         n.startswith("closed_ns_requests_superseded:") for n in quiet_plan.notes
     ), quiet_plan.notes
+
+    # Done needs a dated PRIMARY_PROOF line (Tom, 2026-10-04). A drained
+    # board with a done terminal card is not enough.
+    ship_body = (
+        "**Mode:** ship\n\n## Terminal verification\n- **Card:** `term-card`\n"
+    )
+    saved_show = globals()["kanban_show_card"]
+    globals()["kanban_show_card"] = lambda _s: {"column": "done", "body": ""}
+    try:
+        no_proof = plan_ns("ns-np", "title: ns\nstatus: in_progress\n---\n" + ship_body, {}, {})
+        assert not no_proof.mark_ns_done, no_proof.notes
+        assert "blocked_no_primary_proof" in no_proof.notes, no_proof.notes
+        wrong = plan_ns(
+            "ns-wrong",
+            "title: ns\nstatus: in_progress\n---\n" + ship_body
+            + "PRIMARY_PROOF: merged PR 12\n",
+            {}, {},
+        )
+        assert not wrong.mark_ns_done, wrong.notes
+        proven = plan_ns(
+            "ns-ok",
+            "title: ns\nstatus: in_progress\n---\n" + ship_body
+            + "PRIMARY_PROOF: 2026-10-04 lastdb ops on primary, p99 12ms\n",
+            {}, {},
+        )
+        assert proven.mark_ns_done, proven.notes
+        assert "eligible_mark_ns_done" in proven.notes, proven.notes
+    finally:
+        globals()["kanban_show_card"] = saved_show
 
     print("self-test ok")
     return True

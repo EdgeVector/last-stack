@@ -129,6 +129,9 @@ tags: [north-star, <product tags>]
 - **Card:** `<terminal-card-slug>`
 - **Shape:** `pr` runnable harness | `validation` DONE-WHEN
 - **Done means:** <one line>
+- **Primary proof:** a dated line in this record, `PRIMARY_PROOF: YYYY-MM-DD <command and result from the primary>`.
+  A North Star is done only after that line exists (Tom, 2026-10-04). A copy-home proof,
+  an ephemeral proof, CI, or a merged PR does not count.
 (See [[sop-north-star-terminal-verification]]. If no card exists yet, leave
 `Card: TBD` and let program-driver file one.)
 
