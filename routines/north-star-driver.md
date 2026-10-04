@@ -34,7 +34,8 @@ if [ -x "$last_stack/bin/last-stack-generator-preflight" ]; then
 fi
 # Mechanical ledger sync first: flip MILESTONE_REQUEST statuses that already
 # match complete/abandoned milestones, ensure named terminal proof shells exist,
-# and close ship NS when terminal proof is done. Never invents new outcomes.
+# and close ship NS only when terminal proof is done AND the NS body carries a
+# dated PRIMARY_PROOF line (Tom, 2026-10-04). Never invents new outcomes.
 if [ -x "$last_stack/bin/last-stack-north-star-ledger-sync" ]; then
   "$last_stack/bin/last-stack-north-star-ledger-sync" --apply --max-ns 12 \
     || echo "WARN=north-star-ledger-sync-failed (continuing)"

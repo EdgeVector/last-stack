@@ -65,6 +65,8 @@ def ns_body(
         f"- **Card:** `{proof_card}`\n"
         f"- **Shape:** pr harness\n"
         f"- **Done means:** {end_state.strip()}\n"
+        f"- **Primary proof:** a dated `PRIMARY_PROOF:` line from the primary"
+        f" (Tom, 2026-10-04). A copy proof or a merged PR does not count.\n"
         f"\n"
         f"{request}"
     )
