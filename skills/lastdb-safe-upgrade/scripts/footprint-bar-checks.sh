@@ -12,6 +12,16 @@
 # freed warm bytes. The 12 GiB p99 and the 1.3 multiplier stay backstops.
 # They are not the operating target.
 #
+# A window where no step freed warm bytes is RED, with one exception: the
+# node itself reported governor_state=under (footprint at or under the soft
+# evict line, no host pressure, no failed purge) and published the
+# warm_bytes_freed counter on EVERY sample. Then the governor had no cause to
+# evict, and the 0.25 ratio has nothing to score. Slack, p99 and the
+# multiplier are still measured. A candidate that keeps its footprint small
+# (the logical resident set) never evicts in 600 seconds, so without this
+# exception the bar could only pass a binary that is under memory pressure.
+# An absent governor_state or counter on any sample keeps the RED.
+#
 # bash 3.2 compatible (macOS /bin/bash). No nested functions.
 
 FOOTPRINT_BAR_UPGRADE_GATE_SECS=600
@@ -136,7 +146,7 @@ footprint_bar_eval() {
   local file="$1" canon="" missing="" expected="" kind="" has_net=""
   local proof_kind="" duration="" purge="" phys="" net="" p99="" multiplier="" collect=""
   local nsteps=0 i=0 freed="" before="" after="" drop=0 freed_steps=0 slack=0
-  local ok_flag="" h_expected=""
+  local ok_flag="" h_expected="" no_pressure="" gov_samples="" drop_receipt="drop_ratio_ok=1"
   if [ -z "$file" ] || [ ! -f "$file" ]; then
     printf 'footprint bar RED: status sample is absent (absent fields fail the bar; not skipped)\n'
     return 1
@@ -255,6 +265,8 @@ footprint_bar_eval() {
         p99_phys_footprint: ($p99 | intval),
         multiplier: (if $mult == null then null elif ($mult | type) == "number" then $mult elif ($mult | type) == "string" and ($mult | test("^[0-9]+([.][0-9]+)?$")) then ($mult | tonumber) else "bad" end),
         request_end_collect: $collect,
+        governor_no_pressure: (if $root.governor_no_pressure == true then true else false end),
+        governor_samples: (($root.governor_samples // null) | intval),
         steps: (($steps + $extra) | map(step))
       }
   ' "$file" 2>/dev/null)" || {
@@ -355,8 +367,16 @@ footprint_bar_eval() {
     i=$((i + 1))
   done
   if [ "$freed_steps" -lt 1 ]; then
-    printf 'footprint bar RED: no step freed warm bytes, so the 0.25 footprint drop is unproven (not skipped)\n'
-    return 1
+    no_pressure="$(footprint_bar_field "$canon" '.governor_no_pressure | tostring')"
+    gov_samples="$(footprint_bar_field "$canon" 'if .governor_samples == null then "" else (.governor_samples | tostring) end')"
+    case "$gov_samples" in
+      ''|*[!0-9]*) gov_samples=0 ;;
+    esac
+    if [ "$no_pressure" != "true" ] || [ "$gov_samples" -lt 2 ]; then
+      printf 'footprint bar RED: no step freed warm bytes, so the 0.25 footprint drop is unproven (not skipped; governor_state was not under on every sample)\n'
+      return 1
+    fi
+    drop_receipt="drop_ratio=not-applicable governor_under_samples=$gov_samples"
   fi
   # Backstop, not the operating target. physical_footprint_limit: p99 >= 12 GiB.
   # A failed `[` (a digit string bash cannot compare) must not fall through.
@@ -370,8 +390,8 @@ footprint_bar_eval() {
     printf 'footprint bar RED: implied multiplier %s is at or above the 1.3 backstop\n' "$multiplier"
     return 1
   fi
-  printf 'footprint bar GREEN: proof_kind=upgrade-gate duration_secs=%s purge_delay_ms=%s slack_bytes=%s drop_ratio_ok=1 p99_backstop=12GiB multiplier_backstop=1.3\n' \
-    "$duration" "$purge" "$slack"
+  printf 'footprint bar GREEN: proof_kind=upgrade-gate duration_secs=%s purge_delay_ms=%s slack_bytes=%s %s p99_backstop=12GiB multiplier_backstop=1.3\n' \
+    "$duration" "$purge" "$slack" "$drop_receipt"
   return 0
 }
 
@@ -439,6 +459,7 @@ footprint_bar_from_samples() {
         phys: ((gauge("phys_footprint_bytes") // gauge("phys_footprint") // gauge("measured_phys_footprint_bytes")) | num),
         net: ((gauge("footprint_net_bytes") // gauge("footprint_net")) | num),
         freed: (gauge("warm_bytes_freed") | num),
+        gov: (gauge("governor_state") | if type == "string" then . else null end),
         mult: ((gauge("implied_footprint_multiplier") // gauge("multiplier")) | mult)
       };
     map(row) as $rows
@@ -462,6 +483,8 @@ footprint_bar_from_samples() {
     | (if ($fps | length) == 0 then null
        else $fps[((($fps | length) * 0.99) | ceil) - 1] end) as $p99
     | (if all($rows[]; .net != null) then true else null end) as $collect
+    | (($rows | length) >= 2
+       and all($rows[]; .gov == "under" and .freed != null)) as $no_pressure
     | (if $reset then "counter-reset"
        elif $duration >= $soak then "long-memory-candidate"
        elif $duration >= $gate then "upgrade-gate"
@@ -475,6 +498,8 @@ footprint_bar_from_samples() {
         footprint_net: (if $collect == true then $worst.net else null end),
         p99_phys_footprint: $p99,
         multiplier: $max_mult,
+        governor_no_pressure: $no_pressure,
+        governor_samples: ($rows | length),
         steps: $steps
       }
   ' "$all" >"$out"
