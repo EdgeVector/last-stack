@@ -98,7 +98,7 @@ For each entry in `orphan_north_stars_live` (then, if time remains, done-only):
    `brain get <slug> --type project` succeeds → skip.
 2. **Gather evidence (cheap first):**
    - `kanban show <card>` for up to ~8 live cards (titles + GOAL/END STATE)
-   - (Do not read `active-programs`: `active-programs` is RETIRED (Tom 2026-07-23, `preference-active-programs-retired`); it has no record.)
+   - (Do not read `active-programs`: `active-programs` is RETIRED (Tom 2026-07-23) and has no record.)
    - `brain ask "<slug> <product keywords from card titles>"` (limit 5)
    - any design/concept the ask returns (e.g. Discovery architecture design)
 3. **Write the project** with stdin:
@@ -222,5 +222,5 @@ When the refresh succeeds, re-run `--stdout hygiene` and confirm
 ## Related
 
 - Skill/tool: `last-stack-north-star-dashboard` · routine `north-star-rollup`
-- Driving index: `kanban milestone portfolio` (`active-programs` is retired: `preference-active-programs-retired`)
+- Driving index: `kanban milestone portfolio` (`active-programs` is retired, Tom 2026-07-23)
 - Orphan *completion* ledger (different problem): `fkanban-orphan-completion-checkpoints`

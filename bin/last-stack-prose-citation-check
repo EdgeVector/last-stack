@@ -171,7 +171,24 @@ WIKI_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 #
 # A 50% dangling rate on the unscanned surface, next to 0% on the scanned one,
 # is what an unchecked set looks like after the checked set gets attention.
-PROSE_ROOT_FILES = ("CLAUDE.md", "AGENTS.md")
+# `setup` is prose too, and it is the only GENERATOR in the set: it writes the
+# managed brain-kanban and ASD-STE100 blocks into six harness root files
+# (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, ~/.factory/AGENTS.md,
+# ~/.config/opencode/AGENTS.md, ~/.grok/AGENTS.md, ~/.gemini/GEMINI.md), and
+# registers the PreToolUse hooks with their deny text. Its citations therefore
+# reach every agent on the host through files no repository contains, so the
+# generator is the only place a gate can read them. It was unscanned until
+# 2026-10-04 and BOTH of its brain citations were dead.
+#
+# False positives, measured on this file before the widening (item: a noisy
+# citation checker gets ignored, and `setup` is 900 lines of shell full of
+# kebab-case command names and paths):
+#
+#     distinct tokens extracted   2
+#     false positives             0
+#     dangling                    2   (100%, against `dangling 0` on the
+#                                      *.md corpus the same day)
+PROSE_ROOT_FILES = ("CLAUDE.md", "AGENTS.md", "setup")
 PROSE_GLOBS = (
     "routines/*.md",
     "instructions/*.md",

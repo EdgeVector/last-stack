@@ -24,7 +24,7 @@ description: |
   lastdb", "brew upgrade lastdb", "safe upgrade", "update my brain/database
   binary", "can I upgrade to 0.22.x", "don't brick my data", "new bottle/release",
   or whenever an agent would otherwise brew-upgrade or point a candidate lastdbd
-  at ~/.lastdb. Standing rule: preference-lastdb-upgrade-ephemeral-probe-first.
+  at ~/.lastdb. Standing rule: probe an ephemeral copy first, never live ~/.lastdb.
   Distinct from lastdb-smoke-test (probe-only, no upgrade). Design:
   fold/docs/designs/lastdb-minimal-downtime-cutover.md
 ---
@@ -195,8 +195,8 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
    overrides: `LASTDB_ALLOW_DEBUG_CANDIDATE=1`,
    `LASTDB_ALLOW_DIRTY_CANDIDATE=1`, `LASTDB_ALLOW_LARGE_CANDIDATE=1`,
    `LASTDB_CANDIDATE_SIZE_RATIO` (default 1.5). Brain:
-   `incident-20260801-debug-worktree-lastdbd-primary-cutover-latency`,
-   `preference-lastdb-promote-origin-main-not-feature-branch`.
+   `incident-20260801-debug-worktree-lastdbd-primary-cutover-latency`. Promote
+   from `origin/main`, never from a feature branch.
 9. **CAS mutation bar (LastGit compound):** after data-plane GREEN, run
    `scripts/cas-mutation-probe.sh --lastdbd <candidate>` against an
    **ephemeral throwaway node** of the candidate only (never live primary).
@@ -295,8 +295,8 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
     The gate rejects missing, duplicate, or unknown fields. It also
     rejects a legacy receipt, a stale time, a future time, another candidate,
     a production URL, or an overlapping home. Skip
-    (`LASTDB_PROBE_DEV_STAMP_SKIP=1`) needs Tom's clearance. Brain:
-    `preference-lastdb-upgrade-ephemeral-probe-first`.
+    (`LASTDB_PROBE_DEV_STAMP_SKIP=1`) needs Tom's clearance. The standing rule is
+    to probe an ephemeral copy first, never live `~/.lastdb`.
 
     On RED, the helper writes an owner-only evidence bundle under
     `~/.local/state/last-stack/lastdb-safe-upgrade/dev-photograph-failures/`.

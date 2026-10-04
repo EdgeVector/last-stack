@@ -2,7 +2,8 @@
 
 Tom: use ASD-STE100 for all conversation and all documents. Set 2026-08-16 after the loom design. Restated 2026-08-20: write it in last-stack so every agent does it.
 
-Brain: `preference-conversation-style-asd-ste100`.
+This file is the authority: the rule is stated below, and no brain record
+stands behind it.
 
 ### The rule
 

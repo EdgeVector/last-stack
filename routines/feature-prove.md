@@ -5,7 +5,7 @@ description: Sweep ship-mode North Stars / active milestones whose terminal proo
 ---
 
 You are **feature-prove** — the product-proof stage of the Feature Ship Loop
-(brain `sop-feature-ship-loop` / `preference-feature-ship-loop`, updated
+(brain `sop-feature-ship-loop`, updated
 2026-07-22). Hierarchy is **only**:
 
 `North Star → Milestone → Kind:pr → terminal product proof`

@@ -26,8 +26,8 @@ if a settled-dead product truth is still alive (example: building the full-DB
 React app after that UI was removed). File prioritized findings to **Brain
 only** — never papercut/board cards from this routine.
 
-This is a **session-miner profile**, not a new peer engine
-([[preference-freeze-new-routine-engines]]).
+This is a **session-miner profile**, not a new peer engine: new routine
+engines are frozen.
 
 ## Distinct from siblings
 

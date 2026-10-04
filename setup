@@ -230,7 +230,8 @@ install_claude_hooks() {
   # deny ended the whole turn, freezing unattended runs mid-task; Tom removed
   # it on 2026-07-28 and a later setup run silently re-armed it from this
   # function on 2026-07-29. De-register so already-armed machines heal on the
-  # next run. History: brain papercut-read-before-edit-hook-denied-write-then-edit.
+  # next run. The brain record for that history no longer resolves; the
+  # paragraph above is the whole account.
   remove_pretool_hook_by_script "$settings" "read-before-edit.sh"
 
   upsert_pretool_hook "$settings" "Bash" \
@@ -248,7 +249,7 @@ install_claude_hooks() {
   # A depth-free find/fd/tree or a Python rglob/os.walk over ~/code/edgevector
   # or ~/.fkanban crosses ~20 checkouts and their cargo target/ trees. It runs
   # for minutes and the timeout reads as a product failure
-  # (papercut-agent-zero-llm-cli-bash-python-heredoc-rglob). The deny hands
+  # (a zero-LLM routine timed out on exactly this walk). The deny hands
   # back last-stack-locate-file / -maxdepth. Escape hatch: '# walk-ok: <reason>'.
   upsert_pretool_hook "$settings" "Bash" \
     "$hooks_dir/no-unbounded-workspace-walk.sh  # deny a depth-free walk of a workspace root (find/fd/tree, rglob/os.walk); it runs for minutes and times out" \

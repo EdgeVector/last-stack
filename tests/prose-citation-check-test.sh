@@ -413,9 +413,31 @@ grep -q -- 'last-stack-prose-citation-check".*--one-hop' "$ROOT/skills/close-out
   || bad "case24 live hop caller: close-out does not pass --one-hop on the line that runs the checker, so the hop never executes"
 note "case24 live hop caller ok"
 
+# ------------- case 25: the GENERATOR is in the scanned set.
+# `setup` writes the managed brain-kanban and ASD-STE100 blocks into six harness
+# root files and registers the PreToolUse hooks with their deny text, so a dead
+# slug in `setup` reaches every agent on the host through a file no repository
+# contains. It was unscanned until 2026-10-04 and both of its own citations were
+# dead. Asserted BEHAVIOURALLY, not by grepping the table: a citation checker
+# whose scope is an enumeration is scoped to what the enumeration names, and the
+# comment that explains the entry matches whether or not the entry is there.
+R="$TMP/r25"; make_root "$R" 'Nothing cited here.'
+printf '%s\n' '#!/usr/bin/env bash' \
+  '# History: brain papercut-generator-citation-20260101 explains this.' \
+  > "$R/setup"
+printf 'papercut-generator-citation-20260101=missing\n' > "$TMP/v25"
+run_check "$R" "$TMP/v25"
+[ "$(rc)" = 1 ] \
+  || bad "case25 generator scanned: rc $(rc) != 1; a dead slug in \`setup\` was not reported, so the generator is outside the scanned set"
+[ "$(slugs dangling)" = "papercut-generator-citation-20260101" ] \
+  || bad "case25 generator scanned: slugs '$(slugs dangling)'"
+python3 -c "import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if any('setup' in r['cited_in'] for r in d['dangling']) else 1)" "$TMP/out.json" \
+  || bad "case25 generator scanned: the report does not name \`setup\` in cited_in, so a reader cannot find the line"
+note "case25 generator scanned rc=$(rc) slug=$(slugs dangling)"
+
 rm -rf -- "$TMP"
 if [ "$fail" -ne 0 ]; then
   echo "prose-citation-check guard: FAILED" >&2
   exit 1
 fi
-echo "ok prose-citation-check guard: 24 cases"
+echo "ok prose-citation-check guard: 25 cases"

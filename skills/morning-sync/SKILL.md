@@ -78,7 +78,7 @@ Two modes. Pick by how you were invoked:
 - **North Stars + milestones** — the driving index. `kanban milestone portfolio
   --json` lists nonterminal milestones and their `north_star`; point-read each
   North Star with `brain get <slug> --type project`. (`active-programs` is
-  RETIRED — Tom 2026-07-23, `preference-active-programs-retired`; do not read or
+  RETIRED — Tom 2026-07-23, and has no record; do not read or
   write it.)
 - **`decision` records** (brain type `decision`, one record per decision) —
   every call Tom makes, dated, with what it unblocked. The durable memory. WORK

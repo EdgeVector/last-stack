@@ -92,7 +92,7 @@ those as first-class OPEN papercuts: cluster by repo/failure class, promote
 **pattern-level** cards when recurrence or severity warrants — not automatic
 1:1 board P0s that monopolize pickup. Prefer durable fix + compound prevention
 over "poll deploy until green" cards. See
-[[preference-pipeline-health-brain-papercuts]].
+[[preference-always-file-papercuts-in-brain]].
 
 Read your project's agent-orientation doc and durable memory index first, and
 honor their standing rules. Fetch the shared routine contract and this

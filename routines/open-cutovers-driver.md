@@ -26,8 +26,7 @@ brain get open-cutovers
 - **Source of truth:** live lines only (`^CUTOVER [a-z0-9-]+ \|` + `status=open`).
 - **Cap 5** live lines advanced per wake; **cap 1** new Kanban card per wake.
 - **Close only** on primary END STATE or explicit DEFER residual — never PR merge alone.
-- Long primary jobs: Situation fence
-  ([[preference-primary-long-job-situation-fence]]).
+- Long primary jobs: open a Situation fence before starting one.
 - No empty Kind:pr shells. No primary kill/restart. No safe-upgrade through active fence.
 - HashRange cutovers: migrated **marker**, never non-empty partition gate.
 - Prefer updating existing cards named on the line over filing new ones.

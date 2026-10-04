@@ -119,7 +119,6 @@ LastDB with" and an unexplained "routine", and needed a follow-up fix PR).
 drawings only (thin uniform strokes, hatch for "solid/stored", joint marks,
 dimension lines, plain mono labels). **No colour, no accent, no gruvbox palette.**
 Don't reinvent the style here; the `/diagram` skill is the source of truth.
-Brain: `preference-diagrams-black-and-white-technical`.
 `src/pages/BlogEvolvingALiveSchema.jsx` is a structural reference for wiring only
 — when drawing **new** figures, use pure B&W ink (`#000` / gray hatch), not that
 post's older coloured palette.

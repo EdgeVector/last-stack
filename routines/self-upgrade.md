@@ -13,7 +13,7 @@ do not die at the freshness gate.
 an automatic upgrade path, fleets stay stuck for days filing `stale-routine`
 heartbeats and doing no real work. This routine (and the
 `last-stack-self-upgrade` helper it calls) closes that loop for clean installs
-and, per `[[preference-agents-work-in-worktrees-install-checkout-disposable]]`,
+and, because agents work in worktrees and the install checkout is disposable,
 may repair tracked dirt in the disposable install checkout with a backup branch
 plus reset.
 

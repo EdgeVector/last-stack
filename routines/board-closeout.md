@@ -28,8 +28,9 @@ This closeout is the always-on, zero-credit answer:
 | `doing`, age ≥ 60m, no PR, no live worker, **WIP commits** (illegal handoff) | `move todo` (flag `wip-no-pr`; worktree kept) |
 | open PR / live worker / younger than grace | skip |
 
-Durable: brain `preference-kanban-board-closeout-always-on` and
-`preference-kanban-doing-soft-1h-reclaim`.
+Durable: board closeout is standing-authorized — run it without asking — and
+the 60-minute reclaim above is a move to `todo`, never a kill and never
+`done`.
 
 `Requires-Deploy: deploy-pipeline` is a machine gate, not prose. The closeout
 helper reads `last-stack-pipeline-deploy-scan --json`; pending, missing, or red
