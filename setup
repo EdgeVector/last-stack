@@ -321,6 +321,55 @@ install_claude_hooks() {
     "$hooks_dir/no-list-as-census.sh  # same rule on the MCP spelling of the banned verb" \
     5
 
+  # ---------------------------------------------------------------------
+  # Hooks brought in from the unmanaged ~/.claude/hooks root, 2026-10-04.
+  # They ran for months as live agent surface that no repository contained,
+  # so no gate, no shell lint and no prose-citation checker could read them.
+  # Brain: papercut-the-claude-prose-root-is-in-no-repo-so-no-gate-can-read-its-12-dangling-citations-20261004
+  # The three non-PreToolUse ones are the first production callers of
+  # upsert_hook's matcher-less form; before this the generic helper shipped
+  # with the guard test as its only exercise.
+  # ---------------------------------------------------------------------
+
+  # Standing rule: search brain BEFORE escalating to a human. A Bash marker
+  # `needs-human "<question>"` is denied with a brain + org-secret +
+  # merged-PR scan as the deny reason, so the answer arrives in the refusal.
+  upsert_pretool_hook "$settings" "Bash" \
+    "$hooks_dir/needs-human-check.sh  # search brain before escalating: a needs-human marker is denied with a brain + org-secret + merged-PR scan" \
+    30
+
+  # `{ cat ...; cat /tmp/x_*.md; } > /tmp/x_final.md` truncates the redirect
+  # target before the glob expands, so the command reads its own stdout and
+  # grows without bound — 0 to 65.9GB in ~6 minutes on a live dispatch at 98%
+  # /tmp. Escape hatch: '# scratch-glob-ok: <reason>'.
+  upsert_pretool_hook "$settings" "Bash" \
+    "$hooks_dir/scratch-glob-self-match.sh  # deny a redirect target that the command's own glob argument matches; it reads its own stdout and fills the volume" \
+    5
+
+  # SessionStart carries no matcher, so these pass "" and upsert_hook finds
+  # the group by the ABSENCE of the key. Each managed worktree gets its own
+  # cargo target dir instead of a symlink into the shared fold/target, so
+  # removing the worktree actually reclaims the disk.
+  upsert_hook "$settings" "SessionStart" "" \
+    "$hooks_dir/worktree-target-isolate.sh  # give a managed worktree its own cargo target dir; a symlink into the shared fold/target reclaims nothing on removal" \
+    10
+
+  # Stop, also matcher-less. Backstop for the close-out loop: block the stop
+  # ONCE when an edgevector worktree still has uncommitted or unpushed work,
+  # so finished work does not end with no PR, no brain record and no card.
+  # Honours stop_hook_active, so letting the turn end again passes through.
+  upsert_hook "$settings" "Stop" "" \
+    "$hooks_dir/close-out-reminder.sh  # close-out backstop: block the stop once when an edgevector worktree has uncommitted or unpushed work" \
+    30
+
+  # Stop. Prune a finished Claude-managed session worktree, but only when the
+  # working tree is clean AND the branch has an upstream with no unpushed
+  # commits. Conservative by design: it would rather leak a worktree than
+  # delete uncommitted work.
+  upsert_hook "$settings" "Stop" "" \
+    "$hooks_dir/worktree-cleanup.sh  # prune a finished Claude-managed worktree only when it is clean and fully pushed" \
+    15
+
   for tool in \
     mcp__brain__brain_get \
     mcp__brain__brain_search \
@@ -331,7 +380,8 @@ install_claude_hooks() {
     upsert_permission_allow "$settings" "$tool"
   done
 
-  echo "  claude hooks: unsafe-inline-json.sh + no-home-root-scan.sh + no-unbounded-workspace-walk.sh + routine-shell-lint.sh + no-list-as-census.sh (inline parsing guard; home-root/TCC walk guard; workspace walk guard; shell shape guard; no-scan census guard on Bash + the brain_list MCP verb; read-before-edit retired)"
+  echo "  claude hooks PreToolUse: unsafe-inline-json.sh + no-home-root-scan.sh + no-unbounded-workspace-walk.sh + routine-shell-lint.sh + no-list-as-census.sh (Bash + the brain_list MCP verb) + needs-human-check.sh + scratch-glob-self-match.sh"
+  echo "  claude hooks SessionStart: worktree-target-isolate.sh; Stop: close-out-reminder.sh + worktree-cleanup.sh; read-before-edit retired"
   echo "  claude permissions: brain MCP get/search/list/ask/put"
 }
 
