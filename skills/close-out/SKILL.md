@@ -177,8 +177,8 @@ or latest `main` still contains source hits.
 ### Prose-citation gate
 
 If the change touched any agent prose -- `CLAUDE.md`, `AGENTS.md`,
-`routines/*.md`, `instructions/*.md`, `skills/*/*.md` or `hooks/*.sh` -- point-get
-every brain slug it cites before the PR:
+`routines/*.md`, `instructions/*.md`, `skills/*/*.md`, `hooks/*.sh`, `bin/*` or
+`lib/*` -- point-get every brain slug it cites before the PR:
 
 ```bash
 last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
@@ -202,14 +202,33 @@ about a record, not about your change: fix it if it is yours, otherwise report
 it and ship.
 
 - **0** -- every citation resolves. Done.
-- **1** -- `DANGLING <slug>`: the slug does not point-get, with or without
-  `--type`. Fix the citation or QUOTE the fact instead of citing it. Do not ship
-  it: a dangling citation reads as an audited ground truth, so the next agent
-  stops looking, and the rule it supports arrives with no evidence anyone can
-  check.
+- **1** -- `DANGLING <slug>  INTRODUCED-BY-THIS-CHANGE`: the slug does not
+  point-get, with or without `--type`, and it is on a line this change ADDS. Fix
+  the citation or QUOTE the fact instead of citing it. Do not ship it: a dangling
+  citation reads as an audited ground truth, so the next agent stops looking, and
+  the rule it supports arrives with no evidence anyone can check.
+- **4** -- there are findings and none is yours: `DANGLING <slug>  pre-existing`
+  in a file you touched for another reason, or a `HOP-DANGLING` row one level past
+  the prose. Report them -- append the slugs to the owning papercut -- and ship.
 - **3** -- `UNKNOWN`: the node was busy. Not a blocker; re-run it.
 - **2** -- the changed set could not be computed. Re-run with the full root
   (`--root "$WT"`, no `--changed-since`) rather than treating it as a pass.
+
+`bin/*` and `lib/*` joined the corpus on 2026-10-04 and they are the largest
+citation surface in the repo: 344 prose files against 113. A helper's comment has
+the same job as an instruction file's -- it names the record holding the reason
+the code is shaped this way -- and some of these are not comments at all:
+`bin/last-stack-kanban-decision-check` carries a table of slugs it point-gets at
+run time, so a dead slug there is a command that fails. `dangling 0` covered this
+repo for eight days while **64 of its 238 helpers (27%)** cited a record the brain
+cannot serve, and six of those slugs were ones the owning papercut had listed and
+believed healed in the `*.md` corpus.
+
+That 27% is also why exit 4 exists. About one change in four opens a helper with
+an inherited dead pointer, and `1` carries the instruction "do not ship this". A
+gate that refuses correct work over prose its author never wrote is routed around
+within a day, which is this checker's own stated failure mode; the split keeps the
+refusal for the pointer you just wrote.
 
 This step is the checker's only live caller. Its scheduled one is step 2b of
 `routines/papercut-reconciler.md`, and the fleet read 4 active / 77 paused on
