@@ -653,6 +653,102 @@ if command -v zsh >/dev/null 2>&1; then
     env -i HOME="$HOME" PATH="/usr/bin:/bin:/usr/sbin:/sbin" ZDOTDIR="$zdot" \
       LAST_STACK_ROUTINE_SHELL_LINT="$LINT" "${envs[@]}" /bin/zsh -c "$1"
   }
+
+  # Two of the cases below feed the snippet a DELIBERATE HAZARD, because that
+  # is what the lint is supposed to reject. The snippet FAILS OPEN when the
+  # lint cannot answer -- correct policy, since a missing lint must not block
+  # every routine command -- and then the hazard RUNS.
+  #
+  # Measured 2026-10-04 against a lint stub that exits 1 at startup, the shape
+  # a careless edit to the regex block produces:
+  #
+  #   snippet-lint-reject     `while true; do read -t 1 < /dev/zero; done`
+  #                           spins a core forever. rc 124 at an 8s bound.
+  #   snippet-home-root-scan  walks $HOME and reaches the TCC-protected
+  #                           folders (`/Users/<u>/Pictures/Photos
+  #                           Library.photoslibrary: Operation not permitted`).
+  #                           rc 124 at an 8s bound. On an interactive host
+  #                           that is the macOS privacy dialog that BLOCKS
+  #                           until a human clicks -- the exact harm this rule
+  #                           exists to prevent, produced by the test for it.
+  #
+  # That is the hang this suite used to show as empty stdout past 90s, and a
+  # CI shard burns its whole ~2803s deadline on it. The startup guard at the
+  # top of this file removes the common cause; this removes the mechanism.
+  #
+  # Two details that are not optional:
+  #  * The bound must resolve under a routinesd PATH
+  #    (/usr/gnu/bin:/usr/local/bin:/bin:/usr/bin:.), which has NEITHER
+  #    gtimeout NOR timeout and DOES have /usr/bin/perl. So the perl arm is
+  #    the production arm, not the fallback.
+  #  * `perl -e alarm` bounds the DIRECT CHILD only, and a grandchild keeps
+  #    the write end of a `$(...)` pipe open, so the caller blocks for the
+  #    full run anyway. Output therefore goes to a FILE and is read back --
+  #    never captured with a command substitution. Residual, stated rather
+  #    than hidden: on the perl arm the alarm reaches `env`, not the zsh under
+  #    it, so a spinning grandchild can outlive the bound. The suite still
+  #    reports correctly and does not block; `gtimeout`/`timeout` kill the
+  #    whole process group and leave nothing behind, which is why they are
+  #    preferred when present.
+  # Brain: papercut-routine-shell-lint-fixture-suite-hangs-instead-of-failing-when-the-lint-binary-cannot-start-20261004
+  # The seconds are appended at call time, so a single case can tighten the
+  # bound without rebuilding the array.
+  Z_BOUND_SECS="${LAST_STACK_SHELL_LINT_TEST_BOUND:-20}"
+  z_bounder=()
+  if command -v gtimeout >/dev/null 2>&1; then z_bounder=(gtimeout)
+  elif command -v timeout >/dev/null 2>&1; then z_bounder=(timeout)
+  elif command -v perl >/dev/null 2>&1; then z_bounder=(perl -e 'alarm shift; exec @ARGV')
+  fi
+  [ "${#z_bounder[@]}" -gt 0 ] || { echo "FAIL [bound] no gtimeout, timeout or perl; a hazard fixture would run unbounded" >&2; exit 1; }
+
+  # run_z_bounded <env...> -- <command>
+  # Writes merged output to $tmp/hazard.out, sets z_rc, z_out and z_bounded.
+  # Reports nothing: the self-check below WANTS the bound to fire, so the
+  # verdict belongs to the caller.
+  run_z_bounded() {
+    local envs=()
+    while [ "$1" != "--" ]; do envs+=("$1"); shift; done
+    shift
+    z_rc=0
+    z_bounded=0
+    # The bounder goes OUTSIDE `env -i`: the inner PATH is deliberately
+    # restricted to /usr/bin:/bin:/usr/sbin:/sbin to model a routine shell, so
+    # a bounder named inside it resolves to `env: gtimeout: No such file or
+    # directory` (rc 127) and bounds nothing. This test caught that on its
+    # first run.
+    "${z_bounder[@]}" "$Z_BOUND_SECS" \
+      env -i HOME="$HOME" PATH="/usr/bin:/bin:/usr/sbin:/sbin" ZDOTDIR="$zdot" \
+      LAST_STACK_ROUTINE_SHELL_LINT="${Z_LINT:-$LINT}" "${envs[@]}" \
+      /bin/zsh -c "$1" > "$tmp/hazard.out" 2>&1 || z_rc=$?
+    z_out="$(cat "$tmp/hazard.out")"
+    case "$z_rc" in 124|142|137) z_bounded=1 ;; esac
+    return 0
+  }
+
+  # hazard_case <label> <env...> -- <command>
+  # The one callers use. A bound that fires is reported as the lint having
+  # failed open, never as a slow test.
+  #
+  # This FAIL arm is deliberately double-protected: with it removed, each
+  # caller's own `[ "$z_rc" = 2 ]` still fails, because a bounded run returns
+  # 124/142/137. The arm exists for the DIAGNOSIS, not for the verdict -- it
+  # is the difference between `want 2, got 124` and a line naming the
+  # mechanism. A mutation probe of it is therefore green, and that is correct
+  # rather than a weak guard.
+  #
+  # The bound itself IS single-protected, and probing it is the one case in
+  # this file where `--expect-red-on` must be omitted: remove the bound and
+  # the suite does not fail with an assertion, it stops producing output at
+  # all. The probe needs an externally bounded --test and reads `test_rc=124`
+  # as its verdict.
+  hazard_case() {
+    local label="$1"; shift
+    run_z_bounded "$@"
+    if [ "$z_bounded" = 1 ]; then
+      echo "FAIL [$label] the hazard fixture RAN and was stopped by the ${Z_BOUND_SECS}s bound (rc=$z_rc); the lint failed open instead of rejecting it" >&2
+      fail=1
+    fi
+  }
   routine_env=(DRIVEN_BY=routine CODEX_THREAD_ID=test-thread)
 
   got="$(run_z "${routine_env[@]}" -- 'echo "${BASH_VERSION:+bash}${ZSH_VERSION:+zsh}"')"
@@ -669,19 +765,29 @@ if command -v zsh >/dev/null 2>&1; then
   set -e
   [ "$rc" = 5 ] || { echo "FAIL [snippet-exit-code] want 5, got $rc" >&2; fail=1; }
 
-  set +e
-  err="$(run_z "${routine_env[@]}" -- 'while true; do read -t 1 < /dev/zero; done' 2>&1)"; rc=$?
-  set -e
-  [ "$rc" = 2 ] || { echo "FAIL [snippet-lint-reject] want 2, got $rc: $err" >&2; fail=1; }
+  # The bound's own arm is only reachable with a lint that fails open, which
+  # is exactly the state the two cases below are protecting against. Left
+  # untested it is coverage that cannot fail, so exercise it here against a
+  # stub that accepts everything -- the real lint is untouched, and the
+  # fixture is the same spinner, held to 3 seconds.
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/permissive-lint"
+  chmod +x "$tmp/permissive-lint"
+  Z_LINT="$tmp/permissive-lint" Z_BOUND_SECS=3 \
+    run_z_bounded "${routine_env[@]}" -- 'while true; do read -t 1 < /dev/zero; done'
+  [ "$z_bounded" = 1 ] || {
+    echo "FAIL [bound-self-check] a fail-open lint let the spinner run and the bound did NOT stop it (rc=$z_rc)" >&2
+    fail=1
+  }
+
+  hazard_case snippet-lint-reject "${routine_env[@]}" -- 'while true; do read -t 1 < /dev/zero; done'
+  [ "$z_rc" = 2 ] || { echo "FAIL [snippet-lint-reject] want 2, got $z_rc: $z_out" >&2; fail=1; }
 
   # The gap this rule closes: a Codex routine command (not a Claude Code
   # Bash tool call, so hooks/no-home-root-scan.sh never runs) that scans the
   # home root must still be rejected, by the shared lint alone.
-  set +e
-  err="$(run_z "${routine_env[@]}" -- 'find "$HOME" -maxdepth 4 -name x' 2>&1)"; rc=$?
-  set -e
-  [ "$rc" = 2 ] && printf '%s' "$err" | grep -q 'rule=home-root-scan' \
-    || { echo "FAIL [snippet-home-root-scan] want rc=2 rule=home-root-scan, got $rc: $err" >&2; fail=1; }
+  hazard_case snippet-home-root-scan "${routine_env[@]}" -- 'find "$HOME" -maxdepth 4 -name x'
+  [ "$z_rc" = 2 ] && printf '%s' "$z_out" | grep -q 'rule=home-root-scan' \
+    || { echo "FAIL [snippet-home-root-scan] want rc=2 rule=home-root-scan, got $z_rc: $z_out" >&2; fail=1; }
 
   got="$(run_z -- 'echo "${ZSH_VERSION:+zsh}"')"
   [ "$got" = zsh ] || { echo "FAIL [snippet-not-routine] want zsh, got '$got'" >&2; fail=1; }
