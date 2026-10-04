@@ -4312,9 +4312,32 @@ reopen_deferred_cards() {
     helper="$(command -v last-stack-kanban-reopen-deferred 2>/dev/null || true)"
   fi
   [ -x "$helper" ] || return 0
-  "$helper" --trigger host-track >/dev/null 2>&1 || {
-    printf '%s\n' 'host-track: deferred-card reopen pass failed; next activation retries' >&2
-  }
+  # Capture, do NOT discard. `>/dev/null 2>&1` here threw away the helper's own
+  # diagnosis and printed a line carrying strictly less than the exit code, and
+  # the pass then failed 31 times between 2026-09-24 and 2026-10-04 with the
+  # cause existing in no artefact. The helper names its reason every time
+  # (`error=[Errno 2] No such file or directory: 'kanban'` under a PATH without
+  # ~/.local/bin), and `next activation retries` means a permanent cause and a
+  # transient one print identically at the same cadence.
+  #
+  # No success line on purpose: the activation count already gives the
+  # denominator, and a row per tick would bury the failures it exists to show.
+  #
+  # `if ! "$helper" ...; then rc=$?` does NOT give the helper's status: inside
+  # that branch `$?` is the status of the `!`, which is 0. The first run of
+  # tests/host-track-reopen-deferred-reports-the-cause.sh caught it reporting
+  # `rc=0` on a stub that exits 7. Collect the status with `|| rc=$?`, which is
+  # also what keeps this safe if the script ever runs under `set -e`.
+  local out err rc
+  out="$(mktemp "${TMPDIR:-/tmp}/ht-reopen.XXXXXX")" || return 0
+  err="$out.err"
+  rc=0
+  "$helper" --trigger host-track >"$out" 2>"$err" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'host-track: deferred-card reopen pass failed rc=%s: %s; next activation retries\n' \
+      "$rc" "$(head -1 "$err" 2>/dev/null || true)" >&2
+  fi
+  rm -f -- "$out" "$err" 2>/dev/null || true
 }
 
 # brew_publish_tick: after the soak tick, offer each app with `brew_release`

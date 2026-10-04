@@ -483,6 +483,7 @@ ci_test tests/last-stack-brew-app-publish.sh
 ci_test tests/host-track-on-channel-unpublished-main.sh
 ci_test tests/host-track-safe-upgrade-probe.sh
 ci_test tests/host-track-canary-soak.sh
+ci_test tests/host-track-reopen-deferred-reports-the-cause.sh
 ci_test tests/host-track-soak-red-files-card.sh
 ci_test tests/host-track-local-safe-staleness.sh
 ci_test tests/host-track-deployment-freshness.sh
