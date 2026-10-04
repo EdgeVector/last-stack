@@ -566,8 +566,7 @@ is released by the Loom kickoff (engine park) or by a human, not by this sweep.
        not an infinite skip — see kanban-watch),
        **`move <slug> todo`** so pickup can reclaim it. CHEAP, uncapped. Never
        move these to `done`. Never SIGKILL agents/builds for age alone; open
-       PR/CR or live worker ⇒ leave alone. Brain:
-       `preference-kanban-doing-soft-1h-reclaim`.
+       PR/CR or live worker ⇒ leave alone.
      - `review`: leave alone (human/BLOCKED owns it).
    - **No PR/CR found** but a `kanban/<slug>` branch with commits exists and the
      card is in `doing` → a worker opened a branch but didn't finish landing

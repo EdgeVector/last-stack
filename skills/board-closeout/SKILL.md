@@ -50,8 +50,10 @@ board-closeout <ISO> ok|noop closed=N closed_slugs=… rolled_back=N demoted=N s
 ## Related
 
 - Routine: `last-stack/routines/board-closeout.md`
-- Soft 1h zombies: `preference-kanban-doing-soft-1h-reclaim`
-- Always-on policy: `preference-kanban-board-closeout-always-on`
+- Soft 1h zombies: a `doing` card past 60m with no PR, no live worker and no
+  branch commits moves back to `todo` — never to `done`, and never by killing
+  a live worker.
+- Always-on policy: the sweep is standing-authorized; run it without asking.
 - Per-card helper: `last-stack-card-closeout <slug>` (moves to `done`, then
   reclaims `~/.fkanban/worktrees/*<slug>*` via `last-stack-worktree-reclaim`)
 - Worktree reclaim helper: `last-stack-worktree-reclaim --slug <slug>` or

@@ -102,6 +102,7 @@ cost-ranked follow-up (writes included) and files improvement cards.
 - `concepts-lastdb-agent-access-model` — the no-scan contract
 - `lastdb status` and `lastdb ops` — what the node measures and which client
   consumes the time
-- `preference-brain-read-via-search-not-list-enumeration`
-- `preference-rejected-access-pattern-errors-return-a-runnable-replacement`
+- read the brain with `brain ask` / `brain get`, never `brain list` as a census
+- a rejected access pattern must answer with a runnable replacement, not only
+  with an error
 - CI counterpart: `bin/last-stack-lint-prompts --access-sweep` in `.lastgit/ci.sh`

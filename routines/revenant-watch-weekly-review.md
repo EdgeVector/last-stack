@@ -37,7 +37,7 @@ brain get north-star-revenant-watch --type project
 ```
 
 Do **not** invent a new mining engine. Stay a thin steward over session-miner
-profile `revenant-watch`. Honor [[preference-freeze-new-routine-engines]].
+profile `revenant-watch`. New routine engines are frozen.
 
 ## Step 0 — Setup
 

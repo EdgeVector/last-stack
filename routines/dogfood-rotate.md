@@ -36,8 +36,8 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 ```
 
 Prefer reading this routine through `last-stack-routine-read dogfood-rotate`
-(it auto-upgrades a stale clean install). Honor
-`[[preference-agents-work-in-worktrees-install-checkout-disposable]]`. If
+(it auto-upgrades a stale clean install). Agents do product work in isolated
+worktrees and the install checkout is disposable. If
 self-upgrade, routine-read, or host-track is blocked by tracked dirt in the
 install checkout, authorized remediation is to create a backup branch, then
 run `git reset --hard lastgit/main` in the install checkout and retry. Do not

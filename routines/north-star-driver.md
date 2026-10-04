@@ -116,7 +116,7 @@ Use the milestone portfolio captured by the creation inventory gate. Then:
    `brain get <slug> --type project`.
 2. Otherwise, **never** use `brain list` as a project census. Seed candidates
    from access patterns only:
-   - (Do not read `active-programs`: `active-programs` is RETIRED (Tom 2026-07-23, `preference-active-programs-retired`); it has no record.)
+   - (Do not read `active-programs`: `active-programs` is RETIRED (Tom 2026-07-23) and has no record.)
    - `kanban milestone portfolio --json` → distinct `north_star` fields on
      nonterminal milestones (envelope: `entries` / dual-shape jq guard).
    - Optional discovery sample: `brain search "north-star" --type project

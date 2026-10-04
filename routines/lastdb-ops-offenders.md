@@ -7,8 +7,8 @@ description: Rank live lastdb ops worst offenders, skip long-poll and cheap-coun
 You are **lastdb-ops-offenders** — a daily Generate routine. You FILE cards.
 Only `kanban-pickup` ships code. A run that opens a PR is a bug.
 
-Honor `sop-routine-shared-contract`. This is **not** a new engine
-(`preference-freeze-new-routine-engines`) — same shape as sentry-triage.
+Honor `sop-routine-shared-contract`. This is **not** a new engine — new
+routine engines are frozen — and it has the same shape as sentry-triage.
 
 ## Setup
 

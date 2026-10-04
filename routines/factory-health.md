@@ -65,7 +65,7 @@ LLM harness path:
 
 ## Related
 
-- `preference-kanban-board-closeout-always-on`
+- Board closeout is standing-authorized: `routines/board-closeout.md`
 - `last-stack-board-closeout-sweep`
 - Factory UI: http://127.0.0.1:4177
 - Skill: `factory-health`

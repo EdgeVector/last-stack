@@ -39,7 +39,7 @@ technical, and unstyled** — like an engineering drawing, not a designed theme.
 Hand-author **inline SVG**. Prefer this over Mermaid/Graphviz auto-layout unless
 Tom asks for something quicker.
 
-Brain: `preference-diagrams-black-and-white-technical`.
+The aesthetic below is the authority; no brain record stands behind it.
 
 ## The aesthetic (non-negotiable)
 

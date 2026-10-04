@@ -209,8 +209,8 @@ PR/CR cards cannot sit in `doing` for hours when a prior wake skipped them:
 ```
 
 Include any `closed=` / `rolled_back=` keys from that heartbeat in the watch
-heartbeat. See `routines/board-closeout.md` and brain
-`preference-kanban-board-closeout-always-on`. Soft 1h zombie reclaim **skips**
+heartbeat. See `routines/board-closeout.md`; the sweep is
+standing-authorized. Soft 1h zombie reclaim **skips**
 cards with `pr_url`; this sweep is what closes them once the PR is **merged**.
 
 ## Heal BoardCards list/show drift (CHEAP — ALWAYS, before zombie reclaim)
@@ -282,8 +282,7 @@ hour** should be *checked*. Default for a **dead claim** (no PR/CR, no branch
 commits, no live worker) is reclaim to `todo` so pickup can retry. This is
 **not** a hard kill of agents or processes — never `kill`/`pkill` a live
 codex/claude/grok/cargo worker just for age. Live work, open PRs/CRs, and
-recent progress stay put. Durable: brain
-`preference-kanban-doing-soft-1h-reclaim`.
+recent progress stay put.
 
 **HANDOFF / checkpoint cards (do not reclaim as empty zombies):** if `doing`
 has a non-empty `branch` field, body contains `HANDOFF:`, or

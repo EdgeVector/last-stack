@@ -34,6 +34,7 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 
 ## Related
 
-- `preference-lastgit-no-local-identity-in-public-git`
-- `preference-last-stack-no-machine-leaks` (installable product hygiene)
+- No local machine identity in shipped git: no home paths, hostnames or
+  usernames in tracked files
+- Installable-product hygiene: the install tree carries nothing host-specific
 - CI: `.lastgit/ci.sh` runs `last-stack-lint-machine-leaks --ci`

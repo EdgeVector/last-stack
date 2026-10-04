@@ -82,7 +82,7 @@ every incomplete NS has a named proof card; completed terminals close the NS.
 
 ### Feature Ship Loop budget (Tom 2026-07-17)
 
-Canonical: brain `sop-feature-ship-loop` / `preference-feature-ship-loop`.
+Canonical: brain `sop-feature-ship-loop`.
 
 Before promoting idle/P3 papercuts or inventing program slices:
 
