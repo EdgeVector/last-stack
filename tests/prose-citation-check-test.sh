@@ -244,9 +244,85 @@ run_check "$R" "$TMP/v15"
 [ "$(count dangling)" = 0 ] || bad "case15 path segment: a URL path segment was reported as a dangling record"
 note "case15 path segment rc=$(rc)"
 
+# ------------- case 16: a dangling citation in a HOOK's deny text is caught.
+# The hook surface was unscanned until 2026-10-04 while PROSE_GLOBS was `*.md`
+# only, and it is the surface most likely to be copied: a deny message arrives
+# mid-task, phrased as an instruction, naming a slug as the authority for a
+# refusal. Three of this repo's six `hooks/*.sh` citations were dangling when it
+# was first scanned, against `dangling 0` on the `*.md` corpus the same day.
+R="$TMP/r16"; make_root "$R" 'Nothing cited here.'
+mkdir -p "$R/hooks"
+cat > "$R/hooks/deny-something.sh" <<'HOOK'
+#!/usr/bin/env bash
+emit_deny "BLOCKED: do not do that here.
+
+(brain papercut-the-deny-text-authority-20260101)"
+HOOK
+printf 'papercut-the-deny-text-authority-20260101=missing\n' > "$TMP/v16"
+run_check "$R" "$TMP/v16"
+[ "$(rc)" = 1 ] || bad "case16 hook prose: rc $(rc) != 1 (hooks/*.sh is not being scanned)"
+[ "$(slugs dangling)" = "papercut-the-deny-text-authority-20260101" ] \
+  || bad "case16 hook prose: slugs '$(slugs dangling)'"
+# The load-bearing assertion (case 14's lesson). Dropping `hooks/*.sh` from
+# PROSE_GLOBS makes the token fail to EXTRACT, so the report is empty and rc is
+# 0 -- an unscanned citation and a resolved one are the same number everywhere
+# except in `checked`.
+[ "$(field checked)" = 1 ] \
+  || bad "case16 hook prose: checked=$(field checked) != 1; the hook was never read"
+note "case16 hook prose rc=$(rc) checked=$(field checked)"
+
+# ------------- case 17: --changed-since reads ONLY the changed prose.
+# The per-change mode is what gives this checker a live caller at all (close-out
+# runs on every substantive change; its scheduled caller sits in a routine the
+# fleet has had paused). Both halves matter: the changed file's dangling
+# citation must be CAUGHT, and the untouched file's must not be read -- the
+# narrowing is the whole reason the sweep costs about 1 s instead of 29 s.
+R="$TMP/r17"
+mkdir -p "$R/routines" "$R/bin" "$R/config"
+git -C "$R" init -q 2>/dev/null
+git -C "$R" config user.email ci@example.com
+git -C "$R" config user.name ci
+printf 'Old prose cites papercut-untouched-and-gone-20260101.\n' > "$R/routines/old.md"
+git -C "$R" add -A >/dev/null 2>&1
+git -C "$R" commit -qm base >/dev/null 2>&1
+base_ref="$(git -C "$R" rev-parse HEAD)"
+printf 'New prose cites papercut-just-written-and-gone-20260101.\n' > "$R/routines/new.md"
+printf 'papercut-untouched-and-gone-20260101=missing\npapercut-just-written-and-gone-20260101=missing\n' > "$TMP/v17"
+run_check "$R" "$TMP/v17" --changed-since "$base_ref"
+[ "$(rc)" = 1 ] || bad "case17 changed-since: rc $(rc) != 1; the changed file's dangling citation was missed"
+[ "$(slugs dangling)" = "papercut-just-written-and-gone-20260101" ] \
+  || bad "case17 changed-since: slugs '$(slugs dangling)'; the untouched file must not be read"
+[ "$(field prose_files)" = 1 ] \
+  || bad "case17 changed-since: prose_files=$(field prose_files) != 1; the set was not narrowed"
+note "case17 changed-since rc=$(rc) prose_files=$(field prose_files) slug=$(slugs dangling)"
+
+# ------------- case 18: a changed set that cannot be computed is NOT a pass.
+# Exit 2, never 0. A narrowing that silently covers nothing prints `dangling 0`
+# and reads exactly like a clean corpus, which is the failure this whole checker
+# exists to stop -- the same shape as case 14 and case 16, one level up.
+run_check "$R" "$TMP/v17" --changed-since no-such-ref-here
+[ "$(rc)" = 2 ] \
+  || bad "case18 unresolvable ref: rc $(rc) != 2; an uncomputable changed set must not read as clean"
+grep -q 'cannot determine the changed set' "$TMP/out.err" \
+  || bad "case18 unresolvable ref: no message naming the cause ($(head -1 "$TMP/out.err"))"
+note "case18 unresolvable ref rc=$(rc)"
+
+# ------------- case 19: the checker has a LIVE caller.
+# The wiring case, and the one that matters most over time. This tool shipped
+# correct, installed correctly, and ran zero times on a schedule, because its
+# only automatic caller was a step in a routine the fleet had paused -- every
+# number its papercut carries was produced by hand. A checker nothing runs is
+# the same artifact as no checker. close-out runs on this host after every
+# substantive change, by every agent, and a paused fleet cannot silence it.
+grep -q 'last-stack-prose-citation-check' "$ROOT/skills/close-out/SKILL.md" \
+  || bad "case19 live caller: skills/close-out/SKILL.md no longer runs the checker"
+grep -q -- '--changed-since' "$ROOT/skills/close-out/SKILL.md" \
+  || bad "case19 live caller: close-out must use the per-change mode, not a 29 s full-root sweep"
+note "case19 live caller ok"
+
 rm -rf -- "$TMP"
 if [ "$fail" -ne 0 ]; then
   echo "prose-citation-check guard: FAILED" >&2
   exit 1
 fi
-echo "ok prose-citation-check guard: 15 cases"
+echo "ok prose-citation-check guard: 19 cases"
