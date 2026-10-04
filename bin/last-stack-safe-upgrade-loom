@@ -24,9 +24,8 @@ STAND_IN=0
 DRY_RUN=0
 AS_JSON=0
 SAFE_UPGRADE_PROTOCOL_VERSION="6"
-LOCAL_RECOVERY=0
 LOCAL_RECOVERY_DIR="${LAST_STACK_LOOM_LOCAL_RECOVERY_DIR:-$HOME/.local/state/last-stack/loom/recovery}"
-CONTROL_PLANE="lastdb"
+CONTROL_PLANE="local-recovery"
 
 usage() {
   cat <<'EOF'
@@ -264,125 +263,51 @@ else
   export LOOM_LIVE=1 LOOM_CANARY_LIVE=1
 fi
 
-if ! loom ping >/dev/null 2>&1; then
-  LOCAL_RECOVERY=1
-else
-  set +e
-  probe_json="$(loom write-probe --json 2>/dev/null)"
-  probe_rc=$?
-  set -e
-  if [ "$probe_rc" -eq 42 ] && printf '%s\n' "$probe_json" | jq -e '.recovery_eligible == true' >/dev/null 2>&1; then
-    LOCAL_RECOVERY=1
-  elif [ "$probe_rc" -ne 0 ]; then
-    die "Loom write probe failed without a recovery authorization: ${probe_json:-no result}"
-  fi
+# The safe-upgrade graph ALWAYS keeps its execution state in the local journal
+# outside ~/.lastdb (decision-2026-10-04-safe-upgrade-always-local-journal).
+# The repair path must not depend on the health of the store it repairs. The
+# old gate used LastDB unless a write probe measured a refusal, but a SLOW
+# primary is neither: on 2026-10-04 a thrashing primary timed out the probe,
+# the `validate`/`publish` writes and the `loom run` execution write at 60 s on
+# five tries, so the upgrade that carried the fix for that thrash never reached
+# its first probe (papercut-safe-upgrade-blocked-by-slow-primary-write-timeouts-20261004).
+# The journal is reconciled into LastDB after the run; other graphs still use
+# LastDB as their control plane.
+printf 'last-stack-safe-upgrade-loom: control_plane=local-recovery journal=%s\n' \
+  "$LOCAL_RECOVERY_DIR/executions.jsonl" >&2
+
+# --local-recovery refuses an inherited parent: this graph is always a root
+# execution in its own journal.
+if [ -n "${LOOM_EXEC_ID:-}" ]; then
+  printf 'last-stack-safe-upgrade-loom: ignoring inherited LOOM_EXEC_ID=%s; the safe upgrade is a root execution\n' \
+    "$LOOM_EXEC_ID" >&2
+  unset LOOM_EXEC_ID
 fi
 
-if [ "$LOCAL_RECOVERY" -eq 1 ]; then
-  CONTROL_PLANE="local-recovery"
-  printf 'last-stack-safe-upgrade-loom: control_plane=local-recovery journal=%s\n' \
-    "$LOCAL_RECOVERY_DIR/executions.jsonl" >&2
-else
-  loom validate "$defs/lastdb-safe-upgrade.json" >/dev/null
-  loom publish "$defs/lastdb-safe-upgrade.json" >/dev/null
-fi
-
+# The local run drives the graph to its end in this process. It does not read
+# LastDB, so the CUTOVER restart cannot make the execution unreadable, and no
+# `loom show` readback is needed (`loom show` reads LastDB, not the journal).
 set +e
-run_args=(loom run lastdb-safe-upgrade --key "$KEY" --input "$input")
-if [ "$LOCAL_RECOVERY" -eq 1 ]; then
-  run_args+=(
-    --local-recovery
-    --definition "$defs/lastdb-safe-upgrade.json"
-    --local-recovery-dir "$LOCAL_RECOVERY_DIR"
-  )
-fi
-view="$("${run_args[@]}")"
+view="$(loom run lastdb-safe-upgrade --key "$KEY" --input "$input" \
+  --local-recovery \
+  --definition "$defs/lastdb-safe-upgrade.json" \
+  --local-recovery-dir "$LOCAL_RECOVERY_DIR")"
 loom_rc=$?
 set -e
 execution="$(printf '%s\n' "$view" | awk '/^lx-/{print; exit}')"
 status="$(printf '%s\n' "$view" | awk -F': ' '/^status:/{print $2; exit}')"
 state="$(printf '%s\n' "$view" | awk -F': ' '/^state:/{print $2; exit}')"
 
-# `loom run` can return the execution view before the terminal status write is
-# visible, and — measured 2026-09-20 23:24Z — before the graph is even done:
-# the CUTOVER node's deploy effect restarts the primary, `loom run` came back
-# with `status: running / state: CUTOVER`, and VERIFY still had ~2 minutes to
-# go. A 30 s readback then reported a false red (`Loom safe-upgrade red rc=3`)
-# for a cutover that finished GREEN, and the nightly gate stopped before it
-# wrote the registry rows. So: while the execution is still `running`, keep
-# reading it back for up to LASTDB_SAFE_UPGRADE_LOOM_RUNNING_SECS (default 20
-# min, the VERIFY budget); a terminal non-success stops the wait at once.
-if [ "$status" != "succeeded" ] && [ -n "$execution" ]; then
-  readback_wait_secs="${LASTDB_SAFE_UPGRADE_LOOM_READBACK_SECS:-30}"
-  running_wait_secs="${LASTDB_SAFE_UPGRADE_LOOM_RUNNING_SECS:-1200}"
-  case "$readback_wait_secs" in
-    ''|*[!0-9]*) die "LASTDB_SAFE_UPGRADE_LOOM_READBACK_SECS must be an integer" ;;
-  esac
-  case "$running_wait_secs" in
-    ''|*[!0-9]*) die "LASTDB_SAFE_UPGRADE_LOOM_RUNNING_SECS must be an integer" ;;
-  esac
-  readback_deadline=$((SECONDS + readback_wait_secs))
-  running_deadline=$((SECONDS + running_wait_secs))
-  # Once the execution has read `running`, an unreadable execution is still a
-  # running one: the CUTOVER effect stops the old primary (graceful drain up to
-  # 150 s), so `loom show` has no node to answer it. Measured 2026-09-24 16:17Z:
-  # the empty reads ran the 30 s readback deadline out, the wrapper exited 3
-  # two seconds before the new daemon came up, the routine's process tree was
-  # torn down, and VERIFY and the post-check never ran on a cutover that
-  # landed. Only the running budget may end that wait.
-  seen_running=0
-  [ "$status" = "running" ] && seen_running=1
-  while :; do
-    readback="$(loom show "$execution" 2>/dev/null || true)"
-    readback_status="$(printf '%s\n' "$readback" | awk -F': ' '/^status:/{print $2; exit}')"
-    if [ -z "$readback_status" ] && [ "$seen_running" -eq 1 ]; then
-      if [ "$SECONDS" -ge "$running_deadline" ]; then
-        printf 'last-stack-safe-upgrade-loom: %s unreadable after %ss (last read running); reporting non-green\n' \
-          "$execution" "$running_wait_secs" >&2
-        break
-      fi
-      sleep 2
-      continue
-    fi
-    [ "$readback_status" = "running" ] && seen_running=1
-    if [ "$readback_status" = "succeeded" ]; then
-      view="$readback"
-      loom_rc=0
-      status="$readback_status"
-      state="$(printf '%s\n' "$readback" | awk -F': ' '/^state:/{print $2; exit}')"
-      break
-    fi
-    if [ "$readback_status" = "running" ]; then
-      # Still working (VERIFY after a live cutover). Not a verdict yet.
-      if [ "$SECONDS" -ge "$running_deadline" ]; then
-        view="$readback"
-        status="$readback_status"
-        state="$(printf '%s\n' "$readback" | awk -F': ' '/^state:/{print $2; exit}')"
-        printf 'last-stack-safe-upgrade-loom: %s still running after %ss; reporting non-green\n' \
-          "$execution" "$running_wait_secs" >&2
-        break
-      fi
-      sleep 2
-      continue
-    fi
-    if [ -n "$readback_status" ] && [ "$readback_status" != "succeeded" ]; then
-      # A terminal failure. Report it as read; do not wait the readback out.
-      view="$readback"
-      status="$readback_status"
-      state="$(printf '%s\n' "$readback" | awk -F': ' '/^state:/{print $2; exit}')"
-      break
-    fi
-    [ "$SECONDS" -ge "$readback_deadline" ] && break
-    sleep 1
-  done
-fi
-
 outcome="error"
 [ "$loom_rc" -eq 0 ] && [ "$status" = "succeeded" ] && outcome="ok"
 
-if [ "$LOCAL_RECOVERY" -eq 1 ] && [ "$outcome" = "ok" ] && loom ping >/dev/null 2>&1; then
-  loom reconcile-local "$LOCAL_RECOVERY_DIR/executions.jsonl" --json >/dev/null 2>&1 \
-    || printf 'last-stack-safe-upgrade-loom: local receipt remains pending reconciliation\n' >&2
+# Project the journal into LastDB so Loom readers see the run. This is a
+# report, not a gate: a slow or down node leaves the receipt pending in the
+# journal, and the next reconcile picks it up.
+if [ "$outcome" = "ok" ]; then
+  if ! loom reconcile-local "$LOCAL_RECOVERY_DIR/executions.jsonl" --json >/dev/null 2>&1; then
+    printf 'last-stack-safe-upgrade-loom: local receipt remains pending reconciliation\n' >&2
+  fi
 fi
 
 if [ "$AS_JSON" -eq 1 ]; then

@@ -676,6 +676,21 @@ op_lat_write() {
 # ---------------------------------------------------------------------------
 DURABILITY_N="${LASTDB_DURABILITY_CANARY_N:-4}"
 DURABILITY_READ_WAIT_S="${LASTDB_DURABILITY_READ_WAIT_S:-120}"
+# Arming happens on the OLD daemon, which is often the reason for the upgrade:
+# on 2026-10-01 and 2026-10-04 a thrashing primary answered brain writes and
+# reads in 30-250 s, so a single 60 s put or a 15 s read-back failed the arm and
+# blocked the cutover that carried the fix
+# (papercut-safe-upgrade-blocked-by-slow-primary-write-timeouts-20261004).
+# Slowness is not a durability verdict. The arm retries the same upsert (same
+# slug, same nonce, so a late landing of an earlier attempt is harmless) and
+# polls the read-back with a longer per-read limit. The proof does not change:
+# an exact `durable` receipt (or the HTTP 400 queued+readback mode) plus this
+# run's nonce read back, before any live change.
+DURABILITY_ARM_ATTEMPTS="${LASTDB_DURABILITY_ARM_ATTEMPTS:-6}"
+DURABILITY_ARM_BACKOFF_S="${LASTDB_DURABILITY_ARM_BACKOFF_S:-5 15 30 60 60}"
+DURABILITY_ARM_READ_OP_S="${LASTDB_DURABILITY_ARM_READ_OP_S:-90}"
+DURABILITY_ARM_READ_WAIT_S="${LASTDB_DURABILITY_ARM_READ_WAIT_S:-300}"
+DURABILITY_ARM_READ_POLL_S="${LASTDB_DURABILITY_ARM_READ_POLL_S:-5}"
 DURABILITY_SLUG_PREFIX="lastdb-safe-upgrade-durability-canary"
 DURABILITY_NONCE=""
 DURABILITY_MODE="durable"
@@ -715,8 +730,9 @@ write_upgrade_restart_intent() {
 durability_slug() { printf '%s-%d' "$DURABILITY_SLUG_PREFIX" "$1"; }
 
 durability_read_body() {
-  # $1 = slug. stdout: the record as brain prints it (empty on any failure).
-  run_op_with_deadline 15 env FBRAIN_FOLDDB_SOCKET="$PRIMARY_SOCK" \
+  # $1 = slug, $2 = per-read deadline seconds (default 15). stdout: the record
+  # as brain prints it (empty on any failure).
+  run_op_with_deadline "${2:-15}" env FBRAIN_FOLDDB_SOCKET="$PRIMARY_SOCK" \
     LASTDB_HOME="$PRIMARY_HOME" FOLDDB_HOME="$PRIMARY_HOME" \
     brain get "$1" 2>/dev/null || true
 }
@@ -726,6 +742,29 @@ durability_output_is_http_400() {
   # failures. HTTP 400 is the deny_unknown_fields rejection of `durability`.
   printf '%s' "$1" | grep -Eqi \
     'HTTP[[:space:]]*400|status[[:space:]]*[:=][[:space:]]*"?400"?([^0-9]|$)|400[[:space:]]+Bad[[:space:]]+Request'
+}
+
+durability_arm_sleep() {
+  # $1 = attempt number that just failed (1-based). Sleeps the matching backoff.
+  local n=0 secs="" last=""
+  for secs in $DURABILITY_ARM_BACKOFF_S; do
+    n=$((n + 1))
+    last="$secs"
+    [ "$n" -eq "$1" ] && break
+  done
+  [ -n "$last" ] && sleep "$last"
+}
+
+durability_arm_readback() {
+  # $1 = slug, $2 = sentinel index. 0 when this run's nonce reads back within
+  # DURABILITY_ARM_READ_WAIT_S on the old daemon.
+  local deadline=$(( $(date +%s) + DURABILITY_ARM_READ_WAIT_S ))
+  while :; do
+    durability_read_body "$1" "$DURABILITY_ARM_READ_OP_S" \
+      | grep -qF "nonce: ${DURABILITY_NONCE}#${2}" && return 0
+    [ "$(date +%s)" -ge "$deadline" ] && return 1
+    sleep "$DURABILITY_ARM_READ_POLL_S"
+  done
 }
 
 durability_write_sentinels() {
@@ -739,10 +778,11 @@ durability_write_sentinels() {
   #                     a queued put of the same sentinel succeeded, and
   #                     read-back on the old daemon returned this run's nonce.
   #                     Post-cutover nonce read-back remains mandatory.
-  # Any non-400 durable-put failure still hard-aborts.
+  # Any other durable-put failure is retried up to DURABILITY_ARM_ATTEMPTS
+  # times (a slow old daemon times out; it does not refuse), then hard-aborts.
   DURABILITY_NONCE="$(date -u +%Y%m%dT%H%M%SZ)-$$"
   DURABILITY_MODE="durable"
-  local i slug body receipt put_rc put_err used_fallback=0
+  local i slug body receipt put_rc put_err used_fallback=0 attempt armed
   local errf="${TMPDIR:-/tmp}/lastdb-su-durability-err.$$"
   for i in $(seq 1 "$DURABILITY_N"); do
     slug="$(durability_slug "$i")"
@@ -750,46 +790,57 @@ durability_write_sentinels() {
       printf -- '---\ntype: reference\nslug: %s\ntitle: safe-upgrade durability canary %d (constant slug; nonce changes per run)\n---\nnonce: %s#%d\n\nWritten by lastdb-safe-upgrade immediately before the cutover restart and\nread back after it. A stale nonce after an upgrade means the primary lost an\nacknowledged write across the restart. Safe to keep; carries no other\nmeaning. Rationale: brain\npapercut-lastdb-acked-write-lost-loom-terminal-status-regressed.\n' \
         "$slug" "$i" "$DURABILITY_NONCE" "$i"
     )"
-    put_rc=0
-    receipt="$(
-      printf '%s' "$body" \
-        | env FBRAIN_FOLDDB_SOCKET="$PRIMARY_SOCK" LASTDB_HOME="$PRIMARY_HOME" FOLDDB_HOME="$PRIMARY_HOME" \
-          brain put --durable --json 2>"$errf"
-    )" || put_rc=$?
-    put_err="$(cat "$errf" 2>/dev/null || true)"
-    if [ "$put_rc" -eq 0 ] && printf '%s' "$receipt" | jq -e \
-      '.ok == true and .durability == "durable"' >/dev/null 2>&1; then
-      durability_read_body "$slug" | grep -qF "nonce: ${DURABILITY_NONCE}#${i}" \
-        || { rm -f "$errf"; die "durability canary: pre-cutover read-back of $slug did not return this run's nonce — primary already unhealthy; aborting before any live change"; }
-      continue
-    fi
-    if durability_output_is_http_400 "${receipt}
-${put_err}"; then
-      log "durability canary: $slug --durable put HTTP 400 on old daemon ${CURRENT_VER:-unknown} (no durable-receipt API); printing response body"
-      if [ -n "$put_err" ]; then
-        log "durability canary: HTTP 400 stderr: $(printf '%s' "$put_err" | tr '\n' ' ')"
-      fi
-      if [ -n "$receipt" ]; then
-        log "durability canary: HTTP 400 stdout: $(printf '%s' "$receipt" | tr '\n' ' ')"
-      fi
+    armed=""
+    attempt=0
+    while [ "$attempt" -lt "$DURABILITY_ARM_ATTEMPTS" ]; do
+      attempt=$((attempt + 1))
       put_rc=0
       receipt="$(
         printf '%s' "$body" \
           | env FBRAIN_FOLDDB_SOCKET="$PRIMARY_SOCK" LASTDB_HOME="$PRIMARY_HOME" FOLDDB_HOME="$PRIMARY_HOME" \
-            brain put --json 2>"$errf"
+            brain put --durable --json 2>"$errf"
       )" || put_rc=$?
       put_err="$(cat "$errf" 2>/dev/null || true)"
-      if [ "$put_rc" -ne 0 ] || ! printf '%s' "$receipt" | jq -e '.ok == true' >/dev/null 2>&1; then
-        rm -f "$errf"
-        die "durability canary: HTTP 400 durable put, then queued put of $slug failed — aborting before any live change (${put_err})"
+      if [ "$put_rc" -eq 0 ] && printf '%s' "$receipt" | jq -e \
+        '.ok == true and .durability == "durable"' >/dev/null 2>&1; then
+        armed="durable"
+        break
       fi
-      durability_read_body "$slug" | grep -qF "nonce: ${DURABILITY_NONCE}#${i}" \
-        || { rm -f "$errf"; die "durability canary: queued+readback of $slug did not return this run's nonce — aborting before any live change"; }
-      used_fallback=1
-      continue
+      if durability_output_is_http_400 "${receipt}
+${put_err}"; then
+        log "durability canary: $slug --durable put HTTP 400 on old daemon ${CURRENT_VER:-unknown} (no durable-receipt API); printing response body"
+        if [ -n "$put_err" ]; then
+          log "durability canary: HTTP 400 stderr: $(printf '%s' "$put_err" | tr '\n' ' ')"
+        fi
+        if [ -n "$receipt" ]; then
+          log "durability canary: HTTP 400 stdout: $(printf '%s' "$receipt" | tr '\n' ' ')"
+        fi
+        put_rc=0
+        receipt="$(
+          printf '%s' "$body" \
+            | env FBRAIN_FOLDDB_SOCKET="$PRIMARY_SOCK" LASTDB_HOME="$PRIMARY_HOME" FOLDDB_HOME="$PRIMARY_HOME" \
+              brain put --json 2>"$errf"
+        )" || put_rc=$?
+        put_err="$(cat "$errf" 2>/dev/null || true)"
+        if [ "$put_rc" -eq 0 ] && printf '%s' "$receipt" | jq -e '.ok == true' >/dev/null 2>&1; then
+          armed="queued+readback"
+          break
+        fi
+        log "durability canary: $slug queued put after HTTP 400 failed (attempt $attempt/$DURABILITY_ARM_ATTEMPTS): $(printf '%s' "$put_err" | tr '\n' ' ')"
+      else
+        log "durability canary: $slug durable put failed (attempt $attempt/$DURABILITY_ARM_ATTEMPTS, rc=$put_rc): $(printf '%s' "$put_err" | tr '\n' ' ')"
+      fi
+      [ "$attempt" -lt "$DURABILITY_ARM_ATTEMPTS" ] && durability_arm_sleep "$attempt"
+    done
+    if [ -z "$armed" ]; then
+      rm -f "$errf"
+      die "durability canary: pre-cutover durable write of $slug failed after $DURABILITY_ARM_ATTEMPTS attempts — aborting before any live change (the canary must arm to prove the cutover keeps durable writes; last error: ${put_err})"
     fi
-    rm -f "$errf"
-    die "durability canary: pre-cutover durable write of $slug failed — aborting before any live change (the canary must arm to prove the cutover keeps durable writes; not HTTP 400, so the daemon appears to support durable receipts)"
+    if ! durability_arm_readback "$slug" "$i"; then
+      rm -f "$errf"
+      die "durability canary: pre-cutover read-back of $slug did not return this run's nonce within ${DURABILITY_ARM_READ_WAIT_S}s — primary already unhealthy; aborting before any live change"
+    fi
+    [ "$armed" = "queued+readback" ] && used_fallback=1
   done
   rm -f "$errf"
   if [ "$used_fallback" -eq 1 ]; then
