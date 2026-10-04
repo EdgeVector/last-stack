@@ -266,6 +266,8 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/rowcount-bar-checks.sh"
 # shellcheck source=footprint-bar-checks.sh
 . "$_SCRIPT_DIR/footprint-bar-checks.sh"
+# shellcheck source=key-cap-bar-checks.sh
+. "$_SCRIPT_DIR/key-cap-bar-checks.sh"
 # shellcheck source=live-lastdb-env.sh
 . "$_SCRIPT_DIR/live-lastdb-env.sh"
 # shellcheck source=dev-photograph-stamp-gate.sh
@@ -1023,7 +1025,7 @@ clone_probe_home() {
 
 # Start lastdbd on $1=bin $2=copy $3=label. Sets LAST_PROBE_PID/SOCK/BLOG/BOOT.
 start_probe_node() {
-  local bin="$1" copy="$2" label="$3"
+  local bin="$1" copy="$2" label="$3" extra_env="${4:-}"
   local blog sock pid uh i
   local env_pairs=()
   blog="$copy.boot.log"
@@ -1050,6 +1052,7 @@ EOF_ENV
     -u MIMALLOC_PURGE_DELAY \
     ${env_pairs[@]+"${env_pairs[@]}"} \
     ${stamp_env:+"$stamp_env"} \
+    ${extra_env:+"$extra_env"} \
     "$bin" --data-dir "$copy" >"$blog" 2>&1 &
   pid=$!
   uh=""
@@ -1078,6 +1081,49 @@ EOF_ENV
   LAST_PROBE_SOCK="$sock"
   LAST_PROBE_BLOG="$blog"
   LAST_PROBE_BOOT="$i"
+  return 0
+}
+
+# Key-cap bar: boot the candidate on its own CoW copy with a cap far below
+# the default, drive reads, sample /api/status, and write a proof document.
+# $1 = candidate bin, $2 = proof path. The cap is boot-time, so this cannot
+# reuse the latency node.
+probe_key_cap_bar() {
+  local cand_bin="$1" out="$2" k_copy k_pid k_sock k_blog dir start now n=0
+  k_copy="$(clone_probe_home k)" || return 1
+  if ! start_probe_node "$cand_bin" "$k_copy" "key-cap" "$KEY_CAP_BAR_ENV=$KEY_CAP_BAR_CAP"; then
+    return 1
+  fi
+  k_pid="$LAST_PROBE_PID"
+  k_sock="$LAST_PROBE_SOCK"
+  k_blog="$LAST_PROBE_BLOG"
+  dir="${k_copy}.key-cap-samples"
+  mkdir -p "$dir"
+  log "key-cap bar: $KEY_CAP_BAR_ENV=$KEY_CAP_BAR_CAP for ${KEY_CAP_BAR_SECS}s"
+  start="$(date +%s)"
+  while true; do
+    if ! kill -0 "$k_pid" 2>/dev/null; then
+      warn "key-cap bar: candidate exited during the sample window"
+      remove_probe_copy "$k_copy" "$k_blog" || true
+      return 1
+    fi
+    op_lat_point "$k_sock" || true
+    if command -v kanban >/dev/null 2>&1; then
+      op_lat_scan "$k_copy" || true
+    fi
+    n=$((n + 1))
+    curl -sS --max-time 15 --unix-socket "$k_sock" -H 'Host: localhost' \
+      -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/status \
+      >"$(printf '%s/sample-%03d.json' "$dir" "$n")" 2>/dev/null \
+      || printf '%s\n' '{}' >"$(printf '%s/sample-%03d.json' "$dir" "$n")"
+    now="$(date +%s)"
+    if [ $((now - start)) -ge "$KEY_CAP_BAR_SECS" ] && [ "$n" -ge 2 ]; then
+      break
+    fi
+    sleep 5
+  done
+  key_cap_bar_from_samples "$dir" "$KEY_CAP_BAR_CAP" "$out" || true
+  stop_probe_node "$k_pid" "$k_copy" "$k_blog" || return 1
   return 0
 }
 
@@ -2092,6 +2138,10 @@ probe_like_to_like_metrics "$CANDIDATE_BIN" "$BASELINE_BIN" "$CAND_METRICS" "$BA
 CAND_METRICS_RC=$?
 set -e
 PROBE_RSS_MB="$(metric_val "$CAND_METRICS" peak_rss_mb)"
+KC_PROOF="$WORK/key-cap-proof.json"
+set +e
+probe_key_cap_bar "$CANDIDATE_BIN" "$KC_PROOF"
+set -e
 if [ "$CAND_METRICS_RC" -ne 0 ] || [ -z "$PROBE_RSS_MB" ]; then
   echo ""
   echo "VERDICT: RED"
@@ -2262,6 +2312,21 @@ if [ "$FP_RC" -ne 0 ]; then
   exit 1
 fi
 log "$FP_RECEIPT"
+set +e
+KC_RECEIPT="$(key_cap_bar_eval "$KC_PROOF" 2>&1)"
+KC_RC=$?
+set -e
+if [ "$KC_RC" -ne 0 ]; then
+  log "$KC_RECEIPT"
+  echo ""
+  echo "VERDICT: RED"
+  echo "REASON: candidate $CAND_VER fails the key-cap bar — under $KEY_CAP_BAR_ENV=$KEY_CAP_BAR_CAP the logical resident set must purge and keep resident_key_count within resident_key_budget"
+  echo "KEYCAP:  $KC_RECEIPT"
+  echo "BACKUP: $BACKUP  (kept; primary NOT upgraded)"
+  echo "NEXT:   do NOT live-upgrade. There is no skip flag. A binary without the logical resident set gauges fails this bar."
+  exit 1
+fi
+log "$KC_RECEIPT"
 log "row-count bar GREEN: point cand=${CAND_ROWS_POINT}(base ${BASE_ROWS_POINT}) scan cand=${CAND_ROWS_SCAN}(base ${BASE_ROWS_SCAN})"
 log "probe GREEN for candidate $CAND_VER (data-plane + RSS peak_mb=${PROBE_RSS_MB} + cold_point/scan=${CAND_LAT_COLD_POINT_MS}/${CAND_LAT_COLD_SCAN_MS}ms hot_point/scan/write=${CAND_LAT_POINT_MS}/${CAND_LAT_SCAN_MS}/${CAND_LAT_WRITE_MS}ms)"
 
@@ -2275,6 +2340,7 @@ if [ "$PROBE_ONLY" -eq 1 ]; then
   echo "LATENCY: cold_point=${CAND_LAT_COLD_POINT_MS}ms(base ${BASE_LAT_COLD_POINT_MS}ms) cold_scan=${CAND_LAT_COLD_SCAN_MS}ms(base ${BASE_LAT_COLD_SCAN_MS}ms) hot_point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) hot_scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) hot_write=${CAND_LAT_WRITE_MS}ms(base ${BASE_LAT_WRITE_MS}ms) boot=${CAND_BOOT_SECS}s(base ${BASE_BOOT_SECS:-?}s)"
   echo "ROWCOUNT: point cand=${CAND_ROWS_POINT}(base ${BASE_ROWS_POINT}) scan cand=${CAND_ROWS_SCAN}(base ${BASE_ROWS_SCAN})"
   echo "FOOTPRINT: ${FP_RECEIPT:-unset}"
+  echo "KEYCAP:  ${KC_RECEIPT:-unset}"
   echo "NEXT:    run last-stack-safe-upgrade-loom --candidate $CANDIDATE_BIN --source-git-oid <full-fold-commit>"
   exit 0
 fi
