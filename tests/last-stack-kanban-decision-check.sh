@@ -132,6 +132,73 @@ assert p["conflicts"][0]["slug"] == "preference-kanban-no-trackers-no-human-gate
 print("decision-check tracker-conflict ok")
 PY
 
+# A mechanical invariant must fire with NO citation in the corpus -- the
+# production condition. Both INVARIANT slugs have never resolved in the LastDB
+# brain, so the arms were gated on a point-get that could not succeed, and a
+# card carrying Kind:tracker AND column review AND both forbidden body shapes
+# came back `verdict: clear`, rc 0 (measured live 2026-10-04). The case above
+# passes only because its fixture MANUFACTURES the record production lacks, so
+# it certified the arm while the arm was inert.
+#
+# `cited` must be false here: the refusal stands, and it reports that it could
+# not read its own provenance.
+empty_dir="$tmp/empty-brain"
+mkdir -p "$empty_dir/get"
+printf '[]\n' >"$empty_dir/search.json"
+cat >"$tmp/body_violates_both" <<'EOF'
+## GOAL
+
+Track the review-column work under one umbrella card.
+
+## END STATE
+
+Agents park work with `kanban move <slug> review`.
+EOF
+
+set +e
+python3 "$BIN" --title "Add a review column tracker" --kind tracker \
+  --column review --fixture-dir "$empty_dir" --json \
+  <"$tmp/body_violates_both" >"$tmp/empty.json" 2>"$tmp/empty.err"
+empty_rc=$?
+set -e
+[ "$empty_rc" -eq 2 ] || fail "uncited mechanical invariant must exit 2, got $empty_rc"
+python3 - "$tmp/empty.json" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1]))
+assert p["ok"] is False, "an uncited mechanical invariant must still refuse"
+assert p["verdict"] == "conflict", p["verdict"]
+assert p["slugs"] == [], "nothing resolved, so the stamp lists no slug"
+hit = {c["slug"]: c for c in p["conflicts"]}
+# Both mechanical arms fire: kind on one invariant, column on the other.
+assert "preference-kanban-no-trackers-no-human-gates" in hit, sorted(hit)
+assert "preference-kanban-no-review-column" in hit, sorted(hit)
+for slug, c in hit.items():
+    assert c["cited"] is False, f"{slug} should report unreadable provenance"
+print("decision-check uncited-mechanical-invariant-still-fires ok")
+PY
+grep -q 'did not resolve in this run' "$tmp/empty.err" \
+  || fail "a refusal on an unreadable citation must say so on stderr"
+
+# The body arm alone stays citation-gated: a prose heuristic measured wrong in
+# both directions must not become a hard refusal. Same body, no forbidden kind
+# or column, empty corpus -> no refusal. This is the card that FIXES
+# papercut-kanban-agents-review-column-not-live-20261002, and it has to quote
+# the forbidden command to describe the defect.
+set +e
+python3 "$BIN" --title "Remove stale review-column guidance from AGENTS.md" \
+  --kind pr --column todo --fixture-dir "$empty_dir" --json \
+  <"$tmp/body_violates_both" >"$tmp/bodyonly.json" 2>/dev/null
+bodyonly_rc=$?
+set -e
+[ "$bodyonly_rc" -eq 0 ] || fail "uncited body heuristic must not refuse, got $bodyonly_rc"
+python3 - "$tmp/bodyonly.json" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1]))
+assert p["verdict"] == "clear", p["verdict"]
+assert p["conflicts"] == [], p["conflicts"]
+print("decision-check uncited-body-heuristic-stays-advisory ok")
+PY
+
 # Search candidates with unsupported types still get a point-read. The
 # point-read type, not typed search metadata, controls the stamp set.
 other_dir="$tmp/other"
