@@ -244,10 +244,32 @@ set_soak_fixture 1200 60
 inside_again="$(status_json)"
 printf '%s\n' "$inside_again" | jq -e '.soak_gate == null' >/dev/null \
   || fail "an in-window soak has no gate verdict to report, got: $inside_again"
-case "$(soak_line)" in
-  *:1200s/3600s:last_check=6*) ;;
-  *) fail "in-window line must keep the countdown and the tick age, got: $(soak_line)" ;;
+# TOLERANCE, not a literal. `*:1200s/3600s:last_check=6*` was the first form of
+# this assertion and it is a flake by construction: `set_soak_fixture` takes its
+# own `now`, `host-track status` computes `elapsed` at READ time, and every
+# `status` spawn in between advances the clock. It passed on this host and failed
+# on a GitHub runner at `1202s/3600s:last_check=62s` -- the countdown and the
+# tick age both present and correct, the assertion red on two seconds of drift.
+# An exact second cannot be derived here, so the claim is the SHAPE plus a band.
+line_again="$(soak_line)"
+case "$line_again" in
+  *s/3600s:last_check=*s*) ;;
+  *) fail "in-window line must keep the countdown and the tick age, got: $line_again" ;;
 esac
+# Bound the numbers ON THE LINE, not only in the JSON. The first version of
+# this band read `.soak_elapsed_secs` from the JSON while the shape pattern
+# accepted any digits in the line, so a mutation that rendered the countdown as
+# `0s/3600s` passed: the band and the shape were guarding two different
+# surfaces and the line -- the thing an operator reads -- was unguarded.
+line_elapsed="$(printf '%s\n' "$line_again" | sed -n 's|.*:\([0-9]\{1,\}\)s/3600s:.*|\1|p')"
+line_age="$(printf '%s\n' "$line_again" | sed -n 's|.*:last_check=\([0-9]\{1,\}\)s.*|\1|p')"
+{ [ -n "$line_elapsed" ] && [ "$line_elapsed" -ge 1200 ] && [ "$line_elapsed" -lt 1500 ]; } \
+  || fail "the line's countdown must be the fixture's own elapsed, within drift, got: $line_again"
+{ [ -n "$line_age" ] && [ "$line_age" -ge 60 ] && [ "$line_age" -lt 360 ]; } \
+  || fail "the line's tick age must be the fixture's own, within drift, got: $line_again"
+printf '%s\n' "$inside_again" | jq -e '.soak_elapsed_secs >= 1200 and .soak_elapsed_secs < 1500
+    and .soak_last_check_age_secs >= 60 and .soak_last_check_age_secs < 360' >/dev/null \
+  || fail "the JSON numbers must be the fixture's own, within drift, got: $inside_again"
 
 # A RED canary must NOT carry a clock. Both `soak_red` writes reset
 # `started_epoch` to now, so the stamp holds a fresh window for a candidate that
