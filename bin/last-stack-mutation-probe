@@ -23,7 +23,18 @@
 # -----
 #   last-stack-mutation-probe --name <probe> --target <file> [--target <file>]...
 #                             --patch <command> --test <command>
-#                             [--expect red|green] [--keep-on-fail]
+#                             [--expect red|green] [--expect-red-on <ere>]
+#                             [--keep-on-fail]
+#
+# --expect-red-on <ere> states WHICH assertion the red must be about. Without
+# it the strongest claim a probe can make is "something failed", and every
+# reader of `verdict=RED expect=RED` upgrades that silently to "the guard
+# caught MY defect". Measured 2026-10-04 on EdgeVector/last-stack PR 236: of
+# six probes against one five-case guard test, THREE went red on a different
+# case than the one they targeted, and two of the five cases had no
+# independent verdict available at all. Every one of the six printed
+# `mutated=yes verdict=RED expect=RED restored=ok offtarget=none`.
+# brain: papercut-mutation-probe-cannot-state-which-assertion-the-red-should-be-about-20261004
 #
 # --patch and --test are shell commands run with `bash -c` from the caller's
 # cwd. The patch must change at least one --target; creating a target that was
@@ -46,12 +57,19 @@
 #      The offending paths are named; repair them yourself. The test is not run.
 #      Checked BEFORE 3, because exit 3's advice -- fix the anchor and run it
 #      again -- is then taken on a tree that no longer matches the commit.
+#   6  THE RED WAS NOT THE ONE YOU ASKED FOR. --expect-red-on was given, the
+#      test went RED, and nothing in its output matched the pattern. The probe
+#      has no verdict about the assertion it targeted. Only possible with
+#      --expect-red-on; a probe without one can never reach this code, which is
+#      the point of reporting expect_red_on= on every verdict line.
 set -euo pipefail
 
 name=""
 patch_cmd=""
 test_cmd=""
 expect="red"
+expect_red_on=""
+expect_red_on_set=0
 keep_on_fail=0
 targets=()
 
@@ -64,8 +82,15 @@ while [ "$#" -gt 0 ]; do
     --patch)  [ "$#" -ge 2 ] || die "--patch needs a value"; patch_cmd="$2"; shift 2 ;;
     --test)   [ "$#" -ge 2 ] || die "--test needs a value"; test_cmd="$2"; shift 2 ;;
     --expect) [ "$#" -ge 2 ] || die "--expect needs a value"; expect="$2"; shift 2 ;;
+    --expect-red-on)
+      [ "$#" -ge 2 ] || die "--expect-red-on needs a value"
+      # Refused rather than last-wins: two patterns would read as "either of
+      # these", and a probe that accepts either red is the weak claim this
+      # option exists to remove.
+      [ "$expect_red_on_set" -eq 0 ] || die "--expect-red-on may be given once; two patterns would read as 'either red will do'"
+      expect_red_on="$2"; expect_red_on_set=1; shift 2 ;;
     --keep-on-fail) keep_on_fail=1; shift ;;
-    -h|--help) sed -n '2,50p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,/^[^#]/p' "$0" | sed '$d'; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
 done
@@ -75,6 +100,12 @@ done
 [ -n "$patch_cmd" ] || die "--patch is required"
 [ -n "$test_cmd" ] || die "--test is required"
 case "$expect" in red|green) ;; *) die "--expect must be red or green, got: $expect" ;; esac
+if [ "$expect_red_on_set" -eq 1 ]; then
+  [ -n "$expect_red_on" ] || die "--expect-red-on needs a non-empty pattern"
+  [ "$expect" = "red" ] || die "--expect-red-on is meaningless with --expect green: there is no red for it to be about"
+  printf 'x\n' | grep -E -- "$expect_red_on" >/dev/null 2>&1 || [ "$?" -le 1 ] \
+    || die "--expect-red-on is not a valid extended regular expression: $expect_red_on"
+fi
 
 abs_path() {
   # Absolute, symlink-resolved as far as the parent directory. The leaf may not
@@ -272,9 +303,24 @@ if [ "$mutated" = "no" ]; then
   exit 3
 fi
 
-# 4. run the guard test against the mutated tree
+# 4. run the guard test against the mutated tree.
+#
+#    The output is captured ONLY when --expect-red-on asked for it, so the
+#    default path keeps the two streams separate exactly as every existing
+#    caller sees them today. With the option, stdout and stderr are merged and
+#    teed: merged because a guard may print its FAIL line on either, and teed
+#    so a long test still streams while it runs.
 test_rc=0
-bash -c "$test_cmd" || test_rc=$?
+test_output=""
+if [ "$expect_red_on_set" -eq 1 ]; then
+  test_output="$snap_dir/test-output"
+  set +o pipefail
+  bash -c "$test_cmd" 2>&1 | tee "$test_output"
+  test_rc="${PIPESTATUS[0]}"
+  set -o pipefail
+else
+  bash -c "$test_cmd" || test_rc=$?
+fi
 if [ "$test_rc" -eq 0 ]; then verdict="GREEN"; else verdict="RED"; fi
 
 # 5. restore, then prove the restore landed. The standing rule is not to assume
@@ -285,8 +331,15 @@ if any_target_differs; then
   restored="FAILED"
 fi
 
-printf 'probe %s mutated=yes verdict=%s expect=%s restored=%s test_rc=%s offtarget=%s\n' \
-  "$name" "$verdict" "$(printf '%s' "$expect" | tr '[:lower:]' '[:upper:]')" "$restored" "$test_rc" "$offtarget_state"
+# The pattern is reported on EVERY verdict line, including when it was not
+# given. A probe without one is then visibly the weaker claim -- `something
+# failed` rather than `this assertion failed` -- instead of looking identical
+# to a targeted probe.
+expect_red_on_field="-"
+[ "$expect_red_on_set" -eq 0 ] || expect_red_on_field="'$expect_red_on'"
+
+printf 'probe %s mutated=yes verdict=%s expect=%s restored=%s test_rc=%s offtarget=%s expect_red_on=%s\n' \
+  "$name" "$verdict" "$(printf '%s' "$expect" | tr '[:lower:]' '[:upper:]')" "$restored" "$test_rc" "$offtarget_state" "$expect_red_on_field"
 
 if [ "$restored" = "FAILED" ]; then
   snap_kept=1
@@ -299,5 +352,23 @@ case "$expect" in
   red)   [ "$verdict" = "RED" ]   || { printf 'last-stack-mutation-probe: %s expected RED and the test PASSED; the guard does not catch this defect\n' "$name" >&2; [ "$keep_on_fail" -eq 0 ] || snap_kept=1; exit 1; } ;;
   green) [ "$verdict" = "GREEN" ] || { printf 'last-stack-mutation-probe: %s expected GREEN and the test FAILED (test_rc=%s)\n' "$name" "$test_rc" >&2; [ "$keep_on_fail" -eq 0 ] || snap_kept=1; exit 1; } ;;
 esac
+
+# 6. REFUSE a red that is not the one the caller asked for. The verdict is
+#    already RED here, so without this the probe exits 0 and the operator reads
+#    "the guard caught my defect" off a line that only says a test failed.
+if [ "$expect_red_on_set" -eq 1 ]; then
+  matched=""
+  matched="$(grep -E -m1 -- "$expect_red_on" "$test_output" 2>/dev/null || true)"
+  if [ -n "$matched" ]; then
+    printf '  red-on: %s\n' "$matched"
+  else
+    [ "$keep_on_fail" -eq 0 ] || snap_kept=1
+    printf 'last-stack-mutation-probe: %s went RED, but nothing in the test output matched --expect-red-on %s. The test failed on a DIFFERENT assertion, so this probe has no verdict about the one it targeted. Narrow the guard test (a positional case filter is the recorded fix) or correct the pattern.\n' \
+      "$name" "$expect_red_on" >&2
+    printf 'last-stack-mutation-probe: the test output it DID produce (last 20 lines):\n' >&2
+    tail -20 -- "$test_output" | sed 's/^/  test: /' >&2
+    exit 6
+  fi
+fi
 
 exit 0
