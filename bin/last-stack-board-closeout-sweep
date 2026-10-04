@@ -121,7 +121,7 @@ while [ "$#" -gt 0 ]; do
     --json) json_out=1; shift ;;
     -h|--help)
       # Print the leading comment block; no brittle line-number range.
-      awk 'NR==1 {next} /^#/ {print; next} {exit}' "$0"
+      awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
       exit 0
       ;;
     *)

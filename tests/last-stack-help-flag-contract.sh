@@ -155,6 +155,68 @@ if [ -n "$range_hits" ]; then
 fi
 
 
+# A self-printing help handler must STRIP the source comment marker.
+#
+# Every helper here documents itself in its own leading comment block and prints
+# that block as usage. Two renderings were in the tree. 15 sites stripped the
+# marker; 13 printed it verbatim, so `--help` read as source rather than as
+# documentation, and a blank separator in the header rendered as a line holding
+# one punctuation mark:
+#
+#   $ ./setup --help | head -3
+#   # The Last Stack - setup / installer
+#   #
+#   # Registers each skill in skills/ into whatever agent harnesses you have
+#
+# The split predates the line-range fix above, which deliberately kept each
+# site's existing rendering so a 24-file rewrite stayed mechanical. This rule is
+# the other half.
+#
+# Scope note, measured rather than assumed. The rule matches a self-print header
+# line -- an awk program that skips line 1 and prints /^#/ lines, or the
+# `sed -n '2,/^[^#]/p'` spelling, naming $0 or BASH_SOURCE -- and requires
+# sub(/^# ?/, "") on that same line. Run against the tree before the fix it
+# selected exactly the 13 sites whose `--help` actually printed a leading `#`,
+# and none of the 15 correct ones: no opt-out list, which is what separates this
+# from the reachability rule the header above rejects.
+#
+# Three spellings existed (spaced strip, spaced raw, and one unspaced raw in
+# bin/last-stack-board-closeout-sweep that a literal-match census had missed),
+# so the matcher is whitespace-tolerant on purpose. A fourth spelling would be
+# caught as long as it still skips line 1 and prints /^#/ from itself.
+# papercut-bin-help-prints-the-source-comment-marker-on-11-of-25-helpers-20261004
+help_printer_re="(NR[[:space:]]*==[[:space:]]*1.*/\^#/|sed -n '2,/\^\[\^#\]/p')"
+help_self_re='(\$0|BASH_SOURCE)'
+help_strip_re='sub\(/\^# \?/'
+marker_hits=""
+for f in "$BIN_DIR"/* "$ROOT/setup"; do
+  [ -f "$f" ] || continue
+  # Strip whole-line comments first, for the same reason as the rule above: the
+  # helpers that carry this idiom correctly also QUOTE it in their own headers.
+  # Measured for THIS rule: exactly one line in the tree would false-positive
+  # without the strip, and it is in this file, which the loop below never reads.
+  # So the strip is defensive here rather than load-bearing, unlike in the rule
+  # above where it is both -- and the probe that drops it is GREEN on its own and
+  # RED only when paired with a quoting comment planted in bin/. Keeping it means
+  # a helper may explain the defect in its own header without tripping the guard.
+  #
+  # One pipeline per file, not one per line. The first draft tested each source
+  # line in its own grep, which is ~4 processes per line of bin/ and took over
+  # two minutes; this is the same predicate in a fixed number of processes.
+  if sed -e 's/^[[:space:]]*#.*$//' "$f" \
+    | grep -E -- "$help_printer_re" \
+    | grep -E -- "$help_self_re" \
+    | grep -qvE -- "$help_strip_re"; then
+    marker_hits="$marker_hits $(basename "$f")"
+  fi
+done
+if [ -n "$marker_hits" ]; then
+  for h in $marker_hits; do
+    fail "$h: --help prints its own comment markers; add sub(/^# ?/, \"\") so usage reads as documentation"
+  done
+fi
+
+
 # --report: the unenrolled population, from source only. Never executes.
 if [ "${1:-}" = "--report" ]; then
   printf '\nhelpers in %s with a help arm and NOT enrolled:\n' "$BIN_DIR"

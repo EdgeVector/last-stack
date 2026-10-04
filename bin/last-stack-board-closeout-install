@@ -83,7 +83,7 @@ case "$cmd" in
     exec "$self_root/bin/$program" "${@:2}"
     ;;
   -h|--help)
-    awk 'NR == 1 { next } /^#/ { print; next } { exit }' "$0"
+    awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
     ;;
   *)
     echo "usage: $0 install|uninstall|status|run-once" >&2

@@ -161,6 +161,6 @@ case "$cmd" in
   install) install_agent ;;
   uninstall) uninstall_agent ;;
   status) status_agent ;;
-  -h|--help) awk 'NR == 1 { next } /^#/ { print; next } { exit }' "$0" ;;
+  -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0" ;;
   *) echo "usage: $0 install|uninstall|status" >&2; exit 2 ;;
 esac
