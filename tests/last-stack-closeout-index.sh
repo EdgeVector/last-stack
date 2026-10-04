@@ -228,4 +228,63 @@ PATH="$bin_dir:$PATH" "$tool" record demo closeout-20261003-demo-2200 >/dev/null
 [ "$rc" = "4" ] || fail "case13: a markerless body must be refused, got $rc"
 [ ! -s "$PUT_LOG" ] || fail "case13: overwrote a body this tool did not write"
 
-echo "ok: last-stack-closeout-index (13 cases)"
+# ---------------------------------------------------------------- case 14
+# The banner must name a reader that needs NO install, and the body it writes
+# must still parse.
+#
+# The helper ships with last-stack, so a merge reaches the host one soak window
+# after the record the helper already wrote. Measured 2026-10-03T23:1xZ: the
+# record was correct and `last-stack-closeout-index` answered 127, because the
+# installed tree was one merge behind the commit that added the helper. A banner
+# naming only the helper makes that 127 read as "the pointer is broken" and
+# sends the reader back to guessing slug spellings -- the exact behaviour this
+# record exists to replace.
+# papercut-closeout-index-banner-names-only-the-helper-so-a-reader-who-gets-127-has-no-install-free-fallback-20261003
+make_brain_with_body '{"slug":"closeout-index-demo","body":"## Closeouts, newest first\n\n- closeout-20261003-demo-2115\n"}'
+export PUT_LOG="$tmp/put14.body"
+: >"$PUT_LOG"
+# Capture the status. A renderer that writes a heading the parser does not match
+# makes the NEXT record refuse this tool's own output as "not an index this tool
+# wrote", and under `set -e` that dies here with no named assertion.
+rc=0
+PATH="$bin_dir:$PATH" "$tool" record demo closeout-20261003-demo-2200 >/dev/null || rc=$?
+[ "$rc" = "0" ] || fail "case14: record failed (rc=$rc) on an index this tool wrote"
+grep -Fq 'brain get <slug> --type reference' "$PUT_LOG" \
+  || fail "case14: the banner names no install-free reader"
+grep -Fq 'command not found' "$PUT_LOG" \
+  || fail "case14: the banner does not tell a reader what a missing helper means"
+grep -Fq 'FIRST slug' "$PUT_LOG" \
+  || fail "case14: the banner does not say the list itself carries the answer"
+# A banner is prose above the marker, and case 12 is the reason that matters: a
+# bullet in it would be parsed as a slug. Read the body we just wrote BACK
+# through the real parser, so a future banner that adds a bullet, or moves the
+# heading, fails here instead of making `latest` return a word from a sentence.
+body_json="$(python3 - "$PUT_LOG" <<'PYEOF'
+import json, sys
+raw = open(sys.argv[1]).read()
+body = raw.split("---\n", 2)[-1]
+print(json.dumps({"slug": "closeout-index-demo", "body": body}))
+PYEOF
+)"
+printf '%s' "$body_json" >"$tmp/case14.json"
+cat >"$bin_dir/brain" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$1" = "get" ]; then cat "$BODY_JSON"; echo; exit 0; fi
+if [ "$1" = "put" ]; then cat >/dev/null; echo "updated reference $2"; exit 0; fi
+exit 2
+SH
+chmod +x "$bin_dir/brain"
+export BODY_JSON="$tmp/case14.json"
+# Capture the status too: a heading the parser does not match makes `latest`
+# exit 4, and a bare `$( )` under `set -e` would end the suite there with the
+# tool's own refusal text and no named assertion.
+rc=0
+got="$(PATH="$bin_dir:$PATH" "$tool" latest demo)" || rc=$?
+[ "$rc" = "0" ] \
+  || fail "case14: latest cannot read the body this tool just wrote (rc=$rc); the renderer and the parser disagree on the list heading"
+[ "$got" = "closeout-20261003-demo-2200" ] \
+  || fail "case14: the body this tool wrote does not round-trip through latest: '$got'"
+unset BODY_JSON
+
+echo "ok: last-stack-closeout-index (14 cases)"
