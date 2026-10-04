@@ -16,3 +16,18 @@ papercut-p0-active  prose in routines/pipeline-health.md naming the p0-active ST
 design-in-flight  English prose in routines/kanban-watch.md, not a record: "Avoid speculative refactors, churn, anything design-in-flight."
 design-first-with-a-reasonable-default  English prose in routines/program-driver.md, not a record: "design-first-with-a-reasonable-default -> DRIVE IT". Both of these surfaced the day `design-` joined CITED_TYPES, and both are hyphenated adjectives rather than slugs, which no structural rule distinguishes from a citation.
 reference-fleet-performance-log  a conditional WRITE TARGET in routines/fleet-performance.md step 4, not a citation: the prose itself says "or append to `reference-fleet-performance-log` if it exists", so its absence is already handled where it is named and reporting it tells the reader nothing.
+
+# --- added 2026-10-04 with the bin/ + lib/ corpus widening -------------------
+# Every entry below is a STRING LITERAL a program compares, writes or prints.
+# None is a record anyone is pointed at, and no structural rule separates a
+# kebab-case error code from a slug. The nine truncations the widening also
+# surfaced are NOT here: a trailing hyphen, an elision and a regex capture group
+# are all refused from the source text one character past the token.
+
+papercut-promotion-validation  a flag KEY in bin/last-stack-card-reaper-run: `const flag = \`papercut-promotion-validation:${slug}\``. It namespaces a per-card marker, not a record.
+papercut-queue-missing  an error REASON CODE emitted by bin/last-stack-routine-job-shrink-gate: `emit error "reason=papercut-queue-missing"`. It reports that the papercut queue file was absent.
+papercut-queue-snapshot  a runtime ARTIFACT FILENAME and unit name in bin/last-stack-routine-job-shrink-gate: `papercut-queue-snapshot.json` under the run dir. The local-name rule cannot see it because the file does not exist in the tree.
+papercut-unreadable-or-missing  a return REASON CODE in bin/last-stack-kanban-deferral-release: `return False, "papercut-unreadable-or-missing"`. It describes why one papercut could not be read.
+papercut-product-feature-ns-reconcile-violations  a WRITE TARGET, the same class as reference-fleet-performance-log above: bin/last-stack-product-feature-ns-reconcile puts this slug in the frontmatter of a record it CREATES, so its absence is the normal state before the first run and tells a reader nothing.
+sop-lastdb-safe-upgrade  the checker's OWN documented example, in bin/last-stack-prose-citation-check, of what `brain get` prints for an absent record: `error: No sop: sop-lastdb-safe-upgrade`. The example is only useful because the record is absent.
+task-page-budget  a `Denied()` error code in bin/last-stack-pipeline-pr-guard: `raise Denied("task-page-budget")`. It names the guard clause that refused, not a task record.

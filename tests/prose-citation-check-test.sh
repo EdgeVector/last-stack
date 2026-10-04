@@ -340,7 +340,14 @@ R="$TMP/r20"; make_root "$R" 'Read sop-the-one-that-exists-20260101 first.'
 printf 'sop-the-one-that-exists-20260101=ok\ndogfood-registry=missing\n' > "$TMP/v20"
 printf 'sop-the-one-that-exists-20260101|The index is [[dogfood-registry]].\n' > "$TMP/b20"
 BRAIN_STUB_BODIES="$TMP/b20" run_check "$R" "$TMP/v20" --one-hop
-[ "$(rc)" = 1 ] || bad "case20 one hop: rc $(rc) != 1; the hop finding did not reach the exit code"
+# 4, not 0, and 4 rather than 1 on purpose: a hop finding is a property of a
+# BRAIN RECORD one level past the prose, so it is never attributable to the
+# change in front of it, in either mode. close-out has said "fix it if it is
+# yours, otherwise report it and ship" since the hop shipped; before 2026-10-04
+# the exit code said the opposite. What this case guards is that the finding
+# REACHES the exit code at all -- `hop_dangling 1` beside rc 0 is the defect.
+[ "$(rc)" != 0 ] || bad "case20 one hop: rc 0; the hop finding did not reach the exit code"
+[ "$(rc)" = 4 ] || bad "case20 one hop: rc $(rc) != 4; a hop finding is not the change's to fix"
 [ "$(slugs hop_dangling)" = "dogfood-registry" ] \
   || bad "case20 one hop: hop_dangling '$(slugs hop_dangling)'"
 # What was EXAMINED, not only what was found: a hop over zero records reports
@@ -435,9 +442,150 @@ python3 -c "import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if any('se
   || bad "case25 generator scanned: the report does not name \`setup\` in cited_in, so a reader cannot find the line"
 note "case25 generator scanned rc=$(rc) slug=$(slugs dangling)"
 
+# ------------- case 26: a PRE-EXISTING dangling citation in a touched file is
+# reported, labelled, and does NOT carry the "do not ship" exit code.
+# This is the case that makes the bin/ + lib/ widening shippable. 64 of this
+# repo's 238 helpers (27%) cited a record the brain cannot serve on the day that
+# corpus joined, so about one change in four touches a file with a dead pointer
+# its author never wrote. rc 1 means "do not ship this" and refusing correct work
+# over inherited prose is how a checker gets routed around -- which is the
+# failure mode this checker's own docstring names. rc 4: report and ship.
+R="$TMP/r26"
+mkdir -p "$R/routines" "$R/bin" "$R/config"
+git -C "$R" init -q 2>/dev/null
+git -C "$R" config user.email ci@example.com
+git -C "$R" config user.name ci
+printf 'Legacy prose cites papercut-inherited-and-gone-20260101.\nA second line.\n' \
+  > "$R/routines/legacy.md"
+git -C "$R" add -A >/dev/null 2>&1
+git -C "$R" commit -qm base >/dev/null 2>&1
+base26="$(git -C "$R" rev-parse HEAD)"
+# Touch the file for an unrelated reason: the citation line is untouched.
+printf 'Legacy prose cites papercut-inherited-and-gone-20260101.\nA second line, now edited.\n' \
+  > "$R/routines/legacy.md"
+printf 'papercut-inherited-and-gone-20260101=missing\n' > "$TMP/v26"
+run_check "$R" "$TMP/v26" --changed-since "$base26"
+[ "$(rc)" = 4 ] \
+  || bad "case26 pre-existing: rc $(rc) != 4; a citation the change did not write must not carry 'do not ship'"
+[ "$(slugs dangling)" = "papercut-inherited-and-gone-20260101" ] \
+  || bad "case26 pre-existing: slugs '$(slugs dangling)'; the finding must still be REPORTED, not dropped"
+[ "$(field dangling_pre_existing)" = 1 ] \
+  || bad "case26 pre-existing: dangling_pre_existing=$(field dangling_pre_existing) != 1"
+[ "$(field dangling_introduced)" = 0 ] \
+  || bad "case26 pre-existing: dangling_introduced=$(field dangling_introduced) != 0"
+note "case26 pre-existing rc=$(rc) pre_existing=$(field dangling_pre_existing)"
+
+# ------------- case 27: a citation the change ADDS to an existing file is rc 1.
+# The blocking half, and the common shape: case 17 proves it for a brand new
+# untracked file, which `git diff` cannot see at all. An added line inside a
+# tracked file is what `git diff -U0` is read for, and if that read were empty
+# every row would label itself pre-existing and the gate would never block
+# anything -- silently, with the same output as a healed corpus.
+printf 'Legacy prose cites papercut-inherited-and-gone-20260101.\nA second line.\nNew line cites papercut-just-added-and-gone-20260101.\n' \
+  > "$R/routines/legacy.md"
+printf 'papercut-inherited-and-gone-20260101=ok\npapercut-just-added-and-gone-20260101=missing\n' > "$TMP/v27"
+run_check "$R" "$TMP/v27" --changed-since "$base26"
+[ "$(rc)" = 1 ] \
+  || bad "case27 introduced: rc $(rc) != 1; a pointer-to-nothing the change wrote must not ship"
+[ "$(field dangling_introduced)" = 1 ] \
+  || bad "case27 introduced: dangling_introduced=$(field dangling_introduced) != 1"
+grep -q 'INTRODUCED-BY-THIS-CHANGE' "$TMP/out.err" "$TMP/out.json" 2>/dev/null \
+  || python3 -c "import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if d['dangling'][0]['introduced'] is True else 1)" "$TMP/out.json" \
+  || bad "case27 introduced: the row is not labelled as introduced, so a reader cannot tell which rows are theirs"
+note "case27 introduced rc=$(rc) introduced=$(field dangling_introduced)"
+
+# ------------- case 28: one introduced row among pre-existing ones still blocks.
+# The exit code is about the WORST row, not the newest or the only one. A gate
+# that reports both classes and then takes its status from the count would pass a
+# real new pointer-to-nothing whenever it arrived beside an inherited one.
+printf 'Legacy prose cites papercut-inherited-and-gone-20260101.\nA second line.\nNew line cites papercut-just-added-and-gone-20260101.\n' \
+  > "$R/routines/legacy.md"
+printf 'papercut-inherited-and-gone-20260101=missing\npapercut-just-added-and-gone-20260101=missing\n' > "$TMP/v28"
+run_check "$R" "$TMP/v28" --changed-since "$base26"
+[ "$(rc)" = 1 ] || bad "case28 mixed: rc $(rc) != 1; an introduced row must still block beside a pre-existing one"
+[ "$(field dangling_introduced)" = 1 ] \
+  || bad "case28 mixed: dangling_introduced=$(field dangling_introduced) != 1"
+[ "$(field dangling_pre_existing)" = 1 ] \
+  || bad "case28 mixed: dangling_pre_existing=$(field dangling_pre_existing) != 1"
+note "case28 mixed rc=$(rc) introduced=$(field dangling_introduced) pre_existing=$(field dangling_pre_existing)"
+
+# ------------- case 29: bin/ and lib/ are IN the scanned set.
+# Case 25's shape for the largest citation surface in the repo. `dangling 0`
+# covered this repo for eight days while 27% of its helpers cited a dead record,
+# because the corpus was six globs and neither bin/ nor lib/ was one. Asserted
+# BEHAVIOURALLY: a citation checker whose scope is an enumeration is scoped to
+# what the enumeration names, and the comment explaining an entry reads the same
+# whether or not the entry is there.
+R="$TMP/r29"; make_root "$R" 'Nothing cited here.'
+mkdir -p "$R/lib"
+printf '%s\n' '#!/usr/bin/env bash' \
+  '# Why: papercut-a-helper-comment-citation-20260101 explains this.' \
+  > "$R/bin/last-stack-some-helper"
+printf '%s\n' '# Why: papercut-a-library-citation-20260101 explains this.' \
+  > "$R/lib/some-lib.sh"
+printf 'papercut-a-helper-comment-citation-20260101=missing\npapercut-a-library-citation-20260101=missing\n' > "$TMP/v29"
+run_check "$R" "$TMP/v29"
+[ "$(rc)" = 1 ] \
+  || bad "case29 bin+lib scanned: rc $(rc) != 1; a dead slug in bin/ or lib/ was not reported"
+[ "$(count dangling)" = 2 ] \
+  || bad "case29 bin+lib scanned: dangling=$(count dangling) != 2; slugs '$(slugs dangling)'"
+python3 -c "import json,sys;d=json.load(open(sys.argv[1]));w={f for r in d['dangling'] for f in r['cited_in']};sys.exit(0 if w=={'bin/last-stack-some-helper','lib/some-lib.sh'} else 1)" "$TMP/out.json" \
+  || bad "case29 bin+lib scanned: cited_in does not name both files, so a reader cannot find the lines"
+note "case29 bin+lib scanned rc=$(rc) dangling=$(count dangling)"
+
+# ------------- case 30: a TRUNCATED token is refused, and the refusal is not a
+# silent narrowing -- `checked` still counts the complete citation beside it.
+# Three shapes, all measured in bin/ on 2026-10-04 and all reported as dangling
+# records that were never cited:
+#   a trailing hyphen hard-wrapped at end of line
+#   a trailing hyphen closing a backtick in a comment
+#   a regex capture group:  ^papercut-pipeline-stuck-(cr|forge|pr|merges)-
+# The fourth line of the fixture is the same regex shape with NO hyphen before
+# the group. It is what gives the `(` entry in TEMPLATE_NEXT its own verdict:
+# with the hyphen, the trailing-hyphen rule refuses the token on its own and a
+# probe that removes `(` comes back green on a corpus that happens not to carry
+# this spelling, which reads as a dead entry rather than as a second guard.
+# Item: when the defect class is SILENCE, assert the count of things EXAMINED,
+# not only the count of things found. `dangling 0` holds just as well when the
+# extractor saw nothing at all.
+R="$TMP/r30"; make_root "$R" 'nothing'
+printf '%s\n' '#!/usr/bin/env bash' \
+  '# wrapped: papercut-a-very-long-slug-that-wraps-' \
+  '#   at-the-end-of-this-line-20260101' \
+  '# backtick: `papercut-pipeline-forge-` names the family' \
+  '# regex: ^papercut-pipeline-stuck-(cr|forge|pr|merges)-' \
+  '# regex, no hyphen: ^papercut-pipeline-family(cr|pr)-' \
+  '# elided: papercut-lastdb-torn-row-20260903…' \
+  '# real: papercut-the-one-complete-citation-20260101 is cited here' \
+  > "$R/bin/last-stack-truncation-fixture"
+printf 'papercut-the-one-complete-citation-20260101=missing\n' > "$TMP/v30"
+run_check "$R" "$TMP/v30"
+[ "$(field checked)" = 1 ] \
+  || bad "case30 truncation: checked=$(field checked) != 1; tokens examined were '$(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));print(' '.join(r['slug'] for r in d['dangling']+d['unknown']))" "$TMP/out.json")'"
+[ "$(slugs dangling)" = "papercut-the-one-complete-citation-20260101" ] \
+  || bad "case30 truncation: slugs '$(slugs dangling)'; a truncation was read as a slug"
+note "case30 truncation rc=$(rc) checked=$(field checked)"
+
+# ------------- case 31: close-out tells the reader what exit 4 means.
+# Case 19/24's shape for the new code. A gate whose caller has no branch for 4
+# reads it as an unknown failure and the agent either stops or ignores the gate
+# entirely -- both worse than the rc 1 this replaced.
+# Anchored on the LIST ITEM, not on the characters `**4**` anywhere in the file.
+# The loose pattern was green with the branch removed, because an unrelated
+# paragraph about a different tool's exit codes says "**4** means the index may
+# exist but could not be read" -- a wiring guard that matches another tool's
+# prose certifies nothing. Found by this case's own mutation probe.
+grep -qE '^- \*\*4\*\* --' "$ROOT/skills/close-out/SKILL.md" \
+  || bad "case31 exit 4 documented: skills/close-out/SKILL.md has no branch for exit 4"
+grep -qE '^- \*\*4\*\* --.*(pre-existing|not yours|none is yours)' "$ROOT/skills/close-out/SKILL.md" \
+  || bad "case31 exit 4 documented: the exit-4 branch does not say the findings are not this change's"
+grep -qE 'bin/\*|`bin/`' "$ROOT/skills/close-out/SKILL.md" \
+  || bad "case31 exit 4 documented: close-out's prose list does not name bin/, so an agent editing a helper does not know the gate applies"
+note "case31 exit 4 documented ok"
+
 rm -rf -- "$TMP"
 if [ "$fail" -ne 0 ]; then
   echo "prose-citation-check guard: FAILED" >&2
   exit 1
 fi
-echo "ok prose-citation-check guard: 25 cases"
+echo "ok prose-citation-check guard: 31 cases"

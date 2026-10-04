@@ -49,12 +49,27 @@ ride along with the noise.
 
 Exit codes:
   0  every citation resolves (or was deliberately skipped)
-  1  at least one citation does not resolve
+  1  a citation does not resolve AND this change is answerable for it: in
+     --changed-since mode, the slug appears on a line the change ADDS; in
+     full-root mode, every dangling row (the sweep is a corpus audit).
   2  usage error, or `--changed-since` could not determine the changed set.
      NOT a pass: a narrowing that silently covers nothing prints `dangling 0`
      and reads exactly like a clean corpus.
   3  at least one citation could not be determined (node transient) and none
      were proved dangling
+  4  there are findings and none is attributable to the change in front of the
+     checker: in --changed-since mode, a dangling citation already present in a
+     file the change touched for another reason; in either mode, a hop finding,
+     which is a property of a brain record one level past the prose. Report them
+     and ship.
+
+     4 exists because 1 carries the instruction "do not ship this", which is
+     right for a pointer the author just wrote and wrong for one they inherited.
+     On the day `bin/` joined the corpus, 64 of this repo's 238 helpers (27%)
+     cited a record the brain cannot serve, so about one change in four would
+     have been refused over prose its author never touched --- and a gate that
+     refuses correct work gets routed around, which is this checker's own stated
+     failure mode.
 """
 
 from __future__ import annotations
@@ -189,12 +204,63 @@ WIKI_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 #     dangling                    2   (100%, against `dangling 0` on the
 #                                      *.md corpus the same day)
 PROSE_ROOT_FILES = ("CLAUDE.md", "AGENTS.md", "setup")
+#
+# `bin/*` and `lib/*` joined on 2026-10-04, and they are the largest citation
+# surface in the repo by an order of magnitude. A helper's comment is prose with
+# the same job as an instruction file's: it tells the next agent which record
+# holds the reason the code is shaped this way. Several of these are not comments
+# at all -- `bin/last-stack-kanban-decision-check` carries a table of slugs it
+# point-gets at run time and `bin/last-stack-product-feature-ns-reconcile` passes
+# one to `brain get` as argv -- so a dead slug there is a command that fails, not
+# only a pointer that misleads.
+#
+# `dangling 0` covered this repo for eight days while 64 of its 238 helpers (27%)
+# cited a record the brain cannot serve. Measured on main d152cd885d0a, same tree,
+# same node, each binary with its own ignore file:
+#
+#     corpus              prose files   cited   checked   dangling
+#     six globs                  113      83        78           0
+#     + bin/*, lib/*             344     297       284          67
+#
+# Six of the 22 slugs that THIS defect's own record had listed and believed
+# healed were still cited, still dead, in `bin/` -- the heal was complete for the
+# corpus the checker reads and left the identical pointers in the directory it
+# did not read, and `dangling 0` then reported the whole repo clean.
+#
+# False positives, the number the record asked for BEFORE the widening (a noisy
+# citation checker gets ignored, and 238 shell and Python files are full of
+# kebab-case command names, error codes and regex literals). What the widening
+# would have printed with the extractor and ignore file it found, against what it
+# prints now:
+#
+#     tokens the widening adds to the extracted set   214
+#     refused by a STRUCTURAL rule                     10   truncations: a
+#                                                           trailing hyphen, an
+#                                                           elision, a regex
+#                                                           capture group
+#     refused by the local-name rule                    1   already shipped
+#     ignore-file entries added                         7   error codes, a
+#                                                           runtime filename, a
+#                                                           write target, a
+#                                                           documented CLI example
+#     genuine dangling                                 67
+#
+# So a naive widening prints 84 findings of which 17 (20%) are not citations, and
+# 10 of those 17 are refused by a rule that cannot go stale as new families are
+# added. The seven that needed a list are each a string literal a program
+# compares, writes or prints, which no structural rule separates from a citation.
+#
+# Cost: the full-root sweep went 29 s -> 120 s, which is why it stays the
+# PERIODIC instrument. The live per-change caller is unaffected unless the change
+# touches a helper -- 2.5 s over the 4-file change that shipped this.
 PROSE_GLOBS = (
     "routines/*.md",
     "instructions/*.md",
     "skills/*/SKILL.md",
     "skills/*/*.md",
     "hooks/*.sh",
+    "bin/*",
+    "lib/*",
 )
 
 # Names under these dirs are how a token can be a LOCAL name rather than a
@@ -227,7 +293,25 @@ MISSING_RE = re.compile(r"\berror:\s*no\b", re.IGNORECASE)
 # in `papercut-pipeline-forge-<repo>-pr-<n>` names a family the routine mints at
 # run time. The tell is in the source text, one character past the token, so it
 # needs no allowlist and cannot go stale as new families are added.
-TEMPLATE_NEXT = ("<", "*", "\u2026", "{", "$")
+#
+# `(` joined the set when `bin/` and `lib/` joined the corpus (2026-10-04), for
+# the REGEX LITERAL, which names a family the same way a format string does:
+# `^papercut-pipeline-stuck-(cr|forge|pr|merges)-` in
+# bin/last-stack-papercut-lifecycle-close produced five dangling rows -- the bare
+# prefix plus each of the four families -- and every one is a pattern the tool
+# matches slugs against, not a record it points a reader at.
+#
+# DEFENSIVE, and measured as such the same day, because those five rows are
+# refused by the trailing-hyphen rule below rather than by this entry: TOKEN_RE's
+# character class contains `-`, so the match swallows the hyphen in front of the
+# `(` and the raw token ends in one. Removing `(` leaves the checked set at 284
+# over both globs, byte for byte. What it covers is the form with no hyphen,
+# `papercut-foo(`, which this corpus does not currently contain. It is kept
+# because the hyphen rule is incidental to the shape a reader is looking for, and
+# the guard carries that spelling so the entry has its own verdict: a probe that
+# removes `(` goes red on a fixture line the corpus does not happen to contain,
+# instead of green in a way that reads as a dead entry.
+TEMPLATE_NEXT = ("<", "*", "\u2026", "{", "$", "(")
 
 
 def brain_bin() -> str:
@@ -274,7 +358,7 @@ def changed_paths(root: Path, ref: str) -> tuple[set[str] | None, str]:
     base = git("merge-base", ref, "HEAD")
     if base.returncode != 0:
         detail = (base.stderr or base.stdout or "").strip().splitlines()
-        return None, detail[0][:200] if detail else f"git merge-base {ref} HEAD failed"
+        return None, detail[0][:200] if detail else f"git merge-base {ref} HEAD failed", ""
     merge_base = base.stdout.strip()
     names: set[str] = set()
     for argv in (
@@ -284,9 +368,48 @@ def changed_paths(root: Path, ref: str) -> tuple[set[str] | None, str]:
         proc = git(*argv)
         if proc.returncode != 0:
             detail = (proc.stderr or "").strip().splitlines()
-            return None, detail[0][:200] if detail else f"git {argv[0]} failed"
+            return None, detail[0][:200] if detail else f"git {argv[0]} failed", ""
         names.update(line for line in proc.stdout.splitlines() if line)
-    return names, f"merge-base {merge_base[:12]}"
+    return names, f"merge-base {merge_base[:12]}", merge_base
+
+
+def added_text(root: Path, merge_base: str, changed: set[str]) -> str:
+    """The text of the lines this change ADDS, over the changed prose set.
+
+    A dangling citation on a line the change added is the author's: they wrote a
+    pointer to nothing and must not ship it. One in a file they touched for an
+    unrelated reason is a finding about the LEGACY corpus, and telling them not
+    to ship is how a checker gets ignored -- 64 of this repo's 238 helpers (27%)
+    cited a dead record on the day `bin/` joined the corpus, so about one change
+    in four would have been refused over prose its author never wrote.
+
+    Substring membership over one blob, not line numbers: a token either appears
+    on a line this change added or it does not, and nothing downstream needs to
+    know which line. An untracked file is added in full, which is what makes a
+    brand new helper's first citation the author's own.
+    """
+    blob: list[str] = []
+    diff = subprocess.run(
+        ["git", "-C", str(root), "diff", "-U0", merge_base, "--"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if diff.returncode == 0:
+        for line in diff.stdout.splitlines():
+            if line.startswith("+") and not line.startswith("+++"):
+                blob.append(line[1:])
+    tracked = subprocess.run(
+        ["git", "-C", str(root), "ls-files"], text=True, capture_output=True, check=False
+    )
+    known = set(tracked.stdout.splitlines()) if tracked.returncode == 0 else set()
+    for rel in sorted(changed):
+        if rel in known:
+            continue
+        path = root / rel
+        if path.is_file():
+            blob.append(path.read_text(encoding="utf-8", errors="replace"))
+    return "\n".join(blob)
 
 
 def local_names(root: Path) -> set[str]:
@@ -335,7 +458,28 @@ def collect_citations(paths: list[Path], root: Path) -> dict[str, list[str]]:
         for match in TOKEN_RE.finditer(text):
             raw = match.group(0)
             tail = text[match.end() : match.end() + 2]
-            if raw.endswith("-") and tail[:1] in TEMPLATE_NEXT:
+            # A raw token that ends in `-` is a TRUNCATION, whatever follows it.
+            # TOKEN_RE is greedy over `[a-z0-9-]`, so a trailing hyphen means the
+            # next character cannot continue a slug -- and no brain slug ends in
+            # one. The old form required that character to be in TEMPLATE_NEXT,
+            # which is a strict subset of the ways a slug gets cut off, and the
+            # two it missed are the common ones in code:
+            #
+            #   `papercut-pipeline-forge-` closing a backtick in a comment
+            #   `papercut-portal-wt-rm-suggests-deleting-an-` hard-wrapped at EOL
+            #
+            # Both read as a complete slug after the trailing hyphen is stripped,
+            # and both then report a record that was never cited. The hyphen is
+            # the whole tell and it needs no allowlist.
+            if raw.endswith("-"):
+                continue
+            # The token is complete and the next character opens a placeholder,
+            # an elision or a capture group. bin/last-stack-pr-reaper-close-guard
+            # cites a slug it cut short with a literal …, and this comment has to
+            # spell that character rather than escape it: the escape form is six
+            # ASCII bytes, the token in front of it is then complete, and the
+            # checker reports a dangling citation it invented in its own source.
+            if tail[:1] in TEMPLATE_NEXT:
                 continue
             if tail.startswith("-") and tail[1:2] in TEMPLATE_NEXT:
                 continue
@@ -500,9 +644,10 @@ def main(argv: Iterable[str]) -> int:
     names = local_names(root)
 
     limit_to: set[str] | None = None
+    added_blob: str | None = None
     scope = "every prose file under the root"
     if args.changed_since is not None:
-        limit_to, detail = changed_paths(root, args.changed_since)
+        limit_to, detail, merge_base = changed_paths(root, args.changed_since)
         if limit_to is None:
             # Not a pass. A narrowing that silently covers nothing reports
             # `dangling 0` and reads exactly like a clean corpus -- the failure
@@ -515,6 +660,7 @@ def main(argv: Iterable[str]) -> int:
             )
             return 2
         scope = f"ONLY prose changed vs {args.changed_since} ({detail})"
+        added_blob = added_text(root, merge_base, limit_to)
 
     prose_files = iter_prose_files(root, limit_to)
     cites = collect_citations(prose_files, root)
@@ -550,6 +696,9 @@ def main(argv: Iterable[str]) -> int:
         row["state"] = state
         row["detail"] = detail
         if state == "missing":
+            # `introduced` is None in full-root mode: a corpus audit has no author
+            # to attribute a row to, and every row there is actionable.
+            row["introduced"] = None if added_blob is None else (row["slug"] in added_blob)
             dangling.append(row)
         elif state == "unknown":
             unknown.append(row)
@@ -579,6 +728,19 @@ def main(argv: Iterable[str]) -> int:
         "skipped": len(skipped),
         "resolved": len(checked) - len(dangling) - len(unknown),
         "dangling": dangling,
+        # null in full-root mode: an audit has no author to attribute a row to,
+        # and a 0 there would read as "none of these are new" rather than as
+        # "this mode does not ask".
+        "dangling_introduced": (
+            None
+            if added_blob is None
+            else sum(1 for r in dangling if r["introduced"] is True)
+        ),
+        "dangling_pre_existing": (
+            None
+            if added_blob is None
+            else sum(1 for r in dangling if r["introduced"] is False)
+        ),
         "unknown": unknown,
         "skipped_rows": skipped,
         "one_hop": args.one_hop,
@@ -602,6 +764,14 @@ def main(argv: Iterable[str]) -> int:
                 else "; NO hop: a [[target]] inside a cited record is NOT checked "
                 "(pass --one-hop)"
             )
+            + (
+                "; exit 1 is reserved for a dangling citation on a line this change "
+                "ADDS -- one in a file it touched for another reason, and any hop "
+                "finding, are reported and exit 4"
+                if added_blob is not None
+                else "; full-root audit: every dangling row exits 1, and no row is "
+                "attributed to an author"
+            )
         ),
     }
 
@@ -614,7 +784,14 @@ def main(argv: Iterable[str]) -> int:
             f"dangling {len(dangling)}  unknown {len(unknown)}  skipped {report['skipped']}"
         )
         for row in dangling:
-            print(f"DANGLING {row['slug']}  cited_in={','.join(row['cited_in'])}")
+            origin = (
+                ""
+                if row["introduced"] is None
+                else ("  INTRODUCED-BY-THIS-CHANGE" if row["introduced"] else "  pre-existing")
+            )
+            print(
+                f"DANGLING {row['slug']}  cited_in={','.join(row['cited_in'])}{origin}"
+            )
         for row in unknown:
             print(f"UNKNOWN  {row['slug']}  {row['detail']}")
         if args.one_hop:
@@ -633,9 +810,21 @@ def main(argv: Iterable[str]) -> int:
         print(f"method: {report['method']}")
 
     # A detector that renders a finding and exits 0 is the defect this repo keeps
-    # filing against other people's tools, so the hop counts toward the status.
-    if dangling or hop_dangling:
+    # filing against other people's tools, so every finding below reaches the
+    # exit code -- including the hop's, and including a pre-existing row.
+    #
+    # The split exists because the per-change caller is a GATE whose instruction
+    # is "do not ship this". That instruction is right for a pointer-to-nothing
+    # the author just wrote and wrong for one that was already in a file they
+    # opened for another reason: 27% of this repo's helpers carried a dead
+    # citation when `bin/` joined the corpus, so about one change in four would
+    # have been refused over prose its author never touched, and the gate would
+    # have been routed around within a day. A hop finding is never attributable
+    # either -- it is a property of a brain record, one level past the prose.
+    if any(row["introduced"] is not False for row in dangling):
         return 1
+    if dangling or hop_dangling:
+        return 4
     if unknown or hop_unknown:
         return 3
     return 0
