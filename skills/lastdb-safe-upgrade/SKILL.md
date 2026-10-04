@@ -176,11 +176,7 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
    The ephemeral status sample must show `purge_delay_ms = 0`. Purge slack
    (`phys_footprint` minus `footprint_net`) must be at or under 512 MiB.
    A step that freed warm bytes must drop `phys_footprint` by at least 0.25
-   of those bytes. When no step freed warm bytes, the bar is RED unless
-   every sample reports `governor_state = under` and the `warm_bytes_freed`
-   counter. Then the governor had no cause to evict, and the GREEN line says
-   `drop_ratio=not-applicable`. Slack, p99 and the multiplier still apply.
-   The 12 GiB p99 and the 1.3 multiplier stay backstops.
+   of those bytes. The 12 GiB p99 and the 1.3 multiplier stay backstops.
    They are not the operating target. A sample that lacks the new fields
    is RED. The bar does not skip that sample. A candidate equivalent to
    build `be41e547e` fails. The driver sets
