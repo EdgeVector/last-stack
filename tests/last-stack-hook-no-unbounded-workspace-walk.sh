@@ -126,6 +126,32 @@ expect ALLOW 'cat <<EOF > note.md
 find ~/.fkanban/worktrees -name x  is the slow form
 EOF'
 
+# Prose that NAMES a root and happens to contain the word `find` or `tree` is
+# not a walk. Measured 2026-10-04: four of four such commands were denied, and
+# the second instance was the script written to measure the first
+# (papercut-unbounded-walk-hook-matches-its-scanner-words-in-prose-so-an-evidence-string-is-denied-20261004).
+# This routine's own protocol requires exactly this register, so these rows are
+# the guard's precision contract, not a curiosity.
+expect ALLOW 'brain papercut close x --status verified --verified-by "checked against the INSTALLED tree under ~/.last-stack and the stamp agreed"'
+expect ALLOW 'brain papercut close x --status verified --evidence "could not find the manifest under ~/.host-track so the path did not run"'
+expect ALLOW 'git -C ~/code/edgevector/last-stack log --oneline -3  # the worktree tree layout under ~/.fkanban is unchanged'
+expect ALLOW "echo 'the canary tree under ~/.local/state/last-stack is unpruned'"
+expect ALLOW 'printf "%s\n" "find the digest under ~/.host-track/stamps"'
+
+# ... and the asymmetry that keeps the true positives. A real hazard quotes the
+# PATH far more often than the scanner, so the ROOT regex must keep reading the
+# ORIGINAL segment. These three fail the moment the blanking is applied to it.
+expect DENY 'find "$HOME/.last-stack" -name SKILL.md'
+expect DENY "find '$tmp/code/edgevector' -name Cargo.toml"
+expect DENY 'grep -rl foo "$HOME/.routines"'
+
+# A wrapper that takes a command as a STRING argument runs what it is handed, so
+# inside one the quotes are not prose and the whole-line reading stays.
+expect DENY 'bash -c "find ~/code/edgevector -name Cargo.toml"'
+expect DENY "bash -lc 'find ~/.fkanban/worktrees -name x'"
+expect DENY 'eval "tree ~/code"'
+expect ALLOW 'bash -c "find ~/code/edgevector -maxdepth 2 -name Cargo.toml"'
+
 # The escape hatch: a stated reason passes.
 expect ALLOW 'find ~/.fkanban/worktrees -name Cargo.lock  # walk-ok: one-off audit of lockfile drift'
 
