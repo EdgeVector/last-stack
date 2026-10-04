@@ -351,4 +351,85 @@ jq -e '.verdict == "error" and .ok == false and (.error | contains("cannot be st
   "$tmp/missing.json" >/dev/null || fail "missing brain CLI JSON: $(cat "$tmp/missing.json")"
 echo "decision-check missing-brain-binary fails closed ok"
 
+
+# The review-column body heuristic, BOTH directions, with its citation present
+# so the arm is live. It was wrong in both directions at once
+# (papercut-decision-check-review-column-body-regex-wrong-in-both-directions-20261004):
+# it refused the two cards that FIX the review-column papercut, because each
+# has to quote `kanban move <slug> review` to describe the defect, and it
+# passed "restore THE review column" because its article group was `(?:a\s+)?`.
+# A third defect had not been named: no `(?m)`, so a card-shaped body ending
+# the sentence at a newline missed the boundary.
+#
+# Every refuse case names a DIFFERENT shape of the proposal and every pass case
+# names a different shape of a card that only describes it, so a probe can go
+# red on one direction without the other. A single pass/refuse pair cannot see
+# the direction it does not exercise.
+reviewcol_dir="$tmp/reviewcol"
+mkdir -p "$reviewcol_dir/get"
+cat >"$reviewcol_dir/search.json" <<'EOF'
+[{"slug":"preference-kanban-no-review-column","score":1.0,"type":"preference","title":"no review column","snippet":""}]
+EOF
+cat >"$reviewcol_dir/get/preference-kanban-no-review-column.txt" <<'EOF'
+[preference] preference-kanban-no-review-column
+title:      no review column
+---
+Columns are backlog, todo, doing, done.
+EOF
+
+# body_case <name> <refuse|pass> <body text>
+body_case() {
+  local name="$1" want="$2" body="$3" rc
+  printf '%s\n' "$body" >"$tmp/bc.md"
+  set +e
+  python3 "$BIN" --title "review column body case" --kind pr --column todo \
+    --fixture-dir "$reviewcol_dir" --json <"$tmp/bc.md" \
+    >"$tmp/bc.json" 2>/dev/null
+  rc=$?
+  set -e
+  case "$want" in
+    refuse)
+      [ "$rc" -eq 2 ] \
+        || fail "body case $name must refuse (exit 2), got $rc"
+      jq -e '.verdict == "conflict"
+             and ([.conflicts[].slug] | index("preference-kanban-no-review-column"))' \
+        "$tmp/bc.json" >/dev/null \
+        || fail "body case $name refused for the wrong reason: $(cat "$tmp/bc.json")"
+      ;;
+    pass)
+      [ "$rc" -eq 0 ] \
+        || fail "body case $name must pass (exit 0), got $rc: $(cat "$tmp/bc.json")"
+      jq -e '.conflicts == []' "$tmp/bc.json" >/dev/null \
+        || fail "body case $name must raise no conflict: $(cat "$tmp/bc.json")"
+      ;;
+  esac
+  echo "decision-check body-heuristic $name ok ($want)"
+}
+
+# REFUSE: a card proposing the column, in every spelling measured.
+body_case propose-a        refuse 'Add a review column so humans can gate merges'
+body_case propose-the      refuse 'Restore the review column that was removed in 2026-09'
+body_case propose-bare     refuse 'Add a review column'
+body_case propose-back     refuse 'Add back the review column for human gating'
+body_case propose-new      refuse 'Create a new review column between doing and done'
+body_case propose-colon    refuse 'Add a review column: humans gate merges'
+body_case propose-cardshape refuse '## GOAL
+Add a review column
+
+## END STATE
+Humans gate merges there'
+body_case propose-bullet   refuse '- Restore the review column
+- Update AGENTS.md'
+
+# PASS: a card that only DESCRIBES or FIXES the defect. Each of these was a
+# live false positive, or would become one under a looser widening.
+body_case fix-quotes-command pass 'Remove stale review-column guidance from AGENTS.md. Agents still run `kanban move <slug> review`, which the live board refuses.'
+body_case fix-observed       pass 'The board answered: review is not a valid column. Observed while running kanban move my-card review during closeout.'
+body_case quote-only         pass 'Agents park work with `kanban move <slug> review`; the board refuses it'
+body_case hyphen-compound    pass 'Create the review-column removal card and strike the stale guidance'
+body_case hyphen-doc         pass 'Add a regression test for the review-column refusal the board already emits'
+body_case guard-noun-phrase  pass 'Add the review column guard to the filer so a bad card is refused'
+body_case test-noun-phrase   pass 'Create a review column refusal test in the decision-check suite'
+body_case unrelated          pass 'Fix the jq filter in pipeline-health so the fallback survives quoting'
+
 echo "last-stack-kanban-decision-check tests ok"

@@ -44,14 +44,13 @@ GOAL_RE = re.compile(
 # happened to surface its own citation among the top POINT_GET_CAP hits for
 # this card's title.
 #
-# `body_re` stays citation-gated on purpose. It is a heuristic over prose, and
-# measured 2026-10-04 it is wrong in BOTH directions: it matches a card that
-# only QUOTES the forbidden command in order to describe the defect (it refuses
-# the fix card for papercut-kanban-agents-review-column-not-live-20261002), and
-# it misses "restore the review column" because its article group is
-# `(?:a\s+)?`. Promoting it to an unconditional refusal would ship both errors
-# on every Kind:pr filing in the fleet. Tracked separately in
-# papercut-decision-check-review-column-body-regex-wrong-in-both-directions-20261004.
+# `body_re` stays citation-gated on purpose. It is a heuristic over prose, not
+# a test on a declared field, so an unconditional refusal would be a different
+# claim needing its own evidence. Its pattern WAS wrong in both directions and
+# is fixed below with the measurement; the gate is unchanged, which means the
+# repair defuses a landmine rather than changing today's behaviour -- neither
+# INVARIANT slug resolves in the LastDB brain, so this arm is inert until one
+# of them is written.
 INVARIANTS = (
     {
         "slug": "preference-kanban-no-trackers-no-human-gates",
@@ -64,9 +63,40 @@ INVARIANTS = (
     {
         "slug": "preference-kanban-no-review-column",
         "column_forbid": ("review",),
+        # Measured 2026-10-04 against 5 realistic drafts, 12 adversarial
+        # drafts and all 171 live card bodies (0 hits either way). Three
+        # independent defects, each fixed by one clause:
+        #   1. `|kanban move \S+ review` matched a QUOTED command, so it
+        #      refused the two fix cards that must quote it to describe the
+        #      defect. Dropped: the card's own `--column` field is the
+        #      authoritative signal and `column_forbid` now reads it
+        #      unconditionally.
+        #   2. `(?:a\s+)?` admitted "add a review column" and missed
+        #      "restore THE review column" and "add back the review column".
+        #      A bounded `(?:\w+\s+){0,2}?` filler takes all of them.
+        #   3. no `(?m)`, so `$` meant end of BODY. "## GOAL\nAdd a review
+        #      column\n\n## END STATE" and a "- Restore the review column"
+        #      bullet both missed the boundary below.
+        # The lookahead is what keeps the filler safe: a proposal ends the
+        # noun phrase at "column" or continues with punctuation or a function
+        # word, while a fix card continues with a NOUN ("review column guard",
+        # "review column refusal test"). Function words are a closed class;
+        # the nouns are not, so the boundary is stated over the closed one.
+        # A hyphenated "review-column" is never matched at all -- that is the
+        # compound-adjective spelling descriptive prose uses.
+        # Residual, deliberately: a proposal whose next word is an open-class
+        # noun ("Add a review column Tom asked for") is missed. A false
+        # negative costs an advisory line; a false positive refused the fix
+        # card fleet-wide. papercut-decision-check-review-column-body-regex-
+        # wrong-in-both-directions-20261004.
         "body_re": (
-            r"(?i)(?:add|restore|create|invent)\s+(?:a\s+)?review column"
-            r"|kanban move \S+ review"
+            r"(?im)(?:add|restore|create|invent)\s+(?:\w+\s+){0,2}?"
+            r"review column"
+            r"(?=\s*(?:$|[.,;:!?)\]]|(?:"
+            r"for|to|so|that|which|between|in|on|at|after|before|because|"
+            r"and|with|where|when|if|as|from|instead|again|back|under|"
+            r"until|while|but|or"
+            r")\b))"
         ),
         "reason": (
             "preference-kanban-no-review-column: "
