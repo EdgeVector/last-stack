@@ -43,6 +43,7 @@ verdict for anyone to misread.
 | 3 | **the patch mutated nothing.** The probe is invalid and there is no verdict. Never read it as a green |
 | 4 | the restore did not return every `--target` to its original bytes. The snapshot directory is kept and printed |
 | 5 | **the patch mutated a file the helper never snapshotted.** That file is still mutated and cannot be restored; the paths are named. Checked before 3 |
+| 6 | **THE RED WAS NOT THE ONE YOU ASKED FOR.** `--expect-red-on` was given, the test went RED, and nothing in its output matched. The probe has no verdict about the assertion it targeted |
 
 ### The rules
 
@@ -67,6 +68,35 @@ verdict for anyone to misread.
 5. `--expect green` exists for the other direction: proving that a legitimate
    variation is NOT refused. A guard that refuses correct input is its own
    defect.
+   **State which assertion the red must be about: `--expect-red-on <ere>`.**
+   Without it the strongest claim a probe can make is "something failed", and
+   every reader of `verdict=RED expect=RED` upgrades that to "the guard caught
+   MY defect". Measured 2026-10-04 on EdgeVector/last-stack PR 236: of six
+   probes against one five-case guard test, THREE went red on a different case
+   than the one they targeted, and two of the five cases had no independent
+   verdict available at all. All six printed
+   `mutated=yes verdict=RED expect=RED restored=ok offtarget=none`.
+
+   ```bash
+   last-stack-mutation-probe --name p7-accept-any-existing-file \
+     --target bin/last-stack-verify-skill-links \
+     --patch "python3 probes/p7.py" \
+     --test  "bash tests/last-stack-verify-skill-links-transient-source.sh 4" \
+     --expect-red-on 'FAIL: case 4'
+   ```
+
+   A matching red exits 0 and echoes the matched line, so the verdict carries
+   the assertion. A red with no match is **exit 6**, which names the pattern
+   and prints the assertion the test DID fail on. Every verdict line reports
+   `expect_red_on=` — `-` when none was given — so a probe without a pattern
+   is visibly the weaker claim rather than indistinguishable from a targeted
+   one. It is opt-in: a single-assertion guard does not need it.
+
+   When the pattern cannot be made to match because the cases share a
+   predicate, the fix is on the TEST side — give the guard test a positional
+   case filter so each case can be probed alone. That is what makes a verdict
+   available for the cases that trip last.
+   `papercut-mutation-probe-cannot-state-which-assertion-the-red-should-be-about-20261004`
 6. **Put the patch in its own file** and pass `--patch "python3 probes/p3.py"`.
    A patch written inline goes through shell quoting, then the probe's own
    `bash -c`, then whatever language it is in. Measured while shipping this
