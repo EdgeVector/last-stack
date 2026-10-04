@@ -2,7 +2,7 @@
 set -u
 
 usage() {
-  cat >&2 <<'EOF'
+  cat <<'EOF'
 usage: last-stack-kanban-done-when-eval --kind <kind> --predicate <DONE-WHEN>
        last-stack-kanban-done-when-eval --check --predicate <DONE-WHEN>
 
@@ -50,12 +50,12 @@ check=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --kind)
-      [ "$#" -ge 2 ] || { usage; exit 2; }
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
       kind="$2"
       shift 2
       ;;
     --predicate)
-      [ "$#" -ge 2 ] || { usage; exit 2; }
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
       predicate="$2"
       shift 2
       ;;
@@ -72,13 +72,13 @@ while [ "$#" -gt 0 ]; do
         predicate="$*"
         break
       fi
-      usage
+      usage >&2
       exit 2
       ;;
   esac
 done
 
-[ -n "$predicate" ] || { usage; exit 2; }
+[ -n "$predicate" ] || { usage >&2; exit 2; }
 
 pred_hash() {
   if command -v shasum >/dev/null 2>&1; then

@@ -59,7 +59,7 @@ tail_bytes="${LAST_STACK_DEPLOY_SCAN_TAIL_BYTES:-1048576}"
 repo_filter=""
 
 usage() {
-  cat >&2 <<'EOF'
+  cat <<'EOF'
 usage: last-stack-pipeline-deploy-scan [--json] [--root <dir>] [--pending-max-s <seconds>] [--tail-bytes <bytes>] [--repo <name>]
        last-stack-pipeline-deploy-scan --statuses
 
@@ -85,27 +85,27 @@ while [ "$#" -gt 0 ]; do
       exit 0
       ;;
     --root)
-      [ "$#" -ge 2 ] || { usage; exit 2; }
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
       root="$2"
       shift 2
       ;;
     --pending-max-s)
-      [ "$#" -ge 2 ] || { usage; exit 2; }
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
       pending_max_s="$2"
       shift 2
       ;;
     --tail-bytes)
-      [ "$#" -ge 2 ] || { usage; exit 2; }
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
       tail_bytes="$2"
       shift 2
       ;;
     --repo)
-      [ "$#" -ge 2 ] || { usage; exit 2; }
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
       repo_filter="$2"
       shift 2
       ;;
     -h|--help) usage; exit 0 ;;
-    *) usage; exit 2 ;;
+    *) usage >&2; exit 2 ;;
   esac
 done
 

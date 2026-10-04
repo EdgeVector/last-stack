@@ -17,7 +17,7 @@ registry="${HOST_TRACK_REGISTRY:-}"
 host_track_bin="${HOST_TRACK_BIN:-$ROOT/bin/host-track}"
 
 usage() {
-  cat >&2 <<'EOF'
+  cat <<'EOF'
 Usage:
   last-stack-host-track-artifact-invariant [--json] [--registry <path>]
 

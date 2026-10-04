@@ -36,7 +36,7 @@ MESSAGING_PSEUDONYM="${LAST_STACK_ADMIN_MESSAGING_PSEUDONYM:-}"
 RECIPIENT_NAME="${LAST_STACK_ADMIN_RECIPIENT_NAME:-}"
 
 usage() {
-  cat <<'EOF' >&2
+  cat <<'EOF'
 usage: last-stack-deliver-status [options]
 
 Publish last-stack health, then stage (and optionally approve) a Mini deliver
@@ -66,7 +66,7 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --install-root)
-      [ "$#" -ge 2 ] || { usage; exit 2; }
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
       INSTALL_ROOT="$2"
       shift 2
       ;;
@@ -75,7 +75,7 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --max-records)
-      [ "$#" -ge 2 ] || { usage; exit 2; }
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
       MAX_RECORDS="$2"
       shift 2
       ;;
@@ -84,7 +84,7 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --recipient-pubkey)
-      [ "$#" -ge 2 ] || { usage; exit 2; }
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
       RECIPIENT_PUBKEY="$2"
       shift 2
       ;;
@@ -93,7 +93,7 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --messaging-public-key)
-      [ "$#" -ge 2 ] || { usage; exit 2; }
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
       MESSAGING_PUBLIC_KEY="$2"
       shift 2
       ;;
@@ -102,7 +102,7 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --messaging-pseudonym)
-      [ "$#" -ge 2 ] || { usage; exit 2; }
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
       MESSAGING_PSEUDONYM="$2"
       shift 2
       ;;
@@ -111,14 +111,14 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --recipient-name)
-      [ "$#" -ge 2 ] || { usage; exit 2; }
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
       RECIPIENT_NAME="$2"
       shift 2
       ;;
     -h|--help) usage; exit 0 ;;
     *)
       echo "unknown argument: $1" >&2
-      usage
+      usage >&2
       exit 2
       ;;
   esac

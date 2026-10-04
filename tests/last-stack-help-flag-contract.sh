@@ -217,6 +217,84 @@ if [ -n "$marker_hits" ]; then
 fi
 
 
+# A help arm must not route the usage text to stderr.
+#
+# The third contract clause, and the one that does NOT need execution. The
+# executed check above asserts `usage belongs on stdout` and `wrote to stderr`
+# for the 15 enrolled helpers; `--report` says 162 helpers in bin/ document a
+# help flag and are NOT enrolled, so that clause covered under 9% of the
+# population it describes. Enrollment stays deliberate for the reason the
+# contract file gives — a sweep that runs every helper with `--help` fires
+# last-stack-card-closeout, which reads the flag as a card slug and escalates
+# to a `--force` board move — so the reach has to come from a static rule.
+#
+# A `usage()` that redirects to `>&2` and is called from a `-h|--help` arm is a
+# static fact: nothing about it depends on ordering or reachability, which is
+# what sank the static reachability rule the top of this file rejects.
+#
+# Measured on main fc1eb9d9a988 before the fix. The predicate selected 19
+# helpers, and all 19 were then EXECUTED: every one printed 0 bytes on stdout
+# and its whole usage on stderr. Zero false positives, so there is no opt-out
+# list — the same bar the two rules above meet. One of the 19,
+# last-stack-sccache-health, also exited 2, which is this file's PRIMARY class
+# (papercut-last-stack-kanban-file-pr-help-exits-2, five recurrences) living
+# unseen in an unenrolled helper.
+#
+# The fix the rule asks for is a stream, not a bare `cat`: 18 of the 19 call
+# the same `usage` from their argument-error path too, so dropping `>&2` from
+# the function alone moves the error text to stdout and trades one violation
+# for another. `usage` prints on stdout; the error arms call `usage >&2`.
+# papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004
+stream_hits=""
+for f in "$BIN_DIR"/* "$ROOT/setup"; do
+  [ -f "$f" ] || continue
+  # Strip whole-line comments first, for the same reason as the two rules
+  # above: a helper may quote `cat >&2` while explaining this very defect, and a
+  # guard that greps source matches the rationale as readily as the thing it
+  # describes. Measured today the strip changes nothing (0 hits with it, 0
+  # without), so it is DEFENSIVE here rather than load-bearing -- but the probe
+  # that drops it is RED as soon as one comment inside a usage() body mentions
+  # `>&2`, which is exactly the note this fix invites someone to leave. The
+  # first draft of that probe put the comment ABOVE `usage() {`, outside the
+  # body the loop reads, and came back GREEN: the fixture, not the guard.
+  if sed -e 's/^[[:space:]]*#.*$//' "$f" | awk '
+      { line[NR] = $0 }
+      END {
+        fn = ""
+        for (i = 1; i <= NR; i++) {
+          if (line[i] ~ /(-h\|--help|--help\|-h)[[:space:]]*\)/) {
+            rest = line[i]
+            sub(/^.*(-h\|--help|--help\|-h)[[:space:]]*\)[[:space:]]*/, "", rest)
+            j = i
+            # the arm may wrap, putting the call on the next line
+            while (rest == "" && j < NR) { j++; rest = line[j]; sub(/^[[:space:]]+/, "", rest) }
+            if (match(rest, /^[A-Za-z_][A-Za-z0-9_]*/)) fn = substr(rest, 1, RLENGTH)
+            break
+          }
+        }
+        if (fn == "") exit 1
+        start = 0
+        for (i = 1; i <= NR; i++) {
+          if (line[i] ~ "^[[:space:]]*" fn "[[:space:]]*\\(\\)[[:space:]]*\\{") { start = i; break }
+        }
+        if (start == 0) exit 1
+        for (i = start + 1; i <= NR; i++) {
+          if (line[i] ~ /^\}/) break
+          if (line[i] ~ />&2/) exit 0
+        }
+        exit 1
+      }
+    '; then
+    stream_hits="$stream_hits $(basename "$f")"
+  fi
+done
+if [ -n "$stream_hits" ]; then
+  for h in $stream_hits; do
+    fail "$h: --help routes usage to stderr; print usage on stdout and call \"usage >&2\" from the error arms only"
+  done
+fi
+
+
 # --report: the unenrolled population, from source only. Never executes.
 if [ "${1:-}" = "--report" ]; then
   printf '\nhelpers in %s with a help arm and NOT enrolled:\n' "$BIN_DIR"

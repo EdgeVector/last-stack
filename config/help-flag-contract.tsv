@@ -32,3 +32,30 @@ last-stack-pipeline-health-gate	exit0	parser read 2026-09-16: help answered befo
 last-stack-deploy-loom	exit0	parser read 2026-09-21: --help is matched in the arg loop before any config read, loom call, or forge status post
 last-stack-deploy-watch-gate	exit0	parser read 2026-09-21: -h/--help is the first case, before config, tip, or deploy reads
 last-stack-loom-parked-triage	exit0	parser read 2026-09-25: argparse answers help before loom list
+
+# Enrolled 2026-10-04 with the static stream rule below. These 19 were the
+# rule's whole hit set: each had a -h|--help arm calling a usage() that wrote
+# to stderr. Every parser was read, and both flags were EXECUTED on all 19
+# before and after the fix -- 19/19 went from rc 0 / 0 bytes stdout / usage on
+# stderr (last-stack-sccache-health: rc 2) to rc 0 / usage on stdout / nothing
+# on stderr. That is the enrollment bar this file states, met by measurement
+# rather than by a sweep, so the executed contract now covers 34 helpers.
+host-track	exit0	parser read 2026-10-04: -h/--help is an explicit case arm answered before any side effect, and both flags were executed for the stream fix (papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004)
+last-stack-activate-artifact-layout	exit0	parser read 2026-10-04: -h/--help is an explicit case arm answered before any side effect, and both flags were executed for the stream fix (papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004)
+last-stack-artifact-host-track-proof	exit0	parser read 2026-10-04: -h/--help is an explicit case arm answered before any side effect, and both flags were executed for the stream fix (papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004)
+last-stack-deliver-status	exit0	parser read 2026-10-04: -h/--help is an explicit case arm answered before any side effect, and both flags were executed for the stream fix (papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004)
+last-stack-fleet-channel-freshness-gate	exit0	parser read 2026-10-04: -h/--help is an explicit case arm answered before any side effect, and both flags were executed for the stream fix (papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004)
+last-stack-forge-runner-lanes	exit0	parser read 2026-10-04: -h/--help is an explicit case arm answered before any side effect, and both flags were executed for the stream fix (papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004)
+last-stack-forge-runner-watchdog	exit0	parser read 2026-10-04: -h/--help is an explicit case arm answered before any side effect, and both flags were executed for the stream fix (papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004)
+last-stack-host-track-artifact-invariant	exit0	parser read 2026-10-04: -h/--help is an explicit case arm answered before any side effect, and both flags were executed for the stream fix (papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004)
+last-stack-kanban-done-when-eval	exit0	parser read 2026-10-04: -h/--help is an explicit case arm answered before any side effect, and both flags were executed for the stream fix (papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004)
+last-stack-launchd-path-audit	exit0	parser read 2026-10-04: -h/--help is an explicit case arm answered before any side effect, and both flags were executed for the stream fix (papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004)
+last-stack-migrate-repo-local-worktrees	exit0	parser read 2026-10-04: -h/--help is an explicit case arm answered before any side effect, and both flags were executed for the stream fix (papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004)
+last-stack-park-stuck-merge-poison-cards	exit0	parser read 2026-10-04: -h/--help is an explicit case arm answered before any side effect, and both flags were executed for the stream fix (papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004)
+last-stack-park-terminal-validation-todo	exit0	parser read 2026-10-04: -h/--help is an explicit case arm answered before any side effect, and both flags were executed for the stream fix (papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004)
+last-stack-pipeline-deploy-scan	exit0	parser read 2026-10-04: -h/--help is an explicit case arm answered before any side effect, and both flags were executed for the stream fix (papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004)
+last-stack-portal-resync-venue	exit0	parser read 2026-10-04: -h/--help is an explicit case arm answered before any side effect, and both flags were executed for the stream fix (papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004)
+last-stack-pr-reaper-close-guard	exit0	parser read 2026-10-04: -h/--help is an explicit case arm answered before any side effect, and both flags were executed for the stream fix (papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004)
+last-stack-publish-status	exit0	parser read 2026-10-04: -h/--help is an explicit case arm answered before any side effect, and both flags were executed for the stream fix (papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004)
+last-stack-sccache-health	exit0	parser read 2026-10-04: -h/--help is an explicit case arm answered before any side effect, and both flags were executed for the stream fix (papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004)
+last-stack-self-upgrade	exit0	parser read 2026-10-04: -h/--help is an explicit case arm answered before any side effect, and both flags were executed for the stream fix (papercut-host-track-help-prints-its-entire-usage-to-stderr-and-nothing-to-stdout-20261004)

@@ -65,7 +65,7 @@ repair_dirty=0
 reason=""
 
 usage() {
-  cat <<'EOF' >&2
+  cat <<'EOF'
 usage: last-stack-self-upgrade [--check-only] [--repair-dirty] [--no-setup] [--reason <tag>]
 
 Safely fast-forward the Last Stack install and re-run ./setup when clean.
@@ -96,14 +96,14 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --reason)
-      [ "$#" -ge 2 ] || { usage; exit 2; }
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
       reason="$2"
       shift 2
       ;;
     -h|--help) usage; exit 0 ;;
     *)
       echo "unknown argument: $1" >&2
-      usage
+      usage >&2
       exit 2
       ;;
   esac

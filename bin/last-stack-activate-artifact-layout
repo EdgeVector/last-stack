@@ -8,7 +8,7 @@ backup_root="${LAST_STACK_LAYOUT_BACKUP_ROOT:-$HOME/.local/state/last-stack/layo
 dry_run=0
 
 usage() {
-  cat >&2 <<'EOF'
+  cat <<'EOF'
 Usage: last-stack-activate-artifact-layout [--dry-run]
 
 Repoints Last Stack's stable ~/.last-stack code paths at the active immutable
@@ -21,7 +21,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run) dry_run=1; shift ;;
     -h|--help) usage; exit 0 ;;
-    *) usage; exit 2 ;;
+    *) usage >&2; exit 2 ;;
   esac
 done
 
