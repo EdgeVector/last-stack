@@ -27,7 +27,11 @@ case "$id" in
   last-stack-whats-wrong|whats-wrong) id="last-stack-whats-wrong" ;;
   last-stack-ship-pipeline-gap-audit|ship-pipeline-gap-audit) id="last-stack-ship-pipeline-gap-audit" ;;
   routine-fleet-health) ;;
-  ""|-h|--help)
+  -h|--help)
+    echo "usage: last-stack-routine-observer-gate <routine-id>"
+    exit 0
+    ;;
+  "")
     echo "usage: last-stack-routine-observer-gate <routine-id>" >&2
     exit 2
     ;;
