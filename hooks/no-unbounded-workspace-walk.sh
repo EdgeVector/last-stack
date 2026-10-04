@@ -21,6 +21,11 @@
 #      in the command, heredoc bodies included, together with a workspace root
 #      or `Path.home()` / `expanduser(` in the same command.
 #
+# The scanner word is read off a QUOTE- AND COMMENT-BLANKED copy of the line,
+# so prose that merely contains `find` or `tree` is not a walk. The root and the
+# depth flag are read off the ORIGINAL: a real hazard quotes the path, not the
+# scanner. See the block at the blanking pass for the measurement.
+#
 # The deny hands back the bounded forms: bin/last-stack-locate-file (env var,
 # fixed candidates, depth- and time-bounded roots) or find ... -maxdepth N.
 #
@@ -94,11 +99,73 @@ stripped="$(printf '%s' "$cmd" | awk '
   }
 ')"
 
+# A quote- and comment-blanked copy of the same text. It is matched by the
+# SCANNER regex only; the ROOT and DEPTH regexes keep reading the original.
+#
+# WHY (measured 2026-10-04, brain
+# papercut-unbounded-walk-hook-matches-its-scanner-words-in-prose-so-an-evidence-string-is-denied-20261004):
+#   `find` and `tree` are ordinary English words in exactly the register this
+#   host's evidence prose uses -- "could not find the manifest", "the INSTALLED
+#   tree" -- and that prose routinely names ~/.last-stack, ~/.host-track and
+#   ~/.local/state/last-stack, because that is where the install proofs live.
+#   The guard was therefore most likely to misfire on the one command class
+#   that must carry the most prose about those roots: a `brain papercut close`
+#   whose --evidence string names a root. Four of four such commands were
+#   denied; no scanner ran and nothing was walked.
+#
+# The asymmetry is load-bearing and is the thing to get wrong. A real hazard
+# quotes the PATH far more often than the scanner (`find "$HOME/.last-stack"
+# -name x`), so blanking before the ROOT match would turn the guard's main true
+# positive into a false negative -- the costly direction, because a false
+# positive costs one rewrite and a false negative costs an unattended run
+# stalling on a macOS TCC dialog with nobody there to click it.
+#
+# `&`, `|` and `;` are never blanked, so the segment split below lands on the
+# same offsets in both copies and the two streams stay line-for-line aligned.
+blanked="$(printf '%s' "$stripped" | awk '
+  function emit(c) { out = out c }
+  BEGIN { q = 0 }
+  {
+    out = ""; incomment = 0; n = length($0)
+    for (i = 1; i <= n; i++) {
+      c = substr($0, i, 1)
+      if (c == "&" || c == "|" || c == ";") { emit(c); continue }
+      if (incomment) { emit(" "); continue }
+      if (q == 0) {
+        if (c == "\\") { emit(c); i++; if (i <= n) emit(substr($0, i, 1)); continue }
+        if (c == "\047") { emit(" "); q = 1; continue }
+        if (c == "\"") { emit(" "); q = 2; continue }
+        if (c == "#" && (i == 1 || substr($0, i - 1, 1) ~ /[ \t]/)) { incomment = 1; emit(" "); continue }
+        emit(c); continue
+      }
+      if (q == 1) {
+        if (c == "\047") { q = 0 }
+        emit(" "); continue
+      }
+      if (c == "\\") { emit(" "); i++; if (i <= n) emit(" "); continue }
+      if (c == "\"") { q = 0 }
+      emit(" ")
+    }
+    print out
+  }
+')"
+
+# A wrapper that takes a command as a STRING argument runs what it is handed, so
+# inside one the quotes are not prose. Keep today's whole-line scanner reading
+# for those segments: `bash -c "find ~/code -name x"` must stay denied. The
+# `# walk-ok:` hatch covers prose that quotes such an example.
+exec_wrapper_re='(^|[[:space:]])(eval|(ba|z|k|da)?sh([[:space:]]+-[A-Za-z]+)*[[:space:]]+-[A-Za-z]*c)([[:space:]]|$)'
+
 # Normalize so "$HOME", '$HOME', $HOME and ~ all compare as one literal path.
-probe="$(printf '%s' "$stripped" | tr -d '"'"'" \
-  | sed -e "s#[$]{HOME}#$home#g" -e "s#[$]HOME#$home#g" -e "s#~/#$home/#g" \
-        -e "s#\([[:space:]]\)~\([[:space:]]\)#\1$home\2#g" \
-        -e "s#\([[:space:]]\)~\$#\1$home#")"
+# Both copies get the identical pipeline so neither gains or loses a line.
+normalize() {
+  printf '%s' "$1" | tr -d '"'"'" \
+    | sed -e "s#[$]{HOME}#$home#g" -e "s#[$]HOME#$home#g" -e "s#~/#$home/#g" \
+          -e "s#\([[:space:]]\)~\([[:space:]]\)#\1$home\2#g" \
+          -e "s#\([[:space:]]\)~\$#\1$home#"
+}
+probe="$(normalize "$stripped")"
+probe_blank="$(normalize "$blanked")"
 
 # A recursive `grep` is in here because it is what an agent actually reaches
 # for when the question is "who mentions X", and `grep` has no depth flag at
@@ -118,8 +185,29 @@ depth_re='-maxdepth|--max-depth|(^|[[:space:]])-(d|L)[[:space:]]*[0-9]'
 
 # One segment per simple command, so a bounded find on one side of a pipe does
 # not excuse an unbounded one on the other.
-hit="$(printf '%s\n' "$probe" | sed -e 's/&&/\n/g' -e 's/||/\n/g' -e 's/|/\n/g' -e 's/;/\n/g' \
-  | grep -E "$scanner_re" | grep -E "$roots_re" | grep -vE -- "$depth_re" | head -1 || true)"
+segment() { printf '%s\n' "$1" | sed -e 's/&&/\n/g' -e 's/||/\n/g' -e 's/|/\n/g' -e 's/;/\n/g'; }
+segs_o="$(segment "$probe")"
+segs_b="$(segment "$probe_blank")"
+
+# If the two copies ever disagree on the segment count the pairing below is
+# meaningless, so fall back to reading the scanner off the original: that is
+# today's behaviour, which over-denies rather than under-denies.
+if [ "$(printf '%s\n' "$segs_b" | wc -l)" != "$(printf '%s\n' "$segs_o" | wc -l)" ]; then
+  segs_b="$segs_o"
+fi
+
+hit=""
+while IFS= read -r bseg && IFS= read -r oseg; do
+  sseg="$bseg"
+  if printf '%s' "$oseg" | grep -qE "$exec_wrapper_re"; then
+    sseg="$oseg"
+  fi
+  printf '%s' "$sseg" | grep -qE "$scanner_re" || continue
+  printf '%s' "$oseg" | grep -qE "$roots_re" || continue
+  printf '%s' "$oseg" | grep -qE -- "$depth_re" && continue
+  hit="$oseg"
+  break
+done < <(paste -d '\n' <(printf '%s\n' "$segs_b") <(printf '%s\n' "$segs_o"))
 if [ -n "$hit" ]; then
   emit_deny "BLOCKED: unbounded walk of a workspace root:
   $hit
