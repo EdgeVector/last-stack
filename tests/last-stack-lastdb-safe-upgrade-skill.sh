@@ -291,10 +291,22 @@ case "${1:-}" in
         exit 0
         ;;
       mismatch) printf '%s\n' 'nonce: stale#1' >"$CANARY_STUB_DIR/$slug" ;;
+      slow)
+        # A slow old daemon: the first two puts of each slug time out, then
+        # the third returns the durable receipt.
+        n="$(cat "$CANARY_STUB_DIR/.puts-$slug" 2>/dev/null || echo 0)"
+        n=$((n + 1))
+        printf '%s\n' "$n" >"$CANARY_STUB_DIR/.puts-$slug"
+        if [ "$n" -le 2 ]; then
+          printf '%s\n' 'lastdb POST /api/mutation timed out after 60s' >&2
+          exit 1
+        fi
+        printf '%s' "$body" >"$CANARY_STUB_DIR/$slug"
+        ;;
       *) printf '%s' "$body" >"$CANARY_STUB_DIR/$slug" ;;
     esac
     case "${CANARY_RECEIPT_MODE:-durable}" in
-      durable|mismatch) printf '%s\n' '{"ok":true,"durability":"durable"}' ;;
+      durable|mismatch|slow) printf '%s\n' '{"ok":true,"durability":"durable"}' ;;
       queued) printf '%s\n' '{"ok":true,"durability":"queued"}' ;;
       missing) printf '%s\n' '{"ok":true}' ;;
       malformed) printf '%s\n' 'not-json' ;;
@@ -303,6 +315,13 @@ case "${1:-}" in
     esac
     ;;
   get)
+    if [ "${CANARY_RECEIPT_MODE:-}" = slow ]; then
+      # The first read of each slug times out and prints nothing.
+      r="$(cat "$CANARY_STUB_DIR/.gets-$2" 2>/dev/null || echo 0)"
+      r=$((r + 1))
+      printf '%s\n' "$r" >"$CANARY_STUB_DIR/.gets-$2"
+      [ "$r" -le 1 ] && exit 1
+    fi
     cat "$CANARY_STUB_DIR/${2:?missing slug}"
     ;;
   *) exit 2 ;;
@@ -314,6 +333,9 @@ export PATH="$test_tmp/bin:$PATH"
 export CANARY_STUB_DIR="$test_tmp/state"
 export LASTDB_DURABILITY_CANARY_N=4
 export LASTDB_DURABILITY_READ_WAIT_S=1
+export LASTDB_DURABILITY_ARM_ATTEMPTS=3
+export LASTDB_DURABILITY_ARM_BACKOFF_S=0
+export LASTDB_DURABILITY_ARM_READ_WAIT_S=0
 export PRIMARY_SOCK="$test_tmp/fake.sock"
 export PRIMARY_HOME="$test_tmp/home"
 mkdir -p "$PRIMARY_HOME"
@@ -549,10 +571,28 @@ grep -q 'HTTP 400 stderr: HTTP 400: unknown field durability' "$test_tmp/case-ht
   exit 1
 }
 
+# A slow old daemon is not a durability verdict: the arm retries the same
+# upsert and polls the read-back, then arms on the real durable receipt.
+DURABILITY_ARM_READ_WAIT_S=30
+DURABILITY_ARM_READ_POLL_S=0
+run_receipt_case slow pass
+DURABILITY_ARM_READ_WAIT_S=0
+grep -q 'mode=durable' "$test_tmp/case-slow/stderr" \
+  && grep -q 'durable put failed (attempt 2/3' "$test_tmp/case-slow/stderr" || {
+  echo "FAIL: a slow old daemon did not arm after retries" >&2
+  cat "$test_tmp/case-slow/stderr" >&2
+  exit 1
+}
+
 for mode in queued missing malformed failed mismatch http400-stale; do
   run_receipt_case "$mode" fail
 done
-grep -q 'queued+readback of .* did not return this run' "$test_tmp/case-http400-stale/stderr" || {
+grep -q 'failed after 3 attempts' "$test_tmp/case-failed/stderr" || {
+  echo "FAIL: a persistent durable put failure did not exhaust its attempts" >&2
+  cat "$test_tmp/case-failed/stderr" >&2
+  exit 1
+}
+grep -q 'read-back of .* did not return this run' "$test_tmp/case-http400-stale/stderr" || {
   echo "FAIL: stale queued+readback nonce did not hard-abort" >&2
   cat "$test_tmp/case-http400-stale/stderr" >&2
   exit 1

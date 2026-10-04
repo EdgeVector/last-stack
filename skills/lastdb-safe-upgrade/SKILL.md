@@ -41,10 +41,12 @@ This skill and its Loom `lastdb-safe-upgrade` graph are the **only** allowed
 path for a live binary change on this machine. The shell driver remains the
 probe and cutover implementation. It refuses a live cutover outside Loom.
 
-If LastDB refuses the Loom write probe, `last-stack-safe-upgrade-loom` selects
-Loom local recovery. Loom uses the trusted local graph bundle and a protected
-journal outside LastDB. The launcher reconciles that journal after LastDB
-returns. Other Loom graphs do not use this mode.
+`last-stack-safe-upgrade-loom` always runs the graph on Loom local recovery.
+Loom uses the trusted local graph bundle and a protected journal outside
+LastDB. The launcher reconciles that journal into LastDB after a successful
+run. A slow or down primary cannot stop the upgrade that replaces it. Other
+Loom graphs do not use this mode. Decision:
+`decision-2026-10-04-safe-upgrade-always-local-journal`.
 
 ## Install location (all harnesses)
 
@@ -236,6 +238,12 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
     `restart-intent.json` with the prior session PID and `cause: upgrade`.
     It removes the marker if no start request succeeds. A successful start
     leaves the marker for the new daemon's durable boot-ledger append.
+    A slow old daemon is not a durability verdict. The arm retries the same
+    upsert up to `LASTDB_DURABILITY_ARM_ATTEMPTS` (default 6) times with the
+    `LASTDB_DURABILITY_ARM_BACKOFF_S` backoff (default `5 15 30 60 60`). It
+    polls the pre-cutover read-back for `LASTDB_DURABILITY_ARM_READ_WAIT_S`
+    (default 300s) with a `LASTDB_DURABILITY_ARM_READ_OP_S` (default 90s)
+    per-read limit. The proof does not change.
     Unreadable sentinels after `LASTDB_DURABILITY_READ_WAIT_S` (default 120s)
     are also RED — durability UNPROVEN. Rolling back the binary does not
     recover lost writes; a RED here means audit recent writes across apps
@@ -393,9 +401,8 @@ An equal candidate finishes as a no-op. An older, divergent, or unknown source
 commit fails closed. A byte change needs a new execution key. Do not reuse an
 execution for another pair.
 
-The launcher probes LastDB before it publishes or starts the graph. A refused
-write selects local recovery. An accepted write keeps the normal LastDB path.
-The local journal path defaults to
+The launcher does not write to LastDB before or during the run. The local
+journal path defaults to
 `~/.local/state/last-stack/loom/recovery/executions.jsonl`; set
 `LAST_STACK_LOOM_LOCAL_RECOVERY_DIR` for a different state directory.
 
