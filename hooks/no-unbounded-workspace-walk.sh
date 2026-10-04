@@ -3,7 +3,8 @@
 # depth bound: ~/code, ~/code/edgevector, ~/.fkanban, ~/.fkanban/worktrees,
 # ~/.cache/edgevector-git.
 #
-# WHY (brain papercut-agent-zero-llm-cli-bash-python-heredoc-rglob, 2026-08-02):
+# WHY (measured 2026-08-02; the brain record this used to cite is not in
+# LastDB, so the evidence is kept here rather than pointed at):
 #   An agent that needs one config file reaches for
 #       find ~/.fkanban/worktrees -name feature_catalog.toml
 #   or, inside a python heredoc,
@@ -65,7 +66,7 @@ if printf '%s' "$cmd" | grep -qE "$walk_re" && printf '%s' "$cmd" | grep -qE "$r
 rglob / os.walk / glob('**') from ~/code/edgevector, ~/.fkanban or the home
 directory crosses ~20 checkouts and their cargo target/ trees. It takes minutes
 here, the task times out, and the timeout reads as a product failure
-(brain papercut-agent-zero-llm-cli-bash-python-heredoc-rglob).
+(measured 2026-08-02 on this host).
 
 Resolve the file with a bounded lookup instead:
   last-stack-locate-file --name <file> --env <VAR> \\
@@ -128,7 +129,7 @@ cargo target/ tree, and ~/.last-stack / ~/.host-track / ~/.local/state/last-stac
 resolve into unpruned artifact version trees (106 GiB across 15 apps when last
 measured). A depth-free walk takes minutes here, the task times out, and the
 timeout reads as a product failure
-(brain papercut-agent-zero-llm-cli-bash-python-heredoc-rglob,
+(measured 2026-08-02; roots widened per brain
 papercut-unbounded-walk-hook-roots-omit-install-and-state-roots-20260926).
 
 Bound it:

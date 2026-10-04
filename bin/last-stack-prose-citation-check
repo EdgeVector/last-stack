@@ -17,9 +17,23 @@ table, and while the table held four of the eleven types, `dangling 0` read as
 "no dangling citations" and meant "none among papercut/sop/decision/preference".
 
 Deliberately NOT a merge gate. A required gate here would make CI depend on the
-brain node being reachable, so a busy node would turn a correct PR red. This is
-a periodic checker: the papercut-reconciler routine already runs every few hours
-and already talks to the brain.
+brain node being reachable, so a busy node would turn a correct PR red, and the
+suite must pass on a GitHub runner that has no brain at all.
+
+That left it with no caller. Its only automatic one was a step in
+routines/papercut-reconciler.md, and the fleet has been at 4 active / 77 paused,
+so it had not run on a schedule for days; every number this record carries was
+produced by hand. A checker nothing runs is the same artifact as no checker.
+
+So the live caller is `--changed-since <ref>` from close-out (2026-10-04),
+which runs on this host after every substantive change, by every agent, and
+cannot be silenced by a paused fleet. The per-change set is a handful of files,
+so the sweep is a few point gets instead of ~90 (29 s -> about 1 s), and it
+fails only on prose the author just touched. The full-root sweep stays the
+periodic instrument for the legacy corpus.
+
+The narrowing's residual risk is one-directional and belongs in the method
+line: a citation in a file you did NOT touch is never read in this mode.
 
 A transient node error is reported as `unknown`, never as `dangling`, and it
 sets its own exit code. A checker that reports a busy node as a dangling
@@ -29,7 +43,9 @@ ride along with the noise.
 Exit codes:
   0  every citation resolves (or was deliberately skipped)
   1  at least one citation does not resolve
-  2  usage error
+  2  usage error, or `--changed-since` could not determine the changed set.
+     NOT a pass: a narrowing that silently covers nothing prints `dangling 0`
+     and reads exactly like a clean corpus.
   3  at least one citation could not be determined (node transient) and none
      were proved dangling
 """
@@ -104,8 +120,35 @@ TOKEN_RE = re.compile(
 
 # Prose lives in these places and nowhere else. Named, not searched: a walk over
 # an install or state root resolves into unpruned artifact version trees.
+#
+# `hooks/*.sh` is prose. A PreToolUse hook's deny text is the HIGHEST-RISK
+# citation surface on this host and was unscanned until 2026-10-04: it arrives
+# mid-task, it is phrased as an instruction, it names a slug as the authority
+# for a refusal the agent must now work around, and the agent is in a hurry.
+# Every other prose surface is read deliberately. The defect was found the way
+# it is meant to be: an agent copied a dangling slug out of a deny message into
+# a shipped docstring.
+#
+# Measured 2026-10-04 over this repo's four `hooks/*.sh` before the widening --
+# the false-positive count the record asked for, because a shell file is full of
+# kebab-case tokens (command names, paths, variable values) and this record has
+# twice predicted that a noisy citation checker gets ignored:
+#
+#     distinct tokens extracted   6
+#     false positives             0
+#     dangling                    3   (50%, against an *.md corpus a pass had
+#                                      healed to `dangling 0` the same day)
+#
+# A 50% dangling rate on the unscanned surface, next to 0% on the scanned one,
+# is what an unchecked set looks like after the checked set gets attention.
 PROSE_ROOT_FILES = ("CLAUDE.md", "AGENTS.md")
-PROSE_GLOBS = ("routines/*.md", "instructions/*.md", "skills/*/SKILL.md", "skills/*/*.md")
+PROSE_GLOBS = (
+    "routines/*.md",
+    "instructions/*.md",
+    "skills/*/SKILL.md",
+    "skills/*/*.md",
+    "hooks/*.sh",
+)
 
 # Names under these dirs are how a token can be a LOCAL name rather than a
 # citation: `papercut-lifecycle-close` is bin/last-stack-papercut-lifecycle-close,
@@ -144,7 +187,8 @@ def brain_bin() -> str:
     return os.environ.get("PROSE_CITATION_BRAIN_BIN", "brain")
 
 
-def iter_prose_files(root: Path) -> list[Path]:
+def iter_prose_files(root: Path, limit_to: set[str] | None = None) -> list[Path]:
+    """Prose files under `root`, optionally narrowed to `limit_to` relpaths."""
     found: list[Path] = []
     for name in PROSE_ROOT_FILES:
         path = root / name
@@ -159,8 +203,43 @@ def iter_prose_files(root: Path) -> list[Path]:
         if resolved in seen:
             continue
         seen.add(resolved)
+        if limit_to is not None and str(path.relative_to(root)) not in limit_to:
+            continue
         unique.append(path)
     return unique
+
+
+def changed_paths(root: Path, ref: str) -> tuple[set[str] | None, str]:
+    """(relpaths changed vs `ref`, detail). `None` means git could not answer.
+
+    Compared against the WORKING TREE, not HEAD, so the same command answers
+    before and after the commit -- close-out runs at both points. Untracked
+    files are added separately because `git diff` does not see them, and a brand
+    new routine or hook is exactly the file most likely to carry a fresh
+    citation.
+    """
+
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", str(root), *args], text=True, capture_output=True, check=False
+        )
+
+    base = git("merge-base", ref, "HEAD")
+    if base.returncode != 0:
+        detail = (base.stderr or base.stdout or "").strip().splitlines()
+        return None, detail[0][:200] if detail else f"git merge-base {ref} HEAD failed"
+    merge_base = base.stdout.strip()
+    names: set[str] = set()
+    for argv in (
+        ("diff", "--name-only", merge_base),
+        ("ls-files", "--others", "--exclude-standard"),
+    ):
+        proc = git(*argv)
+        if proc.returncode != 0:
+            detail = (proc.stderr or "").strip().splitlines()
+            return None, detail[0][:200] if detail else f"git {argv[0]} failed"
+        names.update(line for line in proc.stdout.splitlines() if line)
+    return names, f"merge-base {merge_base[:12]}"
 
 
 def local_names(root: Path) -> set[str]:
@@ -200,10 +279,10 @@ def read_ignore(path: Path | None) -> dict[str, str]:
     return ignored
 
 
-def collect_citations(root: Path) -> dict[str, list[str]]:
+def collect_citations(paths: list[Path], root: Path) -> dict[str, list[str]]:
     """token -> the prose files that cite it."""
     cites: dict[str, list[str]] = {}
-    for path in iter_prose_files(root):
+    for path in paths:
         text = path.read_text(encoding="utf-8", errors="replace")
         where = str(path.relative_to(root))
         for match in TOKEN_RE.finditer(text):
@@ -279,6 +358,16 @@ def main(argv: Iterable[str]) -> int:
         default=None,
         help="token+reason exclusions (default: <root>/config/prose-citation-ignore.txt)",
     )
+    parser.add_argument(
+        "--changed-since",
+        metavar="REF",
+        default=None,
+        help=(
+            "check only the prose files that differ from REF (merge-base vs the "
+            "working tree, plus untracked files). This is the per-change mode a "
+            "pre-PR caller uses; it CANNOT see a citation in prose you did not touch."
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="machine-readable report on stdout")
     parser.add_argument(
         "--list-only",
@@ -299,7 +388,26 @@ def main(argv: Iterable[str]) -> int:
     )
     ignored = read_ignore(ignore_path)
     names = local_names(root)
-    cites = collect_citations(root)
+
+    limit_to: set[str] | None = None
+    scope = "every prose file under the root"
+    if args.changed_since is not None:
+        limit_to, detail = changed_paths(root, args.changed_since)
+        if limit_to is None:
+            # Not a pass. A narrowing that silently covers nothing reports
+            # `dangling 0` and reads exactly like a clean corpus -- the failure
+            # this checker exists to stop. Exit 2 is the usage/environment code
+            # and is distinguishable from both 0 and 1.
+            print(
+                f"error: --changed-since {args.changed_since}: cannot determine the "
+                f"changed set ({detail})",
+                file=sys.stderr,
+            )
+            return 2
+        scope = f"ONLY prose changed vs {args.changed_since} ({detail})"
+
+    prose_files = iter_prose_files(root, limit_to)
+    cites = collect_citations(prose_files, root)
 
     checked: list[dict] = []
     skipped: list[dict] = []
@@ -338,7 +446,9 @@ def main(argv: Iterable[str]) -> int:
 
     report = {
         "root": str(root),
-        "prose_files": len(iter_prose_files(root)),
+        "scope": scope,
+        "changed_since": args.changed_since,
+        "prose_files": len(prose_files),
         "cited": len(cites),
         "checked": len(checked),
         "skipped": len(skipped),
@@ -349,7 +459,8 @@ def main(argv: Iterable[str]) -> int:
         "method": (
             "point-get per cited slug via `brain get <slug> --type <type>`; "
             "a transient node error is reported as unknown after 3 attempts, never as dangling; "
-            "tokens naming a file under bin/tests/lib/hooks and tokens in the ignore file are skipped"
+            "tokens naming a file under bin/tests/lib/hooks and tokens in the ignore file are skipped; "
+            f"scanned {scope}"
         ),
     }
 
@@ -365,6 +476,7 @@ def main(argv: Iterable[str]) -> int:
             print(f"DANGLING {row['slug']}  cited_in={','.join(row['cited_in'])}")
         for row in unknown:
             print(f"UNKNOWN  {row['slug']}  {row['detail']}")
+        print(f"scope: {scope}")
         print(f"method: {report['method']}")
 
     if dangling:

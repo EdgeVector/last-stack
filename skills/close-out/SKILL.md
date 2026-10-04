@@ -174,6 +174,45 @@ the repo/ref and command, ending in `0 hits`, for example:
 The closeout helper re-runs this gate and refuses `done` if the proof is absent
 or latest `main` still contains source hits.
 
+### Prose-citation gate
+
+If the change touched any agent prose -- `CLAUDE.md`, `AGENTS.md`,
+`routines/*.md`, `instructions/*.md`, `skills/*/*.md` or `hooks/*.sh` -- point-get
+every brain slug it cites before the PR:
+
+```bash
+last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+"$last_stack/bin/last-stack-prose-citation-check" --root "$WT" --changed-since origin/main
+```
+
+Scoped to the diff, so it is a few point gets (about 1 s, against 29 s for the
+whole root) and it can only fail on prose this change touched.
+
+- **0** -- every citation resolves. Done.
+- **1** -- `DANGLING <slug>`: the slug does not point-get, with or without
+  `--type`. Fix the citation or QUOTE the fact instead of citing it. Do not ship
+  it: a dangling citation reads as an audited ground truth, so the next agent
+  stops looking, and the rule it supports arrives with no evidence anyone can
+  check.
+- **3** -- `UNKNOWN`: the node was busy. Not a blocker; re-run it.
+- **2** -- the changed set could not be computed. Re-run with the full root
+  (`--root "$WT"`, no `--changed-since`) rather than treating it as a pass.
+
+This step is the checker's only live caller. Its scheduled one is step 2b of
+`routines/papercut-reconciler.md`, and the fleet read 4 active / 77 paused on
+2026-10-04, so the sweep had not run on a schedule at all -- every number in
+`papercut-shipped-prose-cites-brain-slugs-that-do-not-resolve-20260926` was
+produced by hand. It is NOT a merge gate on purpose: the suite must pass on a
+GitHub runner with no brain installed, and a busy node must never turn a correct
+PR red.
+
+The highest-risk surface is a PreToolUse hook's deny text. It reaches an agent
+mid-task, phrased as an instruction, naming a slug as the authority for a
+refusal the agent must now work around -- and the agent is in a hurry. Three of
+the six citations in this repo's own `hooks/*.sh` were dangling when that
+surface was first scanned (2026-10-04), against `dangling 0` on the `*.md`
+corpus the same day.
+
 ## 4. File papercuts — default is FILE, not judge
 
 Close-out is the last chance to file friction that would otherwise die in chat.
