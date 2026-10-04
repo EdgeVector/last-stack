@@ -2,8 +2,10 @@
 """Bounded check: a new kanban card must not contradict settled brain records.
 
 Search is candidate slugs only (never membership). Each candidate is
-point-got. Mechanical invariants fire only when that slug was retrieved
-and got. Semantic honor of the listed slugs stays with the filing agent.
+point-got. A mechanical invariant over the card's own declared kind or
+column fires whatever the search returned -- its slug is provenance for
+the reason, not a precondition. Semantic honor of the listed slugs stays
+with the filing agent.
 
 Exit: 0 honor/clear, 2 conflict or usage, 1 brain failure (fail closed).
 """
@@ -31,7 +33,25 @@ GOAL_RE = re.compile(
     r"(?im)^(?:##[ \t]*)?GOAL:?[ \t]*\n?(.*?)(?=^##[ \t]|\Z)"
 )
 
-# Fire only when the slug is in the retrieved, point-got set.
+# The `kind_forbid` and `column_forbid` arms are LOCAL tests on the card's own
+# declared fields and fire whatever the search returned: `slug` is PROVENANCE
+# for the reason text, never a precondition. They used to be gated on the slug
+# landing in the point-got set, which made both of them permanently inert --
+# neither citation has ever resolved in the LastDB brain, so a card carrying
+# Kind:tracker AND column review AND both forbidden body shapes at once read
+# back `verdict: clear`, rc 0 (measured 2026-10-04). Even with the records
+# present the gate was a lottery: the arm fired only when the hybrid search
+# happened to surface its own citation among the top POINT_GET_CAP hits for
+# this card's title.
+#
+# `body_re` stays citation-gated on purpose. It is a heuristic over prose, and
+# measured 2026-10-04 it is wrong in BOTH directions: it matches a card that
+# only QUOTES the forbidden command in order to describe the defect (it refuses
+# the fix card for papercut-kanban-agents-review-column-not-live-20261002), and
+# it misses "restore the review column" because its article group is
+# `(?:a\s+)?`. Promoting it to an unconditional refusal would ship both errors
+# on every Kind:pr filing in the fleet. Tracked separately in
+# papercut-decision-check-review-column-body-regex-wrong-in-both-directions-20261004.
 INVARIANTS = (
     {
         "slug": "preference-kanban-no-trackers-no-human-gates",
@@ -465,22 +485,30 @@ def build_query(title: str, body: str) -> str:
 def apply_invariants(
     got_slugs: set[str], kind: str, column: str, body: str
 ) -> list[dict]:
+    """Fire the mechanical invariants against this card.
+
+    A hit carries `cited`: whether this run could read the record the reason
+    text names. A mechanical arm is NOT suppressed when `cited` is false --
+    an absent citation costs the refusal its provenance, never its teeth.
+    Absent and retracted are different answers, and presence-gating could
+    only ever report the first as the second. See the INVARIANTS comment for
+    why `body_re` alone keeps the old gate.
+    """
     hits: list[dict] = []
     kind_l = (kind or "").strip().lower()
     column_l = (column or "").strip().lower()
     for inv in INVARIANTS:
         slug = inv["slug"]
-        if slug not in got_slugs:
-            continue
+        cited = slug in got_slugs
         if kind_l and kind_l in inv.get("kind_forbid", ()):
-            hits.append({"slug": slug, "reason": inv["reason"]})
+            hits.append({"slug": slug, "reason": inv["reason"], "cited": cited})
             continue
         if column_l and column_l in inv.get("column_forbid", ()):
-            hits.append({"slug": slug, "reason": inv["reason"]})
+            hits.append({"slug": slug, "reason": inv["reason"], "cited": cited})
             continue
         body_re = inv.get("body_re")
-        if body_re and re.search(body_re, body):
-            hits.append({"slug": slug, "reason": inv["reason"]})
+        if cited and body_re and re.search(body_re, body):
+            hits.append({"slug": slug, "reason": inv["reason"], "cited": cited})
     return hits
 
 
@@ -686,6 +714,18 @@ def main(argv: list[str] | None = None) -> int:
                 f"last-stack-kanban-decision-check: conflict {c['slug']}: {c['reason']}",
                 file=sys.stderr,
             )
+            # Say so when the refusal stands on a citation this run could not
+            # read. The rule is mechanical and still applies; the reader is
+            # told the provenance is unavailable rather than being sent to a
+            # `brain get` that answers "No record".
+            if not c.get("cited"):
+                print(
+                    "last-stack-kanban-decision-check: "
+                    f"  note: {c['slug']} did not resolve in this run's store "
+                    "-- the rule is mechanical and still applies, but its "
+                    "record cannot be read back for the reason",
+                    file=sys.stderr,
+                )
         if args.json:
             print(json.dumps(pack, indent=2))
         elif args.inject:
