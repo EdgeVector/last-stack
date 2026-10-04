@@ -137,7 +137,7 @@ while [ "$#" -gt 0 ]; do
     --dry-run) dry_run=1; shift ;;
     --force-live) force_live=1; shift ;;
     -h|--help)
-      sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+      awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
       exit 0
       ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;

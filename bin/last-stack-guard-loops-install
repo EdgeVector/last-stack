@@ -82,6 +82,6 @@ status_agent() {
 case "$cmd" in
   install) install_agent ;;
   status) status_agent ;;
-  -h|--help) sed -n '2,15p' "$0" ;;
+  -h|--help) awk 'NR == 1 { next } /^#/ { print; next } { exit }' "$0" ;;
   *) echo "usage: $0 install|status" >&2; exit 2 ;;
 esac

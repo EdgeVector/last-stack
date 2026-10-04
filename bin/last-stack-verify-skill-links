@@ -35,7 +35,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --check) CHECK_ONLY=1; shift ;;
     --quiet) QUIET=1; shift ;;
-    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+    -h|--help) awk 'NR == 1 { next } /^#/ { print; next } { exit }' "$0"; exit 0 ;;
     --) shift; while [ $# -gt 0 ]; do DIRS+=("$1"); shift; done ;;
     -*) echo "unknown flag: $1" >&2; exit 2 ;;
     *) DIRS+=("$1"); shift ;;

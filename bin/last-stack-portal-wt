@@ -586,7 +586,7 @@ while [ "$#" -gt 0 ]; do
       break
       ;;
     -h|--help)
-      sed -n '2,12p' "$0" | tr -d '#'
+      awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
       exit 0
       ;;
     *)

@@ -31,7 +31,7 @@ while [ "$#" -gt 0 ]; do
     --live) LIVE=1; shift ;;
     --no-live) LIVE=0; shift ;;
     -h|--help)
-      sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+      awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
       exit 0
       ;;
     *) echo "soak-heal-loom: unknown arg: $1" >&2; exit 2 ;;
