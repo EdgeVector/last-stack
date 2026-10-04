@@ -209,11 +209,22 @@ upsert_permission_allow() {
 install_claude_hooks() {
   local hooks_dir="$HOME/.claude/hooks"
   local settings="$HOME/.claude/settings.json"
+  local hook_src hook
   mkdir -p "$hooks_dir" "$(dirname "$settings")"
 
-  for hook in unsafe-inline-json.sh no-home-root-scan.sh no-unbounded-workspace-walk.sh routine-shell-lint.sh; do
-    [ -f "$HOOKS_SRC/$hook" ] || continue
-    cp -f "$HOOKS_SRC/$hook" "$hooks_dir/$hook"
+  # Install the DIRECTORY, not a literal list. This loop used to name four
+  # hooks, so a hook added to last-stack/hooks/ installed nowhere and nothing
+  # said so: the installer ran, reported success, and skipped the file because
+  # it was not in the list. Same silent-enumeration shape host-track's
+  # apps.json documents for routines' dist/probes links.
+  # The registration calls below are still a literal enumeration by design —
+  # each hook needs its own event, matcher and notice text — so
+  # tests/last-stack-setup-installs-every-repo-hook.sh fails the gate when a
+  # repo hook is copied here and never registered.
+  for hook_src in "$HOOKS_SRC"/*.sh; do
+    [ -f "$hook_src" ] || continue
+    hook="$(basename "$hook_src")"
+    cp -f "$hook_src" "$hooks_dir/$hook"
     chmod 700 "$hooks_dir/$hook"
   done
 
