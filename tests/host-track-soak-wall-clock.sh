@@ -125,8 +125,26 @@ printf '%s\n' "$soaking" | jq -e '.soak_elapsed_secs != null and .soak_elapsed_s
 # sees the binding one.
 plain="$("$ROOT/bin/host-track" status demo 2>/dev/null | tr '\t' '\n' | grep '^soak=')"
 case "$plain" in
-  soak=soaking:*/*:*s/3600s) ;;
+  soak=soaking:*/*:*s/3600s*) ;;
   *) fail "plain soak line should carry elapsed/need, got: $plain" ;;
+esac
+
+# WHEN THE GATE LAST LOOKED, on every soaking line. The countdown alone is not
+# a wait: `status` computes `elapsed` at read time while the gate is consulted
+# only on a soak-watch tick, so `3384s/3600s` was read as "216s from flipping"
+# in a durable record when the real wait was that plus up to a full tick.
+case "$plain" in
+  *:last_check=*s*) ;;
+  *) fail "a soaking line must say when the gate last looked, got: $plain" ;;
+esac
+# `checks_total` is what the STARVE arm gates on, so it is needed to explain any
+# non-flipping canary -- not only one that has already been abandoned once. It
+# used to render only while `abandoned > 0`, which hid it on every healthy soak.
+printf '%s\n' "$soaking" | jq -e '.soak_abandoned == 0' >/dev/null \
+  || fail "fixture should be un-abandoned so this covers the hidden case: $soaking"
+case "$plain" in
+  *:total=*:abandoned=0*) ;;
+  *) fail "checks_total must render at abandoned=0 too, got: $plain" ;;
 esac
 
 # THE INVARIANT, not the constant: `soak_watch_one` re-reads the window from the
@@ -153,6 +171,83 @@ out="$("$ROOT/bin/host-track" soak-watch demo)"
 printf '%s\n' "$out" | grep -q 'soak pending' \
   || fail "status reported time left but soak-watch flipped anyway: $out"
 [ "$(demo)" = v1 ] || fail "soak-watch flipped inside the reported window: $(demo)"
+
+# THE OVERDUE DIRECTION. Both thresholds exceeded while the state is still
+# `soaking` is AMBIGUOUS, and the elapsed/need pair above cannot express it: the
+# gate may not have been consulted since the window closed, or it may have
+# looked and refused on a second condition. Those want opposite actions, so the
+# line must name which one it is. The discriminator is the stamp's own
+# `last_check_at`: the gate has looked since the close exactly when
+# `elapsed - need >= last_check_age`.
+iso_at() {
+  # BSD first (the macOS runner and this host), GNU second.
+  date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null
+}
+
+# `status` re-reads the registry, so pin the window back to 1h for these cases.
+write_registry 1
+set_soak_fixture() {
+  # elapsed_secs, last_check_age_secs
+  local elapsed="$1" age="$2" now
+  now="$(date +%s)"
+  jq --argjson started "$(( now - elapsed ))" \
+     --arg last_check "$(iso_at "$(( now - age ))")" \
+     '.status = "soaking" | .started_epoch = $started | .last_check_at = $last_check
+      | .checks = 9 | .checks_total = 9 | .abandoned_consecutive = 0' \
+    "$HOST_TRACK_STAMP_DIR/demo.soak.json" > "$tmp/stamp.json"
+  mv "$tmp/stamp.json" "$HOST_TRACK_STAMP_DIR/demo.soak.json"
+}
+soak_line() { "$ROOT/bin/host-track" status demo 2>/dev/null | tr '\t' '\n' | grep '^soak='; }
+
+# Over budget by 400s, and the gate last looked 600s ago -- so it has NOT been
+# consulted since the window closed. Nothing is wrong; one tick is owed.
+set_soak_fixture 4000 600
+pending="$(status_json)"
+printf '%s\n' "$pending" | jq -e '.soak_elapsed_secs >= .soak_need_secs' >/dev/null \
+  || fail "fixture should be over budget, got: $pending"
+printf '%s\n' "$pending" | jq -e '.soak_gate == "pending"' >/dev/null \
+  || fail "an un-consulted over-budget window is gate-pending, got: $pending"
+pending_line="$(soak_line)"
+case "$pending_line" in
+  *window-met:gate-pending*) ;;
+  *) fail "over-budget line must say the gate has not looked, got: $pending_line" ;;
+esac
+# And it must NOT also print the countdown: an over-budget countdown is the
+# exact rendering that reads as a stuck promotion.
+case "$pending_line" in
+  *s/3600s*) fail "an over-budget line must not render a countdown: $pending_line" ;;
+esac
+
+# Over budget by 400s and the gate looked 100s ago: it HAS evaluated since the
+# close and still did not flip, so something else is binding. Worth diagnosing.
+set_soak_fixture 4000 100
+refused="$(status_json)"
+printf '%s\n' "$refused" | jq -e '.soak_gate == "refused"' >/dev/null \
+  || fail "a consulted over-budget window is gate-refused, got: $refused"
+case "$(soak_line)" in
+  *window-met:gate-refused*) ;;
+  *) fail "expected gate-refused, got: $(soak_line)" ;;
+esac
+
+# An unreadable `last_check_at` is its own answer. Reporting either verdict
+# would be a guess, and the pending one reads as "all is well".
+jq '.last_check_at = "not-a-timestamp"' "$HOST_TRACK_STAMP_DIR/demo.soak.json" > "$tmp/stamp.json"
+mv "$tmp/stamp.json" "$HOST_TRACK_STAMP_DIR/demo.soak.json"
+unknown="$(status_json)"
+printf '%s\n' "$unknown" | jq -e '.soak_gate == "unknown" and .soak_last_check_age_secs == null' >/dev/null \
+  || fail "an unparseable last_check_at must render neither verdict, got: $unknown"
+
+# INSIDE the window the countdown is correct and must survive: the not-yet-due
+# direction is what the elapsed/need pair was added for.
+set_soak_fixture 1200 60
+inside_again="$(status_json)"
+printf '%s\n' "$inside_again" | jq -e '.soak_gate == null' >/dev/null \
+  || fail "an in-window soak has no gate verdict to report, got: $inside_again"
+case "$(soak_line)" in
+  *:1200s/3600s:last_check=6*) ;;
+  *) fail "in-window line must keep the countdown and the tick age, got: $(soak_line)" ;;
+esac
 
 # A RED canary must NOT carry a clock. Both `soak_red` writes reset
 # `started_epoch` to now, so the stamp holds a fresh window for a candidate that
