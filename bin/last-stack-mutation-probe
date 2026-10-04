@@ -90,7 +90,7 @@ while [ "$#" -gt 0 ]; do
       [ "$expect_red_on_set" -eq 0 ] || die "--expect-red-on may be given once; two patterns would read as 'either red will do'"
       expect_red_on="$2"; expect_red_on_set=1; shift 2 ;;
     --keep-on-fail) keep_on_fail=1; shift ;;
-    -h|--help) sed -n '2,/^[^#]/p' "$0" | sed '$d'; exit 0 ;;
+    -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
 done
