@@ -109,6 +109,52 @@ done < "$CONTRACT"
 
 [ -n "$enrolled" ] || fail "no helper is enrolled — the contract file is empty"
 
+# A help handler must not carry a hard-coded upper line bound.
+#
+# The idiom was `print lines 2..N of myself`, where N is a claim about where the
+# header comment block ends and nothing checked it. It drifts in both
+# directions on every header edit. Measured on main da6b2c5ed3a6 across the 24
+# sites that used it: 6 boundaries correct, 17 over-reaching (printing
+# `set -euo pipefail`, blank lines and variable assignments as usage — `setup`
+# ended its usage with `set -e` and `umask 077`), and 1 UNDER-reaching, which
+# is the costly direction and has no symptom:
+# bin/last-stack-routines-prompt-doctor dropped its own exit-code contract from
+# --help while the text sat in the file looking documented.
+#
+# The drift is not a set of wrong numbers to correct. Two days earlier the same
+# census read 9 / 14 / 1; three merges later it read 6 / 17 / 1, with nobody
+# touching a help handler. So the fix is the shared form, and this is the guard
+# that keeps it:
+#
+#   awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
+#
+# which stops at the first non-comment line and cannot drift. Two helpers
+# (bin/last-stack-lint-bin-authoring, bin/last-stack-routine-shell-lint) already
+# carried it, each with the same rationale in its own header.
+#
+# This is a STATIC check, unlike the one the header above rejects. That one had
+# to infer whether a help arm was REACHABLE, which needs ordering it cannot see.
+# This one matches a literal idiom whose presence is the defect, so it has no
+# false positives to opt out of.
+# papercut-bin-help-is-a-hardcoded-sed-line-range-so-14-of-24-print-code-as-usage-20261004
+help_range_re="sed -n '2,[0-9][0-9]*p'"
+range_hits=""
+for f in "$BIN_DIR"/* "$ROOT/setup"; do
+  [ -f "$f" ] || continue
+  # Strip whole-line comments before matching. The two helpers above QUOTE this
+  # idiom in their own headers to explain the defect, and a guard that greps
+  # source matches the rationale as readily as the thing it describes.
+  if sed -e 's/^[[:space:]]*#.*$//' "$f" | grep -qE -- "$help_range_re"; then
+    range_hits="$range_hits $(basename "$f")"
+  fi
+done
+if [ -n "$range_hits" ]; then
+  for h in $range_hits; do
+    fail "$h: --help uses a hard-coded line range; use the awk form that stops at the first non-comment line"
+  done
+fi
+
+
 # --report: the unenrolled population, from source only. Never executes.
 if [ "${1:-}" = "--report" ]; then
   printf '\nhelpers in %s with a help arm and NOT enrolled:\n' "$BIN_DIR"

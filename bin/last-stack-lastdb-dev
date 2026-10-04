@@ -130,7 +130,7 @@ CLIENT_NAME="lastdb-dev"
 say()  { printf 'lastdb-dev: %s\n' "$*"; }
 warn() { printf 'lastdb-dev: WARN %s\n' "$*" >&2; }
 die()  { printf 'lastdb-dev: ERROR %s\n' "$*" >&2; exit 1; }
-usage() { sed -n '2,85p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit "${1:-2}"; }
 now()  { date +%s; }
 iso()  { date -u +%Y-%m-%dT%H:%M:%SZ; }
 OWNER_STAMP_NAME=".lastdb-dev-owner"

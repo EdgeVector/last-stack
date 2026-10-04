@@ -25,7 +25,7 @@ BASELINE_PATH="${LAST_STACK_MACHINE_LEAK_BASELINE:-$ROOT/config/machine-leak-bas
 # asking for help can exit 0 on stdout while a genuine argument error still
 # exits 2 on stderr. papercut-last-stack-kanban-file-pr-help-exits-2
 usage() {
-  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
 }
 
 while [ "$#" -gt 0 ]; do

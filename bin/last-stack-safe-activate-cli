@@ -377,7 +377,7 @@ STAMP
 }
 
 usage() {
-  sed -n '2,20p' "$0" | tr -d '#'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
 }
 
 cmd="${1:-}"

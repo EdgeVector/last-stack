@@ -113,6 +113,6 @@ case "$cmd" in
     shift 2
     exec "$last_stack/bin/$program" "$selection" "$@"
     ;;
-  -h|--help) sed -n '2,8p' "$0" ;;
+  -h|--help) awk 'NR == 1 { next } /^#/ { print; next } { exit }' "$0" ;;
   *) echo "usage: $0 install|uninstall|status [brain|routines|all]" >&2; exit 2 ;;
 esac

@@ -64,7 +64,7 @@ while [ $# -gt 0 ]; do
     --host=*) HOST="${1#*=}"; shift ;;
     --local) LOCAL_INSTALL=1; shift ;;
     --uninstall) exec "$SOURCE_ROOT/bin/last-stack-uninstall" ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    -h|--help) awk 'NR == 1 { next } /^#/ { print; next } { exit }' "$0"; exit 0 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
 done

@@ -37,7 +37,7 @@
 set -u
 
 if [ "$#" -lt 1 ] || [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-  sed -n '2,35p' "$0"
+  awk 'NR == 1 { next } /^#/ { print; next } { exit }' "$0"
   [ "$#" -ge 1 ] && exit 0
   exit 2
 fi
