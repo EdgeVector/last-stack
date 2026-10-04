@@ -7,8 +7,9 @@ description: |
   only against an ephemeral/CoW copy (never live home first), (3) require GREEN
   real-data reads AND RSS under the memory-guard AND the latency bar (real
   workloads timed vs the current binary — correct-but-slow is RED) AND the
-  footprint bar (upgrade-gate at 600 seconds on the ephemeral copy; a sample
-  without footprint_net is RED; not the 86400 soak) AND the
+  key-cap bar (under LASTDB_RESIDENT_KEY_CAP=100 the logical resident set
+  keeps its key count within budget and purges; eviction is measured in keys,
+  so there is no byte footprint bar) AND the
   CAS mutation bar (candidate enforces `/api/mutation` `expected` — false
   precondition → 409; LastGit ref/CI CAS depends on it), AND a GREEN
   **DEV photograph stamp** for the exact Loom source, daemon bytes, and CLI
@@ -171,23 +172,6 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
    candidate's own hot probe numbers (`LASTDB_LIVE_LAT_ENFORCE=1` makes
    either RED). The bar also checks correlated hot-operation regressions and
    avoids a cold sub-floor baseline as a raw ratio denominator.
-7b. **Footprint bar (eviction must move phys_footprint).** The upgrade gate
-   is `proof_kind = upgrade-gate` at 600 seconds. It is not the 86400 soak.
-   The ephemeral status sample must show `purge_delay_ms = 0`. Purge slack
-   (`phys_footprint` minus `footprint_net`) must be at or under 512 MiB.
-   A step that freed warm bytes must drop `phys_footprint` by at least 0.25
-   of those bytes. A window with no such step is not RED: the logical
-   resident set keeps no hash groups, so step 7c proves eviction instead.
-   The 12 GiB p99 and the 1.3 multiplier stay backstops.
-   They are not the operating target. A sample that lacks the new fields
-   is RED. The bar does not skip that sample. A candidate equivalent to
-   build `be41e547e` fails. The driver sets
-   `LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1` on the ephemeral candidate copy
-   only. It does not copy that conflict stamp onto the primary home. The
-   live step, the rollback pin, and the order stay the same: backup, then
-   copy, then the green bar, then live. This bar does not restart a node.
-   Helper: `scripts/footprint-bar-checks.sh`. Receipt line: `FOOTPRINT:`.
-
 7c. **Key-cap bar (the logical resident set must purge).** The cap is a
    count of fetched records (`RESIDENT_KEY_CAP = 10000`), not bytes. The
    driver boots the candidate on its own CoW copy with
@@ -197,6 +181,13 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
    equal to the cap, `resident_key_count` at or under it, and
    `resident_purged_keys` must rise above 0. Absent gauges are RED. There
    is no skip, so a binary without the logical resident set fails.
+   There is no byte footprint bar. Eviction is measured in keys, and a GiB
+   line does not measure it (Tom, 2026-10-04). The RSS bar against the
+   memory-guard limit stays: it is the crash limit, not an eviction rule.
+   The driver sets `LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1` on the
+   ephemeral candidate copy only, never on the primary home. Helpers:
+   `scripts/key-cap-bar-checks.sh`, `scripts/probe-copy-guards.sh`.
+   Receipt line: `KEYCAP:`.
 8. **Candidate-class bar (no debug / dirty / oversized):** before backup or
    probe, refuse candidates that look like a Cargo **debug** build
    (`…/target/debug/…`), a **-dirty** version stamp (uncommitted tree at
@@ -486,7 +477,7 @@ The script:
 | Resolve candidate | `brew update` / `--version` tarball / `--candidate` |
 | **1. Rollback point** | `cp -cR` (APFS only; no full-copy fallback) → `${TMPDIR}/lastdb-safe-upgrade-rollback-<uid>/pre-<new>-from-<old>-<ts>/`; reclaim the prior retained point first |
 | **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before multi-GB backup) |
-| **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **CAS mutation bar** (ephemeral candidate node: false `expected` → 409) + **RSS settle/sample** vs memory-guard limit + **latency bar**: cold then hot Board point-read / scan (like-to-like vs baseline CoW); hot `brain put` write; geo-mean on the hot triple only + **row-count bar**: candidate must not return 0 rows where the baseline returns rows (no skip flag) + **footprint bar**: `upgrade-gate` at 600 seconds (not the 86400 soak); `purge_delay_ms` 0; slack at or under 512 MiB; 0.25 drop when warm bytes are freed; 12 GiB p99 and 1.3 multiplier remain backstops; absent fields RED; no skip + **key-cap bar**: candidate on its own CoW with `LASTDB_RESIDENT_KEY_CAP=100`; count within budget, purge ran; no skip |
+| **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **CAS mutation bar** (ephemeral candidate node: false `expected` → 409) + **RSS settle/sample** vs memory-guard limit + **latency bar**: cold then hot Board point-read / scan (like-to-like vs baseline CoW); hot `brain put` write; geo-mean on the hot triple only + **row-count bar**: candidate must not return 0 rows where the baseline returns rows (no skip flag) + **key-cap bar**: candidate on its own CoW with `LASTDB_RESIDENT_KEY_CAP=100`; count within budget, purge ran; no skip |
 | Detect venue | sidebin vs brew |
 | **2c. DEV photograph proof** | After all normal bars pass, the exact pair clones the static rollback point from step 1. It scrubs production state, connects the copied identity to compiled DEV, and runs the manual snapshot CAS. The fresh v2 receipt must match this Loom execution. |
 | **2d. Meter restart bar** | Read live status before restart. Refuse a `keep_small` plane above 1.5 GiB or a failed persist lane. The 2 GiB cold-group cap can prevent both new and old binaries from booting. |
@@ -537,7 +528,7 @@ Always print:
 - Probe GREEN/RED (+ first Board title if green)  
 - **Probe peak RSS MiB vs memory-guard limit / fail_at**  
 - **Latency: cold point/scan and hot point/scan/write, candidate vs baseline (ms) + boot seconds**  
-- **Footprint receipt:** `FOOTPRINT:` with `proof_kind=upgrade-gate`, `duration_secs` (600, not 86400), `purge_delay_ms=0`, and `slack_bytes` at or under 512 MiB. The 12 GiB p99 and the 1.3 multiplier stay backstops.
+- **Key-cap receipt:** `KEYCAP:` with `cap=100`, the sample count, `max_count` at or under the cap, and `purged_keys` above 0.
 - Whether live upgrade ran + cutover seconds + live peak RSS + live point-read ms  
 - Rollback commands (script prints them)
 
@@ -563,7 +554,7 @@ this call is missed. `LASTDB_SAFE_UPGRADE_PRIMARY_ROWS=0` turns it off.
 | `VERDICT: GREEN` | Probe + live cutover + live post-check passed | Done |
 | `VERDICT: GREEN_PROBE_ONLY` | Probe passed; primary still on old version | Start `last-stack-safe-upgrade-loom` with the candidate and source commit if Tom wants the upgrade |
 | `VERDICT: ALREADY_CURRENT` | Already on candidate/stable | Nothing to do |
-| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (per-op 3×, absolute ceiling, **or correlated** all-ops / geo-mean regression), **or** the **row-count bar** failed (a real read returned 0 rows where the baseline returned rows), **or** the **footprint bar** failed (absent `footprint_net`, slack above 512 MiB, purge delay not 0, a freed step without a 0.25 footprint drop, p99 at or above 12 GiB, multiplier at or above 1.3, or a 86400 soak in place of `upgrade-gate`), **or** the **key-cap bar** failed (budget not the requested cap, count above budget, or no purge), **or** the exact-candidate DEV proof failed, **or** its v2 receipt is stale or mismatched, **or** the **durability canary** lacks an exact durable receipt before cutover, **or** its post-cutover read is stale, **or** the primary LaunchAgent does not own the live process, **or** a meter, persist-lane, supervision, or cloud-frontier bar failed | **Do not upgrade**. File a release blocker. Use the retained rollback point only when recovery needs it. The next safe-upgrade run reclaims it. A durability RED after cutover means you must audit recent writes. A binary rollback cannot recover lost writes. |
+| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (per-op 3×, absolute ceiling, **or correlated** all-ops / geo-mean regression), **or** the **row-count bar** failed (a real read returned 0 rows where the baseline returned rows), **or** the **key-cap bar** failed (budget not the requested cap, count above budget, or no purge), **or** the exact-candidate DEV proof failed, **or** its v2 receipt is stale or mismatched, **or** the **durability canary** lacks an exact durable receipt before cutover, **or** its post-cutover read is stale, **or** the primary LaunchAgent does not own the live process, **or** a meter, persist-lane, supervision, or cloud-frontier bar failed | **Do not upgrade**. File a release blocker. Use the retained rollback point only when recovery needs it. The next safe-upgrade run reclaims it. A durability RED after cutover means you must audit recent writes. A binary rollback cannot recover lost writes. |
 
 ## Rollback
 
