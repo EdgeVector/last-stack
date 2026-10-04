@@ -36,16 +36,23 @@ trap cleanup EXIT
 
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 
-# Pull the helper out of setup and source it on its own: the test is about the
-# function, not about a full setup run.
+# Pull the helpers out of setup and source them on their own: the test is about
+# the functions, not about a full setup run. upsert_pretool_hook is a thin
+# wrapper over the generic upsert_hook, so BOTH have to come across — extracting
+# only the wrapper leaves it calling a function that does not exist, and the
+# test then dies with `upsert_hook: command not found` instead of reporting
+# anything about the key.
 helper="$tmp/helper.sh"
 {
   printf '%s\n' '#!/usr/bin/env bash'
   printf '%s\n' 'set -euo pipefail'
+  sed -n '/^upsert_hook() {$/,/^}$/p' "$ROOT/setup"
   sed -n '/^upsert_pretool_hook() {$/,/^}$/p' "$ROOT/setup"
 } > "$helper"
-grep -q 'upsert_pretool_hook()' "$helper" || fail \
-  "could not extract upsert_pretool_hook from setup (did the function name or its brace style change?)"
+for fn in upsert_hook upsert_pretool_hook; do
+  grep -q "^$fn() {" "$helper" || fail \
+    "could not extract $fn from setup (did the function name or its brace style change?)"
+done
 # shellcheck source=/dev/null
 . "$helper"
 

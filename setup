@@ -138,16 +138,28 @@ assert_safe_skill_links() {
 # each ran TWICE per Bash call, 78 ms of pure duplicate per call, because their
 # notice text had been reworded after they were first registered. Brain:
 # papercut-setup-upsert-pretool-hook-keys-the-replace-on-the-comment-so-rewording-it-duplicates-the-hook-20261004
-upsert_pretool_hook() {
+# A matcher is OPTIONAL and the two shapes are NOT interchangeable. Measured
+# 2026-10-04 on this host's live settings.json: PreToolUse and PostToolUse
+# groups carry a `matcher` key, while SessionStart, Stop and UserPromptSubmit
+# groups carry `keys=[hooks]` and no matcher at all. So a generic helper that
+# always wrote `{matcher, hooks}` would append a SECOND group beside the armed
+# matcher-less one and never replace it — the duplicate-entry defect this
+# helper exists to prevent, re-introduced on a different axis. Pass matcher ""
+# for a matcher-less event: the group is then found by the ABSENCE of the key,
+# and a newly created group is written without it.
+# Brain: papercut-setup-has-only-a-pretooluse-registration-helper-so-five-of-eight-orphan-hooks-cannot-be-managed-20261004
+upsert_hook() {
   local settings="$1"
-  local matcher="$2"
-  local command="$3"
-  local timeout="$4"
+  local event="$2"
+  local matcher="$3"
+  local command="$4"
+  local timeout="$5"
   local script tmp
   # Everything up to the first whitespace: the script path the harness runs.
   script="${command%%[[:space:]]*}"
   tmp="$(mktemp)"
   jq \
+    --arg event "$event" \
     --arg matcher "$matcher" \
     --arg command "$command" \
     --arg script "$script" \
@@ -155,48 +167,55 @@ upsert_pretool_hook() {
       def same_script:
         (.command // "") as $c
         | $c == $script or ($c | startswith($script + " "));
+      def is_group:
+        if $matcher == "" then (has("matcher") | not) else (.matcher? == $matcher) end;
+      def entry:
+        { type: "command", command: $command, timeout: $timeout };
       .hooks //= {}
-      | .hooks.PreToolUse //= []
-      | .hooks.PreToolUse =
-        (if any(.hooks.PreToolUse[]?; .matcher == $matcher) then
-          [.hooks.PreToolUse[] |
-            if .matcher == $matcher then
-              .hooks = (((.hooks // []) | map(select(same_script | not))) + [{
-                type: "command",
-                command: $command,
-                timeout: $timeout
-              }])
+      | .hooks[$event] //= []
+      | .hooks[$event] =
+        (if any(.hooks[$event][]?; is_group) then
+          [.hooks[$event][] |
+            if is_group then
+              .hooks = (((.hooks // []) | map(select(same_script | not))) + [entry])
             else
               .
             end
           ]
         else
-          .hooks.PreToolUse + [{
-            matcher: $matcher,
-            hooks: [{
-              type: "command",
-              command: $command,
-              timeout: $timeout
-            }]
-          }]
+          .hooks[$event] + [
+            (if $matcher == "" then
+              { hooks: [entry] }
+            else
+              { matcher: $matcher, hooks: [entry] }
+            end)
+          ]
         end)
     ' "$settings" > "$tmp"
   mv "$tmp" "$settings"
 }
-remove_pretool_hook_by_script() {
-  # Strip every PreToolUse command entry whose command references the given
-  # script name, dropping matcher groups left empty.
+
+# Thin wrapper so the PreToolUse call sites below stay readable and reviewable.
+upsert_pretool_hook() {
+  upsert_hook "$1" "PreToolUse" "$2" "$3" "$4"
+}
+# De-register across EVERY event, not just PreToolUse. A retired hook that was
+# armed on Stop or SessionStart could not be removed by a PreToolUse-only
+# sweep, so an already-armed machine would keep running it forever with nothing
+# in this installer able to say otherwise.
+remove_hook_by_script() {
   local settings="$1"
   local script="$2"
   local tmp
   tmp="$(mktemp)"
   jq \
     --arg script "$script" '
-      if (.hooks.PreToolUse // []) == [] then . else
-        .hooks.PreToolUse =
-          [.hooks.PreToolUse[]
+      if (.hooks // {}) == {} then . else
+        .hooks = (.hooks | with_entries(
+          .value = [(.value // [])[]
             | .hooks = ((.hooks // []) | map(select((.command // "") | contains($script) | not)))
             | select((.hooks | length) > 0)]
+        ))
       end
     ' "$settings" > "$tmp"
   mv "$tmp" "$settings"
@@ -257,7 +276,7 @@ install_claude_hooks() {
   # function on 2026-07-29. De-register so already-armed machines heal on the
   # next run. The brain record for that history no longer resolves; the
   # paragraph above is the whole account.
-  remove_pretool_hook_by_script "$settings" "read-before-edit.sh"
+  remove_hook_by_script "$settings" "read-before-edit.sh"
 
   upsert_pretool_hook "$settings" "Bash" \
     "$hooks_dir/unsafe-inline-json.sh  # keep parsed JSON stdout clean; block brittle inline parsing and merged stderr" \

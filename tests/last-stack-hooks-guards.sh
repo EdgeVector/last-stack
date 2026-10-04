@@ -16,14 +16,18 @@ if [ -e "$ROOT/hooks/read-before-edit.sh" ]; then
   echo "hooks/read-before-edit.sh is retired and must not return to the repo" >&2
   exit 1
 fi
-if grep -q "upsert_pretool_hook.*read-before-edit" "$ROOT/setup"; then
-  echo "setup must not register read-before-edit.sh" >&2
+# Matches the generic helper as well as the PreToolUse wrapper. Keying this on
+# `upsert_pretool_hook` alone stopped being sufficient when upsert_hook arrived:
+# read-before-edit.sh could be armed on Stop or SessionStart through the generic
+# form and this guard would have said nothing.
+if grep -qE "upsert_(pretool_)?hook.*read-before-edit" "$ROOT/setup"; then
+  echo "setup must not register read-before-edit.sh (on any event, through either helper)" >&2
   exit 1
 fi
 
 # The de-registration must remove read-before-edit entries from an armed
 # settings.json while leaving every other hook untouched.
-eval "$(sed -n '/^remove_pretool_hook_by_script()/,/^}/p' "$ROOT/setup")"
+eval "$(sed -n '/^remove_hook_by_script()/,/^}/p' "$ROOT/setup")"
 settings_fixture="$tmp/settings.json"
 jq -n '{hooks: {PreToolUse: [
   {matcher: "Bash", hooks: [
@@ -37,15 +41,51 @@ jq -n '{hooks: {PreToolUse: [
     {type: "command", command: "/x/hooks/other-guard.sh  # keep me too", timeout: 10}
   ]}
 ]}}' > "$settings_fixture"
-remove_pretool_hook_by_script "$settings_fixture" "read-before-edit.sh"
+remove_hook_by_script "$settings_fixture" "read-before-edit.sh"
 jq -e '[.. | strings | select(test("read-before-edit"))] | length == 0' "$settings_fixture" >/dev/null
 jq -e '.hooks.PreToolUse | length == 2' "$settings_fixture" >/dev/null
 jq -e '.hooks.PreToolUse[0].matcher == "Bash" and (.hooks.PreToolUse[0].hooks | length == 1)' "$settings_fixture" >/dev/null
 jq -e '.hooks.PreToolUse[1].matcher == "Write" and .hooks.PreToolUse[1].hooks[0].command == "/x/hooks/other-guard.sh  # keep me too"' "$settings_fixture" >/dev/null
 
-# Settings with no PreToolUse hooks must pass through unchanged.
+# The sweep must reach EVERY event, not only PreToolUse. A retired hook armed
+# on a matcher-less event (Stop, SessionStart, UserPromptSubmit) was
+# un-removable while this helper was PreToolUse-only, so an already-armed
+# machine would have kept running it with nothing in the installer able to stop
+# it. The surviving Stop entry proves the sweep is surgical and not a wipe.
+jq -n '{hooks: {
+  Stop: [
+    {hooks: [
+      {type: "command", command: "/x/hooks/read-before-edit.sh  # retired, armed on Stop", timeout: 10},
+      {type: "command", command: "/x/hooks/close-out-reminder.sh  # keep me", timeout: 10}
+    ]}
+  ],
+  SessionStart: [
+    {hooks: [{type: "command", command: "/x/hooks/read-before-edit.sh  # retired", timeout: 10}]}
+  ]
+}}' > "$settings_fixture"
+remove_hook_by_script "$settings_fixture" "read-before-edit.sh"
+assert_fixture() {
+  jq -e "$1" "$settings_fixture" >/dev/null || {
+    printf 'FAIL: %s\n' "$2" >&2
+    jq -c . "$settings_fixture" >&2
+    exit 1
+  }
+}
+assert_fixture '[.. | strings | select(test("read-before-edit"))] | length == 0' \
+  "the retired hook survived on a matcher-less event. remove_hook_by_script must sweep EVERY event; a PreToolUse-only sweep cannot reach Stop or SessionStart."
+assert_fixture '.hooks.Stop | length == 1' \
+  "the Stop event should still hold exactly 1 group after the sweep."
+assert_fixture '.hooks.Stop[0].hooks | length == 1' \
+  "the Stop group should keep its 1 surviving hook; the sweep must be surgical, not a wipe."
+assert_fixture '.hooks.Stop[0].hooks[0].command == "/x/hooks/close-out-reminder.sh  # keep me"' \
+  "the surviving Stop entry is not the one that should have been kept."
+# SessionStart held only the retired hook, so its emptied group is dropped.
+assert_fixture '(.hooks.SessionStart // []) | length == 0' \
+  "SessionStart held only the retired hook, so its emptied group should have been dropped."
+
+# Settings with no hooks at all must pass through unchanged.
 jq -n '{model: "fable"}' > "$settings_fixture"
-remove_pretool_hook_by_script "$settings_fixture" "read-before-edit.sh"
+remove_hook_by_script "$settings_fixture" "read-before-edit.sh"
 jq -e '. == {model: "fable"}' "$settings_fixture" >/dev/null
 
 hook_out() {
