@@ -42,6 +42,18 @@ Hazards that no guard can see:
   columns. Emit `-` for an empty field (`(.x // "-")`), or keep the JSON.
 - `jq -r '[inputs ...]' a.json b.json` skips the first file. Use `jq -s`.
 
+- A ranked human table is NOT a parsing contract. `brain search` prints
+  `slug · score · type · title`, slug FIRST; a scrape anchored on a leading
+  score matches nothing, the pipeline exits non-zero into a `$(...)` that
+  swallows it, and EVERY row comes back empty. 100% empty is the same output as
+  a genuine "nothing matched", so a parse failure reads as a measured negative.
+  Measured 2026-10-04: a 23-row sweep reported no candidate for any row; the
+  corrected parse found one for 21 of 23. Parse the `--json` these CLIs already
+  offer (`brain search --json` gives `{slug, score, type, title, snippet}` and
+  guarantees parseable stdout even on failure). If a hand-rolled row sweep
+  survives, assert a non-empty RATE before using it: an all-empty sweep is a
+  bug, never a finding.
+
 Helpers that remove the hand-written parse:
 
 - `last-stack-kanban-done-when-sweep`: the DONE-WHEN sweep, one TSV row per
