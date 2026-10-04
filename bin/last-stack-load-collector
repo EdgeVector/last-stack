@@ -257,6 +257,40 @@ DISPATCH_FROZEN_CONSEC = int(envf("LOAD_MON_ALERT_DISPATCH_FROZEN_CONSEC", 2))
 # normally, and still short of the 105.7 h episode above, which is exactly the
 # longest one and the one a freeze detector must not go quiet on.
 FW_ANY_TS_RE = re.compile(r'"ts":"(\d{4}-\d{2}-\d{2}T[0-9:.]+Z)"')
+# The routine fleet's own POSTURE, as opposed to whether it is dispatching.
+# `dispatch_frozen` answers "the scheduler stopped"; this answers "the scheduler
+# is running and almost nothing is registered to run". Those are different facts
+# with different owners, and the second one had no surface at all: on
+# 2026-10-04 `situations list --json` returned ONE unrelated p2 while 77 of 81
+# routines were paused by a five-day-old `go` decision. Three durable records
+# then gave three different causes for the same `paused` column (the wrong date,
+# "no resume owner", and a registry write defect), because each reader had to
+# reconstruct the posture from the column itself.
+#
+# The registry is plain files and the count is exact, so this needs no
+# subprocess: `routines list --json` reports `[.entries[].status]`, and a
+# line-anchored match over the per-routine TOMLs agrees with it exactly
+# (measured 2026-10-04T15:5xZ at 4/77 of 81, and 16:4xZ at 5/76 of 81). The
+# alternative was `LOAD_MON_ROUTINES_BIN list --json`, which is a ~62 MB bun
+# binary this file already warns about pulling through memory, spawned twice a
+# minute to count a column.
+#
+# The glob is `*.toml` and NOT the directory listing: ~/.routines/registry holds
+# 141 entries of which 81 are routines, so a denominator of 141 puts the ratio
+# at 55% -- silently under any sane threshold, on the exact state the rule
+# exists to report. Read through os.listdir rather than glob.glob because the
+# hermetic guard traces os.listdir and does not trace os.scandir.
+# papercut-a-95-percent-paused-routine-fleet-is-invisible-to-situations-so-three-records-give-three-causes-20261004
+ROUTINE_REGISTRY_DIR = host_path(
+    "LOAD_MON_ROUTINE_REGISTRY_DIR", os.path.join(HOME, ".routines/registry"))
+REGISTRY_STATUS_RE = re.compile(r'^status\s*=\s*"(\w+)"', re.M)
+# 90% is a posture, not a dip: one routine paused for a fix is routine, and a
+# fleet where nine in ten are off is a standing operator decision whichever way
+# it was made. The floor exists so a fresh, tiny or half-installed registry
+# cannot trip it -- 9/9 paused says nothing about a fleet.
+FLEET_PAUSED_PCT = envf("LOAD_MON_FLEET_PAUSED_PCT", 90)
+FLEET_PAUSED_MIN_TOTAL = int(envf("LOAD_MON_FLEET_PAUSED_MIN_TOTAL", 10))
+FLEET_PAUSED_CONSEC = int(envf("LOAD_MON_ALERT_FLEET_PAUSED_CONSEC", 2))
 NOTIFY = os.environ.get("LOAD_MON_NOTIFY", "1") != "0"
 PHONE = os.environ.get("LOAD_MON_PHONE", "1" if NOTIFY else "0") != "0"
 RA = host_path("LOAD_MON_RA", os.path.join(HOME, ".local/bin/ra"))
@@ -914,6 +948,63 @@ def frontier_frozen(now):
                int(obs_age)))
 
 
+def fleet_mass_paused():
+    """Almost the whole routine registry is `paused`, or None if it is not.
+
+    Returns the message, or None. This rule has NO time component on purpose:
+    a registry file carries no timestamp, so there is nothing honest to compare
+    a clock against. The only temporal bound is the consecutive-pass counter in
+    `evaluate_alerts`, which is what stops a mid-write registry from alerting.
+
+    THE MESSAGE NAMES THE ACTIVE IDS, not just the ratio. "77 of 81 paused" is
+    the number an operator already suspects; "which 4 are still running" is the
+    thing they cannot get anywhere else, and it is what decides whether a
+    pipeline they depend on is covered.
+
+    WHAT THIS DOES NOT CLAIM. It takes no position on whether the fleet SHOULD
+    be paused, and it cannot: a deliberate pause is recorded as a brain
+    `decision`, which this agent does not read and must not (no node, no board,
+    same contract as `freeze_watch_down`). A mass pause is reported because it
+    is the largest standing fact about this host's autonomy and no surface
+    carried it, not because it is wrong.
+
+    An absent or unreadable directory is NOT a fault, and neither is an empty
+    one: a host with no routines installed is a legitimate host, exactly as an
+    absent plist is for the watchdog. Both return None.
+    """
+    try:
+        names = sorted(f for f in os.listdir(ROUTINE_REGISTRY_DIR) if f.endswith(".toml"))
+    except OSError:
+        return None
+    total, paused, active = 0, 0, []
+    for name in names:
+        try:
+            with open(os.path.join(ROUTINE_REGISTRY_DIR, name)) as fh:
+                body = fh.read()
+        except OSError:
+            continue
+        m = REGISTRY_STATUS_RE.search(body)
+        if not m:
+            # A routine file with no status line is still a routine, so it
+            # counts in the denominator. Dropping it would let a corrupt half
+            # of the registry raise the paused RATIO while the fleet got
+            # smaller, which is the wrong direction for a floor to fail in.
+            total += 1
+            continue
+        total += 1
+        if m.group(1) == "paused":
+            paused += 1
+        elif m.group(1) == "active":
+            active.append(name[: -len(".toml")])
+    if total < FLEET_PAUSED_MIN_TOTAL or total == 0:
+        return None
+    if paused * 100.0 / total < FLEET_PAUSED_PCT:
+        return None
+    return ("%d of %d routines are paused (>= %g%%); still active: %s. A deliberate pause is "
+            "recorded as a brain decision and not here, so read it before resuming anything"
+            % (paused, total, FLEET_PAUSED_PCT, ", ".join(active) or "none"))
+
+
 def dispatch_frozen(now, watchdog_down):
     """The routine fleet has stopped dispatching and no live watchdog says so.
 
@@ -1001,6 +1092,7 @@ def dispatch_frozen(now, watchdog_down):
 # because those fire on a bound being crossed and recover on their own. Disagree
 # with that criterion rather than with any single row.
 ALERT_SCOPE = {
+    "fleet_mass_paused":               (("routinesd",), "other",   "warn"),
     "fleet_dispatch_frozen":           (("routinesd",), "other",   "warn"),
     "fleet_freeze_watchdog_down":      (("routinesd",), "other",   "warn"),
     "registry_delivery_frozen":        (("host-track",), "other",  "warn"),
@@ -1119,6 +1211,8 @@ def evaluate_alerts(rec, now):
     st["dispatch_frozen"] = st.get("dispatch_frozen", 0) + 1 if dispatch_why else 0
     frozen_why = guarded(lambda: frontier_frozen(now), None)
     st["frontier_frozen"] = st.get("frontier_frozen", 0) + 1 if frozen_why else 0
+    paused_why = guarded(lambda: fleet_mass_paused(), None)
+    st["fleet_paused"] = st.get("fleet_paused", 0) + 1 if paused_why else 0
     last = st.setdefault("last_alert", {})
     checks = [
         # Before the watchdog's absence, because the freeze is the thing an
@@ -1129,6 +1223,13 @@ def evaluate_alerts(rec, now):
          "the routines fleet-freeze watchdog is not running for %d passes: %s "
          "(while it is down, a scheduler freeze is reported by nothing)"
          % (st["fw_down"], fw_why)),
+        # Above the frozen prover, because a paused fleet is UPSTREAM of it: on
+        # this host the only routine that can prove the running build is itself
+        # one of the paused ones, so the pin cannot clear until the posture
+        # changes. An operator reading the pin first acts on the wrong link.
+        ("fleet_mass_paused", st["fleet_paused"] >= FLEET_PAUSED_CONSEC,
+         "the routine fleet is mass-paused for %d passes: %s"
+         % (st["fleet_paused"], paused_why)),
         ("registry_delivery_frozen", st["frontier_frozen"] >= FRONTIER_CONSEC,
          "registry delivery frozen for %d passes: %s"
          % (st["frontier_frozen"], frozen_why)),
