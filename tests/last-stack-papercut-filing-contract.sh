@@ -51,6 +51,8 @@ grep -q 'instructions/brain-kanban.md' "$ROOT/setup" \
   || fail "setup no longer sources instructions/brain-kanban.md, so the rule reaches no harness"
 grep -q 'instructions/asd-ste100.md' "$ROOT/setup" \
   || fail "setup no longer sources instructions/asd-ste100.md, so STE reaches no harness"
+grep -q 'instructions/tom-vocabulary.md' "$ROOT/setup" \
+  || fail "setup no longer sources instructions/tom-vocabulary.md, so the word list reaches no harness"
 for harness_file in '.claude/CLAUDE.md' '.codex/AGENTS.md'; do
   grep -q "$harness_file" "$ROOT/setup" \
     || fail "setup no longer upserts the managed block into $harness_file"

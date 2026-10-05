@@ -397,6 +397,8 @@ BK_START='<!-- last-stack:brain-kanban:start (managed by last-stack setup; edits
 BK_END='<!-- last-stack:brain-kanban:end -->'
 STE_START='<!-- last-stack:asd-ste100:start (managed by last-stack setup; edits inside are overwritten) -->'
 STE_END='<!-- last-stack:asd-ste100:end -->'
+TV_START='<!-- last-stack:tom-vocabulary:start (managed by last-stack setup; edits inside are overwritten) -->'
+TV_END='<!-- last-stack:tom-vocabulary:end -->'
 HS_START='<!-- last-stack:no-home-root-scan:start (managed by last-stack setup; edits inside are overwritten) -->'
 HS_END='<!-- last-stack:no-home-root-scan:end -->'
 BA_START='<!-- last-stack:bin-authoring:start (managed by last-stack setup; edits inside are overwritten) -->'
@@ -444,13 +446,14 @@ append_managed_md_block() {
 }
 
 upsert_harness_instruction_blocks() {
-  # Strip both blocks, then append in a stable order so re-runs are byte-identical.
+  # Strip the managed blocks, then append in a stable order so re-runs are byte-identical.
   local file="$1"
   local label="$2"
   mkdir -p "$(dirname "$file")"
   [ -f "$file" ] || : > "$file"
   strip_managed_md_block "$file" "$BK_START" "$BK_END"
   strip_managed_md_block "$file" "$STE_START" "$STE_END"
+  strip_managed_md_block "$file" "$TV_START" "$TV_END"
   strip_managed_md_block "$file" "$HS_START" "$HS_END"
   strip_managed_md_block "$file" "$BA_START" "$BA_END"
   strip_managed_md_block "$file" "$JC_START" "$JC_END"
@@ -458,12 +461,13 @@ upsert_harness_instruction_blocks() {
   strip_managed_md_block "$file" "$MP_START" "$MP_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/brain-kanban.md" "$BK_START" "$BK_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/asd-ste100.md" "$STE_START" "$STE_END"
+  append_managed_md_block "$file" "$SOURCE_ROOT/instructions/tom-vocabulary.md" "$TV_START" "$TV_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/no-home-root-scan.md" "$HS_START" "$HS_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/bin-authoring.md" "$BA_START" "$BA_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/safe-json-capture.md" "$JC_START" "$JC_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/routine-shell.md" "$RS_START" "$RS_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/mutation-probe.md" "$MP_START" "$MP_END"
-  echo "  ${label} instructions: brain-kanban + asd-ste100 + no-home-root-scan + bin-authoring + safe-json-capture + routine-shell + mutation-probe -> $file"
+  echo "  ${label} instructions: brain-kanban + asd-ste100 + tom-vocabulary + no-home-root-scan + bin-authoring + safe-json-capture + routine-shell + mutation-probe -> $file"
 }
 
 # ── Codex routine shell: zsh -lc -> bash ─────────────────────────────────────

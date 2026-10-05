@@ -42,7 +42,7 @@ remove_from() {
 }
 
 remove_managed_instruction_block() {
-  # Strip one setup-managed block (brain-kanban or asd-ste100) from a harness file.
+  # Strip one setup-managed block (brain-kanban, asd-ste100, or tom-vocabulary).
   local file="$1" label="$2" name="$3"
   [ -f "$file" ] || return 0
   grep -q "last-stack:${name}:start" "$file" || return 0
@@ -64,6 +64,7 @@ remove_managed_instruction_block() {
 remove_harness_instruction_blocks() {
   remove_managed_instruction_block "$1" "$2" "brain-kanban"
   remove_managed_instruction_block "$1" "$2" "asd-ste100"
+  remove_managed_instruction_block "$1" "$2" "tom-vocabulary"
 }
 
 real_home_matches() {

@@ -47,6 +47,8 @@ fi
 grep -q 'keep me' "$agents" || fail "user AGENTS.md content was clobbered"
 grep -q 'last-stack:brain-kanban:start' "$agents" || fail "managed block missing from AGENTS.md"
 grep -q 'last-stack:asd-ste100:start' "$agents" || fail "asd-ste100 block missing from AGENTS.md"
+grep -q 'last-stack:tom-vocabulary:start' "$agents" || fail "tom-vocabulary block missing from AGENTS.md"
+grep -q 'preference-tom-vocabulary' "$agents" || fail "Tom vocabulary living list missing from AGENTS.md"
 grep -q 'Repository venue: GitHub' "$agents" || fail "GitHub repo venue section missing from AGENTS.md"
 grep -q 'command -v <cmd>' "$agents" || fail "supported CLI provenance check missing"
 grep -q 'Routines and Loom do not implement' "$agents" || fail "unsupported which limitation missing"
