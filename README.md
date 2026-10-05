@@ -383,6 +383,11 @@ instructions/asd-ste100.md
                         ASD-STE100 writing rule (Tom, 2026-08-20). Setup
                         upserts it next to the brain-kanban block so every
                         harness agent writes conversation and documents in STE.
+instructions/tom-vocabulary.md
+                        Approved words for the database and for a change
+                        (Tom, 2026-10-05). Setup upserts it immediately after
+                        the ASD-STE100 block. The living list is brain
+                        `preference-tom-vocabulary`. Add a new word there.
 routines/<name>.md      one parameterized scheduled-agent template per routine
 routines/README.md      how routines + skills compose; how to register them
 templates/routine-fleet/

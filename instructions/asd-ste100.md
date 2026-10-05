@@ -37,3 +37,7 @@ STE does not permit a comparison. An ELI5 answer needs one comparison. When Tom 
 ### Limit
 
 Do not claim approval of each word. Apply the writing rules.
+
+### Word list
+
+Use the Tom vocabulary block with these writing rules. That block names the approved words for the database and for a change. The living list is brain `preference-tom-vocabulary`. Add a new word only in that record.
