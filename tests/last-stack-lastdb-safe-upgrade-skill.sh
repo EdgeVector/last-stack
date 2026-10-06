@@ -651,7 +651,9 @@ case "${1:-}" in
       && [ ! -e "$home/laststore_backup_known_present.json" ] \
       && [ ! -e "$home/laststore_backup_manifest.json" ] || exit 36
     [ "$(find "$home" -maxdepth 1 \
-        \( -name 'cloud_sync.json*' -o -name '.cloud_sync.json.tmp*' \) \
+        \( -name 'cloud_sync.json*' -o -name '.cloud_sync.json.tmp*' \
+           -o -name '.cloud_resume_required' -o -name '.cloud_resume_requested' \
+           -o -name '.cloud_resume_ready' \) \
         -print | wc -l | tr -d ' ')" = 0 ] \
       || exit 37
     printf '%s' 'fresh-dev-device' >"$home/data/.device_id"
@@ -756,6 +758,9 @@ printf '%s\n' production >"$proof_primary/cloud_sync.json"
 printf '%s\n' production >"$proof_primary/cloud_sync.json.paused"
 printf '%s\n' production >"$proof_primary/cloud_sync.json.backup-20260904"
 printf '%s\n' production >"$proof_primary/.cloud_sync.json.tmp"
+printf '%s\n' production >"$proof_primary/.cloud_resume_required"
+printf '%s\n' production >"$proof_primary/.cloud_resume_requested"
+printf '%s\n' production >"$proof_primary/.cloud_resume_ready"
 printf '%s\n' production >"$proof_primary/laststore_backup_known_present.json"
 printf '%s\n' production >"$proof_primary/laststore_backup_manifest.json"
 printf '%s\n' '{"store_uuid":"skill-proof-store-uuid"}' >"$proof_primary/laststore_high_water.json"
@@ -872,8 +877,14 @@ fi
   && [ -f "$proof_primary/cloud_sync.json.backup-20260904" ] \
   && [ -f "$proof_primary/current-session.json" ] \
   && [ -f "$proof_primary/.cloud_sync.json.tmp" ] \
+  && [ -f "$proof_primary/.cloud_resume_required" ] \
+  && [ -f "$proof_primary/.cloud_resume_requested" ] \
+  && [ -f "$proof_primary/.cloud_resume_ready" ] \
   && [ -f "$proof_source/cloud_sync.json.backup-20260904" ] \
   && [ -f "$proof_source/.cloud_sync.json.tmp" ] \
+  && [ -f "$proof_source/.cloud_resume_required" ] \
+  && [ -f "$proof_source/.cloud_resume_requested" ] \
+  && [ -f "$proof_source/.cloud_resume_ready" ] \
   && [ -f "$proof_source/laststore_backup_manifest.json" ] \
   || { echo "FAIL: DEV proof changed the primary fixture" >&2; exit 1; }
 

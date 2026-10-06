@@ -432,7 +432,9 @@ production_device_id="$(cat "$COW_HOME/data/.device_id")"
 # The copied manifest can pass production lineage into the DEV CAS request.
 FAILURE_PHASE="scrub_production_state"
 find "$COW_HOME" -maxdepth 1 \
-  \( -name 'cloud_sync.json*' -o -name '.cloud_sync.json.tmp*' \) \
+  \( -name 'cloud_sync.json*' -o -name '.cloud_sync.json.tmp*' \
+     -o -name '.cloud_resume_required' -o -name '.cloud_resume_requested' \
+     -o -name '.cloud_resume_ready' \) \
   -exec rm -f -- {} + 2>/dev/null \
   || proof_die "a copied cloud credential residue cannot be removed"
 rm -f -- \
@@ -445,7 +447,9 @@ rm -f -- \
   || proof_die "a copied runtime or backup residue cannot be removed"
 
 [ "$(find "$COW_HOME" -maxdepth 1 \
-    \( -name 'cloud_sync.json*' -o -name '.cloud_sync.json.tmp*' \) \
+    \( -name 'cloud_sync.json*' -o -name '.cloud_sync.json.tmp*' \
+       -o -name '.cloud_resume_required' -o -name '.cloud_resume_requested' \
+       -o -name '.cloud_resume_ready' \) \
     -print | wc -l | tr -d ' ')" = "0" ] \
   || proof_die "copied cloud credential residue remains before DEV connect"
 for absent in \
@@ -478,7 +482,9 @@ active_config="$COW_HOME/cloud_sync.json"
 [ "$(_dev_stamp_file_mode "$active_config" || true)" = "600" ] \
   || proof_die "the DEV cloud config is not owner-only"
 [ "$(find "$COW_HOME" -maxdepth 1 \
-    \( -name 'cloud_sync.json*' -o -name '.cloud_sync.json.tmp*' \) \
+    \( -name 'cloud_sync.json*' -o -name '.cloud_sync.json.tmp*' \
+       -o -name '.cloud_resume_required' -o -name '.cloud_resume_requested' \
+       -o -name '.cloud_resume_ready' \) \
     -print | wc -l | tr -d ' ')" = "1" ] \
   || proof_die "cloud credential backup residue remains after DEV connect"
 jq -e --arg url "$LASTDB_DEV_BACKUP_API_URL_DEFAULT" \

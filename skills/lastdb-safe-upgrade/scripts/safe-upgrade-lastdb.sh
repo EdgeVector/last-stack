@@ -1027,7 +1027,12 @@ clone_probe_home() {
     remove_probe_copy "$copy" || return 1
     return 1
   fi
-  rm -f "$copy/cloud_sync.json" "$copy/data/"*.sock 2>/dev/null || true
+  probe_strip_cloud_state "$copy" "$PRIMARY_HOME" || {
+    warn "$label metrics probe: copied cloud state could not be removed"
+    remove_probe_copy "$copy" || return 1
+    return 1
+  }
+  rm -f "$copy/data/"*.sock 2>/dev/null || true
   printf '%s\n' "$copy"
 }
 
@@ -2073,14 +2078,25 @@ fi
 # --- 2) probe candidate on a throwaway CoW of the primary --------------------
 
 log "STEP 2/4: probe candidate $CAND_VER against CoW copy of primary (never live home)"
-# The smoke harness clones PRIMARY_HOME itself and boots BIN. We only pass BIN.
+# The smoke harness clones HOME/.lastdb itself. Give it a sanitized CoW source.
+# The candidate must never see the primary's paused config or resume markers.
+SMOKE_SOURCE="$(clone_probe_home smoke-source)" \
+  || die "could not prepare a cloud-free source for the real-data smoke probe"
+SMOKE_HOME="$WORK/smoke-home"
+mkdir -p "$SMOKE_HOME"
+ln -s "$SMOKE_SOURCE" "$SMOKE_HOME/.lastdb" \
+  || die "could not bind the cloud-free smoke source"
 set +e
 SMOKE_OUT="$WORK/smoke.out"
-LASTDB_PROBE_ROOT="$PROBE_ROOT/smoke" \
-LASTDB_SMOKE_FAIL_LOG_DIR="$BACKUP/.safe-upgrade" \
-BIN="$CANDIDATE_BIN" bash "$SMOKE_SH" >"$SMOKE_OUT" 2>&1
+env -u LASTDB_HOME -u FOLDDB_HOME -u LASTDB_DATA_DIR -u FOLD_SYNC_DEVICE_ID \
+  HOME="$SMOKE_HOME" \
+  LASTDB_PROBE_ROOT="$PROBE_ROOT/smoke" \
+  LASTDB_SMOKE_FAIL_LOG_DIR="$BACKUP/.safe-upgrade" \
+  BIN="$CANDIDATE_BIN" bash "$SMOKE_SH" >"$SMOKE_OUT" 2>&1
 SMOKE_RC=$?
 set -e
+remove_probe_copy "$SMOKE_SOURCE" \
+  || die "could not remove the cloud-free smoke source"
 cat "$SMOKE_OUT"
 if [ "$SMOKE_RC" -ne 0 ] || ! grep -q 'VERDICT: GREEN' "$SMOKE_OUT"; then
   echo ""

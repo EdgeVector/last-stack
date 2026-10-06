@@ -26,6 +26,8 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/live-lastdb-env.sh"
 # shellcheck source=write-path-cow-checks.sh
 . "$_SCRIPT_DIR/write-path-cow-checks.sh"
+# shellcheck source=probe-copy-guards.sh
+. "$_SCRIPT_DIR/probe-copy-guards.sh"
 
 PRIMARY_HOME="${LASTDB_HOME:-$HOME/.lastdb}"
 PRIMARY_SOCK="$PRIMARY_HOME/data/folddb.sock"
@@ -199,7 +201,9 @@ fi
 if [ ! -d "$copy" ] || [ ! -f "$copy/identity.key" ] || [ ! -d "$copy/data" ]; then
   fail_red "CoW clone incomplete at $copy"
 fi
-rm -f "$copy/cloud_sync.json" "$copy/data/"*.sock 2>/dev/null || true
+probe_strip_cloud_state "$copy" "$PRIMARY_HOME" \
+  || fail_red "copied cloud state could not be removed"
+rm -f "$copy/data/"*.sock 2>/dev/null || true
 # Never let the probe upload to the production backup home.
 unset LASTDB_CLOUD_SYNC LASTDB_BACKUP_HOME AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY 2>/dev/null || true
 
