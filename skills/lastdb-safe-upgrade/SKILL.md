@@ -286,6 +286,10 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
     `LASTDB_HOME`, `FOLDDB_HOME`, and `FOLD_SYNC_DEVICE_ID` for connect, daemon
     start, and snapshot.
 
+    The main smoke test receives a sanitized CoW source through a temporary
+    HOME. The driver checks the real primary process before and after this
+    test because the smoke script sees the temporary HOME.
+
     The proof reads `lastdb-restore-probe-invite-dev-20260720` from
     LastSecrets. It pipes the value directly to the paired CLI through stdin.
     The CLI uses `--env dev --invite-code-stdin --use-existing-identity`.

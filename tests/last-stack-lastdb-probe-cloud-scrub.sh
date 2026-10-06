@@ -53,6 +53,12 @@ grep -Fq 'SMOKE_SOURCE="$(clone_probe_home smoke-source)"' "$DRIVER" \
   || fail 'safe upgrade smoke does not use a scrubbed copy'
 grep -Fq 'HOME="$SMOKE_HOME"' "$DRIVER" \
   || fail 'safe upgrade smoke does not use the scrubbed HOME'
+grep -Fq 'SMOKE_PRIMARY_PID_BEFORE="$(resolve_live_primary_pid)"' "$DRIVER" \
+  || fail 'safe upgrade does not read the real primary process before smoke'
+grep -Fq 'SMOKE_PRIMARY_PID_AFTER="$(resolve_live_primary_pid)"' "$DRIVER" \
+  || fail 'safe upgrade does not read the real primary process after smoke'
+grep -Fq '"$SMOKE_PRIMARY_PID_BEFORE" != "$SMOKE_PRIMARY_PID_AFTER"' "$DRIVER" \
+  || fail 'safe upgrade does not compare the real primary process across smoke'
 grep -Fq 'probe_strip_cloud_state "$copy" "$PRIMARY_HOME"' "$WRITE_PROBE" \
   || fail 'write path probe does not scrub its copy'
 for name in .cloud_resume_required .cloud_resume_requested .cloud_resume_ready; do
