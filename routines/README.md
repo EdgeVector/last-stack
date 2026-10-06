@@ -34,10 +34,11 @@ Brain = intent · Board = queue · Pickup = only code shipper · Watch = only cl
 never a board card. The rule lives in `instructions/brain-kanban.md` (injected
 into every harness's global instructions by `setup`) and in
 `sop-routine-shared-contract` §5; `tests/last-stack-papercut-filing-contract.sh`
-gates both. Write to Tom in ASD-STE100; that rule lives in
+gates both. Write to the user in ASD-STE100; that rule lives in
 `instructions/asd-ste100.md` and setup injects it the same way. The approved
-words for the database and for a change live in `instructions/tom-vocabulary.md`.
-Setup injects that block next. The living list is brain `preference-tom-vocabulary`. The default is FILE, not judge — a mention in a checkpoint or PR
+words live in the user file `~/.local/state/last-stack/vocabulary.md`.
+Setup injects that block next. Add a word with `last-stack-vocab add`.
+A repo may add words in `.last-stack/vocabulary.md`. The default is FILE, not judge — a mention in a checkpoint or PR
 description is not a filing.
 
 **Every routine ends with close-out (Tom, 2026-08-17).** The last work step of

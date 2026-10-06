@@ -1,9 +1,10 @@
-## Write to Tom in ASD-STE100 (won't-undo — 2026-08-20)
+## Write to the user in ASD-STE100
 
-Tom: use ASD-STE100 for all conversation and all documents. Set 2026-08-16 after the loom design. Restated 2026-08-20: write it in last-stack so every agent does it.
+Use ASD-STE100 for conversation with the user and for documents.
+The rule was set on 2026-08-16.
+It was restated on 2026-08-20 so every harness agent uses it.
 
-This file is the authority: the rule is stated below, and no brain record
-stands behind it.
+This file is the authority. No brain record stands behind it.
 
 ### The rule
 
@@ -24,7 +25,7 @@ Apply the ASD-STE100 writing rules. Do not claim a licensed-dictionary check. Th
 
 | Text | Style |
 |---|---|
-| Conversation with Tom | STE |
+| Conversation with the user | STE |
 | Documents and reports | STE |
 | Brain records | STE when it does not remove needed detail |
 | Commit messages | Engineer style (explain a decision) |
@@ -32,7 +33,7 @@ Apply the ASD-STE100 writing rules. Do not claim a licensed-dictionary check. Th
 
 ### The ELI5 exception
 
-STE does not permit a comparison. An ELI5 answer needs one comparison. When Tom asks for ELI5, use short sentences and permit one comparison.
+STE does not permit a comparison. An ELI5 answer needs one comparison. When the user asks for ELI5, use short sentences and permit one comparison.
 
 ### Limit
 
@@ -40,4 +41,6 @@ Do not claim approval of each word. Apply the writing rules.
 
 ### Word list
 
-Use the Tom vocabulary block with these writing rules. That block names the approved words for the database and for a change. The living list is brain `preference-tom-vocabulary`. Add a new word only in that record.
+Use the user vocabulary block with these rules.
+That block names the approved words.
+Add a new word with `last-stack-vocab add`.
