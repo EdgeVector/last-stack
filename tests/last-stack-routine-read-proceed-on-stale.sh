@@ -39,7 +39,12 @@ rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "stale-but-unhealable routine-read blocked (exit $rc) instead of proceeding"
 grep -q 'LAST_STACK_ROUTINE_STALE_PROCEED' "$tmp/err" || fail "did not emit the proceed-on-stale warning"
-printf '%s\n' "$out" | grep -q 'card_batch_limit' || fail "did not return the prompt after proceeding"
+# A pipe into grep -q closes early. Under pipefail that SIGPIPE
+# looks like a missing prompt. Match the captured text instead.
+case "$out" in
+  *card_batch_limit*) ;;
+  *) fail "did not return the prompt after proceeding" ;;
+esac
 grep -q 'LAST_STACK_ROUTINE_STALE ' "$tmp/err" && fail "hard-blocked (stale_fail) on a merely-stale skill-pack"
 
 # --- Scenario 2: pointer CURRENT but content bad (corrupt) -> HARD BLOCK ---
@@ -94,7 +99,10 @@ set -e
 [ "$rc3" -eq 0 ] || fail "on-channel unpublished-main routine-read blocked (exit $rc3)"
 [ ! -f "$tmp/refresh.ran" ] || fail "on-channel unpublished-main invoked host-track refresh"
 grep -q 'LAST_STACK_ROUTINE_STALE ' "$tmp/err3" && fail "hard-blocked on-channel unpublished main"
-printf '%s\n' "$out3" | grep -q 'card_batch_limit' || fail "on-channel unpublished-main did not return the prompt"
+case "$out3" in
+  *card_batch_limit*) ;;
+  *) fail "on-channel unpublished-main did not return the prompt" ;;
+esac
 uc="$("$ROOT/bin/last-stack-update-check")"
 [ "$uc" = UP_TO_DATE ] || fail "on-channel unpublished-main update-check was $uc, want UP_TO_DATE"
 
