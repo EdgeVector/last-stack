@@ -77,12 +77,13 @@ lastdb_launchd_graceful_prestop() {
   #
   # Method: move the job's program aside so a KeepAlive respawn cannot exec,
   # send SIGTERM with `launchctl kill` (launchd applies no exit timeout to it),
-  # wait up to <wait-secs> for the pid to exit, SIGKILL only after that, boot
-  # the job out while no process runs, then put the program back. The caller's
+  # wait up to <wait-secs> for the pid to exit, force only in non-strict mode,
+  # boot the job out while no process runs, then put the program back. The caller's
   # job reload then finds the job unloaded and bootstraps the new definition.
   #
   # Args: launchctl-bin service program wait-secs want-exit-timeout [strict]
-  # Strict mode always stops the process. A forced kill cannot prove a flush.
+  # Strict mode fails on a timeout and leaves the process alive. A forced kill
+  # cannot prove a flush.
   # Prints LASTDB_LAUNCHD_PRESTOP=<skipped|ok|failed> ...
   local launchctl_bin="$1" service="$2" program="$3" wait_secs="$4" want="$5" strict="${6:-0}"
   local loaded="" pid="" hold="" elapsed=0 forced=0 kill_wait=0
@@ -133,6 +134,12 @@ lastdb_launchd_graceful_prestop() {
     "$service" "$pid" "${loaded:-unset}" "$wait_secs"
   while kill -0 "$pid" 2>/dev/null; do
     if [ "$elapsed" -ge "$wait_secs" ]; then
+      if [ "$strict" = 1 ]; then
+        _lastdb_prestop_restore || return 1
+        printf 'LASTDB_LAUNCHD_PRESTOP=failed reason=strict-timeout-no-force service=%s pid=%s waited_s=%s\n' \
+          "$service" "$pid" "$elapsed" >&2
+        return 1
+      fi
       forced=1
       "$launchctl_bin" kill SIGKILL "$service" || kill -KILL "$pid" 2>/dev/null || true
       while kill -0 "$pid" 2>/dev/null && [ "$kill_wait" -lt 15 ]; do
@@ -170,11 +177,6 @@ lastdb_launchd_graceful_prestop() {
   fi
   printf 'LASTDB_LAUNCHD_PRESTOP=ok service=%s pid=%s waited_s=%s forced_kill=%s\n' \
     "$service" "$pid" "$elapsed" "$forced"
-  if [ "$strict" = 1 ] && [ "$forced" = 1 ]; then
-    printf 'LASTDB_LAUNCHD_PRESTOP=failed reason=forced-kill-no-flush-proof service=%s pid=%s\n' \
-      "$service" "$pid" >&2
-    return 1
-  fi
   return 0
 }
 

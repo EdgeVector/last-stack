@@ -47,8 +47,8 @@ MUTATIONS = {
         '  if false && { [ -e "$hold" ] || [ -L "$hold" ]; }; then',
     ),
     "forced_kill": (
-        '  if [ "$strict" = 1 ] && [ "$forced" = 1 ]; then',
-        '  if false && [ "$strict" = 1 ] && [ "$forced" = 1 ]; then',
+        '      if [ "$strict" = 1 ]; then',
+        '      if false && [ "$strict" = 1 ]; then',
     ),
     "copy_marker_receipt": (
         '    if receipt != {"version": 1, "pid": pid, "start_ts": start_ts, "flush_ok": True}:',
@@ -81,6 +81,30 @@ MUTATIONS = {
     "waiver_claim_before_stop": (
         '  STOP_STARTED=1\n  stop_out=',
         '  python3 "$SCRIPT_DIR/claim-stopped-copy-waiver.py" --home "$PRIMARY_HOME" --pid "$OLD_PID" --start-ts "$start_ts" --copy-path "$COPY_DIR" --decision-slug "$ACCEPT_UNPROVED_FLUSH"\n  STOP_STARTED=1\n  stop_out=',
+    ),
+    "waiver_failed_copy_release": (
+        '  if [ "$rc" -ne 0 ] && [ "$WAIVER_CLAIMED" -eq 1 ]; then',
+        '  if false && [ "$rc" -ne 0 ] && [ "$WAIVER_CLAIMED" -eq 1 ]; then',
+    ),
+    "waiver_release_needs_healthy_primary": (
+        '      && primary_is_supervised_and_healthy "gui/$(id -u)" "$LAUNCHD_LABEL" "$PRIMARY_HOME/data/folddb.sock" \\',
+        '      && true \\',
+    ),
+    "waiver_release_needs_paused_config": (
+        '      && validate_cloud_off_home "$PRIMARY_HOME" waiver \\',
+        '      && true \\',
+    ),
+    "waiver_release_needs_live_cloud_off": (
+        '      && require_live_cloud_off "$PRIMARY_HOME/data/folddb.sock" \\',
+        '      && true \\',
+    ),
+    "waiver_release_needs_unmarked_stage": (
+        '      && [ ! -e "$STAGE_COPY/.cloud_backup_source_copy" ] \\',
+        '      && true \\',
+    ),
+    "waiver_keep_published_claim": (
+        "        if copy_path.exists() or copy_path.is_symlink():",
+        "        if False and (copy_path.exists() or copy_path.is_symlink()):",
     ),
 }
 

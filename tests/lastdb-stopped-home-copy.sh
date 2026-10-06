@@ -171,6 +171,110 @@ fi
   || { echo 'FAIL: a failed supervised stop made a copy' >&2; exit 1; }
 printf 'WAIVER-STOP-GATE: failed stop leaves primary claim absent\n'
 
+# A later copy error releases the claim only after the primary recovers.
+release_home="$TEST_ROOT/release-home"
+release_copy="$TEST_ROOT/release-copy"
+mkdir -p "$release_home/data/data"
+printf 'fake identity\n' >"$release_home/identity.key"
+printf '{"fake":"cloud-config"}\n' >"$release_home/cloud_sync.json.paused"
+python3 "$claim_script" --home "$release_home" --pid 1234 --start-ts 5678 \
+  --copy-path "$release_copy" --decision-slug "$decision"
+if (
+  WAIVER_CLAIMED=1; STOP_STARTED=1; RESTARTED=0; RESTART_REQUESTED=0
+  PRIMARY_HOME="$release_home"; COPY_DIR="$release_copy"; STAGE_COPY="$release_copy.incomplete"
+  OLD_PID=1234; SOURCE_START_TS=5678; ACCEPT_UNPROVED_FLUSH="$decision"
+  LAUNCHD_LABEL=com.test.lastdbd; OWNER_LOCK_HELD=0
+  primary_is_supervised_and_healthy() { [ -f "$TEST_ROOT/recovery-restarted" ]; }
+  lastdb_launchd_job_loaded() { return 1; }
+  restart_primary() { : >"$TEST_ROOT/recovery-restarted"; }
+  require_live_cloud_off() { return 0; }
+  safe_upgrade_owner_lock_release() { :; }
+  false
+  recover_on_exit
+) >"$TEST_ROOT/release-after-copy-error.out" 2>&1; then
+  echo 'FAIL: a failed copy reported success' >&2; exit 1
+fi
+[ ! -e "$release_home/.cloud_backup_unproved_flush_claim" ] \
+  || { echo 'FAIL: a recovered failed copy consumed the waiver' >&2; exit 1; }
+grep -q 'STOPPED_COPY_WAIVER=available_after_failed_copy' "$TEST_ROOT/release-after-copy-error.out" \
+  || { echo 'FAIL: a recovered failed copy lacked a release proof' >&2; exit 1; }
+python3 "$claim_script" --home "$release_home" --pid 1234 --start-ts 5678 \
+  --copy-path "$release_copy" --decision-slug "$decision"
+if (
+  WAIVER_CLAIMED=1; STOP_STARTED=0; RESTARTED=1
+  PRIMARY_HOME="$release_home"; COPY_DIR="$release_copy"; STAGE_COPY="$release_copy.incomplete"
+  OLD_PID=1234; SOURCE_START_TS=5678; ACCEPT_UNPROVED_FLUSH="$decision"
+  LAUNCHD_LABEL=com.test.lastdbd; OWNER_LOCK_HELD=0
+  primary_is_supervised_and_healthy() { return 1; }
+  require_live_cloud_off() { return 0; }
+  safe_upgrade_owner_lock_release() { :; }
+  false
+  recover_on_exit
+) >"$TEST_ROOT/release-unhealthy.out" 2>&1; then
+  echo 'FAIL: an unhealthy primary reported a safe retry' >&2; exit 1
+fi
+[ -f "$release_home/.cloud_backup_unproved_flush_claim" ] \
+  || { echo 'FAIL: an unhealthy primary released the waiver' >&2; exit 1; }
+if (
+  WAIVER_CLAIMED=1; STOP_STARTED=0; RESTARTED=1
+  PRIMARY_HOME="$release_home"; COPY_DIR="$release_copy"; STAGE_COPY="$release_copy.incomplete"
+  OLD_PID=1234; SOURCE_START_TS=5678; ACCEPT_UNPROVED_FLUSH="$decision"
+  LAUNCHD_LABEL=com.test.lastdbd; OWNER_LOCK_HELD=0
+  primary_is_supervised_and_healthy() { return 0; }
+  require_live_cloud_off() { return 1; }
+  safe_upgrade_owner_lock_release() { :; }
+  false
+  recover_on_exit
+) >"$TEST_ROOT/release-sync-on.out" 2>&1; then
+  echo 'FAIL: Cloud Sync On reported a safe retry' >&2; exit 1
+fi
+[ -f "$release_home/.cloud_backup_unproved_flush_claim" ] \
+  || { echo 'FAIL: Cloud Sync On released the waiver' >&2; exit 1; }
+printf '{"fake":"active-cloud-config"}\n' >"$release_home/cloud_sync.json"
+if (
+  WAIVER_CLAIMED=1; STOP_STARTED=0; RESTARTED=1
+  PRIMARY_HOME="$release_home"; COPY_DIR="$release_copy"; STAGE_COPY="$release_copy.incomplete"
+  OLD_PID=1234; SOURCE_START_TS=5678; ACCEPT_UNPROVED_FLUSH="$decision"
+  LAUNCHD_LABEL=com.test.lastdbd; OWNER_LOCK_HELD=0
+  primary_is_supervised_and_healthy() { return 0; }
+  require_live_cloud_off() { return 0; }
+  safe_upgrade_owner_lock_release() { :; }
+  false
+  recover_on_exit
+) >"$TEST_ROOT/release-active-config.out" 2>&1; then
+  echo 'FAIL: active cloud config reported a safe retry' >&2; exit 1
+fi
+[ -f "$release_home/.cloud_backup_unproved_flush_claim" ] \
+  || { echo 'FAIL: active cloud config released the waiver' >&2; exit 1; }
+unlink "$release_home/cloud_sync.json"
+mkdir "$release_copy.incomplete"
+: >"$release_copy.incomplete/.cloud_backup_source_copy"
+if (
+  WAIVER_CLAIMED=1; STOP_STARTED=0; RESTARTED=1
+  PRIMARY_HOME="$release_home"; COPY_DIR="$release_copy"; STAGE_COPY="$release_copy.incomplete"
+  OLD_PID=1234; SOURCE_START_TS=5678; ACCEPT_UNPROVED_FLUSH="$decision"
+  LAUNCHD_LABEL=com.test.lastdbd; OWNER_LOCK_HELD=0
+  primary_is_supervised_and_healthy() { return 0; }
+  require_live_cloud_off() { return 0; }
+  safe_upgrade_owner_lock_release() { :; }
+  false
+  recover_on_exit
+) >"$TEST_ROOT/release-stage-marker.out" 2>&1; then
+  echo 'FAIL: a marked stage reported a safe retry' >&2; exit 1
+fi
+[ -f "$release_home/.cloud_backup_unproved_flush_claim" ] \
+  || { echo 'FAIL: a marked stage released the waiver' >&2; exit 1; }
+unlink "$release_copy.incomplete/.cloud_backup_source_copy"
+mkdir "$release_copy"
+if python3 "$claim_script" --release --home "$release_home" --pid 1234 --start-ts 5678 \
+  --copy-path "$release_copy" --decision-slug "$decision" \
+  >"$TEST_ROOT/release-published.out" 2>&1; then
+  echo 'FAIL: a published copy released the waiver claim' >&2; exit 1
+fi
+[ -f "$release_home/.cloud_backup_unproved_flush_claim" ] \
+  || { echo 'FAIL: a published copy lost its waiver claim' >&2; exit 1; }
+printf 'WAIVER-RETRY-GATE: failed copy can retry only after primary recovery\n'
+
 ln -s "$home/data/data/record" "$home/data/data/live-alias"
 if require_plain_data_tree "$home/data" "$timeout_bin" >"$TEST_ROOT/link.out" 2>&1; then
   echo 'FAIL: source data symlink can reach the live home' >&2; exit 1

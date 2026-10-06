@@ -529,19 +529,28 @@ pid_is_live "$fake_pid" && { echo "FAIL: strict stop left the old daemon alive" 
 [ ! -e "$FAKE_LOADED_FILE" ] \
   || { echo "FAIL: strict stop left the supervisor loaded" >&2; exit 1; }
 
-# A forced kill cannot certify the final flush for the stopped-copy path.
+# A strict timeout keeps the old daemon live and the job loaded. It never kills.
 : >"$FAKE_LOADED_FILE"; : >"$FAKE_LAUNCHCTL_LOG"
 ( trap '' TERM; while :; do sleep 0.2; done ) &
 fake_pid=$!
 if FAKE_PRINT_EXIT_TIMEOUT=150 FAKE_PRINT_PID=$fake_pid FAKE_KILL_PID=$fake_pid \
   lastdb_launchd_graceful_prestop "$TMP/launchctl" gui/501/com.test.lastdbd "$prog" 2 150 1 \
   >"$TMP/strict-forced.out" 2>"$TMP/strict-forced.err"; then
-  echo "FAIL: strict stop accepted a forced kill" >&2; exit 1
+  echo "FAIL: strict stop accepted a timeout" >&2; exit 1
 fi
-grep -q 'reason=forced-kill-no-flush-proof' "$TMP/strict-forced.err" \
-  || { echo "FAIL: strict stop gave no forced-kill reason" >&2; exit 1; }
-[ ! -e "$FAKE_LOADED_FILE" ] \
-  || { echo "FAIL: strict forced-kill path left the supervisor loaded" >&2; exit 1; }
+grep -q 'reason=strict-timeout-no-force' "$TMP/strict-forced.err" \
+  || { echo "FAIL: strict stop gave no timeout reason" >&2; exit 1; }
+if grep -q '^kill SIGKILL' "$FAKE_LAUNCHCTL_LOG"; then
+  echo "FAIL: strict timeout sent SIGKILL" >&2; exit 1
+fi
+pid_is_live "$fake_pid" \
+  || { echo "FAIL: strict timeout killed the old daemon" >&2; exit 1; }
+[ -e "$FAKE_LOADED_FILE" ] \
+  || { echo "FAIL: strict timeout unloaded the supervisor" >&2; exit 1; }
+[ -x "$prog" ] && [ ! -e "$prog.prestop-hold" ] \
+  || { echo "FAIL: strict timeout did not restore the program" >&2; exit 1; }
+kill -KILL "$fake_pid" 2>/dev/null || true
+wait "$fake_pid" 2>/dev/null || true
 
 # A strict stop must preserve a prior held program and leave the daemon live.
 : >"$FAKE_LOADED_FILE"; : >"$FAKE_LAUNCHCTL_LOG"

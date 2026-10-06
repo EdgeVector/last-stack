@@ -117,8 +117,12 @@ Run the same supervised action with this additional argument:
 The action writes `.cloud_backup_unproved_flush_claim` in the stopped home
 only after the strict supervised stop succeeds. The claim binds the approval
 to one PID, session, and exact copy path. A failed stop leaves no claim.
-The claim remains if a later step fails. Do not remove or retry it without a new
-source review. The action still requires a graceful stop without a forced kill,
+On a strict stop timeout, the action restores the program and returns RED.
+It leaves the daemon alive and does not use a forced kill. A later copy error
+releases the claim only if the primary recovers, Cloud Sync stays Off, and no
+final copy exists. A published copy keeps the claim. Do not remove the claim
+by hand. The script keeps an incomplete stage for review. Use a new copy path
+for a retry. The action still requires a graceful stop without a forced kill,
 no live session or socket in the copy, the same-volume APFS copy, matching
 identity and paused cloud files, a healthy supervised restart, and Cloud Sync
 Off on the live socket. It writes a version 2 `.cloud_backup_source_copy` only

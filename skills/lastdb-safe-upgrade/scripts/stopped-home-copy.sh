@@ -27,6 +27,8 @@ LAUNCHCTL_BIN="launchctl"
 EXPECTED_DAEMON_SHA=""
 EXPECTED_CLI_SHA=""
 ACCEPT_UNPROVED_FLUSH=""
+WAIVER_CLAIMED=0
+SOURCE_START_TS=""
 OWNER_LOCK_DIR="/tmp/lastdb-safe-upgrade-owner-$(id -u).lock.d"
 OWNER_LOCK_TOKEN="$$.$RANDOM.$(date +%s)"
 OWNER_LOCK_HELD=0
@@ -192,7 +194,8 @@ primary_is_supervised_and_healthy() {
 
 require_live_cloud_off() {
   local sock="$1"
-  curl -fsS --max-time 15 --unix-socket "$sock" http://localhost/api/status \
+  curl -fsS --max-time 15 --unix-socket "$sock" \
+    -H 'X-LastDB-Client: lastdb-safe-upgrade' http://localhost/api/status \
     | jq -e '.status.sync.enabled == false' >/dev/null \
     || { fail live-cloud-sync-not-off; return 1; }
 }
@@ -246,6 +249,20 @@ recover_on_exit() {
     else
       printf 'STOPPED_COPY_RECOVERY=red primary=unhealthy action=inspect-launchd\n' >&2
       rc=1
+    fi
+  fi
+  if [ "$rc" -ne 0 ] && [ "$WAIVER_CLAIMED" -eq 1 ]; then
+    if [ ! -e "$COPY_DIR" ] && [ ! -L "$COPY_DIR" ] \
+      && [ ! -e "$STAGE_COPY/.cloud_backup_source_copy" ] \
+      && primary_is_supervised_and_healthy "gui/$(id -u)" "$LAUNCHD_LABEL" "$PRIMARY_HOME/data/folddb.sock" \
+      && validate_cloud_off_home "$PRIMARY_HOME" waiver \
+      && require_live_cloud_off "$PRIMARY_HOME/data/folddb.sock" \
+      && python3 "$SCRIPT_DIR/claim-stopped-copy-waiver.py" --release \
+        --home "$PRIMARY_HOME" --pid "$OLD_PID" --start-ts "$SOURCE_START_TS" \
+        --copy-path "$COPY_DIR" --decision-slug "$ACCEPT_UNPROVED_FLUSH"; then
+      printf 'STOPPED_COPY_WAIVER=available_after_failed_copy primary=recovered\n' >&2
+    else
+      printf 'STOPPED_COPY_WAIVER=consumed reason=copy-or-primary-not-proved action=review-source\n' >&2
     fi
   fi
   safe_upgrade_owner_lock_release "$OWNER_LOCK_DIR" "$OWNER_LOCK_TOKEN" "$OWNER_LOCK_HELD" \
@@ -328,6 +345,7 @@ main() {
     "$PRIMARY_HOME/current-session.json")" \
     || { fail live-session-identity-absent; return 1; }
   OLD_PID="$job_pid"
+  SOURCE_START_TS="$start_ts"
   STOP_STARTED=1
   stop_out="$(lastdb_launchd_graceful_prestop "$LAUNCHCTL_BIN" "$service" \
     "$SIDEBIN_DIR/lastdbd" 150 150 1)" \
@@ -350,6 +368,7 @@ main() {
       --home "$PRIMARY_HOME" --pid "$OLD_PID" --start-ts "$start_ts" \
       --copy-path "$COPY_DIR" --decision-slug "$ACCEPT_UNPROVED_FLUSH" \
       || { fail unproved-flush-waiver-claim-failed; return 1; }
+    WAIVER_CLAIMED=1
   fi
   copy_stopped_home "$PRIMARY_HOME" "$STAGE_COPY" "$timeout_bin" "$before_free" "$mode" || return 1
   if [ "$mode" = receipt ]; then
