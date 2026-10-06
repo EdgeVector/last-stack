@@ -1,3 +1,7 @@
+<!-- Example word list from the dogfood user. Setup does not inject this file.
+     The harness block comes from the user word list.
+     Add a word with last-stack-vocab add. -->
+
 ## Tom vocabulary (won't-undo — 2026-10-05)
 
 CAUTION: Use this list with the ASD-STE100 rules. Use it when you speak to Tom about the database or about a change. Do not invent a word.

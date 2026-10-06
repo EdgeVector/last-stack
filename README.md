@@ -380,14 +380,17 @@ instructions/brain-kanban.md
                         while existing venue choices remain unchanged until
                         explicitly migrated
 instructions/asd-ste100.md
-                        ASD-STE100 writing rule (Tom, 2026-08-20). Setup
-                        upserts it next to the brain-kanban block so every
-                        harness agent writes conversation and documents in STE.
+                        ASD-STE100 writing rule. Setup upserts it next to the
+                        brain-kanban block so every harness agent writes
+                        conversation and documents in STE.
+instructions/user-vocabulary.md
+                        Rules for the user word list. Setup places this block
+                        after the ASD-STE100 block. The words live in
+                        ~/.local/state/last-stack/vocabulary.md.
+                        Add a word with `last-stack-vocab add`.
+                        A repo may add words in `.last-stack/vocabulary.md`.
 instructions/tom-vocabulary.md
-                        Approved words for the database and for a change
-                        (Tom, 2026-10-05). Setup upserts it immediately after
-                        the ASD-STE100 block. The living list is brain
-                        `preference-tom-vocabulary`. Add a new word there.
+                        Example word list. Setup does not inject this file.
 routines/<name>.md      one parameterized scheduled-agent template per routine
 routines/README.md      how routines + skills compose; how to register them
 templates/routine-fleet/

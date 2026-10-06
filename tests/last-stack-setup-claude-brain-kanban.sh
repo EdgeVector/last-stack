@@ -30,14 +30,14 @@ printf '## My own notes\nkeep me\n' > "$claude_md"
 grep -q 'keep me' "$claude_md" || fail "user CLAUDE.md content was clobbered"
 grep -q 'last-stack:brain-kanban:start' "$claude_md" || fail "managed block missing from CLAUDE.md"
 grep -q 'last-stack:asd-ste100:start' "$claude_md" || fail "asd-ste100 block missing from CLAUDE.md"
-grep -q 'Write to Tom in ASD-STE100' "$claude_md" || fail "ASD-STE100 rule missing from CLAUDE.md"
-grep -q 'last-stack:tom-vocabulary:start' "$claude_md" || fail "tom-vocabulary block missing from CLAUDE.md"
-grep -q 'preference-tom-vocabulary' "$claude_md" || fail "Tom vocabulary living list missing from CLAUDE.md"
-grep -q 'Do not invent a word' "$claude_md" || fail "Tom vocabulary rule missing from CLAUDE.md"
+grep -q 'Write to the user in ASD-STE100' "$claude_md" || fail "ASD-STE100 rule missing from CLAUDE.md"
+grep -q 'last-stack:user-vocabulary:start' "$claude_md" || fail "user-vocabulary block missing from CLAUDE.md"
+grep -q 'last-stack-vocab add' "$claude_md" || fail "user vocabulary add command missing from CLAUDE.md"
+grep -q 'Do not invent a word' "$claude_md" || fail "user vocabulary rule missing from CLAUDE.md"
 ste_end_line="$(grep -n 'last-stack:asd-ste100:end' "$claude_md" | head -1 | cut -d: -f1)"
-tv_start_line="$(grep -n 'last-stack:tom-vocabulary:start' "$claude_md" | head -1 | cut -d: -f1)"
+tv_start_line="$(grep -n 'last-stack:user-vocabulary:start' "$claude_md" | head -1 | cut -d: -f1)"
 [ -n "$ste_end_line" ] && [ -n "$tv_start_line" ] && [ "$tv_start_line" -gt "$ste_end_line" ] \
-  || fail "tom-vocabulary block does not follow the asd-ste100 block"
+  || fail "user-vocabulary block does not follow the asd-ste100 block"
 grep -q 'Repository venue: GitHub' "$claude_md" \
   || fail "GitHub repo venue section missing from CLAUDE.md"
 grep -q 'brain ask' "$claude_md" || fail "CLI guidance missing from managed block"
@@ -57,8 +57,8 @@ cp "$claude_md" "$tmp/claude.before"
   || fail "managed block duplicated on re-run"
 [ "$(grep -c 'last-stack:asd-ste100:start' "$claude_md")" -eq 1 ] \
   || fail "asd-ste100 block duplicated on re-run"
-[ "$(grep -c 'last-stack:tom-vocabulary:start' "$claude_md")" -eq 1 ] \
-  || fail "tom-vocabulary block duplicated on re-run"
+[ "$(grep -c 'last-stack:user-vocabulary:start' "$claude_md")" -eq 1 ] \
+  || fail "user-vocabulary block duplicated on re-run"
 cmp -s "$claude_md" "$tmp/claude.before" || fail "CLAUDE.md changed on re-run"
 
 # ── Uninstall removes the managed block but keeps user content ────────────────
@@ -69,6 +69,9 @@ if grep -q 'last-stack:brain-kanban:start' "$claude_md"; then
 fi
 if grep -q 'last-stack:asd-ste100:start' "$claude_md"; then
   fail "uninstall left the asd-ste100 block in CLAUDE.md"
+fi
+if grep -q 'last-stack:user-vocabulary:start' "$claude_md"; then
+  fail "uninstall left the user-vocabulary block in CLAUDE.md"
 fi
 if grep -q 'last-stack:tom-vocabulary:start' "$claude_md"; then
   fail "uninstall left the tom-vocabulary block in CLAUDE.md"

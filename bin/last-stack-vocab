@@ -1,0 +1,404 @@
+#!/usr/bin/env python3
+"""Edit one user's word list and copy it into each harness file."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+HEADER = ROOT / "instructions" / "user-vocabulary.md"
+TABLES = ROOT / "instructions" / "user-vocabulary-tables.md"
+
+UV_START = "<!-- last-stack:user-vocabulary:start (managed by last-stack setup; edits inside are overwritten) -->"
+UV_END = "<!-- last-stack:user-vocabulary:end -->"
+STE_END = "<!-- last-stack:asd-ste100:end -->"
+LEGACY_START = "last-stack:tom-vocabulary:start"
+LEGACY_END = "last-stack:tom-vocabulary:end"
+
+HEADINGS = {
+    "database": "## Database words",
+    "change": "## Change words",
+    "unapproved": "## Unapproved words",
+}
+
+HARNESS_RELS = (
+    ".claude/CLAUDE.md",
+    ".codex/AGENTS.md",
+    ".factory/AGENTS.md",
+    ".config/opencode/AGENTS.md",
+    ".grok/AGENTS.md",
+    ".gemini/GEMINI.md",
+    ".gemini/config/GEMINI.md",
+)
+
+
+def die(message: str, code: int = 1) -> None:
+    print(f"last-stack-vocab: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def vocab_path() -> Path:
+    override = os.environ.get("LAST_STACK_VOCAB_FILE")
+    if override:
+        return Path(override)
+    state = os.environ.get("LAST_STACK_STATE")
+    if not state:
+        state = str(Path.home() / ".local" / "state" / "last-stack")
+    return Path(state) / "vocabulary.md"
+
+
+def harness_paths() -> list[Path]:
+    home = Path.home()
+    return [home / rel for rel in HARNESS_RELS]
+
+
+def empty_tables() -> str:
+    return TABLES.read_text(encoding="utf-8")
+
+
+def project_vocab_path() -> Path:
+    override = os.environ.get("LAST_STACK_PROJECT_VOCAB")
+    if override:
+        return Path(override)
+    try:
+        root = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        die("run this command inside a repo")
+    if not root:
+        die("run this command inside a repo")
+    return Path(root) / ".last-stack" / "vocabulary.md"
+
+
+def extract_legacy(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    lines = path.read_text(encoding="utf-8").splitlines()
+    body: list[str] = []
+    inside = False
+    found = False
+    for line in lines:
+        if not inside and LEGACY_START in line:
+            inside = True
+            found = True
+            continue
+        if inside and LEGACY_END in line:
+            break
+        if inside:
+            body.append(line)
+    if not found:
+        return None
+    text = "\n".join(body).strip("\n")
+    marker = "## Database words"
+    idx = text.find(marker)
+    if idx > 0:
+        text = text[idx:]
+    if not text.strip():
+        return None
+    return text + "\n"
+
+
+def candidate_sources(extra: list[str]) -> list[Path]:
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for raw in extra:
+        path = Path(raw)
+        if path not in seen:
+            seen.add(path)
+            out.append(path)
+    for path in harness_paths():
+        if path not in seen:
+            seen.add(path)
+            out.append(path)
+    return out
+
+
+def migrate(extra: list[str]) -> None:
+    path = vocab_path()
+    if path.exists() and path.stat().st_size > 0:
+        return
+    for source in candidate_sources(extra):
+        body = extract_legacy(source)
+        if not body:
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        print(f"last-stack-vocab: migrated words from {source}", file=sys.stderr)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(empty_tables(), encoding="utf-8")
+    print(f"last-stack-vocab: created {path}", file=sys.stderr)
+
+
+def ensure_tables() -> str:
+    """Return the user word list. Create the empty list when no file exists.
+
+    This does not read a harness file. Setup migrates first, then render
+    calls this. A render that also migrates hides a dropped migrate call.
+    """
+    path = vocab_path()
+    if path.exists() and path.stat().st_size > 0:
+        return path.read_text(encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = empty_tables()
+    path.write_text(text, encoding="utf-8")
+    return text
+
+
+def write_user_tables(text: str) -> None:
+    path = vocab_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def render_body() -> str:
+    header = HEADER.read_text(encoding="utf-8").strip("\n")
+    tables = ensure_tables().strip("\n")
+    return header + "\n\n" + tables + "\n"
+
+
+def section_span(lines: list[str], heading: str) -> tuple[int, int] | None:
+    start = None
+    for index, line in enumerate(lines):
+        if line.strip() == heading:
+            start = index
+            break
+    if start is None:
+        return None
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if lines[index].startswith("## "):
+            end = index
+            break
+    return start, end
+
+
+def first_cell(line: str) -> str:
+    return line.strip().strip("|").split("|", 1)[0].strip()
+
+
+def is_divider(cell: str) -> bool:
+    return cell == "" or set(cell) <= set("-:")
+
+
+def check_cell(label: str, value: str) -> str:
+    value = value.strip()
+    if not value:
+        die(f"{label} is empty")
+    if "|" in value or "\n" in value or "\t" in value:
+        die(f"{label} must not contain a bar, a tab, or a new line")
+    return value
+
+
+def upsert_row(text: str, section: str, word: str, meaning: str) -> str:
+    heading = HEADINGS[section]
+    word = check_cell("word", word)
+    meaning = check_cell("meaning", meaning)
+    if word in ("Word", "Unapproved"):
+        die(f"word {word} is a column name")
+    lines = text.splitlines()
+    span = section_span(lines, heading)
+    if span is None:
+        die(f"section missing: {heading}")
+    start, end = span
+    table = [index for index in range(start, end) if lines[index].startswith("|")]
+    if len(table) < 2:
+        die(f"table missing under {heading}")
+    last = table[0]
+    replaced = False
+    for index in table:
+        if index != last and index != last + 1:
+            break
+        last = index
+        cell = first_cell(lines[index])
+        if cell in ("Word", "Unapproved") or is_divider(cell):
+            continue
+        if cell == word:
+            lines[index] = f"| {word} | {meaning} |"
+            replaced = True
+            break
+    if not replaced:
+        lines.insert(last + 1, f"| {word} | {meaning} |")
+    body = "\n".join(lines)
+    if not body.endswith("\n"):
+        body += "\n"
+    return body
+
+
+def remove_legacy_block(text: str) -> str:
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        if LEGACY_START in lines[index]:
+            if out and out[-1].strip() == "":
+                out.pop()
+            index += 1
+            while index < len(lines) and LEGACY_END not in lines[index]:
+                index += 1
+            if index < len(lines):
+                index += 1
+            if index < len(lines) and lines[index].strip() == "":
+                index += 1
+            continue
+        out.append(lines[index])
+        index += 1
+    return "".join(out)
+
+
+def upsert_harness_text(text: str, body: str) -> str:
+    text = remove_legacy_block(text)
+    block = UV_START + "\n" + body.rstrip("\n") + "\n" + UV_END
+    if UV_START in text:
+        if UV_END not in text:
+            die("harness block has no end marker")
+        pre, rest = text.split(UV_START, 1)
+        _old, post = rest.split(UV_END, 1)
+        if post.startswith("\n"):
+            post = post[1:]
+        return pre + block + "\n" + post
+    if STE_END in text:
+        at = text.find(STE_END)
+        line_end = text.find("\n", at)
+        if line_end < 0:
+            return text + "\n\n" + block + "\n"
+        return text[: line_end + 1] + "\n" + block + "\n" + text[line_end + 1 :]
+    if text and not text.endswith("\n"):
+        text += "\n"
+    if text and not text.endswith("\n\n"):
+        text += "\n"
+    return text + block + "\n"
+
+
+def write_harness_file(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8")  # harness copy
+
+
+def write_project_file(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8")
+
+
+def sync_harnesses() -> int:
+    body = render_body()
+    updated = 0
+    for path in harness_paths():
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        if UV_START in text and UV_END not in text:
+            die(f"harness block has no end marker: {path}")
+        write_harness_file(path, upsert_harness_text(text, body))
+        print(f"last-stack-vocab: updated {path}")
+        updated += 1
+    if updated == 0:
+        print("last-stack-vocab: no harness file is present", file=sys.stderr)
+    return updated
+
+
+def add_user_word(section: str, word: str, meaning: str) -> None:
+    migrate([])
+    updated = upsert_row(ensure_tables(), section, word, meaning)
+    write_user_tables(updated)
+    sync_harnesses()
+
+
+def add_project_word(section: str, word: str, meaning: str) -> None:
+    path = project_vocab_path()
+    current = path.read_text(encoding="utf-8") if path.is_file() else empty_tables()
+    updated = upsert_row(current, section, word, meaning)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_project_file(path, updated)  # project scope stops here
+    print(f"last-stack-vocab: updated {path}")
+
+
+def iter_rows(text: str):
+    lines = text.splitlines()
+    for section, heading in HEADINGS.items():
+        span = section_span(lines, heading)
+        if span is None:
+            continue
+        start, end = span
+        for index in range(start, end):
+            line = lines[index]
+            if not line.startswith("|"):
+                continue
+            cell = first_cell(line)
+            if cell in ("Word", "Unapproved") or is_divider(cell):
+                continue
+            meaning = ""
+            parts = [part.strip() for part in line.strip().strip("|").split("|")]
+            if len(parts) > 1:
+                meaning = parts[1]
+            yield section, cell, meaning
+
+
+def cmd_list(project: bool) -> None:
+    if project:
+        path = project_vocab_path()
+        text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    else:
+        migrate([])
+        text = ensure_tables()
+    for section, word, meaning in iter_rows(text):
+        print(f"{section}\t{word}\t{meaning}")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Edit the user word list.")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    add = sub.add_parser("add", help="add or update one word")
+    add.add_argument("word")
+    add.add_argument("--means", required=True)
+    add.add_argument("--section", required=True, choices=tuple(HEADINGS))
+    add.add_argument("--project", action="store_true")
+
+    listed = sub.add_parser("list", help="print the words")
+    listed.add_argument("--project", action="store_true")
+
+    sub.add_parser("sync", help="copy the user word list into harness files")
+    sub.add_parser("render", help="print the harness block body")
+    sub.add_parser("path", help="print the user word-list path")
+
+    migrate_cmd = sub.add_parser("migrate", help="keep an older harness word list")
+    migrate_cmd.add_argument("--from", dest="sources", action="append", default=[])
+    return parser
+
+
+def main(argv: list[str]) -> int:
+    args = build_parser().parse_args(argv)
+    if args.cmd == "add":
+        if args.project:
+            add_project_word(args.section, args.word, args.means)
+        else:
+            add_user_word(args.section, args.word, args.means)
+        return 0
+    if args.cmd == "list":
+        cmd_list(args.project)
+        return 0
+    if args.cmd == "sync":
+        migrate([])
+        sync_harnesses()
+        return 0
+    if args.cmd == "render":
+        sys.stdout.write(render_body())
+        return 0
+    if args.cmd == "path":
+        print(vocab_path())
+        return 0
+    if args.cmd == "migrate":
+        migrate(args.sources)
+        return 0
+    die(f"unknown command {args.cmd}", 2)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
