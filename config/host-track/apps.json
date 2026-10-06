@@ -106,6 +106,10 @@
           "target": "$HOME/.local/bin/last-stack-mutation-probe"
         },
         {
+          "source": "bin/last-stack-vocab",
+          "target": "$HOME/.local/bin/last-stack-vocab"
+        },
+        {
           "source": "bin/last-stack-locate-file",
           "target": "$HOME/.local/bin/last-stack-locate-file"
         },

@@ -2,7 +2,7 @@
 # The Last Stack — setup / installer
 #
 # Registers each skill in skills/ into whatever agent harnesses you have
-# installed (Claude Code, Codex, Factory/droid, OpenCode, Antigravity CLI/agy).
+# installed (Claude Code, Codex, Factory/droid, OpenCode, Grok, Antigravity CLI/agy).
 # Skills stay in this repo; the harness gets a real directory with a
 # symlinked SKILL.md, so a later `git pull` updates every installed skill at
 # once. Host-track last-stack post_install runs this with --host auto.
@@ -937,6 +937,7 @@ echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) ..."
 [ "$INSTALL_FACTORY"  -eq 1 ] && upsert_harness_instruction_blocks "$HOME/.factory/AGENTS.md" "factory"
 [ "$INSTALL_OPENCODE" -eq 1 ] && register_into "$HOME/.config/opencode/skills" "opencode"
 [ "$INSTALL_OPENCODE" -eq 1 ] && upsert_harness_instruction_blocks "$HOME/.config/opencode/AGENTS.md" "opencode"
+[ "$INSTALL_GROK"     -eq 1 ] && register_into "$HOME/.grok/skills"           "grok"
 [ "$INSTALL_GROK"     -eq 1 ] && upsert_harness_instruction_blocks "$HOME/.grok/AGENTS.md" "grok"
 [ "$INSTALL_AGY"      -eq 1 ] && register_into "$HOME/.gemini/config/skills"  "agy"
 [ "$INSTALL_AGY"      -eq 1 ] && upsert_harness_instruction_blocks "$HOME/.gemini/GEMINI.md" "agy"
@@ -1075,6 +1076,7 @@ if [ -x "$guard" ]; then
   [ "$INSTALL_CODEX"    -eq 1 ] && guard_dirs+=("$HOME/.codex/skills")
   [ "$INSTALL_FACTORY"  -eq 1 ] && guard_dirs+=("$HOME/.factory/skills")
   [ "$INSTALL_OPENCODE" -eq 1 ] && guard_dirs+=("$HOME/.config/opencode/skills")
+  [ "$INSTALL_GROK"     -eq 1 ] && guard_dirs+=("$HOME/.grok/skills")
   [ "$INSTALL_AGY"      -eq 1 ] && guard_dirs+=("$HOME/.gemini/config/skills")
   [ ${#guard_dirs[@]} -gt 0 ] && "$guard" --quiet "${guard_dirs[@]}" || true
 fi

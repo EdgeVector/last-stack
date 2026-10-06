@@ -50,7 +50,7 @@ grep -q 'last-stack:asd-ste100:start' "$agents" || fail "asd-ste100 block missin
 grep -q 'Write to the user in ASD-STE100' "$agents" || fail "ASD-STE100 rule missing from AGENTS.md"
 grep -q 'last-stack:user-vocabulary:start' "$agents" || fail "user-vocabulary block missing from AGENTS.md"
 grep -q 'last-stack-vocab add' "$agents" || fail "user vocabulary add command missing from AGENTS.md"
-grep -q 'Claude and Codex read this same block' "$agents" || fail "Codex is not named in the vocabulary block"
+grep -q 'Claude, Codex, and Grok read this same block' "$agents" || fail "Codex is not named in the vocabulary block"
 grep -q 'Repository venue: GitHub' "$agents" || fail "GitHub repo venue section missing from AGENTS.md"
 grep -q 'command -v <cmd>' "$agents" || fail "supported CLI provenance check missing"
 grep -q 'Routines and Loom do not implement' "$agents" || fail "unsupported which limitation missing"
