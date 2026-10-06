@@ -138,16 +138,15 @@ def require_no_open_files(home: Path) -> None:
         refuse("open-file check is unavailable")
     if result.returncode not in (0, 1):
         refuse("open-file check failed")
-    holders = [
-        int(line[1:]) for line in result.stdout.splitlines()
-        if line.startswith("p") and line[1:].isdigit()
-    ]
+    holders = [line for line in result.stdout.splitlines()
+               if line.startswith("p") and line[1:].isdigit()]
     if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip():
         return
+    if result.stderr.strip():
+        refuse("open-file check failed")
     if not holders:
         refuse("open-file check returned no process identity")
-    if any(pid not in (os.getpid(), os.getppid()) for pid in holders):
-        refuse("a process still has a rescue file open")
+    refuse("a process still has a rescue file open")
 
 
 def verify(args: argparse.Namespace) -> Path:
