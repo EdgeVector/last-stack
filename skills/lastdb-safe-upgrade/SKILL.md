@@ -65,6 +65,97 @@ Shipped in **last-stack** (`skills/lastdb-safe-upgrade/`). After
 
 Prefer the **driver script** path below; do not hard-code a single harness dir.
 
+## Stopped copy for a backup after an upgrade
+
+The first safe upgrade keeps Cloud Sync Off. It does not use the live rollback
+copy as a cloud backup source. That copy can miss writes that remain in memory.
+
+After the new daemon passes its live checks, run `stopped-home-copy.sh` as a
+separate supervised action. The new daemon must write `.shutdown_flush_ready`
+only after all host writers stop and the final flush succeeds. The script
+requires that receipt for the exact stopped session. It also requires Cloud
+Sync Off, the expected binary hashes, and at least 30 GiB of free disk space.
+
+The script runs `situations preflight --action restart --system lastdbd` before
+it takes the owner lock or stops the daemon. A block or read error leaves the
+primary and the copy path unchanged. After a successful restart, it posts a
+Situations restart notice.
+
+Use a new path under `/private/tmp`. Do not use `/tmp`, which is a symlink on
+this host. Supply the release pair's SHA-256 values from the safe upgrade
+receipt:
+
+```bash
+bash ~/.last-stack/skills/lastdb-safe-upgrade/scripts/stopped-home-copy.sh \
+  --copy /private/tmp/lastdb-stopped-backup-<unique-run-id> \
+  --launchd-label <primary-label> \
+  --expected-lastdbd-sha256 <release-daemon-sha256> \
+  --expected-lastdb-sha256 <release-cli-sha256>
+```
+
+The script stops the candidate, verifies its flush receipt, makes one APFS
+copy, and restarts the same candidate. It writes `.cloud_backup_source_copy`
+to the final copy after restart checks pass. The marker binds the copy to the
+stopped PID and session start time. The copy has no cloud backup request.
+After the script reports `STOPPED_COPY=green`, run the candidate `lastdb`
+one-shot `cloud backup-while-off` command on that copy. Keep the copy until
+the cloud backup and a fresh restore both pass. The live home remains Off.
+
+### One approved old-daemon source without a flush receipt
+
+Tom accepted possible loss of an acked write that the old daemon did not flush.
+The decision is `decision-2026-10-06-cloud-sync-rescue-risk-acceptance`.
+This one-time mode uses the installed old daemon pair. It does not require a
+new primary upgrade solely to obtain a shutdown receipt.
+
+Run the same supervised action with this additional argument:
+
+```bash
+  --accept-unproved-flush decision-2026-10-06-cloud-sync-rescue-risk-acceptance
+```
+
+The action writes `.cloud_backup_unproved_flush_claim` in the stopped home
+only after the strict supervised stop succeeds. The claim binds the approval
+to one PID, session, and exact copy path. A failed stop leaves no claim.
+On a strict stop timeout, the action restores the program and returns RED.
+It leaves the daemon alive and does not use a forced kill. A later copy error
+releases the claim only if the primary recovers, Cloud Sync stays Off, and no
+final copy exists. A published copy keeps the claim. Do not remove the claim
+by hand. The script keeps an incomplete stage for review. Use a new copy path
+for a retry. The action still requires a graceful stop without a forced kill,
+no live session or socket in the copy, the same-volume APFS copy, matching
+identity and paused cloud files, a healthy supervised restart, and Cloud Sync
+Off on the live socket. It writes a version 2 `.cloud_backup_source_copy` only
+after the restart. That marker states `flush_proof=absent` and
+`owner_approved=2026-10-06`. It does not claim that every acked write reached
+disk. A separate Fold publisher must accept this exact marker before upload.
+
+CAUTION: The current cleanup helper requires a version 1 flush receipt. Keep a
+version 2 stopped copy until the helper supports the waiver and a fresh
+source-free restore proves the rescue.
+
+After the fresh source-free restore passes, check the exact stopped copy with
+`cleanup-stopped-copy.py`. Use the captured restore JSON report. The report
+must name the same database hash and manifest SHA-256 as the source and the
+restored home. The source must have `.rescue_s0_complete`. The restored home
+must have `.rescue_s0_restore_ready`. The helper also requires Cloud Sync Off.
+It refuses a socket path, an open file, or a process that names either home.
+It checks only by default:
+
+```bash
+python3 ~/.last-stack/skills/lastdb-safe-upgrade/scripts/cleanup-stopped-copy.py \
+  --copy /private/tmp/lastdb-stopped-backup-<unique-run-id> \
+  --restored-home /private/tmp/<fresh-restore-home> \
+  --restore-report /private/tmp/<captured-restore-report>.json \
+  --expect-db-hash <source-database-hash> \
+  --expect-manifest-sha256 <rescue-manifest-sha256>
+```
+
+Review the `STOPPED_COPY_CLEANUP=checked` result. Repeat the same command with
+`--execute` to remove that one source copy. Keep the restored home and report.
+Do not use `laststore_backup_manifest.json` as the rescue proof. It records the
+previous normal backup, and the rescue backup uses a separate manifest.
+
 ## Live venue (important — 2026-07-16)
 
 Primary can use either supervisor, but exact-candidate live cutover supports
