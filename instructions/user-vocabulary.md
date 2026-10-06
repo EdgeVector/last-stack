@@ -5,7 +5,7 @@ CAUTION: Use this list with the ASD-STE100 rules. Use it when you speak to the u
 This file is the word list for this user.
 Add a word with `last-stack-vocab add`.
 The add command writes the word into this block.
-Claude and Codex read this same block.
+Claude, Codex, and Grok read this same block.
 A project may keep more words in `.last-stack/vocabulary.md`.
 Read that file when the repo has it.
 A word in the project file is approved in that repo.

@@ -143,7 +143,7 @@ case_inject() {
   "$ROOT/setup" --host claude > /dev/null
   grep -q 'last-stack:user-vocabulary:start' "$claude" \
     || fail "user-vocabulary block missing from CLAUDE.md"
-  grep -q 'Claude and Codex read this same block' "$claude" \
+  grep -q 'Claude, Codex, and Grok read this same block' "$claude" \
     || fail "Claude is not named in the vocabulary block"
   grep -q 'keep me' "$claude" || fail "user notes were dropped"
 }
