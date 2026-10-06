@@ -188,7 +188,7 @@ restart_primary() {
   lastdb_launchd_reload_job "$LAUNCHCTL_BIN" "$domain" "$label" "$plist" || return 1
   wait_for_live_unix_socket_health "$sock" 180 || return 1
   job_pid="$(lastdb_launchd_job_pid "$LAUNCHCTL_BIN" "$domain/$label")"
-  listener_pid="$(live_unix_socket_listener_pid "$sock" || true)"
+  listener_pid="$(live_unix_socket_health_pid "$sock" || true)"
   [ -n "$job_pid" ] && [ "$job_pid" = "$listener_pid" ] || return 1
   lastdb_require_supervised_primary "$LAUNCHCTL_BIN" "$domain/$label" "$listener_pid" >/dev/null
 }
@@ -197,7 +197,7 @@ primary_is_supervised_and_healthy() {
   local domain="$1" label="$2" sock="$3" job_pid listener_pid
   live_unix_socket_is_healthy "$sock" || return 1
   job_pid="$(lastdb_launchd_job_pid "$LAUNCHCTL_BIN" "$domain/$label")"
-  listener_pid="$(live_unix_socket_listener_pid "$sock" || true)"
+  listener_pid="$(live_unix_socket_health_pid "$sock" || true)"
   [ -n "$job_pid" ] && [ "$job_pid" = "$listener_pid" ] || return 1
   lastdb_require_supervised_primary "$LAUNCHCTL_BIN" "$domain/$label" "$listener_pid" >/dev/null
 }
@@ -346,7 +346,7 @@ main() {
   before_free="$(require_disk_floor "$PRIMARY_HOME")" || return 1
   service="gui/$(id -u)/$LAUNCHD_LABEL"
   job_pid="$(lastdb_launchd_job_pid "$LAUNCHCTL_BIN" "$service")"
-  listener_pid="$(live_unix_socket_listener_pid "$PRIMARY_HOME/data/folddb.sock" || true)"
+  listener_pid="$(live_unix_socket_health_pid "$PRIMARY_HOME/data/folddb.sock" || true)"
   [ -n "$job_pid" ] && [ "$job_pid" = "$listener_pid" ] \
     && live_unix_socket_is_healthy "$PRIMARY_HOME/data/folddb.sock" \
     || { fail primary-not-supervised-and-healthy; return 1; }
