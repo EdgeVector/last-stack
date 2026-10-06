@@ -101,6 +101,28 @@ After the script reports `STOPPED_COPY=green`, run the candidate `lastdb`
 one-shot `cloud backup-while-off` command on that copy. Keep the copy until
 the cloud backup and a fresh restore both pass. The live home remains Off.
 
+After the fresh source-free restore passes, check the exact stopped copy with
+`cleanup-stopped-copy.py`. Use the captured restore JSON report. The report
+must name the same database hash and manifest SHA-256 as the source and the
+restored home. The source must have `.rescue_s0_complete`. The restored home
+must have `.rescue_s0_restore_ready`. The helper also requires Cloud Sync Off.
+It refuses a socket path, an open file, or a process that names either home.
+It checks only by default:
+
+```bash
+python3 ~/.last-stack/skills/lastdb-safe-upgrade/scripts/cleanup-stopped-copy.py \
+  --copy /private/tmp/lastdb-stopped-backup-<unique-run-id> \
+  --restored-home /private/tmp/<fresh-restore-home> \
+  --restore-report /private/tmp/<captured-restore-report>.json \
+  --expect-db-hash <source-database-hash> \
+  --expect-manifest-sha256 <rescue-manifest-sha256>
+```
+
+Review the `STOPPED_COPY_CLEANUP=checked` result. Repeat the same command with
+`--execute` to remove that one source copy. Keep the restored home and report.
+Do not use `laststore_backup_manifest.json` as the rescue proof. It records the
+previous normal backup, and the rescue backup uses a separate manifest.
+
 ## Live venue (important — 2026-07-16)
 
 Primary can use either supervisor, but exact-candidate live cutover supports
