@@ -279,10 +279,16 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
 
     The proof removes both sockets, `current-session.json`, the copied device
     ID, `laststore_backup_known_present.json`,
-    `laststore_backup_manifest.json`, every `cloud_sync.json*` file, and hidden
-    `.cloud_sync.json.tmp*` residue. It does this before DEV connect. It unsets
+    `laststore_backup_manifest.json`, every `cloud_sync.json*` file, hidden
+    `.cloud_sync.json.tmp*` residue, and the `.cloud_resume_required`,
+    `.cloud_resume_requested`, and `.cloud_resume_ready` markers. It does this
+    before DEV connect. It unsets
     `LASTDB_HOME`, `FOLDDB_HOME`, and `FOLD_SYNC_DEVICE_ID` for connect, daemon
     start, and snapshot.
+
+    The main smoke test receives a sanitized CoW source through a temporary
+    HOME. The driver checks the real primary process before and after this
+    test because the smoke script sees the temporary HOME.
 
     The proof reads `lastdb-restore-probe-invite-dev-20260720` from
     LastSecrets. It pipes the value directly to the paired CLI through stdin.

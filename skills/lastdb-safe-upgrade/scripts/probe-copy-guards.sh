@@ -96,3 +96,30 @@ probe_copy_is_not_primary() {
   esac
   return 0
 }
+
+# $1 = probe copy, $2 = primary home. Remove all copied production cloud
+# credentials and resume intent before any candidate process can boot.
+probe_strip_cloud_state() {
+  local copy="$1" primary="$2" path
+  probe_copy_is_not_primary "$copy" "$primary" || return 1
+  [ -d "$copy" ] && [ ! -L "$copy" ] || return 1
+  for path in \
+    "$copy"/cloud_sync.json* \
+    "$copy"/.cloud_sync.json.tmp* \
+    "$copy"/.cloud_resume_required \
+    "$copy"/.cloud_resume_requested \
+    "$copy"/.cloud_resume_ready; do
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      [ ! -d "$path" ] || return 1
+      rm -f -- "$path" || return 1
+    fi
+  done
+  for path in \
+    "$copy"/cloud_sync.json* \
+    "$copy"/.cloud_sync.json.tmp* \
+    "$copy"/.cloud_resume_required \
+    "$copy"/.cloud_resume_requested \
+    "$copy"/.cloud_resume_ready; do
+    [ ! -e "$path" ] && [ ! -L "$path" ] || return 1
+  done
+}
