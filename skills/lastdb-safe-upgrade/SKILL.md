@@ -65,6 +65,42 @@ Shipped in **last-stack** (`skills/lastdb-safe-upgrade/`). After
 
 Prefer the **driver script** path below; do not hard-code a single harness dir.
 
+## Stopped copy for a backup after an upgrade
+
+The first safe upgrade keeps Cloud Sync Off. It does not use the live rollback
+copy as a cloud backup source. That copy can miss writes that remain in memory.
+
+After the new daemon passes its live checks, run `stopped-home-copy.sh` as a
+separate supervised action. The new daemon must write `.shutdown_flush_ready`
+only after all host writers stop and the final flush succeeds. The script
+requires that receipt for the exact stopped session. It also requires Cloud
+Sync Off, the expected binary hashes, and at least 30 GiB of free disk space.
+
+The script runs `situations preflight --action restart --system lastdbd` before
+it takes the owner lock or stops the daemon. A block or read error leaves the
+primary and the copy path unchanged. After a successful restart, it posts a
+Situations restart notice.
+
+Use a new path under `/private/tmp`. Do not use `/tmp`, which is a symlink on
+this host. Supply the release pair's SHA-256 values from the safe upgrade
+receipt:
+
+```bash
+bash ~/.last-stack/skills/lastdb-safe-upgrade/scripts/stopped-home-copy.sh \
+  --copy /private/tmp/lastdb-stopped-backup-<unique-run-id> \
+  --launchd-label <primary-label> \
+  --expected-lastdbd-sha256 <release-daemon-sha256> \
+  --expected-lastdb-sha256 <release-cli-sha256>
+```
+
+The script stops the candidate, verifies its flush receipt, makes one APFS
+copy, and restarts the same candidate. It writes `.cloud_backup_source_copy`
+to the final copy after restart checks pass. The marker binds the copy to the
+stopped PID and session start time. The copy has no cloud backup request.
+After the script reports `STOPPED_COPY=green`, run the candidate `lastdb`
+one-shot `cloud backup-while-off` command on that copy. Keep the copy until
+the cloud backup and a fresh restore both pass. The live home remains Off.
+
 ## Live venue (important — 2026-07-16)
 
 Primary can use either supervisor, but exact-candidate live cutover supports

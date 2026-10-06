@@ -81,20 +81,26 @@ lastdb_launchd_graceful_prestop() {
   # the job out while no process runs, then put the program back. The caller's
   # job reload then finds the job unloaded and bootstraps the new definition.
   #
-  # Args: launchctl-bin service program wait-secs want-exit-timeout
+  # Args: launchctl-bin service program wait-secs want-exit-timeout [strict]
+  # Strict mode always stops the process. A forced kill cannot prove a flush.
   # Prints LASTDB_LAUNCHD_PRESTOP=<skipped|ok|failed> ...
-  local launchctl_bin="$1" service="$2" program="$3" wait_secs="$4" want="$5"
+  local launchctl_bin="$1" service="$2" program="$3" wait_secs="$4" want="$5" strict="${6:-0}"
   local loaded="" pid="" hold="" elapsed=0 forced=0 kill_wait=0
   case "$wait_secs" in ''|*[!0-9]*) printf 'invalid graceful stop wait\n' >&2; return 1 ;; esac
   case "$want" in ''|*[!0-9]*) printf 'invalid wanted exit timeout\n' >&2; return 1 ;; esac
+  case "$strict" in 0|1) ;; *) printf 'invalid strict stop flag\n' >&2; return 1 ;; esac
 
   loaded="$(lastdb_launchd_job_exit_timeout "$launchctl_bin" "$service")"
-  if [ -n "$loaded" ] && [ "$loaded" -ge "$want" ] 2>/dev/null; then
+  if [ "$strict" = 0 ] && [ -n "$loaded" ] && [ "$loaded" -ge "$want" ] 2>/dev/null; then
     printf 'LASTDB_LAUNCHD_PRESTOP=skipped reason=loaded-exit-timeout-ok loaded_s=%s\n' "$loaded"
     return 0
   fi
   pid="$(lastdb_launchd_job_pid "$launchctl_bin" "$service")"
   if [ -z "$pid" ]; then
+    if [ "$strict" = 1 ]; then
+      printf 'LASTDB_LAUNCHD_PRESTOP=failed reason=no-process service=%s\n' "$service" >&2
+      return 1
+    fi
     printf 'LASTDB_LAUNCHD_PRESTOP=skipped reason=no-process loaded_s=%s\n' "${loaded:-unset}"
     return 0
   fi
@@ -104,6 +110,10 @@ lastdb_launchd_graceful_prestop() {
   fi
 
   hold="${program}.prestop-hold"
+  if [ "$strict" = 1 ] && { [ -e "$hold" ] || [ -L "$hold" ]; }; then
+    printf 'LASTDB_LAUNCHD_PRESTOP=failed reason=existing-program-hold hold=%s\n' "$hold" >&2
+    return 1
+  fi
   rm -f -- "$hold"
   if ! mv -f -- "$program" "$hold"; then
     printf 'LASTDB_LAUNCHD_PRESTOP=failed step=hold program=%s\n' "$program" >&2
@@ -160,6 +170,11 @@ lastdb_launchd_graceful_prestop() {
   fi
   printf 'LASTDB_LAUNCHD_PRESTOP=ok service=%s pid=%s waited_s=%s forced_kill=%s\n' \
     "$service" "$pid" "$elapsed" "$forced"
+  if [ "$strict" = 1 ] && [ "$forced" = 1 ]; then
+    printf 'LASTDB_LAUNCHD_PRESTOP=failed reason=forced-kill-no-flush-proof service=%s pid=%s\n' \
+      "$service" "$pid" >&2
+    return 1
+  fi
   return 0
 }
 

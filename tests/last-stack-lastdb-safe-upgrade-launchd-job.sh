@@ -513,7 +513,62 @@ grep -q '^LASTDB_LAUNCHD_PRESTOP=skipped reason=loaded-exit-timeout-ok' <<<"$out
   || { echo "FAIL: full loaded window must skip the pre-stop: $out" >&2; exit 1; }
 [ -e "$FAKE_LOADED_FILE" ] || { echo "FAIL: skipped pre-stop must not unload the job" >&2; exit 1; }
 
+# The stopped-copy path must stop even when the loaded job has the full timeout.
+: >"$FAKE_LOADED_FILE"; : >"$FAKE_LAUNCHCTL_LOG"
+( trap 'sleep 1; exit 0' TERM; while :; do sleep 0.2; done ) &
+fake_pid=$!
+out="$(FAKE_PRINT_EXIT_TIMEOUT=150 FAKE_PRINT_PID=$fake_pid FAKE_KILL_PID=$fake_pid \
+  lastdb_launchd_graceful_prestop "$TMP/launchctl" gui/501/com.test.lastdbd "$prog" 20 150 1)"
+if ! grep -q '^LASTDB_LAUNCHD_PRESTOP=ok .* forced_kill=0$' <<<"$out"; then
+  kill -KILL "$fake_pid" 2>/dev/null || true
+  wait "$fake_pid" 2>/dev/null || true
+  echo "FAIL: strict stop skipped a live process: $out" >&2
+  exit 1
+fi
+pid_is_live "$fake_pid" && { echo "FAIL: strict stop left the old daemon alive" >&2; exit 1; }
+[ ! -e "$FAKE_LOADED_FILE" ] \
+  || { echo "FAIL: strict stop left the supervisor loaded" >&2; exit 1; }
+
+# A forced kill cannot certify the final flush for the stopped-copy path.
+: >"$FAKE_LOADED_FILE"; : >"$FAKE_LAUNCHCTL_LOG"
+( trap '' TERM; while :; do sleep 0.2; done ) &
+fake_pid=$!
+if FAKE_PRINT_EXIT_TIMEOUT=150 FAKE_PRINT_PID=$fake_pid FAKE_KILL_PID=$fake_pid \
+  lastdb_launchd_graceful_prestop "$TMP/launchctl" gui/501/com.test.lastdbd "$prog" 2 150 1 \
+  >"$TMP/strict-forced.out" 2>"$TMP/strict-forced.err"; then
+  echo "FAIL: strict stop accepted a forced kill" >&2; exit 1
+fi
+grep -q 'reason=forced-kill-no-flush-proof' "$TMP/strict-forced.err" \
+  || { echo "FAIL: strict stop gave no forced-kill reason" >&2; exit 1; }
+[ ! -e "$FAKE_LOADED_FILE" ] \
+  || { echo "FAIL: strict forced-kill path left the supervisor loaded" >&2; exit 1; }
+
+# A strict stop must preserve a prior held program and leave the daemon live.
+: >"$FAKE_LOADED_FILE"; : >"$FAKE_LAUNCHCTL_LOG"
+printf 'prior candidate bytes\n' >"$prog.prestop-hold"
+( trap 'exit 0' TERM; while :; do sleep 0.2; done ) &
+fake_pid=$!
+if FAKE_PRINT_EXIT_TIMEOUT=150 FAKE_PRINT_PID=$fake_pid FAKE_KILL_PID=$fake_pid \
+  lastdb_launchd_graceful_prestop "$TMP/launchctl" gui/501/com.test.lastdbd "$prog" 20 150 1 \
+  >"$TMP/strict-hold.out" 2>"$TMP/strict-hold.err"; then
+  kill "$fake_pid" 2>/dev/null || true
+  wait "$fake_pid" 2>/dev/null || true
+  echo "FAIL: strict stop replaced a prior held program" >&2; exit 1
+fi
+hold_daemon_live=0
+pid_is_live "$fake_pid" && hold_daemon_live=1
+kill "$fake_pid" 2>/dev/null || true
+wait "$fake_pid" 2>/dev/null || true
+grep -q 'reason=existing-program-hold' "$TMP/strict-hold.err" \
+  || { echo "FAIL: strict stop did not explain the prior hold" >&2; exit 1; }
+printf 'prior candidate bytes\n' | cmp -s - "$prog.prestop-hold" \
+  || { echo "FAIL: strict stop changed the prior held program" >&2; exit 1; }
+[ "$hold_daemon_live" = 1 ] \
+  || { echo "FAIL: strict stop signaled the daemon despite the prior hold" >&2; exit 1; }
+unlink "$prog.prestop-hold"
+
 # A failed SIGTERM restores the program and leaves the job loaded.
+: >"$FAKE_LOADED_FILE"
 cat >"$TMP/launchctl-killfail" <<STUB2
 #!/usr/bin/env bash
 [ "\${1:-}" = kill ] && exit 3
