@@ -510,6 +510,8 @@ ci_test tests/last-stack-artifact-routine-freshness.sh
 ci_test tests/last-stack-artifact-one-rule.sh
 ci_test tests/last-stack-post-merge-safe-upgrade.sh
 ci_test tests/last-stack-lastdb-safe-upgrade-launchd-job.sh
+ci_test tests/lastdb-stopped-home-copy.sh
+ci_test tests/lastdb-stopped-home-durable-path.sh
 ci_test tests/last-stack-lastdb-safe-upgrade-live-socket-health.sh
 ci_test tests/last-stack-lastdb-safe-upgrade-candidate-class.sh
 ci_test tests/last-stack-lastdb-safe-upgrade-latency-bar.sh

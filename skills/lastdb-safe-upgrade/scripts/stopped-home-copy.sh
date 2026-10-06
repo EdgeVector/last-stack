@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Make one cloud-backup source from a stopped, flushed LastDB primary.
-# Run only after the candidate safe upgrade has completed and Cloud Sync is Off.
-# Example copy path: /private/tmp/lastdb-stopped-backup-<unique-run-id>.
+# Make one cloud-backup source from a stopped LastDB primary.
+# The old daemon has no flush receipt; its one-time waiver must be explicit.
+# Run only while Cloud Sync is Off and after the required primary checks.
+# The copy can use /private/tmp or the exact private STATE source-copies parent.
 set -euo pipefail
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -54,7 +55,7 @@ require_disk_floor() {
 }
 
 validate_copy_path() {
-  local copy="$1" home="$2" parent parent_real home_real
+  local copy="$1" home="$2" parent parent_real home_real durable_parent
   case "$copy" in /*) ;; *) fail copy-path-not-absolute; return 1 ;; esac
   [ "$copy" = "${copy%/}" ] || { fail copy-path-trailing-slash; return 1; }
   [ ! -e "$copy" ] && [ ! -L "$copy" ] || { fail copy-path-exists; return 1; }
@@ -63,9 +64,18 @@ validate_copy_path() {
   parent_real="$(CDPATH= cd -- "$parent" && pwd -P)" || return 1
   home_real="$(CDPATH= cd -- "$home" && pwd -P)" || return 1
   [ "$parent_real" = "$parent" ] || { fail copy-parent-not-canonical; return 1; }
-  case "$parent_real" in /private/tmp|/private/tmp/*) ;; *) fail copy-parent-not-temp; return 1 ;; esac
+  durable_parent="$HOME/.local/state/last-stack/cloud-rescue/source-copies"
   case "$parent_real" in
-    "$HOME"|"$HOME"/*|"$home_real"|"$home_real"/*)
+    /private/tmp|/private/tmp/*) ;;
+    "$durable_parent")
+      [ "$(stat -f '%u' "$parent_real")" = "$(id -u)" ] \
+        && [ "$(stat -f '%Lp' "$parent_real")" = 700 ] \
+        || { fail copy-parent-not-private; return 1; }
+      ;;
+    *) fail copy-parent-not-approved; return 1 ;;
+  esac
+  case "$parent_real" in
+    "$home_real"|"$home_real"/*)
       fail copy-under-home; return 1 ;;
   esac
   [ "$(stat -f '%d' "$parent_real")" = "$(stat -f '%d' "$home_real")" ] \
