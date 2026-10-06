@@ -101,6 +101,35 @@ After the script reports `STOPPED_COPY=green`, run the candidate `lastdb`
 one-shot `cloud backup-while-off` command on that copy. Keep the copy until
 the cloud backup and a fresh restore both pass. The live home remains Off.
 
+### One approved old-daemon source without a flush receipt
+
+Tom accepted possible loss of an acked write that the old daemon did not flush.
+The decision is `decision-2026-10-06-cloud-sync-rescue-risk-acceptance`.
+This one-time mode uses the installed old daemon pair. It does not require a
+new primary upgrade solely to obtain a shutdown receipt.
+
+Run the same supervised action with this additional argument:
+
+```bash
+  --accept-unproved-flush decision-2026-10-06-cloud-sync-rescue-risk-acceptance
+```
+
+The action writes `.cloud_backup_unproved_flush_claim` in the stopped home
+only after the strict supervised stop succeeds. The claim binds the approval
+to one PID, session, and exact copy path. A failed stop leaves no claim.
+The claim remains if a later step fails. Do not remove or retry it without a new
+source review. The action still requires a graceful stop without a forced kill,
+no live session or socket in the copy, the same-volume APFS copy, matching
+identity and paused cloud files, a healthy supervised restart, and Cloud Sync
+Off on the live socket. It writes a version 2 `.cloud_backup_source_copy` only
+after the restart. That marker states `flush_proof=absent` and
+`owner_approved=2026-10-06`. It does not claim that every acked write reached
+disk. A separate Fold publisher must accept this exact marker before upload.
+
+CAUTION: The current cleanup helper requires a version 1 flush receipt. Keep a
+version 2 stopped copy until the helper supports the waiver and a fresh
+source-free restore proves the rescue.
+
 After the fresh source-free restore passes, check the exact stopped copy with
 `cleanup-stopped-copy.py`. Use the captured restore JSON report. The report
 must name the same database hash and manifest SHA-256 as the source and the

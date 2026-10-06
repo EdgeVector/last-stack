@@ -66,6 +66,111 @@ fi
   || { echo 'FAIL: a bad receipt left a source marker' >&2; exit 1; }
 printf 'COPY-MARKER-GATE: stopped session bound to final copy only\n'
 
+# The old daemon has no flush receipt. The owner approved one stopped source
+# with that limit. The action consumes the claim after the stop succeeds.
+waiver_home="$TEST_ROOT/waiver-home"
+waiver_copy="$TEST_ROOT/waiver-copy"
+mkdir -p "$waiver_home/data/data"
+printf 'fake identity\n' >"$waiver_home/identity.key"
+printf '{"fake":"cloud-config"}\n' >"$waiver_home/cloud_sync.json.paused"
+printf 'one old record\n' >"$waiver_home/data/data/record"
+if validate_cloud_off_home "$waiver_home" >"$TEST_ROOT/normal-missing-resume.out" 2>&1; then
+  echo 'FAIL: normal copy accepted an absent resume marker' >&2; exit 1
+fi
+validate_cloud_off_home "$waiver_home" waiver
+claim_script="$ROOT/skills/lastdb-safe-upgrade/scripts/claim-stopped-copy-waiver.py"
+decision=decision-2026-10-06-cloud-sync-rescue-risk-acceptance
+if python3 "$claim_script" --home "$waiver_home" --pid 1234 --start-ts 5678 \
+  --copy-path "$waiver_copy" --decision-slug wrong >"$TEST_ROOT/wrong-decision.out" 2>&1; then
+  echo 'FAIL: wrong approval claimed the waiver' >&2; exit 1
+fi
+[ ! -e "$waiver_home/.cloud_backup_unproved_flush_claim" ] \
+  || { echo 'FAIL: wrong approval wrote a claim' >&2; exit 1; }
+python3 "$claim_script" --home "$waiver_home" --pid 1234 --start-ts 5678 \
+  --copy-path "$waiver_copy" --decision-slug "$decision"
+if python3 "$claim_script" --home "$waiver_home" --pid 1234 --start-ts 5678 \
+  --copy-path "$waiver_copy" --decision-slug "$decision" >"$TEST_ROOT/claim-again.out" 2>&1; then
+  echo 'FAIL: the one-time waiver was claimed twice' >&2; exit 1
+fi
+before_free="$(free_kib "$waiver_home")"
+printf '{"pid":1234,"start_ts":5678}\n' >"$waiver_home/current-session.json"
+if copy_stopped_home "$waiver_home" "$TEST_ROOT/waiver-copy-with-session" \
+  "$timeout_bin" "$before_free" waiver >"$TEST_ROOT/waiver-session.out" 2>&1; then
+  echo 'FAIL: a live session entered the waiver copy' >&2; exit 1
+fi
+unlink "$waiver_home/current-session.json"
+copy_stopped_home "$waiver_home" "$waiver_copy" "$timeout_bin" "$before_free" waiver
+other_copy="$TEST_ROOT/waiver-other-copy"
+copy_stopped_home "$waiver_home" "$other_copy" "$timeout_bin" "$before_free" waiver
+if python3 "$ROOT/skills/lastdb-safe-upgrade/scripts/write-stopped-copy-marker.py" \
+  --copy "$other_copy" --pid 1234 --start-ts 5678 \
+  --accept-unproved-flush "$decision" >"$TEST_ROOT/waiver-other-copy.out" 2>&1; then
+  echo 'FAIL: waiver marker accepted another copy' >&2; exit 1
+fi
+if python3 "$ROOT/skills/lastdb-safe-upgrade/scripts/write-stopped-copy-marker.py" \
+  --copy "$waiver_copy" --pid 1234 --start-ts 5679 \
+  --accept-unproved-flush "$decision" >"$TEST_ROOT/waiver-wrong-session.out" 2>&1; then
+  echo 'FAIL: waiver marker accepted another session' >&2; exit 1
+fi
+python3 "$ROOT/skills/lastdb-safe-upgrade/scripts/write-stopped-copy-marker.py" \
+  --copy "$waiver_copy" --pid 1234 --start-ts 5678 --accept-unproved-flush "$decision"
+jq -e '(keys | sort) == (["version","source_pid","source_start_ts","copied_at_unix_s", "flush_proof", "owner_approved", "stop_proof"] | sort)
+  and .version == 2 and .source_pid == 1234 and .source_start_ts == 5678
+  and .flush_proof == "absent" and .owner_approved == "2026-10-06"
+  and .stop_proof == "supervised_sigterm_no_forced_kill"' \
+  "$waiver_copy/.cloud_backup_source_copy" >/dev/null \
+  || { echo 'FAIL: waiver marker differs from the approved contract' >&2; exit 1; }
+[ ! -e "$waiver_home/.cloud_backup_source_copy" ] \
+  || { echo 'FAIL: waiver marker reached the live home' >&2; exit 1; }
+curl() { printf '{"status":{"sync":{"enabled":false}}}\n'; }
+require_live_cloud_off "$waiver_home/data/folddb.sock" \
+  || { echo 'FAIL: live Cloud Sync Off failed the restart gate' >&2; exit 1; }
+curl() { printf '{"status":{"sync":{"enabled":true}}}\n'; }
+if require_live_cloud_off "$waiver_home/data/folddb.sock" >"$TEST_ROOT/sync-on.out" 2>&1; then
+  echo 'FAIL: live Cloud Sync On passed the restart gate' >&2; exit 1
+fi
+unset -f curl
+printf 'WAIVER-GATE: one approval, one stopped copy, Cloud Sync Off\n'
+
+# A failed supervised stop does not consume the live-home waiver.
+failed_home="$TEST_ROOT/failed-stop-home"
+failed_copy="$TEST_ROOT/failed-stop-copy"
+fake_bin="$TEST_ROOT/fake-bin"
+fake_plist="$TEST_ROOT/fake-primary.plist"
+mkdir -p "$failed_home/data/data" "$fake_bin"
+printf 'fake identity\n' >"$failed_home/identity.key"
+printf '{"fake":"cloud-config"}\n' >"$failed_home/cloud_sync.json.paused"
+printf '{"pid":1234,"start_ts":5678}\n' >"$failed_home/current-session.json"
+printf '#!/bin/sh\nexit 0\n' >"$fake_bin/lastdbd"
+printf '#!/bin/sh\nexit 0\n' >"$fake_bin/lastdb"
+chmod +x "$fake_bin/lastdbd" "$fake_bin/lastdb"
+printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+  '<plist version="1.0"><dict><key>ProgramArguments</key><array>' \
+  "<string>$fake_bin/lastdbd</string>" '</array></dict></plist>' >"$fake_plist"
+daemon_sha="$(shasum -a 256 "$fake_bin/lastdbd" | awk '{print $1}')"
+cli_sha="$(shasum -a 256 "$fake_bin/lastdb" | awk '{print $1}')"
+if (
+  SIDEBIN_DIR="$fake_bin"; LAUNCHD_PLIST="$fake_plist"
+  require_restart_preflight() { :; }
+  safe_upgrade_owner_lock_acquire() { :; }
+  safe_upgrade_owner_lock_release() { :; }
+  lastdb_launchd_job_pid() { printf '1234\n'; }
+  live_unix_socket_listener_pid() { printf '1234\n'; }
+  live_unix_socket_is_healthy() { return 0; }
+  lastdb_launchd_graceful_prestop() { return 1; }
+  recover_on_exit() { :; }
+  main --copy "$failed_copy" --launchd-label com.test.lastdbd \
+    --primary-home "$failed_home" --expected-lastdbd-sha256 "$daemon_sha" \
+    --expected-lastdb-sha256 "$cli_sha" --accept-unproved-flush "$decision"
+) >"$TEST_ROOT/failed-stop.out" 2>&1; then
+  echo 'FAIL: failed supervised stop passed' >&2; exit 1
+fi
+[ ! -e "$failed_home/.cloud_backup_unproved_flush_claim" ] \
+  || { echo 'FAIL: a failed supervised stop consumed the waiver' >&2; exit 1; }
+[ ! -e "$failed_copy" ] \
+  || { echo 'FAIL: a failed supervised stop made a copy' >&2; exit 1; }
+printf 'WAIVER-STOP-GATE: failed stop leaves primary claim absent\n'
+
 ln -s "$home/data/data/record" "$home/data/data/live-alias"
 if require_plain_data_tree "$home/data" "$timeout_bin" >"$TEST_ROOT/link.out" 2>&1; then
   echo 'FAIL: source data symlink can reach the live home' >&2; exit 1

@@ -54,6 +54,34 @@ MUTATIONS = {
         '    if receipt != {"version": 1, "pid": pid, "start_ts": start_ts, "flush_ok": True}:',
         '    if False and receipt != {"version": 1, "pid": pid, "start_ts": start_ts, "flush_ok": True}:',
     ),
+    "waiver_decision": (
+        "    if decision_slug != DECISION or pid <= 0 or start_ts <= 0:",
+        "    if pid <= 0 or start_ts <= 0:",
+    ),
+    "waiver_once": (
+        '    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)',
+        '    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)',
+    ),
+    "waiver_marker_session": (
+        "        if claim != {",
+        "        if False and claim != {",
+    ),
+    "waiver_copy_session": (
+        '[ ! -e "$copy/current-session.json" ] && [ ! -L "$copy/current-session.json" ]',
+        'true',
+    ),
+    "waiver_live_sync": (
+        '.status.sync.enabled == false',
+        '.status.sync.enabled == true',
+    ),
+    "waiver_marker_copy_path": (
+        '            "copy_path": str(copy),',
+        '            "copy_path": claim.get("copy_path"),',
+    ),
+    "waiver_claim_before_stop": (
+        '  STOP_STARTED=1\n  stop_out=',
+        '  python3 "$SCRIPT_DIR/claim-stopped-copy-waiver.py" --home "$PRIMARY_HOME" --pid "$OLD_PID" --start-ts "$start_ts" --copy-path "$COPY_DIR" --decision-slug "$ACCEPT_UNPROVED_FLUSH"\n  STOP_STARTED=1\n  stop_out=',
+    ),
 }
 
 

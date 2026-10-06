@@ -15,6 +15,8 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 MIN_FREE_KIB=31457280 # 30 GiB; checked before stop and after the copy.
 MAX_DISK_DROP_KIB=23068672 # 22 GiB; an APFS clone must not consume a full home.
 MAX_COPY_SECS=600
+WAIVER_DECISION_SLUG=decision-2026-10-06-cloud-sync-rescue-risk-acceptance
+WAIVER_CLAIM_FILE=.cloud_backup_unproved_flush_claim
 COPY_DIR=""
 STAGE_COPY=""
 PRIMARY_HOME="${LASTDB_HOME:-$HOME/.lastdb}"
@@ -24,6 +26,7 @@ LAUNCHD_PLIST="${LASTDB_LAUNCHD_PLIST:-}"
 LAUNCHCTL_BIN="launchctl"
 EXPECTED_DAEMON_SHA=""
 EXPECTED_CLI_SHA=""
+ACCEPT_UNPROVED_FLUSH=""
 OWNER_LOCK_DIR="/tmp/lastdb-safe-upgrade-owner-$(id -u).lock.d"
 OWNER_LOCK_TOKEN="$$.$RANDOM.$(date +%s)"
 OWNER_LOCK_HELD=0
@@ -68,13 +71,24 @@ validate_copy_path() {
 }
 
 validate_cloud_off_home() {
-  local home="$1"
+  local home="$1" mode="${2:-receipt}"
   [ ! -e "$home/cloud_sync.json" ] && [ ! -L "$home/cloud_sync.json" ] \
     || { fail cloud-config-active; return 1; }
   [ -f "$home/cloud_sync.json.paused" ] && [ ! -L "$home/cloud_sync.json.paused" ] \
     || { fail paused-cloud-config-absent; return 1; }
-  [ -f "$home/.cloud_resume_required" ] && [ ! -L "$home/.cloud_resume_required" ] \
-    || { fail resume-required-marker-absent; return 1; }
+  case "$mode" in
+    receipt)
+      [ -f "$home/.cloud_resume_required" ] && [ ! -L "$home/.cloud_resume_required" ] \
+        || { fail resume-required-marker-absent; return 1; }
+      ;;
+    waiver)
+      if [ -e "$home/.cloud_resume_required" ] || [ -L "$home/.cloud_resume_required" ]; then
+        [ -f "$home/.cloud_resume_required" ] && [ ! -L "$home/.cloud_resume_required" ] \
+          || { fail resume-required-marker-unsafe; return 1; }
+      fi
+      ;;
+    *) fail cloud-off-mode-invalid; return 1 ;;
+  esac
   [ ! -e "$home/.cloud_resume_requested" ] && [ ! -L "$home/.cloud_resume_requested" ] \
     || { fail live-resume-request-present; return 1; }
   [ ! -e "$home/.cloud_resume_ready" ] && [ ! -L "$home/.cloud_resume_ready" ] \
@@ -113,7 +127,7 @@ require_plain_data_tree() {
 }
 
 copy_stopped_home() {
-  local home="$1" copy="$2" timeout_bin="$3" before_free="$4" after_free
+  local home="$1" copy="$2" timeout_bin="$3" before_free="$4" mode="${5:-receipt}" after_free
   # The stopped daemon no longer owns these socket names. They cannot be
   # cloned, and the next daemon creates them again when it starts.
   for sock in "$home/data/folddb.sock" "$home/data/folddb-full.sock"; do
@@ -136,9 +150,21 @@ copy_stopped_home() {
   [ "$(shasum -a 256 "$home/identity.key" | awk '{print $1}')" = \
     "$(shasum -a 256 "$copy/identity.key" | awk '{print $1}')" ] \
     && cmp -s "$home/cloud_sync.json.paused" "$copy/cloud_sync.json.paused" \
-    && cmp -s "$home/.shutdown_flush_ready" "$copy/.shutdown_flush_ready" \
     || { fail stopped-copy-critical-bytes-mismatch; return 1; }
-  validate_cloud_off_home "$copy" || return 1
+  if [ "$mode" = receipt ]; then
+    cmp -s "$home/.shutdown_flush_ready" "$copy/.shutdown_flush_ready" \
+      || { fail stopped-copy-receipt-mismatch; return 1; }
+  else
+    cmp -s "$home/$WAIVER_CLAIM_FILE" "$copy/$WAIVER_CLAIM_FILE" \
+      || { fail stopped-copy-waiver-claim-mismatch; return 1; }
+  fi
+  validate_cloud_off_home "$copy" "$mode" || return 1
+  [ ! -e "$copy/current-session.json" ] && [ ! -L "$copy/current-session.json" ] \
+    || { fail stopped-copy-live-session-present; return 1; }
+  for sock in "$copy/data/folddb.sock" "$copy/data/folddb-full.sock"; do
+    [ ! -e "$sock" ] && [ ! -L "$sock" ] \
+      || { fail stopped-copy-socket-present; return 1; }
+  done
   after_free="$(require_disk_floor "$copy")" || return 1
   [ "$((before_free - after_free))" -le "$MAX_DISK_DROP_KIB" ] \
     || { fail stopped-copy-disk-drop-over-22-gib; return 1; }
@@ -162,6 +188,13 @@ primary_is_supervised_and_healthy() {
   listener_pid="$(live_unix_socket_listener_pid "$sock" || true)"
   [ -n "$job_pid" ] && [ "$job_pid" = "$listener_pid" ] || return 1
   lastdb_require_supervised_primary "$LAUNCHCTL_BIN" "$domain/$label" "$listener_pid" >/dev/null
+}
+
+require_live_cloud_off() {
+  local sock="$1"
+  curl -fsS --max-time 15 --unix-socket "$sock" http://localhost/api/status \
+    | jq -e '.status.sync.enabled == false' >/dev/null \
+    || { fail live-cloud-sync-not-off; return 1; }
 }
 
 bootstrap_absent_primary_once() {
@@ -221,7 +254,7 @@ recover_on_exit() {
 }
 
 main() {
-  local service plist_program job_pid listener_pid start_ts before_free timeout_bin stop_out
+  local service plist_program job_pid listener_pid start_ts before_free timeout_bin stop_out notice_summary flush_proof
   local actual_daemon_sha actual_cli_sha
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -230,10 +263,16 @@ main() {
       --primary-home) PRIMARY_HOME="${2:-}"; shift 2 ;;
       --expected-lastdbd-sha256) EXPECTED_DAEMON_SHA="${2:-}"; shift 2 ;;
       --expected-lastdb-sha256) EXPECTED_CLI_SHA="${2:-}"; shift 2 ;;
+      --accept-unproved-flush) ACCEPT_UNPROVED_FLUSH="${2:-}"; shift 2 ;;
       *) fail unknown-argument; return 2 ;;
     esac
   done
   [ -n "$COPY_DIR" ] && [ -n "$LAUNCHD_LABEL" ] || { fail required-argument-absent; return 2; }
+  if [ -n "$ACCEPT_UNPROVED_FLUSH" ] && [ "$ACCEPT_UNPROVED_FLUSH" != "$WAIVER_DECISION_SLUG" ]; then
+    fail unproved-flush-decision-mismatch; return 2
+  fi
+  local mode=receipt
+  [ -z "$ACCEPT_UNPROVED_FLUSH" ] || mode=waiver
   [ "${#EXPECTED_DAEMON_SHA}" -eq 64 ] && [ "${#EXPECTED_CLI_SHA}" -eq 64 ] \
     && [[ "$EXPECTED_DAEMON_SHA" =~ ^[0-9a-f]+$ ]] \
     && [[ "$EXPECTED_CLI_SHA" =~ ^[0-9a-f]+$ ]] \
@@ -258,7 +297,12 @@ main() {
   validate_copy_path "$COPY_DIR" "$PRIMARY_HOME" || return 1
   STAGE_COPY="${COPY_DIR}.incomplete"
   validate_copy_path "$STAGE_COPY" "$PRIMARY_HOME" || return 1
-  validate_cloud_off_home "$PRIMARY_HOME" || return 1
+  validate_cloud_off_home "$PRIMARY_HOME" "$mode" || return 1
+  if [ "$mode" = waiver ]; then
+    [ ! -e "$PRIMARY_HOME/$WAIVER_CLAIM_FILE" ] \
+      && [ ! -L "$PRIMARY_HOME/$WAIVER_CLAIM_FILE" ] \
+      || { fail unproved-flush-waiver-already-used; return 1; }
+  fi
   [ ! -e "$PRIMARY_HOME/.shutdown_flush_ready" ] \
     || { fail stale-shutdown-receipt-present; return 1; }
   timeout_bin="$(command -v gtimeout || command -v timeout || true)"
@@ -291,14 +335,31 @@ main() {
   case "$stop_out" in *'LASTDB_LAUNCHD_PRESTOP=ok '*'forced_kill=0'*) ;; *) fail strict-stop-unproved; return 1 ;; esac
   ! kill -0 "$OLD_PID" 2>/dev/null && ! lastdb_launchd_job_loaded "$LAUNCHCTL_BIN" "$service" \
     && ! live_unix_socket_has_listener "$PRIMARY_HOME/data/folddb.sock" \
+    && ! live_unix_socket_has_listener "$PRIMARY_HOME/data/folddb-full.sock" \
     || { fail old-daemon-still-serving; return 1; }
-  validate_shutdown_receipt "$PRIMARY_HOME" "$OLD_PID" "$start_ts" || return 1
-  copy_stopped_home "$PRIMARY_HOME" "$STAGE_COPY" "$timeout_bin" "$before_free" || return 1
-  validate_shutdown_receipt "$STAGE_COPY" "$OLD_PID" "$start_ts" || return 1
+  [ ! -e "$PRIMARY_HOME/current-session.json" ] \
+    && [ ! -L "$PRIMARY_HOME/current-session.json" ] \
+    || { fail stopped-home-live-session-present; return 1; }
+  if [ "$mode" = receipt ]; then
+    validate_shutdown_receipt "$PRIMARY_HOME" "$OLD_PID" "$start_ts" || return 1
+  else
+    [ ! -e "$PRIMARY_HOME/.shutdown_flush_ready" ] \
+      && [ ! -L "$PRIMARY_HOME/.shutdown_flush_ready" ] \
+      || { fail unproved-flush-receipt-present; return 1; }
+    python3 "$SCRIPT_DIR/claim-stopped-copy-waiver.py" \
+      --home "$PRIMARY_HOME" --pid "$OLD_PID" --start-ts "$start_ts" \
+      --copy-path "$COPY_DIR" --decision-slug "$ACCEPT_UNPROVED_FLUSH" \
+      || { fail unproved-flush-waiver-claim-failed; return 1; }
+  fi
+  copy_stopped_home "$PRIMARY_HOME" "$STAGE_COPY" "$timeout_bin" "$before_free" "$mode" || return 1
+  if [ "$mode" = receipt ]; then
+    validate_shutdown_receipt "$STAGE_COPY" "$OLD_PID" "$start_ts" || return 1
+  fi
   restart_primary "gui/$(id -u)" "$LAUNCHD_LABEL" "$LAUNCHD_PLIST" "$PRIMARY_HOME/data/folddb.sock" \
     || { fail primary-restart-failed; return 1; }
   RESTARTED=1
-  validate_cloud_off_home "$PRIMARY_HOME" || return 1
+  validate_cloud_off_home "$PRIMARY_HOME" "$mode" || return 1
+  require_live_cloud_off "$PRIMARY_HOME/data/folddb.sock" || return 1
   [ ! -e "$PRIMARY_HOME/.shutdown_flush_ready" ] \
     && [ ! -L "$PRIMARY_HOME/.shutdown_flush_ready" ] \
     || { fail live-shutdown-receipt-survived-restart; return 1; }
@@ -307,15 +368,26 @@ main() {
   [ "$actual_daemon_sha" = "$EXPECTED_DAEMON_SHA" ] \
     && [ "$actual_cli_sha" = "$EXPECTED_CLI_SHA" ] \
     || { fail installed-candidate-changed-after-restart; return 1; }
+  if [ "$mode" = waiver ]; then
+    notice_summary='The primary restarted after a stopped APFS copy; source flush proof is absent by owner approval; Cloud Sync remains Off.'
+    flush_proof=absent
+  else
+    notice_summary='The primary restarted after a verified flush and APFS copy; Cloud Sync remains Off.'
+    flush_proof=verified
+  fi
   situations notice --title 'LastDB stopped copy complete' --kind restart \
     --system lastdbd --actor skill:lastdb-safe-upgrade \
-    --summary 'The primary restarted after a verified flush and APFS copy; Cloud Sync remains Off.' \
+    --summary "$notice_summary" \
     >/dev/null || { fail situations-notice-failed; return 1; }
   mv -- "$STAGE_COPY" "$COPY_DIR" || { fail stopped-copy-publish-failed; return 1; }
-  python3 "$SCRIPT_DIR/write-stopped-copy-marker.py" --copy "$COPY_DIR" \
-    --pid "$OLD_PID" --start-ts "$start_ts" \
+  local marker_args=(--copy "$COPY_DIR" --pid "$OLD_PID" --start-ts "$start_ts")
+  if [ "$mode" = waiver ]; then
+    marker_args+=(--accept-unproved-flush "$ACCEPT_UNPROVED_FLUSH")
+  fi
+  python3 "$SCRIPT_DIR/write-stopped-copy-marker.py" "${marker_args[@]}" \
     || { fail stopped-copy-marker-failed; return 1; }
-  printf 'STOPPED_COPY=green path=%s source_pid=%s cloud=off\n' "$COPY_DIR" "$OLD_PID"
+  printf 'STOPPED_COPY=green path=%s source_pid=%s cloud=off flush_proof=%s\n' \
+    "$COPY_DIR" "$OLD_PID" "$flush_proof"
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
