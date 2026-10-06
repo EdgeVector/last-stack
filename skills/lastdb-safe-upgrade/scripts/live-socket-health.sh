@@ -9,10 +9,37 @@
 # bash 3.2 compatible — no namerefs, no nested functions.
 # Avoid `... | head` under `set -o pipefail` (SIGPIPE → 141).
 
-live_unix_socket_listener_pid() {
+live_unix_socket_health_pid() {
   local sock="$1"
   [ -n "$sock" ] && [ -S "$sock" ] || return 1
-  local pid=""
+  local pid="" health="" instance_id=""
+  # The daemon binds folddb.sock.tmp and renames it to folddb.sock. macOS
+  # lsof can retain the old name on the open FD and miss the live path.
+  # Read the instance ID from this exact socket. Supervision callers compare
+  # its PID with the launchd job PID.
+  health="$(curl -fsS --max-time 3 --unix-socket "$sock" \
+    -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+    http://x/health 2>/dev/null)" || return 1
+  instance_id="$(printf '%s\n' "$health" | jq -er \
+    'select(.status == "ok" and .api_version == 1 and (.instance_id | type) == "string") | .instance_id' \
+    2>/dev/null)" || return 1
+  case "$instance_id" in
+    [1-9]*-[0-9]*) ;;
+    *) return 1 ;;
+  esac
+  pid="${instance_id%%-*}"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  case "${instance_id#*-}" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$pid"
+}
+
+live_unix_socket_listener_pid() {
+  local sock="$1" pid=""
+  [ -n "$sock" ] && [ -S "$sock" ] || return 1
+  if pid="$(live_unix_socket_health_pid "$sock")"; then
+    printf '%s\n' "$pid"
+    return 0
+  fi
   # CAUTION: `lsof -t -U -- "$sock"` lists EVERY unix socket on the host
   # (path is ignored). Use the path-only form. Sandboxed CI may hide lsof.
   pid="$(lsof -t -- "$sock" 2>/dev/null | awk 'NR==1 { print; exit }')"

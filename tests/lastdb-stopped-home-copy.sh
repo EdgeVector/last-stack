@@ -155,7 +155,7 @@ if (
   safe_upgrade_owner_lock_acquire() { :; }
   safe_upgrade_owner_lock_release() { :; }
   lastdb_launchd_job_pid() { printf '1234\n'; }
-  live_unix_socket_listener_pid() { printf '1234\n'; }
+  live_unix_socket_health_pid() { printf '1234\n'; }
   live_unix_socket_is_healthy() { return 0; }
   lastdb_launchd_graceful_prestop() { return 1; }
   recover_on_exit() { :; }
