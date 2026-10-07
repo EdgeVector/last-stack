@@ -30,6 +30,7 @@ if isinstance(item, dict):
         "source_git_oid",
         "candidate_artifact_digest",
         "safe_upgrade_protocol_version",
+        "zero_live_soak",
     )
     conflicts = [
         key for key in immutable
@@ -54,6 +55,10 @@ lastdb_sha256 = str(ctx.get("lastdb_sha256") or "")
 source_git_oid = str(ctx.get("source_git_oid") or "")
 candidate_artifact_digest = str(ctx.get("candidate_artifact_digest") or "")
 safe_upgrade_protocol_version = str(ctx.get("safe_upgrade_protocol_version") or "")
+zero_live_soak = ctx.get("zero_live_soak", False)
+if type(zero_live_soak) is not bool:
+    print("safe-upgrade zero_live_soak must be a boolean", file=sys.stderr)
+    raise SystemExit(2)
 
 
 def emit(payload, line="PASS"):
@@ -552,6 +557,9 @@ def verify_candidate_binding():
 
 def exact_driver_env():
     env = os.environ.copy()
+    # The Loom execution input owns this policy. An ambient variable cannot
+    # shorten the default live check or alter an already-started execution.
+    env.pop("LASTDB_SAFE_UPGRADE_ZERO_LIVE_SOAK", None)
     env.update(
         {
             "LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID": source_git_oid,
@@ -796,6 +804,8 @@ if step == "CUTOVER":
     print('LOOM_EFFECT_INTENT:{"kind":"deploy","target":"lastdb-safe-upgrade"}')
     cutover_env = exact_driver_env()
     cutover_env["LASTDB_SAFE_UPGRADE_VIA_LOOM"] = "1"
+    if zero_live_soak:
+        cutover_env["LASTDB_SAFE_UPGRADE_ZERO_LIVE_SOAK"] = "1"
     cutover_env.setdefault("LASTDB_SAFE_UPGRADE_OWNER_LOCK_WAIT_S", "1800")
     state_path = make_cutover_recovery_state(cutover_env)
     recovery_script_raw = os.environ.get(

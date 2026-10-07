@@ -23,6 +23,7 @@ SOURCE_OID=""
 STAND_IN=0
 DRY_RUN=0
 AS_JSON=0
+ZERO_LIVE_SOAK=0
 SAFE_UPGRADE_PROTOCOL_VERSION="6"
 LOCAL_RECOVERY_DIR="${LAST_STACK_LOOM_LOCAL_RECOVERY_DIR:-$HOME/.local/state/last-stack/loom/recovery}"
 CONTROL_PLANE="local-recovery"
@@ -30,13 +31,17 @@ CONTROL_PLANE="local-recovery"
 usage() {
   cat <<'EOF'
 Usage:
-  last-stack-safe-upgrade-loom --candidate PATH [--source-git-oid OID] [--json]
+  last-stack-safe-upgrade-loom --candidate PATH [--source-git-oid OID] [--zero-live-soak] [--json]
   last-stack-safe-upgrade-loom --dry-run --candidate PATH [--source-git-oid OID] [--json]
   last-stack-safe-upgrade-loom --candidate PATH --retry N [--json]
 
 The launcher derives one immutable execution key from a SHA-256 digest of the
 source OID, canonical pair paths, binary hashes, and binary versions.
 It refuses live use when source ancestry cannot be identified.
+
+--zero-live-soak removes only the five-minute minimum after the live canary
+write and read-back. A fresh GREEN status sample remains required. The option
+uses a separate Loom execution key and has no effect on the copy probe.
 
 --retry N (N >= 2) runs attempt N of the SAME candidate pair under the key
 <key>-retry-N. Use it after a terminal-failed execution whose cause was fixed
@@ -58,6 +63,7 @@ while [ "$#" -gt 0 ]; do
     --candidate) CAND="${2:-}"; shift 2 ;;
     --source-git-oid) SOURCE_OID="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --zero-live-soak) ZERO_LIVE_SOAK=1; shift ;;
     --json) AS_JSON=1; shift ;;
     --no-heal|--stand-in) STAND_IN=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -178,6 +184,9 @@ printf '%s\n' "$candidate_artifact_digest" | grep -Eq '^[0-9a-f]{64}$' \
   || die "candidate artifact digest calculation failed"
 
 expected_key="safe-upgrade-v${SAFE_UPGRADE_PROTOCOL_VERSION}-${candidate_artifact_digest}"
+if [ "$ZERO_LIVE_SOAK" -eq 1 ]; then
+  expected_key="${expected_key}-zero-live-soak"
+fi
 # A retry of the same pair gets its own execution: the pair's key would
 # resume the terminal-failed one
 # (papercut-safe-upgrade-failed-execution-blocks-retry-of-same-candidate-20260922).
@@ -207,7 +216,8 @@ input="$(jq -cn \
   --arg candidate_artifact_digest "$candidate_artifact_digest" \
   --arg safe_upgrade_protocol_version "$SAFE_UPGRADE_PROTOCOL_VERSION" \
   --argjson attempt "$ATTEMPT" \
-  '{candidate:$candidate,candidate_cli:$candidate_cli,version:$version,lastdbd_version:$lastdbd_version,lastdb_version:$lastdb_version,lastdbd_sha256:$lastdbd_sha256,lastdb_sha256:$lastdb_sha256,source_git_oid:$source_git_oid,candidate_artifact_digest:$candidate_artifact_digest,safe_upgrade_protocol_version:$safe_upgrade_protocol_version} + (if $attempt > 1 then {attempt:$attempt} else {} end)')"
+  --argjson zero_live_soak "$ZERO_LIVE_SOAK" \
+  '{candidate:$candidate,candidate_cli:$candidate_cli,version:$version,lastdbd_version:$lastdbd_version,lastdb_version:$lastdb_version,lastdbd_sha256:$lastdbd_sha256,lastdb_sha256:$lastdb_sha256,source_git_oid:$source_git_oid,candidate_artifact_digest:$candidate_artifact_digest,safe_upgrade_protocol_version:$safe_upgrade_protocol_version} + (if $attempt > 1 then {attempt:$attempt} else {} end) + (if $zero_live_soak == 1 then {zero_live_soak:true} else {} end)')"
 
 emit_json() {
   local outcome="$1" status="$2" state="$3" execution="$4"
@@ -229,7 +239,8 @@ emit_json() {
     --arg safe_upgrade_protocol_version "$SAFE_UPGRADE_PROTOCOL_VERSION" \
     --arg control_plane "$CONTROL_PLANE" \
     --argjson attempt "$ATTEMPT" \
-    '{attempt:$attempt,outcome:$outcome,status:$status,state:$state,execution:$execution,key:$key,candidate:$candidate,candidate_cli:$candidate_cli,version:$version,lastdbd_version:$lastdbd_version,lastdb_version:$lastdb_version,lastdbd_sha256:$lastdbd_sha256,lastdb_sha256:$lastdb_sha256,source_git_oid:$source_git_oid,candidate_artifact_digest:$candidate_artifact_digest,safe_upgrade_protocol_version:$safe_upgrade_protocol_version,control_plane:$control_plane,graph:"lastdb-safe-upgrade"}'
+    --argjson zero_live_soak "$ZERO_LIVE_SOAK" \
+    '{attempt:$attempt,outcome:$outcome,status:$status,state:$state,execution:$execution,key:$key,candidate:$candidate,candidate_cli:$candidate_cli,version:$version,lastdbd_version:$lastdbd_version,lastdb_version:$lastdb_version,lastdbd_sha256:$lastdbd_sha256,lastdb_sha256:$lastdb_sha256,source_git_oid:$source_git_oid,candidate_artifact_digest:$candidate_artifact_digest,safe_upgrade_protocol_version:$safe_upgrade_protocol_version,control_plane:$control_plane,graph:"lastdb-safe-upgrade",zero_live_soak:($zero_live_soak == 1)}'
 }
 
 if [ "$DRY_RUN" -eq 1 ]; then

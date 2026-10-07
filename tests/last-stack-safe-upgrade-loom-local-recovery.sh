@@ -60,7 +60,7 @@ run_launcher() {
   PATH="$tmp/bin:$PATH" \
   FAKE_LOOM_LOG="$tmp/loom.log" \
   LAST_STACK_LOOM_LOCAL_RECOVERY_DIR="$tmp/recovery" \
-    "$BIN" --stand-in --json
+    "$BIN" --stand-in --json "$@"
 }
 
 # 1. Every LastDB call times out: the launcher still runs locally and never
@@ -107,5 +107,13 @@ if grep -q -- '^reconcile-local ' "$tmp/loom.log"; then
   echo 'FAIL case 4: a failed run was reconciled' >&2
   exit 1
 fi
+
+# 5. The opt-in policy reaches the immutable Loom input and has a distinct key.
+: >"$tmp/loom.log"
+run_case "case 5" run_launcher --zero-live-soak
+[ "$(printf '%s\n' "$output" | jq -r .zero_live_soak)" = true ] \
+  || { echo 'FAIL case 5: receipt omitted zero-live-soak' >&2; exit 1; }
+grep -q -- '-zero-live-soak --input .*"zero_live_soak":true' "$tmp/loom.log" \
+  || { echo 'FAIL case 5: Loom key or input omitted zero-live-soak' >&2; exit 1; }
 
 printf '%s\n' 'PASS: safe-upgrade launcher always runs on the local journal, even when every LastDB call times out'
