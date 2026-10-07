@@ -51,6 +51,12 @@ cat >"$tmp/records.json" <<'JSON'
     "body": "Status: OPEN\nRepo: EdgeVector/last-stack\n\n## Symptom\nThe reconciler read cr-ms7sdfqg-16b8 out of this record's prose and treated it\nas this papercut's own review ref.\n"
   },
   {
+    "slug": "papercut-lifecycle-ref-bare-url-in-symptom-prose",
+    "title": "Symptom cites a merged, unrelated forge PR URL with no repair label",
+    "status": "open",
+    "body": "Status: OPEN\nRepo: EdgeVector/last-stack\n\n## Symptom\nloom exec parked AWAIT_HUMAN needing a human_decision (ci unknown at http://forge.example/EdgeVector/last-stack/pulls/176#issuecomment-1). No escalation was ever posted for this.\n"
+  },
+  {
     "slug": "papercut-pipeline-stuck-forge-mystery-service-pr-7",
     "title": "Stuck forge PR with no Repo header to anchor the repo name",
     "status": "open",
@@ -117,6 +123,11 @@ case "$route" in
   repos/EdgeVector/lastgit/pulls/90|repos/EdgeVector/fold/pulls/1018|repos/EdgeVector/fold/pulls/1709)
     printf '{"state":"closed","merged":true}\n'
     ;;
+  repos/EdgeVector/last-stack/pulls/176)
+    # Genuinely merged -- the fixture's whole point is that this must never be
+    # QUERIED for the bare-URL-in-prose record, let alone used to close it.
+    printf '{"state":"closed","merged":true}\n'
+    ;;
   *)
     echo "404 Not Found: $route" >&2
     exit 1
@@ -146,7 +157,7 @@ import sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 errors = data.get("errors") or []
 assert not errors, f"self-inflicted parse errors survived: {errors}"
-assert data["checked"] == 12, data["checked"]
+assert data["checked"] == 13, data["checked"]
 
 fixed = {item["slug"]: item["ref"] for item in data["fixed"]}
 assert fixed == {
@@ -174,6 +185,13 @@ for cr_slug in (
 # with "closed and never coming back"; only the second is terminal.
 assert skipped["papercut-pipeline-stuck-forge-fold-pr-826"]["reason"] == "review-still-open"
 assert skipped["papercut-lifecycle-ref-prose-mention"]["reason"] == "no-review-ref"
+# A merged, unrelated forge PR URL cited only in Symptom prose (no label, no
+# repair verb) must not be taken as this papercut's own repair ref, even
+# though the PR it names really is merged.
+assert "papercut-lifecycle-ref-bare-url-in-symptom-prose" not in fixed, fixed
+assert skipped["papercut-lifecycle-ref-bare-url-in-symptom-prose"]["reason"] == "no-review-ref", skipped[
+    "papercut-lifecycle-ref-bare-url-in-symptom-prose"
+]
 unmapped = skipped["papercut-pipeline-stuck-forge-mystery-service-pr-7"]
 assert unmapped["reason"] == "unresolved-review-ref", unmapped
 assert unmapped["details"] == ["unmapped-forge-repo:mystery-service"], unmapped
@@ -202,6 +220,10 @@ for forbidden in 'fold-pr' 'lastgit-pr' 'mystery-service-pr'; do
     exit 1
   fi
 done
+if grep -qF -- 'last-stack/pulls/176' "$FORGE_CALL_LOG"; then
+  echo "forge API was called for a bare URL mentioned only in free Symptom prose" >&2
+  exit 1
+fi
 grep -qx 'repos/EdgeVector/fold/pulls/826' "$FORGE_CALL_LOG"
 grep -qx 'repos/EdgeVector/lastgit/pulls/90' "$FORGE_CALL_LOG"
 grep -qx 'repos/EdgeVector/fold/pulls/1018' "$FORGE_CALL_LOG"
