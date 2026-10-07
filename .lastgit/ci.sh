@@ -823,6 +823,7 @@ ci_test tests/last-stack-worktree-reclaim-aliased-pool.sh
 
 # APPENDED: ci_test shards by list position.
 ci_test tests/last-stack-safe-json-capture-docs.sh
+ci_test tests/last-stack-lastdb-batching-docs.sh
 ci_test tests/last-stack-safe-upgrade-loom-local-recovery.sh
 
 # Skip gates from design-routines-efficient-degrade (PR1–PR6).

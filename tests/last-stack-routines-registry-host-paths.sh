@@ -17,6 +17,7 @@ for bin in \
   last-stack-lastdb-canary-candidate-set-routine \
   last-stack-deploy-watch-routine \
   last-stack-lastdb-ops-offenders-routine \
+  last-stack-lastdb-batch-apps-routine \
   last-stack-kanban-validate-routine \
   last-stack-fleet-performance-routine \
   last-stack-dogfood-rotate-routine
