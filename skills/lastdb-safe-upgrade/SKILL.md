@@ -224,7 +224,10 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
    post-check fails after upgrade, **stop and restore** (binary bak and/or data
    retained rollback point) — do not improvise.
 5. Probe bar = smoke bar: identity decrypts, `/api/schemas` > 0, `Board` query
-   returns real **title values** (counts alone are not proof).
+   returns real **title values** (counts alone are not proof). The driver sets
+   `LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1` on this separate candidate copy.
+   The smoke bar does not assert stamp completion. The primary stays free of
+   this copy-only startup work.
 6. **RSS bar (memory-guard):** after data-plane GREEN, boot candidate again on a
    CoW copy, settle (~45s), sample peak RSS. **RED** if peak RSS ≥
    `LASTDBD_RSS_LIMIT_MB` minus headroom (default 10%). Limit is read from
@@ -238,7 +241,10 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
    candidate and baseline to identity-ready **before** any timed query.
    **Cold** = first Board point-read (and scan, if measured) after that
    daemon reaches identity-ready. **Hot** = median after settle plus one
-   discarded warmup sample on that same daemon. Write is hot-only. Compare
+   discarded warmup sample on that same daemon. The driver measures six
+   candidate and baseline samples in adjacent pairs. It alternates which
+   daemon runs first and records each sample in the probe log. Write is
+   hot-only. Compare
    **like with like only**: cold vs cold, hot vs hot. A mixed pair (cold
    candidate vs hot baseline, including the 2026-08-26 354 ms vs 50 ms
    shape) must not RED. Pairs where both times are under
@@ -275,9 +281,9 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
    There is no byte footprint bar. Eviction is measured in keys, and a GiB
    line does not measure it (Tom, 2026-10-04). The RSS bar against the
    memory-guard limit stays: it is the crash limit, not an eviction rule.
-   The driver sets `LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1` on the
-   ephemeral candidate copy only, never on the primary home. Helpers:
-   `scripts/key-cap-bar-checks.sh`, `scripts/probe-copy-guards.sh`.
+   The key-cap copy and the timed latency copies stay free of conflict-stamp
+   startup work. Helpers: `scripts/key-cap-bar-checks.sh`,
+   `scripts/probe-copy-guards.sh`.
    Receipt line: `KEYCAP:`.
 7d. **Hard-delete bar (the purge lane must not fail).** On the candidate's
    latency copy, after every timed read, the driver writes a scratch kanban
@@ -296,7 +302,9 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
    RED. There is no skip. Incident 2026-10-04: fold f362b8e72 passed every
    other copy bar, then failed live with `persist-lane-failure` from a card
    delete ("hard-erase meter intent changed before commit"). Helper:
-   `scripts/hard-delete-bar-checks.sh`. Receipt line: `HARDDELETE:`.
+   `scripts/hard-delete-bar-checks.sh`. The driver logs each step and its
+   result with time and output size. It does not log CLI text. Receipt line:
+   `HARDDELETE:`.
 8. **Candidate-class bar (no debug / dirty / oversized):** before backup or
    probe, refuse candidates that look like a Cargo **debug** build
    (`…/target/debug/…`), a **-dirty** version stamp (uncommitted tree at

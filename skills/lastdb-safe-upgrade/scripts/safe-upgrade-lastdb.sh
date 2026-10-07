@@ -26,8 +26,8 @@
 #      status.resident.persist_lane_failures and deferred_persist_failed at
 #      0 (incident 2026-10-04: f362b8e72 failed live on a card delete after
 #      every copy bar was GREEN). There is no skip.
-#      LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1 is set on the candidate copy
-#      only and is not installed on the primary.
+#      LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1 is set on the separate smoke copy
+#      and is not installed on the primary.
 #      AND the CANDIDATE CLASS BAR (incident 2026-08-01): refuse Cargo
 #      debug paths (target/debug), -dirty version stamps, and binaries
 #      ≫ incumbent size (debug/unstripped) before any backup or probe
@@ -237,7 +237,7 @@ RSS_SAMPLE_SECS="${LASTDB_PROBE_RSS_SAMPLE_SECS:-15}"
 # candidate's CoW copy AND on an identical copy served by the CURRENT live
 # binary, and fails RED on regression. Correct-but-slow is NOT GREEN.
 LAT_SKIP="${LASTDB_PROBE_LAT_SKIP:-0}"              # 1 = skip bar (Tom clearance only)
-LAT_SAMPLES="${LASTDB_PROBE_LAT_SAMPLES:-3}"        # samples per op; median wins
+LAT_SAMPLES="${LASTDB_PROBE_LAT_SAMPLES:-6}"        # paired hot samples per daemon; median wins
 LAT_RATIO="${LASTDB_PROBE_LAT_RATIO:-3}"            # RED if cand > ratio x baseline
 # Floor was 1000ms; exclusive CoW scans often sit under 1s so the ratio bar
 # never fired (incident 2026-08-01: debug cand 670ms vs base 503ms both under
@@ -268,6 +268,8 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/binary-pair-checks.sh"
 # shellcheck source=latency-bar-checks.sh
 . "$_SCRIPT_DIR/latency-bar-checks.sh"
+# shellcheck source=latency-paired-samples.sh
+. "$_SCRIPT_DIR/latency-paired-samples.sh"
 # shellcheck source=rowcount-bar-checks.sh
 . "$_SCRIPT_DIR/rowcount-bar-checks.sh"
 # shellcheck source=probe-copy-guards.sh
@@ -1051,14 +1053,10 @@ EOF_ENV
   if [ "${#env_pairs[@]}" -gt 0 ]; then
     log "$label metrics probe: mirroring live env: ${env_pairs[*]}"
   fi
-  # The conflict-stamp builder runs on the candidate copy only. Do not export
-  # the flag into this shell, and do not write it into the primary plist.
-  # The stamp the copy builds is deleted with the copy. It is not installed
-  # onto the primary home.
-  local stamp_env=""
-  if [ "$label" = "candidate" ]; then
-    stamp_env="LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1"
-  fi
+  # Timed latency and key-cap copies receive no conflict-stamp job. The
+  # separate smoke copy exercises it. Do not export the flag to the primary.
+  local stamp_env
+  stamp_env="$(probe_stamp_env_for_label "$label")"
   env -u SENTRY_DSN -u FOLD_SENTRY_DSN \
     -u LASTDB_HOME -u FOLDDB_HOME -u LASTDB_DATA_DIR \
     -u LASTDB_BUILD_CONFLICT_STAMP_ON_COPY \
@@ -1159,9 +1157,14 @@ probe_like_to_like_metrics() {
   local c_cold_pt=-1 b_cold_pt=-1 c_cold_sc=-1 b_cold_sc=-1
   local c_hot_pt=-1 b_hot_pt=-1 c_hot_sc=-1 b_hot_sc=-1 c_hot_wr=-1 b_hot_wr=-1
 
+  if ! lat_paired_sample_count_valid; then
+    warn "latency: LASTDB_PROBE_LAT_SAMPLES must be an even integer of at least 2 (got $LAT_SAMPLES)"
+    return 1
+  fi
+
   c_copy="$(clone_probe_home c)" || return 1
   if ! probe_copy_is_not_primary "$c_copy" "$PRIMARY_HOME"; then
-    warn "candidate metrics probe: copy is the primary home; the conflict stamp must stay on the ephemeral copy"
+    warn "candidate metrics probe: copy is the primary home; no probe may use the primary"
     return 1
   fi
   if [ -n "$base_bin" ] && [ -x "$base_bin" ]; then
@@ -1247,17 +1250,44 @@ probe_like_to_like_metrics() {
       [ -n "$b_copy" ] && discard_op_warmup op_lat_scan "$b_copy" "baseline hot warmup scan"
     fi
 
-    c_hot_pt="$(measure_op_median_ms op_lat_point "$c_sock" "candidate hot point-read")"
-    [ -n "$b_sock" ] && b_hot_pt="$(measure_op_median_ms op_lat_point "$b_sock" "baseline hot point-read")"
+    if [ -n "$b_sock" ]; then
+      lat_measure_paired_medians_ms op_lat_point "$c_sock" "$b_sock" "hot point-read" || {
+        stop_probe_node "$b_pid" "$b_copy" "$b_blog" || true
+        stop_probe_node "$c_pid" "$c_copy" "$c_blog" || true
+        return 1
+      }
+      c_hot_pt="$LAT_PAIR_CAND_MS"
+      b_hot_pt="$LAT_PAIR_BASE_MS"
+    else
+      c_hot_pt="$(measure_op_median_ms op_lat_point "$c_sock" "candidate hot point-read")"
+    fi
     sample_cand_rss
     if command -v kanban >/dev/null 2>&1; then
-      c_hot_sc="$(measure_op_median_ms op_lat_scan "$c_copy" "candidate hot scan")"
-      [ -n "$b_copy" ] && b_hot_sc="$(measure_op_median_ms op_lat_scan "$b_copy" "baseline hot scan")"
+      if [ -n "$b_copy" ]; then
+        lat_measure_paired_medians_ms op_lat_scan "$c_copy" "$b_copy" "hot scan" || {
+          stop_probe_node "$b_pid" "$b_copy" "$b_blog" || true
+          stop_probe_node "$c_pid" "$c_copy" "$c_blog" || true
+          return 1
+        }
+        c_hot_sc="$LAT_PAIR_CAND_MS"
+        b_hot_sc="$LAT_PAIR_BASE_MS"
+      else
+        c_hot_sc="$(measure_op_median_ms op_lat_scan "$c_copy" "candidate hot scan")"
+      fi
       sample_cand_rss
     fi
     if command -v brain >/dev/null 2>&1; then
-      c_hot_wr="$(measure_op_median_ms op_lat_write "$c_copy" "candidate hot write")"
-      [ -n "$b_copy" ] && b_hot_wr="$(measure_op_median_ms op_lat_write "$b_copy" "baseline hot write")"
+      if [ -n "$b_copy" ]; then
+        lat_measure_paired_medians_ms op_lat_write "$c_copy" "$b_copy" "hot write" || {
+          stop_probe_node "$b_pid" "$b_copy" "$b_blog" || true
+          stop_probe_node "$c_pid" "$c_copy" "$c_blog" || true
+          return 1
+        }
+        c_hot_wr="$LAT_PAIR_CAND_MS"
+        b_hot_wr="$LAT_PAIR_BASE_MS"
+      else
+        c_hot_wr="$(measure_op_median_ms op_lat_write "$c_copy" "candidate hot write")"
+      fi
       sample_cand_rss
     else
       warn "latency: brain CLI not on PATH — write op unmeasured"
@@ -2092,10 +2122,14 @@ ln -s "$SMOKE_SOURCE" "$SMOKE_HOME/.lastdb" \
   || die "could not bind the cloud-free smoke source"
 set +e
 SMOKE_OUT="$WORK/smoke.out"
+SMOKE_STAMP_ENV="$(probe_stamp_env_for_label smoke)"
+log "real-data smoke copy: conflict stamp requested, completion not asserted"
 env -u LASTDB_HOME -u FOLDDB_HOME -u LASTDB_DATA_DIR -u FOLD_SYNC_DEVICE_ID \
+  -u LASTDB_BUILD_CONFLICT_STAMP_ON_COPY \
   HOME="$SMOKE_HOME" \
   LASTDB_PROBE_ROOT="$PROBE_ROOT/smoke" \
   LASTDB_SMOKE_FAIL_LOG_DIR="$BACKUP/.safe-upgrade" \
+  ${SMOKE_STAMP_ENV:+"$SMOKE_STAMP_ENV"} \
   BIN="$CANDIDATE_BIN" bash "$SMOKE_SH" >"$SMOKE_OUT" 2>&1
 SMOKE_RC=$?
 set -e
@@ -2302,14 +2336,14 @@ else
   warn "latency bar SKIPPED (LASTDB_PROBE_LAT_SKIP=1) — Tom-clearance only; correct-but-slow will NOT be caught"
 fi
 
-# The conflict stamp stays on the copy. The primary plist must not carry it.
+# The conflict stamp stays on the separate smoke copy. The primary plist must not carry it.
 primary_stamp="$(probe_plist_stamp_value "$LAUNCHD_PLIST")"
 if ! probe_stamp_env_allowed primary "$primary_stamp"; then
   echo ""
   echo "VERDICT: RED"
   echo "REASON: primary LaunchAgent sets LASTDB_BUILD_CONFLICT_STAMP_ON_COPY; the ephemeral copy stamp must not be installed on the primary home"
   echo "BACKUP: $BACKUP  (kept; primary NOT upgraded)"
-  echo "NEXT:   remove LASTDB_BUILD_CONFLICT_STAMP_ON_COPY from the primary plist. The driver sets it on the candidate copy only."
+  echo "NEXT:   remove LASTDB_BUILD_CONFLICT_STAMP_ON_COPY from the primary plist. The driver sets it on the separate smoke copy only."
   exit 1
 fi
 set +e

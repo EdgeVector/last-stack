@@ -63,6 +63,7 @@ case "$verb" in
     if [ -f "$FAKE_STATE/card-$slug" ]; then echo "$slug"; exit 0; fi
     echo "kanban: No card with slug \"$slug\"." >&2; exit 1 ;;
   rm)
+    [ "${FAKE_RM_TIMEOUT:-0}" = "1" ] && { echo "private probe error text" >&2; exit 124; }
     [ "${FAKE_RM_FAIL:-0}" = "1" ] && { echo "kanban: persist lane rejected" >&2; exit 4; }
     [ "${FAKE_RM_KEEP:-0}" = "1" ] && exit 0
     rm -f "$FAKE_STATE/card-$slug"; exit 0 ;;
@@ -109,7 +110,7 @@ run_case() {
   done
   copy="$TMP/$name/mp-c-1"
   mkdir -p "$copy/data"
-  probe_hard_delete_bar "$copy" "$copy/data/folddb.sock" "$SLEEPER" "$TMP/$name.json" >/dev/null 2>&1 \
+  probe_hard_delete_bar "$copy" "$copy/data/folddb.sock" "$SLEEPER" "$TMP/$name.json" >"$TMP/$name.probe.log" 2>&1 \
     || fail "case $name: probe_hard_delete_bar must return 0 and leave the verdict to the proof"
   set +e
   OUT="$(hard_delete_bar_eval "$TMP/$name.json" 2>&1)"
@@ -137,6 +138,8 @@ if want 1; then
     fail "case 1: a kanban call used a socket other than the copy socket"
   fi
   [ ! -e "$TMP/1/state/card-lastdb-safe-upgrade-hard-delete-probe-$$" ] || fail "case 1: the scratch card is still on the copy"
+  grep -q 'hard-delete bar: stage=show-after rc=1 elapsed_s=[0-9]*' "$TMP/1.probe.log" \
+    || fail "case 1: the post-delete read result marker is absent"
 fi
 # 2. RED: persist_lane_failures rises after the hard delete (the 2026-10-04 defect).
 if want 2; then
@@ -193,6 +196,21 @@ if want 10; then
     fail "case 10: a socket outside the copy must be refused"
   fi
   [ ! -s "$FAKE_STATE/sockets" ] || fail "case 10: kanban ran against a socket outside the copy"
+fi
+# 11. A deadline keeps exact stage evidence in the retained driver log. CLI
+#     error text stays in the temporary per-step file, not in that log.
+if want 11; then
+  FAKE_RM_TIMEOUT=1 run_case 11 0:0 0:0
+  expect 11 red 'kanban rm lastdb-safe-upgrade-hard-delete-probe-[0-9]* failed on the copy (rc=124)'
+  grep -q 'hard-delete bar: stage=rm start_unix_s=.* deadline_s=90' "$TMP/11.probe.log" \
+    || fail "case 11: the rm start marker is absent"
+  grep -q 'hard-delete bar: stage=rm rc=124 elapsed_s=[0-9]* stdout_bytes=0 stderr_bytes=[1-9][0-9]*' "$TMP/11.probe.log" \
+    || fail "case 11: the rm result marker is absent"
+  grep -q 'hard-delete bar: stage=rm deadline_result=124 deadline_s=90' "$TMP/11.probe.log" \
+    || fail "case 11: the deadline marker is absent"
+  if grep -q 'private probe error text' "$TMP/11.probe.log"; then
+    fail "case 11: raw CLI error text leaked into the retained log"
+  fi
 fi
 
 # --- driver wiring -----------------------------------------------------------

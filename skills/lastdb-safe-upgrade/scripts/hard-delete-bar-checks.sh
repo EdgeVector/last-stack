@@ -28,6 +28,7 @@ HARD_DELETE_BAR_POLL_SECS="${LASTDB_PROBE_HARD_DELETE_POLL_SECS:-10}"
 # AND this much time: one keep_small persist interval (30 s) plus margin.
 HARD_DELETE_BAR_MIN_SECS="${LASTDB_PROBE_HARD_DELETE_MIN_SECS:-40}"
 HARD_DELETE_SLUG_PREFIX="lastdb-safe-upgrade-hard-delete-probe"
+HARD_DELETE_KANBAN_DEADLINE_SECS=90
 
 # $1 = one /api/status capture. Prints "<persist_lane_failures>
 # <deferred_persist_failed> <keep_small_last_compacted_at_unix_s>", with -1 for
@@ -181,8 +182,20 @@ hard_delete_bar_eval() {
 hd_kanban_on_copy() {
   local copy="$1" sock="$2"
   shift 2
-  run_op_with_deadline 90 env FOLDDB_SOCKET_PATH="$sock" LASTDB_HOME="$copy" FOLDDB_HOME="$copy" \
+  run_op_with_deadline "$HARD_DELETE_KANBAN_DEADLINE_SECS" env FOLDDB_SOCKET_PATH="$sock" LASTDB_HOME="$copy" FOLDDB_HOME="$copy" \
     kanban "$@"
+}
+
+# Log only stage, time, result, and output size. The CLI output can contain
+# customer data, so the retained safe-upgrade log never copies its text.
+hd_log_step() {
+  local stage="$1" rc="$2" started="$3" stdout="$4" stderr="$5"
+  local now elapsed stdout_bytes=0 stderr_bytes=0
+  now="$(date +%s)"
+  elapsed=$((now - started))
+  [ ! -f "$stdout" ] || stdout_bytes="$(wc -c <"$stdout" | tr -d '[:space:]')"
+  [ ! -f "$stderr" ] || stderr_bytes="$(wc -c <"$stderr" | tr -d '[:space:]')"
+  log "hard-delete bar: stage=$stage rc=$rc elapsed_s=$elapsed stdout_bytes=$stdout_bytes stderr_bytes=$stderr_bytes"
 }
 
 # Hard-delete bar: on the candidate's CoW copy, write a scratch kanban card,
@@ -194,6 +207,7 @@ hd_kanban_on_copy() {
 probe_hard_delete_bar() {
   local copy="$1" sock="$2" pid="$3" out="$4"
   local dir steps slug body add_rc=-1 present=0 rm_rc=-1 gone=0 del_at=0 start now n=0 triple plf dpf ks waited=0
+  local step_started show_rc=0
   [ -n "$out" ] || return 1
   if [ -z "$copy" ] || ! probe_copy_is_not_primary "$copy" "$PRIMARY_HOME"; then
     warn "hard-delete bar: copy is the primary home or inside it: ${copy:-unset}; no write"
@@ -219,21 +233,39 @@ probe_hard_delete_bar() {
   # run_op_with_deadline backgrounds the command, so the body goes in --body.
   body="$(printf '%s\n' "Scratch card on the safe-upgrade CoW copy. The probe hard-deletes it." "" \
     "## END STATE" "" "- The probe deleted this card. It never reaches the primary.")"
+  step_started="$(date +%s)"
+  log "hard-delete bar: stage=add start_unix_s=$step_started"
   add_rc=0
   hd_kanban_on_copy "$copy" "$sock" add "$slug" --title "safe-upgrade hard-delete probe" \
     --column backlog --kind meta --body "$body" >"$dir/add.out" 2>"$dir/add.err" || add_rc=$?
-  if [ "$add_rc" -eq 0 ] \
-    && hd_kanban_on_copy "$copy" "$sock" show "$slug" >"$dir/show-before.out" 2>"$dir/show-before.err"; then
-    present=1
+  hd_log_step add "$add_rc" "$step_started" "$dir/add.out" "$dir/add.err"
+  if [ "$add_rc" -eq 0 ]; then
+    step_started="$(date +%s)"
+    log "hard-delete bar: stage=show-before start_unix_s=$step_started"
+    show_rc=0
+    hd_kanban_on_copy "$copy" "$sock" show "$slug" >"$dir/show-before.out" 2>"$dir/show-before.err" || show_rc=$?
+    hd_log_step show-before "$show_rc" "$step_started" "$dir/show-before.out" "$dir/show-before.err"
+    [ "$show_rc" -ne 0 ] || present=1
   fi
   if [ "$present" -eq 1 ]; then
     del_at="$(date +%s)"
+    log "hard-delete bar: stage=rm start_unix_s=$del_at deadline_s=$HARD_DELETE_KANBAN_DEADLINE_SECS"
     rm_rc=0
     hd_kanban_on_copy "$copy" "$sock" rm "$slug" >"$dir/rm.out" 2>"$dir/rm.err" || rm_rc=$?
-    if [ "$rm_rc" -eq 0 ] \
-      && ! hd_kanban_on_copy "$copy" "$sock" show "$slug" >"$dir/show-after.out" 2>"$dir/show-after.err" \
-      && grep -q 'No card with slug' "$dir/show-after.err" "$dir/show-after.out" 2>/dev/null; then
-      gone=1
+    hd_log_step rm "$rm_rc" "$del_at" "$dir/rm.out" "$dir/rm.err"
+    if [ "$rm_rc" -eq 124 ]; then
+      warn "hard-delete bar: stage=rm deadline_result=124 deadline_s=$HARD_DELETE_KANBAN_DEADLINE_SECS; the CLI may still have an active request on the candidate copy"
+    fi
+    if [ "$rm_rc" -eq 0 ]; then
+      step_started="$(date +%s)"
+      log "hard-delete bar: stage=show-after start_unix_s=$step_started"
+      show_rc=0
+      hd_kanban_on_copy "$copy" "$sock" show "$slug" >"$dir/show-after.out" 2>"$dir/show-after.err" || show_rc=$?
+      hd_log_step show-after "$show_rc" "$step_started" "$dir/show-after.out" "$dir/show-after.err"
+      if [ "$show_rc" -ne 0 ] \
+        && grep -q 'No card with slug' "$dir/show-after.err" "$dir/show-after.out" 2>/dev/null; then
+        gone=1
+      fi
     fi
   fi
   printf 'add_rc=%s\npresent=%s\nrm_rc=%s\ngone=%s\ndelete_at=%s\n' \

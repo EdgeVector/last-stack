@@ -24,6 +24,17 @@ probe_stamp_env_allowed() {
   esac
 }
 
+# The separate real-data smoke copy exercises the copy-only stamp builder.
+# Timed latency copies and the key-cap copy receive no stamp work. An older
+# baseline can ignore this flag without bias. The primary never receives it.
+# $1 is the label.
+probe_stamp_env_for_label() {
+  case "${1:-}" in
+    smoke) printf '%s\n' 'LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1' ;;
+    *) printf '\n' ;;
+  esac
+}
+
 # $1 = plist. Prints the primary stamp flag, or an empty line when unset.
 probe_plist_stamp_value() {
   local plist="${1:-}" val=""
