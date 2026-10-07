@@ -208,4 +208,68 @@ RC=$?
 set -e
 [ "$RC" -eq 0 ] || fail "354 vs sub-floor 50 must GREEN via floored denominator; out=$OUT"
 
-echo "OK: correlated latency bar (Aug-5 numbers RED; healthy GREEN; cold/hot like-to-like)"
+# --- hot sample predicate ----------------------------------------------------
+# A hot test is a repeat of an operation that already finished.
+# A call that opens files is not a hot test.
+lat_sample_is_hot 0 10 10 && fail "a first call is not a hot test"
+lat_sample_is_hot 1 10 11 && fail "a call that opens files is not a hot test"
+lat_sample_is_hot 1 10 9 && fail "a reset file-open counter is not a hot test"
+lat_sample_is_hot 1 "" 10 && fail "a missing file-open counter is not a hot test"
+lat_sample_is_hot 1 10 10 || fail "a repeat that opens no file is a hot test"
+
+# --- nothot drops the pair; -1 against a measured baseline stays RED --------
+set +e
+OUT="$(lat_op_like_to_like_within_bar "hot scan" nothot 115 hot hot 2>&1)"
+RC=$?
+set -e
+[ "$RC" -eq 0 ] || fail "nothot must drop the pair; out=$OUT"
+echo "$OUT" | grep -q 'not a hot test' \
+  || fail "expected not-a-hot-test line; out=$OUT"
+
+set +e
+OUT="$(lat_op_like_to_like_within_bar "hot scan" -1 115 hot hot 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "-1 vs a measured baseline must stay RED; out=$OUT"
+echo "$OUT" | grep -q 'unmeasurable' \
+  || fail "expected unmeasurable RED; out=$OUT"
+
+# --- 2026-10-07 cold numbers, with the file-open samples dropped -------------
+# This checks the classification. It is not a live green bar.
+# Cold point 333/237 and cold column list 9995/7207 stay under 3x.
+# Hot point 101/24 is under the floor. nothot drops the other hot pairs.
+set +e
+OUT="$(lat_apply_like_to_like_bars 333 237 9995 7207 101 24 nothot 115 nothot 579 2>&1)"
+RC=$?
+set -e
+[ "$RC" -eq 0 ] || fail "dropped hot pairs must not RED the 2026-10-07 cold numbers; out=$OUT"
+echo "$OUT" | grep -q 'not a hot test' \
+  || fail "expected dropped hot pairs; out=$OUT"
+
+# --- the same clock times presented as hot still RED ------------------------
+# The ratio, the floor, and the skip flags stay put.
+set +e
+OUT="$(lat_apply_like_to_like_bars 333 237 9995 7207 101 24 284 115 1235 579 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "284/115 and 1235/579 presented as hot must still RED; out=$OUT"
+echo "$OUT" | grep -q 'correlated RED' \
+  || fail "expected correlated RED; out=$OUT"
+
+# --- driver: hot read is a batch of keys the column list already returned ---
+grep -q 'HashRangeKeys' "$DRIVER" \
+  || fail "driver hot read must be one HashRangeKeys batch"
+grep -q 'cold_shard_loads' "$DRIVER" \
+  || fail "driver must read the file-open counter"
+grep -q 'measure_op_hot_median_ms' "$DRIVER" \
+  || fail "driver must time only hot samples"
+grep -q 'lat_sample_is_hot' "$CHECKS" \
+  || fail "helper must define lat_sample_is_hot"
+if grep -n 'measure_op_hot_median_ms op_lat_scan' "$DRIVER" >/dev/null; then
+  fail "column list must not be a hot sample"
+fi
+if grep -n 'measure_op_median_ms ' "$DRIVER" >/dev/null; then
+  fail "driver must not call measure_op_median_ms"
+fi
+
+echo "OK: correlated latency bar (Aug-5 numbers RED; healthy GREEN; cold/hot like-to-like; file-open samples are not hot)"

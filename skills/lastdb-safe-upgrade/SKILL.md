@@ -239,12 +239,15 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
    -> thrash. Live post-check re-samples primary RSS the same way.
 7. **Latency bar (correct-but-slow is RED):** clone **two** CoWs and boot
    candidate and baseline to identity-ready **before** any timed query.
-   **Cold** = first Board point-read (and scan, if measured) after that
-   daemon reaches identity-ready. **Hot** = median after settle plus one
-   discarded warmup sample on that same daemon. The driver measures six
+   **Cold** = the first Board point read and the first column list after
+   that daemon reaches identity-ready. **Hot** = a later sample of that
+   same operation after it has already finished, and only when the sample
+   opens no file. A sample that opens a file is `nothot` and the pair is
+   dropped. The hot read is one HashRangeKeys batch of the keys that the
+   column list returned. The first batch is not hot. The hot write is a
+   repeat of one put. The first write is not hot. The driver measures six
    candidate and baseline samples in adjacent pairs. It alternates which
-   daemon runs first and records each sample in the probe log. Write is
-   hot-only. Compare
+   daemon runs first and records each sample in the probe log. Compare
    **like with like only**: cold vs cold, hot vs hot. A mixed pair (cold
    candidate vs hot baseline, including the 2026-08-26 354 ms vs 50 ms
    shape) must not RED. Pairs where both times are under
@@ -265,7 +268,7 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
    is sampled under the hot load. Skipping the whole bar
    (`LASTDB_PROBE_LAT_SKIP=1`) or only the correlated term
    (`LASTDB_PROBE_LAT_CORR_SKIP=1`) requires Tom's explicit clearance. Live
-   post-check re-times **hot point-read and `kanban list` scan** vs the
+   post-check re-times **hot point-read and the hot batch read** vs the
    candidate's own hot probe numbers (`LASTDB_LIVE_LAT_ENFORCE=1` makes
    either RED). The bar also checks correlated hot-operation regressions and
    avoids a cold sub-floor baseline as a raw ratio denominator.
@@ -606,12 +609,12 @@ The script:
 | Resolve candidate | `brew update` / `--version` tarball / `--candidate` |
 | **1. Rollback point** | `cp -cR` (APFS only; no full-copy fallback) → `${TMPDIR}/lastdb-safe-upgrade-rollback-<uid>/pre-<new>-from-<old>-<ts>/`; reclaim the prior retained point first |
 | **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before multi-GB backup) |
-| **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **CAS mutation bar** (ephemeral candidate node: false `expected` → 409) + **RSS settle/sample** vs memory-guard limit + **latency bar**: cold then hot Board point-read / scan (like-to-like vs baseline CoW); hot `brain put` write; geo-mean on the hot triple only + **row-count bar**: candidate must not return 0 rows where the baseline returns rows (no skip flag) + **key-cap bar**: candidate on its own CoW with `LASTDB_RESIDENT_KEY_CAP=100`; count within budget, purge ran; no skip + **hard-delete bar**: scratch card `kanban rm` on the candidate copy, then `persist_lane_failures` and `deferred_persist_failed` stay 0 for a bounded window; no skip |
+| **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **CAS mutation bar** (ephemeral candidate node: false `expected` → 409) + **RSS settle/sample** vs memory-guard limit + **latency bar**: cold Board point-read and cold column list, then hot point-read, one HashRangeKeys batch, and a repeat `brain put` (like-to-like vs baseline CoW; a sample that opens a file is not hot); geo-mean on the hot triple only + **row-count bar**: candidate must not return 0 rows where the baseline returns rows (no skip flag) + **key-cap bar**: candidate on its own CoW with `LASTDB_RESIDENT_KEY_CAP=100`; count within budget, purge ran; no skip + **hard-delete bar**: scratch card `kanban rm` on the candidate copy, then `persist_lane_failures` and `deferred_persist_failed` stay 0 for a bounded window; no skip |
 | Detect venue | sidebin vs brew |
 | **2c. DEV photograph proof** | After all normal bars pass, the exact pair clones the static rollback point from step 1. It scrubs production state, connects the copied identity to compiled DEV, and runs the manual snapshot CAS. The fresh v2 receipt must match this Loom execution. |
 | **2d. Meter restart bar** | Read live status before restart. Refuse a `keep_small` plane above 1.5 GiB or a failed persist lane. The 2 GiB cold-group cap can prevent both new and old binaries from booting. |
 | **3. Live** | Refuse brew. For sidebin, arm the **durability canary** (N run-unique sentinels returned `durable` + read back on the old daemon, **or** `queued+readback` after HTTP 400 on `--durable` plus a queued put and matching nonce read-back; before any live change), arm the boot-ledger restart intent, verify both `.new` hashes before either rename, verify both installed hashes before reload, then reload the LaunchAgent job definition. A post-rename hash failure restores the saved pair before exit. |
-| **4. Post-check** | Exact installed pair hashes, live `/health`, schemas > 0, Board title, **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **durability canary read-back** (stale nonce → RED, no skip flag), **live peak RSS** vs guard, **live point-read + kanban list latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency + durability in notice |
+| **4. Post-check** | Exact installed pair hashes, live `/health`, schemas > 0, Board title, **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **durability canary read-back** (stale nonce → RED, no skip flag), **live peak RSS** vs guard, **live point-read + batch-read latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency + durability in notice |
 | **4a. Live soak** | Write and read four new durable canaries on the candidate. Keep the rollback point for at least five minutes by default. `--zero-live-soak` removes only that minimum. At least one fresh GREEN status sample remains required. Check persist failures, write access, and meter size on each status sample. If Cloud Sync was on before cutover, require its confirmed frontier beyond the canary time. A failed or stale bar is RED. |
 | **4b. Release** | After GREEN, delete the rollback point and its empty root. GREEN probe-only and operator abort release it too. |
 | RED | Exit 1, retain the one rollback point, print its path, TTL, and cleanup owner; primary untouched if class/probe failed |
@@ -656,7 +659,7 @@ Always print:
 - Rollback path and whether it was released or retained (TTL + cleanup owner)
 - Probe GREEN/RED (+ first Board title if green)  
 - **Probe peak RSS MiB vs memory-guard limit / fail_at**  
-- **Latency: cold point/scan and hot point/scan/write, candidate vs baseline (ms) + boot seconds**  
+- **Latency: cold point/column-list and hot point/batch/write, candidate vs baseline (ms) + boot seconds.** The hot batch uses the receipt key `lat_hot_scan_ms`. A `nothot` pair is dropped.
 - **Key-cap receipt:** `KEYCAP:` with `cap=100`, the sample count, `max_count` at or under the cap, and `purged_keys` above 0.
 - **Hard-delete receipt:** `HARDDELETE:` with the scratch slug, the sample count, `waited_s`, and `persist_lane_failures=0 deferred_persist_failed=0`.
 - Whether live upgrade ran + cutover seconds + live peak RSS + live point-read ms  

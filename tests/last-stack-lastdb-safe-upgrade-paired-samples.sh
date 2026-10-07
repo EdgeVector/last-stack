@@ -34,6 +34,7 @@ run_op_with_deadline() {
     drift) if [ "$n" -le 6 ]; then delta=1000; else delta=500; fi ;;
     first) if [ $((n % 2)) -eq 1 ]; then delta=1000; else delta=500; fi ;;
     regress) if [ "$3" = candidate ]; then delta=1000; else delta=500; fi ;;
+    gate-open|gate-flat) delta=100 ;;
     *) fail "unknown fixture mode $LAT_FIXTURE_MODE" ;;
   esac
   printf '%s\n' "$((now + delta))" >"$clock_file"
@@ -110,6 +111,75 @@ fi
 [ "$(cat "$count_file")" = "0" ] || fail "invalid sample count ran an operation"
 fi
 
+# LAT_HOT_FILE_GATE=1 drops a paired sample whose file-open counter rises.
+# A flat counter stays a time. The flag stays unset for the cases above.
+hold_pair_sockets() {
+  local cand_sock="$1" base_sock="$2"
+  mkdir -p "$(dirname "$cand_sock")" "$(dirname "$base_sock")"
+  python3 - "$cand_sock" "$base_sock" <<'PY' &
+import os, socket, sys, time
+socks = []
+for path in sys.argv[1:]:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(path)
+    sock.listen(1)
+    socks.append(sock)
+time.sleep(60)
+PY
+  PAIR_SOCK_PID=$!
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if [ -S "$cand_sock" ] && [ -S "$base_sock" ]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+if [ "$only_case" = all ] || [ "$only_case" = gate-open ]; then
+LAT_FIXTURE_MODE=gate-open
+LAT_HOT_FILE_GATE=1
+LAT_SAMPLES=6
+reset_clock
+# macOS rejects a unix socket path longer than 104 bytes.
+sock_root="$(mktemp -d /tmp/lg.XXXXXX)"
+hold_pair_sockets "$sock_root/c.sock" "$sock_root/b.sock" \
+  || fail "gate-open sockets did not appear"
+shard_loads_of() {
+  local n
+  n="$(cat "$scratch/loadcount")"
+  printf '%s\n' "$((n + 1))" >"$scratch/loadcount"
+  printf '%s\n' "$n"
+}
+printf '0\n' >"$scratch/loadcount"
+lat_measure_paired_medians_ms fake "$sock_root/c.sock" "$sock_root/b.sock" "hot batch-read"
+[ "$LAT_PAIR_CAND_MS/$LAT_PAIR_BASE_MS" = "nothot/nothot" ] \
+  || fail "a paired sample that opens files is not a hot test"
+kill "$PAIR_SOCK_PID" >/dev/null 2>&1 || true
+LAT_HOT_FILE_GATE=""
+fi
+
+if [ "$only_case" = all ] || [ "$only_case" = gate-flat ]; then
+LAT_FIXTURE_MODE=gate-flat
+LAT_HOT_FILE_GATE=1
+LAT_SAMPLES=6
+reset_clock
+sock_root="$(mktemp -d /tmp/lg.XXXXXX)"
+hold_pair_sockets "$sock_root/c.sock" "$sock_root/b.sock" \
+  || fail "gate-flat sockets did not appear"
+shard_loads_of() { printf '7\n'; }
+lat_measure_paired_medians_ms fake "$sock_root/c.sock" "$sock_root/b.sock" "hot batch-read"
+[ "$LAT_PAIR_CAND_MS/$LAT_PAIR_BASE_MS" = "100/100" ] \
+  || fail "a later paired sample that opens no file must stay hot"
+kill "$PAIR_SOCK_PID" >/dev/null 2>&1 || true
+LAT_HOT_FILE_GATE=""
+fi
+
 # The driver patterns are literal shell source, including dollar signs.
 # shellcheck disable=SC2016
 if [ "$only_case" = all ] || [ "$only_case" = wiring ]; then
@@ -117,8 +187,8 @@ grep -Fq '. "$_SCRIPT_DIR/latency-paired-samples.sh"' "$DRIVER" \
   || fail "driver does not source the paired sampler"
 grep -Fq 'lat_measure_paired_medians_ms op_lat_point "$c_sock" "$b_sock" "hot point-read"' "$DRIVER" \
   || fail "driver does not pair hot point reads"
-grep -Fq 'lat_measure_paired_medians_ms op_lat_scan "$c_copy" "$b_copy" "hot scan"' "$DRIVER" \
-  || fail "driver does not pair hot scans"
+grep -Fq 'lat_measure_paired_medians_ms op_lat_batch "$c_sock" "$b_sock" "hot batch-read"' "$DRIVER" \
+  || fail "driver does not pair hot batch reads"
 grep -Fq 'lat_measure_paired_medians_ms op_lat_write "$c_copy" "$b_copy" "hot write"' "$DRIVER" \
   || fail "driver does not pair hot writes"
 fi

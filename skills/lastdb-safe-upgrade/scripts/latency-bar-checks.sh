@@ -27,8 +27,12 @@
 #   LASTDB_PROBE_LAT_RATIO           default 3   (or LAT_RATIO)
 #   LASTDB_PROBE_LAT_ABS_MAX_MS      default 20000 (or LAT_ABS_MAX_MS)
 #
-# Thermal: cold = first query after identity-ready; hot = after settle +
-# discarded warmup. Like-to-like only. A mixed pair (cold vs hot) must not RED.
+# Thermal: cold = first query after identity-ready. Hot = a later sample of
+# the same operation, and only when that sample did not open files.
+# A column list is cold only. The hot read is one batch of keys that list
+# already returned. The write is hot only after one untimed write.
+# The token nothot drops that pair. It is not an unmeasurable failure.
+# Like-to-like only. A mixed pair (cold vs hot) must not RED.
 # Pairs where both times are under the floor are noise, not a ratio.
 # Geo-mean uses the HOT triple only (driver passes hot times in).
 #
@@ -60,6 +64,24 @@ lat_pair_both_under_floor() {
   lat_pair_measurable "$cand" "$base" || return 1
   [ "$cand" -le "$floor" ] 2>/dev/null || return 1
   [ "$base" -le "$floor" ] 2>/dev/null || return 1
+  return 0
+}
+
+# rc 0 = this sample is a hot test.
+# $1 = 1 when the same operation already finished once, else 0.
+# $2 = cold_shard_loads before the call. $3 = the counter after the call.
+# A first call is not hot. A call that opens files is not hot.
+# A missing counter is not hot: the sample did not prove the files stayed shut.
+lat_sample_is_hot() {
+  local prior="${1:-0}" before="${2:-}" after="${3:-}"
+  [ "$prior" = "1" ] || return 1
+  case "$before" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  case "$after" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$after" -eq "$before" ] || return 1
   return 0
 }
 
@@ -216,6 +238,14 @@ lat_op_like_to_like_within_bar() {
     fi
   fi
 
+  # nothot = the sample opened files, or the op had not already run.
+  # Drop the pair. Do not use the unmeasurable-candidate RED below.
+  if [ "$cand" = "nothot" ] || [ "$base" = "nothot" ]; then
+    printf 'latency %s not a hot test (cand=%s base=%s) — pair dropped\n' \
+      "$op" "${cand:-unset}" "${base:-unset}"
+    return 0
+  fi
+
   if [ "$cand" = "-1" ] || [ -z "$cand" ]; then
     if [ -n "$base" ] && [ "$base" != "-1" ]; then
       printf 'latency %s RED: unmeasurable on candidate but baseline measured %sms\n' "$op" "$base"
@@ -278,8 +308,8 @@ lat_op_like_to_like_within_bar() {
 
 # Full probe bars. Args:
 #   $1..$4  cold cand/base point, cold cand/base scan
-#   $5..$10 hot cand/base point, hot cand/base scan, hot cand/base write
-# Write is hot-only. Geo-mean uses the hot triple only.
+#   $5..$10 hot cand/base point, hot cand/base batch-read, hot cand/base write
+# A hot value may be the token nothot. Geo-mean uses the hot triple only.
 # rc 0 = all like-to-like GREEN; rc 1 = RED.
 lat_apply_like_to_like_bars() {
   local cold_c_pt="$1" cold_b_pt="$2" cold_c_sc="$3" cold_b_sc="$4"
