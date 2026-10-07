@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+from pathlib import Path
+
+path = Path("skills/lastdb-safe-upgrade/scripts/probe-copy-guards.sh")
+source = path.read_text()
+old = "key-cap) printf '%s\\n' 'LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1' ;;"
+assert source.count(old) == 1, "expected one key-cap copy flag rule"
+path.write_text(source.replace(old, "key-cap) printf '\\n' ;;", 1))

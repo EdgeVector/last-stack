@@ -33,14 +33,16 @@ if probe_stamp_env_allowed primary 1; then
 fi
 candidate_stamp="$(probe_stamp_env_for_label candidate)"
 baseline_stamp="$(probe_stamp_env_for_label baseline)"
-[ "$candidate_stamp" = 'LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1' ] \
-  || fail "candidate latency copy must build the conflict stamp"
+[ -z "$candidate_stamp" ] \
+  || fail "candidate timed copy must not build the conflict stamp"
 [ "$baseline_stamp" = "$candidate_stamp" ] \
-  || fail "latency copies must use the same stamp setup"
+  || fail "timed copies must use the same stamp setup"
 [ -z "$(probe_stamp_env_for_label primary)" ] \
   || fail "primary must not receive the copy stamp flag"
-[ -z "$(probe_stamp_env_for_label key-cap)" ] \
-  || fail "the key-cap copy must not receive the latency stamp flag"
+[ "$(probe_stamp_env_for_label key-cap)" = 'LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1' ] \
+  || fail "the separate key-cap copy must exercise the conflict stamp"
+grep -q 'copy-only conflict stamp requested, completion not asserted' "$DRIVER" \
+  || fail "the log must state that stamp completion is not checked"
 probe_copy_is_not_primary /tmp/probe-copy /tmp/probe-primary \
   || fail "distinct copy and primary must pass"
 if probe_copy_is_not_primary /tmp/probe-primary /tmp/probe-primary; then

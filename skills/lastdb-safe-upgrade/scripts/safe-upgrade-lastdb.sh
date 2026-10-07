@@ -26,7 +26,7 @@
 #      status.resident.persist_lane_failures and deferred_persist_failed at
 #      0 (incident 2026-10-04: f362b8e72 failed live on a card delete after
 #      every copy bar was GREEN). There is no skip.
-#      LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1 is set on both latency copies
+#      LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1 is set on the separate key-cap copy
 #      and is not installed on the primary.
 #      AND the CANDIDATE CLASS BAR (incident 2026-08-01): refuse Cargo
 #      debug paths (target/debug), -dirty version stamps, and binaries
@@ -1053,8 +1053,8 @@ EOF_ENV
   if [ "${#env_pairs[@]}" -gt 0 ]; then
     log "$label metrics probe: mirroring live env: ${env_pairs[*]}"
   fi
-  # Both latency copies do the same copy-only startup work. Do not export the
-  # flag into this shell or the primary plist. Both copies are deleted.
+  # Timed latency copies receive no conflict-stamp job. The separate key-cap
+  # copy exercises it. Do not export the flag or write it into the primary.
   local stamp_env
   stamp_env="$(probe_stamp_env_for_label "$label")"
   env -u SENTRY_DSN -u FOLD_SENTRY_DSN \
@@ -1110,7 +1110,7 @@ probe_key_cap_bar() {
   k_blog="$LAST_PROBE_BLOG"
   dir="${k_copy}.key-cap-samples"
   mkdir -p "$dir"
-  log "key-cap bar: $KEY_CAP_BAR_ENV=$KEY_CAP_BAR_CAP for ${KEY_CAP_BAR_SECS}s"
+  log "key-cap bar: $KEY_CAP_BAR_ENV=$KEY_CAP_BAR_CAP for ${KEY_CAP_BAR_SECS}s; copy-only conflict stamp requested, completion not asserted"
   start="$(date +%s)"
   while true; do
     if ! kill -0 "$k_pid" 2>/dev/null; then
@@ -1164,7 +1164,7 @@ probe_like_to_like_metrics() {
 
   c_copy="$(clone_probe_home c)" || return 1
   if ! probe_copy_is_not_primary "$c_copy" "$PRIMARY_HOME"; then
-    warn "candidate metrics probe: copy is the primary home; the conflict stamp must stay on the ephemeral copy"
+    warn "candidate metrics probe: copy is the primary home; no probe may use the primary"
     return 1
   fi
   if [ -n "$base_bin" ] && [ -x "$base_bin" ]; then
@@ -2332,14 +2332,14 @@ else
   warn "latency bar SKIPPED (LASTDB_PROBE_LAT_SKIP=1) — Tom-clearance only; correct-but-slow will NOT be caught"
 fi
 
-# The conflict stamp stays on the copy. The primary plist must not carry it.
+# The conflict stamp stays on the separate key-cap copy. The primary plist must not carry it.
 primary_stamp="$(probe_plist_stamp_value "$LAUNCHD_PLIST")"
 if ! probe_stamp_env_allowed primary "$primary_stamp"; then
   echo ""
   echo "VERDICT: RED"
   echo "REASON: primary LaunchAgent sets LASTDB_BUILD_CONFLICT_STAMP_ON_COPY; the ephemeral copy stamp must not be installed on the primary home"
   echo "BACKUP: $BACKUP  (kept; primary NOT upgraded)"
-  echo "NEXT:   remove LASTDB_BUILD_CONFLICT_STAMP_ON_COPY from the primary plist. The driver sets it on the candidate copy only."
+  echo "NEXT:   remove LASTDB_BUILD_CONFLICT_STAMP_ON_COPY from the primary plist. The driver sets it on the separate key-cap copy only."
   exit 1
 fi
 set +e

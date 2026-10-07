@@ -24,11 +24,12 @@ probe_stamp_env_allowed() {
   esac
 }
 
-# The latency copies use the same optional startup work. The live primary and
-# other probes never receive this flag. $1 is the probe label.
+# The separate key-cap copy exercises the copy-only stamp builder. Timed
+# latency copies receive no stamp work, including with an older baseline that
+# ignores this flag. The live primary never receives it. $1 is the label.
 probe_stamp_env_for_label() {
   case "${1:-}" in
-    candidate|baseline) printf '%s\n' 'LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1' ;;
+    key-cap) printf '%s\n' 'LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1' ;;
     *) printf '\n' ;;
   esac
 }

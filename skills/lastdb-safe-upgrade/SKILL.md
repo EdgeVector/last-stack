@@ -278,8 +278,9 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
    There is no byte footprint bar. Eviction is measured in keys, and a GiB
    line does not measure it (Tom, 2026-10-04). The RSS bar against the
    memory-guard limit stays: it is the crash limit, not an eviction rule.
-   The driver sets `LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1` on both
-   latency copies, never on the primary home. Helpers:
+   The driver sets `LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1` on the separate
+   key-cap copy. The timed latency copies and primary stay free of this
+   startup work. The key-cap bar does not assert stamp completion. Helpers:
    `scripts/key-cap-bar-checks.sh`, `scripts/probe-copy-guards.sh`.
    Receipt line: `KEYCAP:`.
 7d. **Hard-delete bar (the purge lane must not fail).** On the candidate's
