@@ -75,6 +75,18 @@ KEEP_OPEN_PROSE_RE = re.compile(
     r"(?:stays?|remains?|stay|remain)[ \t]+open\b"
 )
 GITHUB_RE = re.compile(r"https?://github\.com/([^/\s)>\]]+)/([^/\s)>\]]+)/pull/(\d+)")
+# A direct URL/CR match (LASTGIT_RE, GITHUB_RE, FORGE_RE below) counts as a
+# repair ref only when it is the value of its own labeled line (`Evidence:
+# <url>`, `Fixed by: <url>`, `PR: <url>`, …) — any short label works, not only
+# the fixed set LABELED_REF_LINE_RE knows, because `Evidence:` is a real,
+# already-relied-on label with no repair verb in it. The label must be
+# followed immediately by the match (only whitespace and an optional
+# quote/backtick in between): a URL that is merely somewhere later in a
+# sentence starting with a capitalized word and a colon (`Symptom: ... (ci
+# unknown at http://...)`) is free prose describing what happened, not a
+# repair claim, and must not satisfy this.
+# (papercut-lifecycle-closer-forge-url-in-free-prose-treated-as-repair-ref-20261007)
+DIRECT_REF_LABEL_RE = re.compile(r"(?im)^[ \t>*-]*[A-Za-z][A-Za-z0-9 /_-]{0,40}:[ \t]*[`'\"]?")
 PIPELINE_STUCK_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-(cr|forge|pr|merges)-")
 # `pipeline-health` also files an AGGREGATE row per repo (`...-merges-<repo>`,
 # optionally with a wake stamp). It names its reviews in the BODY, never in the
@@ -787,6 +799,23 @@ def labeled_ref_values(body: str) -> list[str]:
     return [match.group(1) for match in LABELED_REF_LINE_RE.finditer(body)]
 
 
+def is_labeled_ref_url(body: str, match: "re.Match[str]") -> bool:
+    """True when a direct URL/CR match is the value of its own labeled line.
+
+    Finds the line the match sits on and checks that a short label-and-colon
+    prefix (DIRECT_REF_LABEL_RE) ends exactly where the match begins — i.e.
+    the match is the first thing after the label, not a URL mentioned deeper
+    in a free-prose sentence.
+    """
+    line_start = body.rfind("\n", 0, match.start()) + 1
+    offset_in_line = match.start() - line_start
+    line_end = body.find("\n", match.start())
+    if line_end == -1:
+        line_end = len(body)
+    label = DIRECT_REF_LABEL_RE.match(body, line_start, line_end)
+    return bool(label) and label.end() == match.start()
+
+
 def record_repo(record: dict[str, Any]) -> tuple[str, str]:
     """The owner and bare repo name a papercut is filed against.
 
@@ -863,9 +892,12 @@ def review_refs(body: str, slug: str = "") -> tuple[list[ReviewRef], list[str]]:
 
     Returns the resolvable refs plus typed reasons for refs that were named but
     could not be resolved. A ref is only taken from a structured source: an
-    explicit review URL, a labeled `PR:`/`Fixed by:`-style field, or the
-    papercut's own `pipeline-stuck-*` slug. Free prose is never scanned — a
-    `cr-…`-shaped token elsewhere in the body belongs to some other record.
+    explicit review URL or CR id on its own labeled line (see
+    DIRECT_REF_LABEL_RE / is_labeled_ref_url), a labeled `PR:`/`Fixed by:`-style
+    field, or the papercut's own `pipeline-stuck-*` slug. Free prose is never
+    scanned — a `cr-…`-shaped token or a bare URL mentioned elsewhere in the
+    body belongs to some other record or is merely describing what happened,
+    not claiming a repair.
     """
     refs: list[ReviewRef] = []
     skips: list[str] = []
@@ -880,18 +912,24 @@ def review_refs(body: str, slug: str = "") -> tuple[list[ReviewRef], list[str]]:
         if reason not in skips:
             skips.append(reason)
 
-    for raw_repo, raw_ident in LASTGIT_RE.findall(body):
+    for match in LASTGIT_RE.finditer(body):
+        raw_repo, raw_ident = match.group(1), match.group(2)
         repo = repo_token(raw_repo)
         ident = ref_token(raw_ident)
         if not repo or not ident:
             skip(f"unparseable-lastgit-ref:{raw_repo}/{raw_ident}")
             continue
+        if not is_labeled_ref_url(body, match):
+            continue
         add(ReviewRef("lastgit", f"lastgit://{repo}/cr/{ident}", repo, ident))
-    for raw_owner, raw_repo, num in GITHUB_RE.findall(body):
+    for match in GITHUB_RE.finditer(body):
+        raw_owner, raw_repo, num = match.group(1), match.group(2), match.group(3)
         owner = repo_token(raw_owner)
         repo = repo_token(raw_repo)
         if not owner or not repo:
             skip(f"unparseable-github-ref:{raw_owner}/{raw_repo}#{num}")
+            continue
+        if not is_labeled_ref_url(body, match):
             continue
         add(ReviewRef("github", f"https://github.com/{owner}/{repo}/pull/{num}", repo, num, owner))
     for match in FORGE_RE.finditer(body):
@@ -902,6 +940,8 @@ def review_refs(body: str, slug: str = "") -> tuple[list[ReviewRef], list[str]]:
         num = match.group(3)
         if not owner or not repo:
             skip(f"unparseable-forge-ref:{match.group(1)}/{match.group(2)}#{num}")
+            continue
+        if not is_labeled_ref_url(body, match):
             continue
         add(ReviewRef("forge", f"{owner}/{repo}/pulls/{num}", repo, num, owner))
 
