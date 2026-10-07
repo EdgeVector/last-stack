@@ -1,0 +1,13 @@
+# Hourly: pick one app, file one pickup-ready card to batch its LastDB calls.
+# Generate-only. Pickup ships. :25 avoids crowded slots.
+id = "last-stack-lastdb-batch-apps"
+difficulty = "normal"
+fallback = "grok:grok-4.5"
+effort = "medium"
+group = "quality"
+rrule = "FREQ=HOURLY;BYMINUTE=25;BYSECOND=0"
+cwd = "/Users/REPLACE/code/edgevector"
+status = "active"
+timeout_min = 30
+prompt_path = "/Users/REPLACE/.last-stack/routines/lastdb-batch-apps.md"
+heartbeat_slug = "routine-heartbeats"

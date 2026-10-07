@@ -411,6 +411,8 @@ RS_START='<!-- last-stack:routine-shell:start (managed by last-stack setup; edit
 RS_END='<!-- last-stack:routine-shell:end -->'
 MP_START='<!-- last-stack:mutation-probe:start (managed by last-stack setup; edits inside are overwritten) -->'
 MP_END='<!-- last-stack:mutation-probe:end -->'
+LB_START='<!-- last-stack:lastdb-batching:start (managed by last-stack setup; edits inside are overwritten) -->'
+LB_END='<!-- last-stack:lastdb-batching:end -->'
 
 strip_managed_md_block() {
   # $1 file  $2 start  $3 end
@@ -464,6 +466,7 @@ upsert_harness_instruction_blocks() {
   strip_managed_md_block "$file" "$JC_START" "$JC_END"
   strip_managed_md_block "$file" "$RS_START" "$RS_END"
   strip_managed_md_block "$file" "$MP_START" "$MP_END"
+  strip_managed_md_block "$file" "$LB_START" "$LB_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/brain-kanban.md" "$BK_START" "$BK_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/asd-ste100.md" "$STE_START" "$STE_END"
   local vocab_src
@@ -476,7 +479,8 @@ upsert_harness_instruction_blocks() {
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/safe-json-capture.md" "$JC_START" "$JC_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/routine-shell.md" "$RS_START" "$RS_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/mutation-probe.md" "$MP_START" "$MP_END"
-  echo "  ${label} instructions: brain-kanban + asd-ste100 + user-vocabulary + no-home-root-scan + bin-authoring + safe-json-capture + routine-shell + mutation-probe -> $file"
+  append_managed_md_block "$file" "$SOURCE_ROOT/instructions/lastdb-batching.md" "$LB_START" "$LB_END"
+  echo "  ${label} instructions: brain-kanban + asd-ste100 + user-vocabulary + no-home-root-scan + bin-authoring + safe-json-capture + routine-shell + mutation-probe + lastdb-batching -> $file"
 }
 
 # ── Codex routine shell: zsh -lc -> bash ─────────────────────────────────────
