@@ -129,6 +129,43 @@ validate_shutdown_receipt() {
   ' "$path" >/dev/null || { fail shutdown-flush-receipt-mismatch; return 1; }
 }
 
+verify_stopped_waiver_session() {
+  local home="$1" pid="$2" start_ts="$3" service="$4" session ledger ledger_size
+  session="$home/current-session.json"
+  ledger="$home/sessions.jsonl"
+  ! kill -0 "$pid" 2>/dev/null \
+    && ! lastdb_launchd_job_loaded "$LAUNCHCTL_BIN" "$service" \
+    && ! live_unix_socket_has_listener "$home/data/folddb.sock" \
+    && ! live_unix_socket_has_listener "$home/data/folddb-full.sock" \
+    || { fail old-daemon-still-serving; return 1; }
+  [ -f "$ledger" ] && [ ! -L "$ledger" ] \
+    || { fail stopped-session-ledger-unsafe; return 1; }
+  ledger_size="$(stat -f '%z' "$ledger")" || { fail stopped-session-ledger-unreadable; return 1; }
+  [ "$ledger_size" -le 16777216 ] \
+    || { fail stopped-session-ledger-over-16-mib; return 1; }
+  jq -se --argjson pid "$pid" --argjson start_ts "$start_ts" '
+    all(.[]; type == "object" and (.pid | type) == "number"
+      and (.start_ts | type) == "number")
+    and ([ .[] | select(.pid == $pid and .start_ts == $start_ts) ] as $matches |
+      ($matches | length) == 1 and $matches[0].exit == "clean"
+      and ($matches[0].end_ts | type) == "number"
+      and $matches[0].end_ts >= $start_ts)
+  ' "$ledger" >/dev/null || { fail stopped-session-ledger-not-clean; return 1; }
+  if [ ! -e "$session" ] && [ ! -L "$session" ]; then
+    return 0
+  fi
+  [ -f "$session" ] && [ ! -L "$session" ] \
+    || { fail stopped-session-marker-unsafe; return 1; }
+  jq -se --argjson pid "$pid" --argjson start_ts "$start_ts" '
+    length == 1 and (.[0] | type) == "object"
+    and (.[0] | keys | sort) == (["pid","start_ts","last_heartbeat_ts"] | sort)
+    and .[0].pid == $pid and .[0].start_ts == $start_ts
+    and (.[0].last_heartbeat_ts | type) == "number"
+    and .[0].last_heartbeat_ts >= .[0].start_ts
+  ' "$session" >/dev/null || { fail stopped-session-marker-mismatch; return 1; }
+  shasum -a 256 "$session" | awk '{print $1}'
+}
+
 require_plain_data_tree() {
   local data="$1" timeout_bin="$2" special
   [ -d "$data" ] && [ ! -L "$data" ] || { fail data-root-unsafe; return 1; }
@@ -139,7 +176,7 @@ require_plain_data_tree() {
 }
 
 copy_stopped_home() {
-  local home="$1" copy="$2" timeout_bin="$3" before_free="$4" mode="${5:-receipt}" after_free
+  local home="$1" copy="$2" timeout_bin="$3" before_free="$4" mode="${5:-receipt}" session_sha="${6:-}" after_free
   # The stopped daemon no longer owns these socket names. They cannot be
   # cloned, and the next daemon creates them again when it starts.
   for sock in "$home/data/folddb.sock" "$home/data/folddb-full.sock"; do
@@ -169,6 +206,17 @@ copy_stopped_home() {
   else
     cmp -s "$home/$WAIVER_CLAIM_FILE" "$copy/$WAIVER_CLAIM_FILE" \
       || { fail stopped-copy-waiver-claim-mismatch; return 1; }
+  fi
+  if [ "$mode" = waiver ] && [ -n "$session_sha" ]; then
+    [ -f "$home/current-session.json" ] && [ ! -L "$home/current-session.json" ] \
+      && [ -f "$copy/current-session.json" ] && [ ! -L "$copy/current-session.json" ] \
+      && [ "$(shasum -a 256 "$home/current-session.json" | awk '{print $1}')" = "$session_sha" ] \
+      && [ "$(shasum -a 256 "$copy/current-session.json" | awk '{print $1}')" = "$session_sha" ] \
+      && cmp -s "$home/current-session.json" "$copy/current-session.json" \
+      || { fail stopped-copy-session-bytes-mismatch; return 1; }
+    unlink "$copy/current-session.json" \
+      || { fail stopped-copy-session-remove-failed; return 1; }
+    printf 'STOPPED_COPY_SESSION=copy-only-remove sha256=%s\n' "$session_sha"
   fi
   validate_cloud_off_home "$copy" "$mode" || return 1
   [ ! -e "$copy/current-session.json" ] && [ ! -L "$copy/current-session.json" ] \
@@ -281,8 +329,9 @@ recover_on_exit() {
 }
 
 main() {
-  local service plist_program job_pid listener_pid start_ts before_free timeout_bin stop_out notice_summary flush_proof
+  local service plist_program job_pid listener_pid start_ts before_free timeout_bin stop_out notice_summary flush_proof session_sha
   local actual_daemon_sha actual_cli_sha
+  session_sha=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --copy) COPY_DIR="${2:-}"; shift 2 ;;
@@ -365,12 +414,14 @@ main() {
     && ! live_unix_socket_has_listener "$PRIMARY_HOME/data/folddb.sock" \
     && ! live_unix_socket_has_listener "$PRIMARY_HOME/data/folddb-full.sock" \
     || { fail old-daemon-still-serving; return 1; }
-  [ ! -e "$PRIMARY_HOME/current-session.json" ] \
-    && [ ! -L "$PRIMARY_HOME/current-session.json" ] \
-    || { fail stopped-home-live-session-present; return 1; }
   if [ "$mode" = receipt ]; then
+    [ ! -e "$PRIMARY_HOME/current-session.json" ] \
+      && [ ! -L "$PRIMARY_HOME/current-session.json" ] \
+      || { fail stopped-home-live-session-present; return 1; }
     validate_shutdown_receipt "$PRIMARY_HOME" "$OLD_PID" "$start_ts" || return 1
   else
+    session_sha="$(verify_stopped_waiver_session "$PRIMARY_HOME" "$OLD_PID" "$start_ts" "$service")" \
+      || return 1
     [ ! -e "$PRIMARY_HOME/.shutdown_flush_ready" ] \
       && [ ! -L "$PRIMARY_HOME/.shutdown_flush_ready" ] \
       || { fail unproved-flush-receipt-present; return 1; }
@@ -380,7 +431,7 @@ main() {
       || { fail unproved-flush-waiver-claim-failed; return 1; }
     WAIVER_CLAIMED=1
   fi
-  copy_stopped_home "$PRIMARY_HOME" "$STAGE_COPY" "$timeout_bin" "$before_free" "$mode" || return 1
+  copy_stopped_home "$PRIMARY_HOME" "$STAGE_COPY" "$timeout_bin" "$before_free" "$mode" "$session_sha" || return 1
   if [ "$mode" = receipt ]; then
     validate_shutdown_receipt "$STAGE_COPY" "$OLD_PID" "$start_ts" || return 1
   fi
