@@ -22,8 +22,10 @@ for bin in \
   last-stack-dogfood-rotate-routine
 do
   out="$("$ROOT/bin/$bin" --dry-run 2>/dev/null || true)"
-  printf '%s\n' "$out" | grep -q 'REPLACE' && fail "$bin dry-run still contains REPLACE"
-  printf '%s\n' "$out" | grep -qE 'cwd = ".+code/edgevector"' \
+  out_file="$tmp/$bin.dry-run"
+  printf '%s\n' "$out" >"$out_file"
+  grep -q 'REPLACE' "$out_file" && fail "$bin dry-run still contains REPLACE"
+  grep -qE 'cwd = ".+code/edgevector"' "$out_file" \
     || fail "$bin dry-run missing host-style cwd"
 done
 
@@ -39,8 +41,9 @@ out="$(
     --bootstrap-path "$bootstrap" \
     --dry-run
 )"
-printf '%s\n' "$out" | grep -q 'REPLACE' && fail "pickup-workers dry-run still contains REPLACE"
-printf '%s\n' "$out" | grep -qE 'cwd = ".+code/edgevector"' \
+printf '%s\n' "$out" >"$tmp/pickup-workers.dry-run"
+grep -q 'REPLACE' "$tmp/pickup-workers.dry-run" && fail "pickup-workers dry-run still contains REPLACE"
+grep -qE 'cwd = ".+code/edgevector"' "$tmp/pickup-workers.dry-run" \
   || fail "pickup-workers dry-run missing host-style cwd"
 
 # --- 2) Explicit registry under tmp: write succeeds, no REPLACE ---
