@@ -8,9 +8,11 @@
 #   3. Require GREEN (identity decrypts, schemas load, real Board values)
 #      AND probe RSS stays under the memory-guard ceiling (so live cutover
 #      does not immediately thrash-restart under lastdbd-memory-guard)
-#      AND the LATENCY BAR: real workloads (Board point read, kanban list
-#      scan, brain put write) timed on the candidate's CoW copy must not
-#      regress vs the CURRENT live binary on an identical copy —
+#      AND the LATENCY BAR: real workloads on the candidate copy must not
+#      regress vs the current binary on an identical copy. Cold is the first
+#      Board point read and the first column list. Hot is a later sample of
+#      the same operation that opens no file. The hot read is one batch of
+#      the keys that list returned. The hot write repeats one put.
 #      correct-but-slow is RED (incident 2026-07-25/27: 0.23.1 passed the
 #      correctness+RSS bars while scans ran 5-20x slower; the live primary
 #      was the first place anyone noticed)
@@ -596,9 +598,10 @@ median_of() {
 }
 
 # Latency ops. Each takes one arg and must exit non-zero on failure. These are
-# the REAL workloads: the keyed point read from the smoke bar, the scan-shaped
-# read that regressed in 0.23.1 (kanban list), and a real brain upsert (writes
+# the REAL workloads: the keyed point read from the smoke bar, the column list
+# that regressed in 0.23.1 (kanban list), and a real brain upsert (writes
 # only ever land on the throwaway CoW copy, never the primary).
+# The column list is cold only. The hot read is one batch of its keys.
 op_lat_point() {
   # $1 = socket path
   curl -sS --max-time "$LAT_OP_TIMEOUT_SECS" --unix-socket "$1" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
@@ -609,8 +612,16 @@ op_lat_point() {
 
 op_lat_scan() {
   # $1 = probe copy home
-  env FOLDDB_SOCKET_PATH="$1/data/folddb.sock" LASTDB_HOME="$1" FOLDDB_HOME="$1" \
-    kanban list --column todo --json >/dev/null 2>&1
+  # Cold column list. This call can open files. It is not a hot test.
+  # When LAT_KEYS_OUT is set, keep only the key pairs for one later batch.
+  local home="$1" body
+  body="$(env FOLDDB_SOCKET_PATH="$home/data/folddb.sock" LASTDB_HOME="$home" FOLDDB_HOME="$home" \
+    kanban list --column todo --json 2>/dev/null)" || return 1
+  if [ -n "${LAT_KEYS_OUT:-}" ]; then
+    printf '%s' "$body" | jq -c '[.cards[]? | select(.board != null and .column != null and .slug != null and .position != null) | [.board, "\(.column)#\(.position)#\(.slug)"]]' \
+      >"$LAT_KEYS_OUT" || true
+  fi
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -657,9 +668,68 @@ op_rows_scan() {
 
 op_lat_write() {
   # $1 = probe copy home
+  # One mutation. The hot samples repeat this same put. The first call is
+  # not hot. The copy is the only target.
   printf -- '---\ntype: reference\nslug: safe-upgrade-latency-probe-scratch\ntitle: safe-upgrade latency probe scratch\n---\nUpsert from the safe-upgrade latency bar. Only ever written to throwaway CoW probe copies.\n' \
     | env FBRAIN_FOLDDB_SOCKET="$1/data/folddb.sock" LASTDB_HOME="$1" FOLDDB_HOME="$1" \
       brain put >/dev/null 2>&1
+}
+
+# One batch read of the key pairs in LAT_BATCH_KEYS_FILE.
+# LAT_BATCH_SCHEMA is the BoardCards schema id the first try selected.
+# $1 = socket path. Exit non-zero when the batch does not return rows.
+op_lat_batch() {
+  local sock="$1" req
+  [ -n "${LAT_BATCH_SCHEMA:-}" ] || return 1
+  [ -s "${LAT_BATCH_KEYS_FILE:-}" ] || return 1
+  req="${LAT_BATCH_KEYS_FILE}.req"
+  jq -c --arg schema "$LAT_BATCH_SCHEMA" \
+    '{schema_name:$schema, fields:["title"], filter:{HashRangeKeys:.}}' \
+    "$LAT_BATCH_KEYS_FILE" >"$req" || return 1
+  curl -sS --max-time "$LAT_OP_TIMEOUT_SECS" --unix-socket "$sock" \
+    -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+    -H 'Content-Type: application/json' \
+    --data @"$req" http://x/api/query 2>/dev/null \
+    | jq -e '.ok == true and ((.returned_count // 0) | tonumber) > 0' >/dev/null 2>&1
+}
+
+# Print status.read_cost.cold_shard_loads. Empty when the node omits it.
+shard_loads_of() {
+  local sock="$1" n
+  n="$(curl -sS --max-time 15 --unix-socket "$sock" -H 'Host: localhost' \
+    -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/status 2>/dev/null \
+    | jq -r '.status.read_cost.cold_shard_loads // empty' 2>/dev/null || true)"
+  case "$n" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$n"
+}
+
+# Pick the BoardCards schema whose one batch returns the captured keys.
+# The successful call is the first test of that batch. It is not timed.
+# $1 = socket. Sets LAT_BATCH_SCHEMA. Returns non-zero when no schema hits.
+discover_board_cards_schema() {
+  local sock="$1" names name nkeys
+  LAT_BATCH_SCHEMA=""
+  [ -s "${LAT_BATCH_KEYS_FILE:-}" ] || return 1
+  nkeys="$(jq 'length' "$LAT_BATCH_KEYS_FILE" 2>/dev/null || echo 0)"
+  [ "$nkeys" -gt 0 ] 2>/dev/null || return 1
+  names="$(curl -sS --max-time 60 --unix-socket "$sock" -H 'Host: localhost' \
+    -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/schemas 2>/dev/null \
+    | jq -r '.schemas[]? | select(.descriptive_name=="BoardCards_hashrange_v1" and ((.key.hash_field // "")=="board")) | .name' 2>/dev/null || true)"
+  [ -n "$names" ] || return 1
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    LAT_BATCH_SCHEMA="$name"
+    if op_lat_batch "$sock"; then
+      log "latency batch: schema selected; keys=$nkeys"
+      return 0
+    fi
+  done <<EOF
+$names
+EOF
+  LAT_BATCH_SCHEMA=""
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -959,6 +1029,49 @@ discard_op_warmup() {
   log "latency $label: discarded warmup sample"
 }
 
+# Median of samples that are hot tests. stdout: median ms, nothot, or -1.
+# $1 = op fn, $2 = op arg, $3 = label, $4 = socket for the file-open counter.
+# The caller already completed this same op once. A sample that opens files
+# is not hot. A failed op is not a time. nothot when every sample opened
+# files or the counter was absent. -1 when every sample failed another way.
+measure_op_hot_median_ms() {
+  local fn="$1" arg="$2" label="$3" sock="$4"
+  local vals="" t0 t1 rc n=0 i before after saw_open=0
+  for i in $(seq 1 "$LAT_SAMPLES"); do
+    before="$(shard_loads_of "$sock" || true)"
+    t0="$(now_ms)"
+    rc=0
+    run_op_with_deadline "$LAT_OP_TIMEOUT_SECS" "$fn" "$arg" || rc=$?
+    t1="$(now_ms)"
+    after="$(shard_loads_of "$sock" || true)"
+    if ! lat_sample_is_hot 1 "$before" "$after"; then
+      saw_open=1
+      warn "latency $label: sample $i opened files or has no file-open counter — not a hot test"
+      continue
+    fi
+    if [ "$rc" -eq 124 ]; then
+      warn "latency $label: sample $i hit the ${LAT_OP_TIMEOUT_SECS}s deadline"
+      vals="$vals $((LAT_OP_TIMEOUT_SECS * 1000))"
+      n=$((n + 1))
+    elif [ "$rc" -ne 0 ]; then
+      warn "latency $label: sample $i failed (rc=$rc)"
+    else
+      vals="$vals $((t1 - t0))"
+      n=$((n + 1))
+    fi
+  done
+  if [ "$n" -eq 0 ]; then
+    if [ "$saw_open" -eq 1 ]; then
+      echo "nothot"
+    else
+      echo "-1"
+    fi
+    return 0
+  fi
+  # shellcheck disable=SC2086
+  median_of $vals
+}
+
 metric_val() {
   # $1 = metrics file, $2 = key
   awk -F= -v k="$2" '$1==k{print $2}' "$1" 2>/dev/null | head -1
@@ -1120,6 +1233,7 @@ probe_key_cap_bar() {
     fi
     op_lat_point "$k_sock" || true
     if command -v kanban >/dev/null 2>&1; then
+      LAT_KEYS_OUT=""
       op_lat_scan "$k_copy" || true
     fi
     n=$((n + 1))
@@ -1148,8 +1262,9 @@ stop_probe_node() {
 }
 
 # Boot candidate and baseline CoWs together. Cold fetch = first query after
-# identity-ready. Hot = median after settle + one discarded warmup. Write is
-# hot-only. Writes cand/base metric files with lat_cold_* / lat_hot_* keys.
+# identity-ready. Hot = a later sample of that same op that opens no file.
+# The column list stays cold. The hot read is one batch of its keys.
+# Writes cand/base metric files with lat_cold_* / lat_hot_* keys.
 probe_like_to_like_metrics() {
   local cand_bin="$1" base_bin="$2" cand_out="$3" base_out="$4" hd_out="${5:-}"
   local c_copy b_copy c_pid b_pid c_sock b_sock c_blog b_blog c_boot b_boot
@@ -1227,6 +1342,9 @@ probe_like_to_like_metrics() {
     fi
     sample_cand_rss
     if command -v kanban >/dev/null 2>&1; then
+      mkdir -p "$PROBE_ROOT"
+      LAT_BATCH_KEYS_FILE="$PROBE_ROOT/lat-batch-keys.json"
+      LAT_KEYS_OUT="$LAT_BATCH_KEYS_FILE"
       if [ -n "$b_copy" ] && [ $((RANDOM % 2)) -eq 0 ]; then
         b_cold_sc="$(measure_op_once_ms op_lat_scan "$b_copy" "baseline cold scan")"
         c_cold_sc="$(measure_op_once_ms op_lat_scan "$c_copy" "candidate cold scan")"
@@ -1236,57 +1354,112 @@ probe_like_to_like_metrics() {
           b_cold_sc="$(measure_op_once_ms op_lat_scan "$b_copy" "baseline cold scan")"
         fi
       fi
+      LAT_KEYS_OUT=""
       sample_cand_rss
     else
       warn "latency: kanban CLI not on PATH — scan op unmeasured"
     fi
 
-    log "latency: settling ${RSS_SETTLE_SECS}s then discarding one warmup sample per node"
+    log "latency: settling ${RSS_SETTLE_SECS}s before hot samples"
     sleep "$RSS_SETTLE_SECS"
-    discard_op_warmup op_lat_point "$c_sock" "candidate hot warmup point"
-    [ -n "$b_sock" ] && discard_op_warmup op_lat_point "$b_sock" "baseline hot warmup point"
-    if command -v kanban >/dev/null 2>&1; then
-      discard_op_warmup op_lat_scan "$c_copy" "candidate hot warmup scan"
-      [ -n "$b_copy" ] && discard_op_warmup op_lat_scan "$b_copy" "baseline hot warmup scan"
-    fi
 
-    if [ -n "$b_sock" ]; then
+    # The cold point read is the first call. Time a later call only after
+    # that first call finished on both nodes.
+    if [ -n "$b_sock" ] && [ "$c_cold_pt" != "-1" ] && [ "$b_cold_pt" != "-1" ]; then
+      discard_op_warmup op_lat_point "$c_sock" "candidate point before hot"
+      discard_op_warmup op_lat_point "$b_sock" "baseline point before hot"
+      LAT_HOT_FILE_GATE=1
       lat_measure_paired_medians_ms op_lat_point "$c_sock" "$b_sock" "hot point-read" || {
+        LAT_HOT_FILE_GATE=""
         stop_probe_node "$b_pid" "$b_copy" "$b_blog" || true
         stop_probe_node "$c_pid" "$c_copy" "$c_blog" || true
         return 1
       }
+      LAT_HOT_FILE_GATE=""
       c_hot_pt="$LAT_PAIR_CAND_MS"
       b_hot_pt="$LAT_PAIR_BASE_MS"
     else
-      c_hot_pt="$(measure_op_median_ms op_lat_point "$c_sock" "candidate hot point-read")"
+      if [ "$c_cold_pt" != "-1" ]; then
+        discard_op_warmup op_lat_point "$c_sock" "candidate point before hot"
+        c_hot_pt="$(measure_op_hot_median_ms op_lat_point "$c_sock" "candidate hot point-read" "$c_sock")"
+      else
+        c_hot_pt="nothot"
+      fi
+      if [ -n "$b_sock" ]; then
+        if [ "$b_cold_pt" != "-1" ]; then
+          discard_op_warmup op_lat_point "$b_sock" "baseline point before hot"
+          b_hot_pt="$(measure_op_hot_median_ms op_lat_point "$b_sock" "baseline hot point-read" "$b_sock")"
+        else
+          b_hot_pt="nothot"
+        fi
+      fi
     fi
     sample_cand_rss
-    if command -v kanban >/dev/null 2>&1; then
-      if [ -n "$b_copy" ]; then
-        lat_measure_paired_medians_ms op_lat_scan "$c_copy" "$b_copy" "hot scan" || {
-          stop_probe_node "$b_pid" "$b_copy" "$b_blog" || true
-          stop_probe_node "$c_pid" "$c_copy" "$c_blog" || true
-          return 1
-        }
-        c_hot_sc="$LAT_PAIR_CAND_MS"
-        b_hot_sc="$LAT_PAIR_BASE_MS"
+
+    # The column list is not hot. One batch of its keys is the hot read,
+    # and only after that same batch has already run.
+    if [ -n "${LAT_BATCH_KEYS_FILE:-}" ] && [ -s "$LAT_BATCH_KEYS_FILE" ]; then
+      if discover_board_cards_schema "$c_sock"; then
+        if [ -n "$b_sock" ] && op_lat_batch "$b_sock"; then
+          LAT_HOT_FILE_GATE=1
+          lat_measure_paired_medians_ms op_lat_batch "$c_sock" "$b_sock" "hot batch-read" || {
+            LAT_HOT_FILE_GATE=""
+            stop_probe_node "$b_pid" "$b_copy" "$b_blog" || true
+            stop_probe_node "$c_pid" "$c_copy" "$c_blog" || true
+            return 1
+          }
+          LAT_HOT_FILE_GATE=""
+          c_hot_sc="$LAT_PAIR_CAND_MS"
+          b_hot_sc="$LAT_PAIR_BASE_MS"
+        elif [ -n "$b_sock" ]; then
+          warn "latency: baseline batch did not complete before the hot samples"
+          b_hot_sc="nothot"
+          c_hot_sc="$(measure_op_hot_median_ms op_lat_batch "$c_sock" "candidate hot batch-read" "$c_sock")"
+        else
+          c_hot_sc="$(measure_op_hot_median_ms op_lat_batch "$c_sock" "candidate hot batch-read" "$c_sock")"
+        fi
       else
-        c_hot_sc="$(measure_op_median_ms op_lat_scan "$c_copy" "candidate hot scan")"
+        warn "latency: no BoardCards batch returned the captured keys"
+        c_hot_sc="nothot"
+        [ -n "$b_sock" ] && b_hot_sc="nothot"
       fi
       sample_cand_rss
+    elif command -v kanban >/dev/null 2>&1; then
+      c_hot_sc="nothot"
+      [ -n "$b_sock" ] && b_hot_sc="nothot"
     fi
+
     if command -v brain >/dev/null 2>&1; then
+      local c_write_prior=0 b_write_prior=0
+      if run_op_with_deadline "$LAT_OP_TIMEOUT_SECS" op_lat_write "$c_copy"; then
+        c_write_prior=1
+      else
+        warn "latency: candidate write did not complete before the hot samples"
+        c_hot_wr="nothot"
+      fi
       if [ -n "$b_copy" ]; then
+        if run_op_with_deadline "$LAT_OP_TIMEOUT_SECS" op_lat_write "$b_copy"; then
+          b_write_prior=1
+        else
+          warn "latency: baseline write did not complete before the hot samples"
+          b_hot_wr="nothot"
+        fi
+      fi
+      if [ "$c_write_prior" -eq 1 ] && [ "$b_write_prior" -eq 1 ]; then
+        LAT_HOT_FILE_GATE=1
         lat_measure_paired_medians_ms op_lat_write "$c_copy" "$b_copy" "hot write" || {
+          LAT_HOT_FILE_GATE=""
           stop_probe_node "$b_pid" "$b_copy" "$b_blog" || true
           stop_probe_node "$c_pid" "$c_copy" "$c_blog" || true
           return 1
         }
+        LAT_HOT_FILE_GATE=""
         c_hot_wr="$LAT_PAIR_CAND_MS"
         b_hot_wr="$LAT_PAIR_BASE_MS"
-      else
-        c_hot_wr="$(measure_op_median_ms op_lat_write "$c_copy" "candidate hot write")"
+      elif [ "$c_write_prior" -eq 1 ]; then
+        c_hot_wr="$(measure_op_hot_median_ms op_lat_write "$c_copy" "candidate hot write" "$c_sock")"
+      elif [ "$b_write_prior" -eq 1 ]; then
+        b_hot_wr="$(measure_op_hot_median_ms op_lat_write "$b_copy" "baseline hot write" "$b_sock")"
       fi
       sample_cand_rss
     else
@@ -2713,15 +2886,21 @@ if [ -n "${LIVE_RSS_MB:-}" ]; then
   fi
 fi
 
-# Live latency spot-check: point-read AND kanban list scan (incident 2026-08-01:
-# live point stayed ~113ms while list went multi-second→60s; point-only missed
-# it). Compared against the candidate's OWN probe numbers (same binary).
+# Live latency spot-check: point read and one batch read (incident 2026-08-01:
+# live point stayed ~113ms while the column list went multi-second→60s;
+# point-only missed it). The hot sample is a later call that opens no file.
+# Compared against the candidate's OWN probe numbers (same binary).
 # Defaults to WARN under client load; LASTDB_LIVE_LAT_ENFORCE=1 → RED.
+# Receipt key stays live_scan_ms for the batch time.
 LIVE_LAT_POINT_MS="-1"
 LIVE_LAT_SCAN_MS="-1"
 live_lat_check_op() {
   # $1=label $2=live_ms $3=cand_probe_ms
   local label="$1" live_ms="$2" cand_ms="$3"
+  if [ "$live_ms" = "nothot" ] || [ "${cand_ms:-}" = "nothot" ]; then
+    log "live $label latency: not a hot test (live=${live_ms} probe=${cand_ms:-unset})"
+    return 0
+  fi
   if [ "$live_ms" = "-1" ] || [ -z "$live_ms" ]; then
     warn "live $label latency: unmeasured"
     return 0
@@ -2748,11 +2927,30 @@ live_lat_check_op() {
   fi
 }
 if [ "$LAT_SKIP" != "1" ]; then
-  LIVE_LAT_POINT_MS="$(measure_op_median_ms op_lat_point "$PRIMARY_SOCK" "live point-read")"
+  # The live point read must already have run once. Time only a later sample
+  # that does not open files. The receipt still records this as live scan.
+  if run_op_with_deadline "$LAT_OP_TIMEOUT_SECS" op_lat_point "$PRIMARY_SOCK"; then
+    LIVE_LAT_POINT_MS="$(measure_op_hot_median_ms op_lat_point "$PRIMARY_SOCK" "live point-read" "$PRIMARY_SOCK")"
+  else
+    warn "live point-read did not complete before the hot samples"
+    LIVE_LAT_POINT_MS="nothot"
+  fi
   live_lat_check_op "point-read" "$LIVE_LAT_POINT_MS" "${CAND_LAT_POINT_MS:--1}"
   if command -v kanban >/dev/null 2>&1; then
-    LIVE_LAT_SCAN_MS="$(measure_op_median_ms op_lat_scan "$PRIMARY_HOME" "live kanban-scan")"
-    live_lat_check_op "scan (kanban list)" "$LIVE_LAT_SCAN_MS" "${CAND_LAT_SCAN_MS:--1}"
+    LAT_BATCH_KEYS_FILE="${PROBE_ROOT:-${TMPDIR:-/tmp}}/live-lat-batch-keys.json"
+    LAT_KEYS_OUT="$LAT_BATCH_KEYS_FILE"
+    if op_lat_scan "$PRIMARY_HOME"; then
+      LAT_KEYS_OUT=""
+      if discover_board_cards_schema "$PRIMARY_SOCK"; then
+        LIVE_LAT_SCAN_MS="$(measure_op_hot_median_ms op_lat_batch "$PRIMARY_SOCK" "live scan batch-read" "$PRIMARY_SOCK")"
+      else
+        LIVE_LAT_SCAN_MS="nothot"
+      fi
+    else
+      LAT_KEYS_OUT=""
+      LIVE_LAT_SCAN_MS="nothot"
+    fi
+    live_lat_check_op "batch-read" "$LIVE_LAT_SCAN_MS" "${CAND_LAT_SCAN_MS:--1}"
   else
     warn "live scan latency: kanban CLI not on PATH — unmeasured"
   fi
