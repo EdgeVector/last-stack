@@ -300,7 +300,9 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
    RED. There is no skip. Incident 2026-10-04: fold f362b8e72 passed every
    other copy bar, then failed live with `persist-lane-failure` from a card
    delete ("hard-erase meter intent changed before commit"). Helper:
-   `scripts/hard-delete-bar-checks.sh`. Receipt line: `HARDDELETE:`.
+   `scripts/hard-delete-bar-checks.sh`. The driver logs each step and its
+   result with time and output size. It does not log CLI text. Receipt line:
+   `HARDDELETE:`.
 8. **Candidate-class bar (no debug / dirty / oversized):** before backup or
    probe, refuse candidates that look like a Cargo **debug** build
    (`…/target/debug/…`), a **-dirty** version stamp (uncommitted tree at
