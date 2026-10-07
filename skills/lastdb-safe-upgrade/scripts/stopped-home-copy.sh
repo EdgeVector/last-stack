@@ -175,8 +175,28 @@ require_plain_data_tree() {
   [ -z "$special" ] || { fail data-special-path-present; return 1; }
 }
 
+transient_search_inbox_cp_error_count() {
+  local errors="$1" home="$2" line name count=0
+  local prefix="cp: $home/apps/search/inbox/"
+  local suffix=": No such file or directory"
+  [ -s "$errors" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "$prefix"*"$suffix") ;;
+      *) return 1 ;;
+    esac
+    name="${line#"$prefix"}"
+    name="${name%"$suffix"}"
+    [[ "$name" =~ ^[0-9]{13}_[0-9a-f]{32}\.json$ ]] || return 1
+    count=$((count + 1))
+  done < "$errors"
+  [ "$count" -gt 0 ] || return 1
+  printf '%s\n' "$count"
+}
+
 copy_stopped_home() {
   local home="$1" copy="$2" timeout_bin="$3" before_free="$4" mode="${5:-receipt}" session_sha="${6:-}" after_free
+  local cp_errors cp_status ignored drift
   # The stopped daemon no longer owns these socket names. They cannot be
   # cloned, and the next daemon creates them again when it starts.
   for sock in "$home/data/folddb.sock" "$home/data/folddb-full.sock"; do
@@ -187,8 +207,24 @@ copy_stopped_home() {
     fi
   done
   require_plain_data_tree "$home/data" "$timeout_bin" || return 1
-  (umask 077; "$timeout_bin" -s TERM "$MAX_COPY_SECS" cp -cR "$home" "$copy") \
-    || { fail stopped-copy-failed; return 1; }
+  cp_errors="$(mktemp "${TMPDIR:-/private/tmp}/lastdb-stopped-copy-cp.XXXXXX")" \
+    || { fail stopped-copy-error-capture-failed; return 1; }
+  if (umask 077; "$timeout_bin" -s TERM "$MAX_COPY_SECS" cp -cR "$home" "$copy") \
+    2>"$cp_errors"; then
+    [ ! -s "$cp_errors" ] || { fail stopped-copy-unexpected-stderr; return 1; }
+  else
+    cp_status=$?
+    [ "$cp_status" -eq 1 ] || { fail stopped-copy-failed; return 1; }
+    ignored="$(transient_search_inbox_cp_error_count "$cp_errors" "$home")" \
+      || { fail stopped-copy-failed; return 1; }
+    # Search can move a batch to done/ while cp walks the inbox. The publisher
+    # reads data/ only. Verify every data path and size before accepting the copy.
+    drift="$("$timeout_bin" -s TERM 120 rsync --dry-run --recursive \
+      --itemize-changes --size-only --delete "$home/data/" "$copy/data/")" \
+      || { fail stopped-copy-data-compare-failed; return 1; }
+    [ -z "$drift" ] || { fail stopped-copy-data-path-or-size-mismatch; return 1; }
+    printf 'STOPPED_COPY_CP=transient-search-inbox-move count=%s\n' "$ignored"
+  fi
   [ -d "$copy" ] && [ ! -L "$copy" ] \
     && [ -f "$copy/identity.key" ] && [ ! -L "$copy/identity.key" ] \
     && [ -d "$copy/data" ] \
@@ -383,6 +419,7 @@ main() {
     || { fail stale-shutdown-receipt-present; return 1; }
   timeout_bin="$(command -v gtimeout || command -v timeout || true)"
   [ -n "$timeout_bin" ] || { fail copy-timeout-command-absent; return 1; }
+  command -v rsync >/dev/null || { fail copy-data-compare-command-absent; return 1; }
   [ "$(uname -s)" = Darwin ] || { fail apfs-clone-unavailable; return 1; }
   # A blocked or unreadable Situation leaves the primary and the copy path untouched.
   require_restart_preflight || return 1
