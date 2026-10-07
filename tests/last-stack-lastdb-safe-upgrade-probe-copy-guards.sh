@@ -31,6 +31,16 @@ probe_stamp_env_allowed primary 0 || fail "primary 0 is allowed"
 if probe_stamp_env_allowed primary 1; then
   fail "primary must not carry LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1"
 fi
+candidate_stamp="$(probe_stamp_env_for_label candidate)"
+baseline_stamp="$(probe_stamp_env_for_label baseline)"
+[ "$candidate_stamp" = 'LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1' ] \
+  || fail "candidate latency copy must build the conflict stamp"
+[ "$baseline_stamp" = "$candidate_stamp" ] \
+  || fail "latency copies must use the same stamp setup"
+[ -z "$(probe_stamp_env_for_label primary)" ] \
+  || fail "primary must not receive the copy stamp flag"
+[ -z "$(probe_stamp_env_for_label key-cap)" ] \
+  || fail "the key-cap copy must not receive the latency stamp flag"
 probe_copy_is_not_primary /tmp/probe-copy /tmp/probe-primary \
   || fail "distinct copy and primary must pass"
 if probe_copy_is_not_primary /tmp/probe-primary /tmp/probe-primary; then
@@ -88,18 +98,13 @@ fi
 
 # --- driver wiring -----------------------------------------------------------
 grep -q '\. "$_SCRIPT_DIR/probe-copy-guards.sh"' "$DRIVER" || fail "driver must source probe-copy-guards.sh"
-[ "$(grep -c 'stamp_env="LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1"' "$DRIVER")" -eq 1 ] \
-  || fail "stamp flag must be assigned once"
 awk '
   /^start_probe_node\(\)/ { p=1 }
   p { print }
   p && /^}$/ { exit }
 ' "$DRIVER" >"$TMP/start.sh"
-grep -q 'label" = "candidate"' "$TMP/start.sh" \
-  || grep -q '\[ "$label" = "candidate" \]' "$TMP/start.sh" \
-  || fail "stamp flag must be gated on the candidate label"
-grep -q 'LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1' "$TMP/start.sh" \
-  || fail "stamp flag assignment must live in start_probe_node"
+grep -Fq 'stamp_env="$(probe_stamp_env_for_label "$label")"' "$TMP/start.sh" \
+  || fail "node startup must use the tested stamp label rule"
 if grep 'PlistBuddy' "$DRIVER" | grep -q 'LASTDB_BUILD_CONFLICT_STAMP_ON_COPY'; then
   fail "driver must not write the stamp flag into a plist"
 fi

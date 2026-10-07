@@ -24,6 +24,15 @@ probe_stamp_env_allowed() {
   esac
 }
 
+# The latency copies use the same optional startup work. The live primary and
+# other probes never receive this flag. $1 is the probe label.
+probe_stamp_env_for_label() {
+  case "${1:-}" in
+    candidate|baseline) printf '%s\n' 'LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1' ;;
+    *) printf '\n' ;;
+  esac
+}
+
 # $1 = plist. Prints the primary stamp flag, or an empty line when unset.
 probe_plist_stamp_value() {
   local plist="${1:-}" val=""
