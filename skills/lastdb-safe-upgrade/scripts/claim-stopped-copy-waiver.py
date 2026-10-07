@@ -11,6 +11,8 @@ import sys
 
 DECISION = "decision-2026-10-06-cloud-sync-rescue-risk-acceptance"
 CLAIM = ".cloud_backup_unproved_flush_claim"
+TEMP_PARENT = Path("/private/tmp")
+DURABLE_PARENT = Path(".local/state/last-stack/cloud-rescue/source-copies")
 
 
 def expected_claim(pid: int, start_ts: int, copy_path: Path) -> dict:
@@ -33,15 +35,37 @@ def sync_home(home: Path) -> None:
         os.close(dir_fd)
 
 
+def validate_copy_path(home: Path, copy_path: Path) -> None:
+    if not copy_path.is_absolute() or Path(os.path.normpath(str(copy_path))) != copy_path:
+        raise ValueError("stopped copy path is not canonical")
+    parent = copy_path.parent
+    if not parent.is_dir() or parent.is_symlink() or parent.resolve() != parent:
+        raise ValueError("stopped copy parent is absent or linked")
+    durable_parent = Path.home() / DURABLE_PARENT
+    is_temp = parent == TEMP_PARENT or TEMP_PARENT in parent.parents
+    is_durable = parent == durable_parent
+    if not is_temp and not is_durable:
+        raise ValueError("stopped copy parent is not approved")
+    if is_durable:
+        parent_stat = parent.stat()
+        if parent_stat.st_uid != os.getuid() or stat.S_IMODE(parent_stat.st_mode) != 0o700:
+            raise ValueError("stopped copy parent is not private")
+    home_real = home.resolve()
+    if parent == home_real or home_real in parent.parents:
+        raise ValueError("stopped copy is under the primary home")
+    if parent.stat().st_dev != home.stat().st_dev:
+        raise ValueError("stopped copy is on another device")
+
+
 def claim(home: Path, pid: int, start_ts: int, copy_path: Path, decision_slug: str,
           release: bool = False) -> None:
     if decision_slug != DECISION or pid <= 0 or start_ts <= 0:
         raise ValueError("unproved-flush approval or stopped session is invalid")
     if home.is_symlink() or not home.is_dir():
         raise ValueError("primary home is absent or linked")
-    if (not copy_path.is_absolute() or Path("/private/tmp") not in copy_path.parents
-            or Path(os.path.normpath(str(copy_path))) != copy_path):
-        raise ValueError("stopped copy path is not a canonical /private/tmp path")
+    validate_copy_path(home, copy_path)
+    if not release and (copy_path.exists() or copy_path.is_symlink()):
+        raise ValueError("stopped copy path already exists")
     path = home / CLAIM
     payload = expected_claim(pid, start_ts, copy_path)
     if release:
