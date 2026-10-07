@@ -17,6 +17,7 @@
       "source_git_oid": { "type": "string" },
       "candidate_artifact_digest": { "type": "string" },
       "safe_upgrade_protocol_version": { "type": "string" },
+      "zero_live_soak": { "type": "boolean" },
       "item": {}
     },
     "required": [

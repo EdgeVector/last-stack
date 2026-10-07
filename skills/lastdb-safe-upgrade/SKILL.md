@@ -503,7 +503,7 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
 
 Start the graph with an explicit release candidate. The launcher reads the
 full candidate source commit. It hashes the sibling `lastdbd` and `lastdb`
-files. The fixed-length `safe-upgrade-v6-<digest>` key includes the gate
+files. The default fixed-length `safe-upgrade-v6-<digest>` key includes the gate
 protocol version. Its digest covers the source OID, both canonical paths, both
 binary hashes, and both versions. The graph checks the complete tuple before
 PROBE and CUTOVER.
@@ -513,6 +513,12 @@ last-stack-safe-upgrade-loom \
   --candidate /path/to/release/lastdbd \
   --source-git-oid <full-fold-commit>
 ```
+
+For the one-client rescue, Tom approved the explicit `--zero-live-soak` option.
+Add it to this command only for that cutover. The option removes the 300-second
+minimum after the live canary write and read-back. The driver still requires a
+fresh GREEN status sample and keeps the rollback point until that check passes.
+The option uses a separate Loom execution key. The default remains 300 seconds.
 
 The sibling `lastdb` binary and the bundle manifest must be next to `lastdbd`.
 An equal candidate finishes as a no-op. An older, divergent, or unknown source
@@ -598,7 +604,7 @@ The script:
 | **2d. Meter restart bar** | Read live status before restart. Refuse a `keep_small` plane above 1.5 GiB or a failed persist lane. The 2 GiB cold-group cap can prevent both new and old binaries from booting. |
 | **3. Live** | Refuse brew. For sidebin, arm the **durability canary** (N run-unique sentinels returned `durable` + read back on the old daemon, **or** `queued+readback` after HTTP 400 on `--durable` plus a queued put and matching nonce read-back; before any live change), arm the boot-ledger restart intent, verify both `.new` hashes before either rename, verify both installed hashes before reload, then reload the LaunchAgent job definition. A post-rename hash failure restores the saved pair before exit. |
 | **4. Post-check** | Exact installed pair hashes, live `/health`, schemas > 0, Board title, **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **durability canary read-back** (stale nonce → RED, no skip flag), **live peak RSS** vs guard, **live point-read + kanban list latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency + durability in notice |
-| **4a. Live soak** | Write and read four new durable canaries on the candidate. Keep the rollback point for at least five minutes. Check persist failures, write access, and meter size on each status sample. If Cloud Sync was on before cutover, require its confirmed frontier beyond the canary time. A failed or stale bar is RED. |
+| **4a. Live soak** | Write and read four new durable canaries on the candidate. Keep the rollback point for at least five minutes by default. `--zero-live-soak` removes only that minimum. At least one fresh GREEN status sample remains required. Check persist failures, write access, and meter size on each status sample. If Cloud Sync was on before cutover, require its confirmed frontier beyond the canary time. A failed or stale bar is RED. |
 | **4b. Release** | After GREEN, delete the rollback point and its empty root. GREEN probe-only and operator abort release it too. |
 | RED | Exit 1, retain the one rollback point, print its path, TTL, and cleanup owner; primary untouched if class/probe failed |
 

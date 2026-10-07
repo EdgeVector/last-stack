@@ -2766,6 +2766,15 @@ durability_verify_after_cutover
 # the first write can pass while later canaries still wait for cloud capture.
 POST_CUTOVER_WRITE_DONE_S="$(date +%s)"
 SOAK_MIN_SECS=300
+case "${LASTDB_SAFE_UPGRADE_ZERO_LIVE_SOAK:-0}" in
+  0) ;;
+  1)
+    [ "${LASTDB_SAFE_UPGRADE_VIA_LOOM:-0}" = "1" ] \
+      || die "zero live soak requires the Loom cutover"
+    SOAK_MIN_SECS=0
+    ;;
+  *) die "LASTDB_SAFE_UPGRADE_ZERO_LIVE_SOAK must be 0 or 1" ;;
+esac
 # A real-data rollback needed about 43 minutes to republish its cloud frontier.
 # Keep the rollback point and health checks active until that startup work ends.
 SOAK_MAX_SECS=3600

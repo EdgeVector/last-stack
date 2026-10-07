@@ -193,14 +193,15 @@ safe_log="$tmp/safe.log"
 cat >"$skill_dir/safe-upgrade-lastdb.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'args=%s marker=%s exec=%s daemon=%s cli=%s daemon_sha=%s cli_sha=%s source=%s receipt=%s\n' \
+printf 'args=%s marker=%s exec=%s daemon=%s cli=%s daemon_sha=%s cli_sha=%s source=%s receipt=%s zero_live_soak=%s\n' \
   "$*" "${LASTDB_SAFE_UPGRADE_VIA_LOOM:-}" "${LOOM_EXEC_ID:-}" \
   "${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_PATH:-}" \
   "${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_PATH:-}" \
   "${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_SHA256:-}" \
   "${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_SHA256:-}" \
   "${LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID:-}" \
-  "${LASTDB_DEV_STAMP_RECEIPT:-}" >>"${SAFE_LOG:?}"
+  "${LASTDB_DEV_STAMP_RECEIPT:-}" \
+  "${LASTDB_SAFE_UPGRADE_ZERO_LIVE_SOAK:-0}" >>"${SAFE_LOG:?}"
 case " $* " in
   *" --probe-only "*)
     case "${SAFE_MOCK_PROBE:-green}" in
@@ -327,6 +328,13 @@ printf '%s\n' "$out" | grep -q '"verdict":"current"' || fail "equal graph probe 
 [ ! -e "$safe_log" ] || fail "equal graph probe reached the safe-upgrade driver"
 
 forward_input="$(candidate_input "$tmp/candidate-b" "$oid_b")"
+malformed_soak_input="$(printf '%s' "$forward_input" | jq -c '. + {zero_live_soak:"true"}')"
+set +e
+out="$(HOME="$mock_home" LOOM_LIVE=1 LOOM_INPUT="$malformed_soak_input" "$STEP" PROBE 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 2 ] && printf '%s\n' "$out" | grep -q 'zero_live_soak must be a boolean' \
+  || fail "malformed zero-live-soak input reached the graph: rc=$rc out=$out"
 
 # Item fanout cannot override the immutable tuple that the parent supplies.
 conflict_input="$(printf '%s' "$forward_input" | jq -c \
@@ -962,6 +970,32 @@ grep -q "daemon_sha=$(sha256_file "$tmp/candidate-b/lastdbd") cli_sha=$(sha256_f
 grep -q 'receipt=.*/lx-test-safe-upgrade-.*\.receipt' "$safe_log" \
   || fail "Loom did not isolate the DEV receipt by execution and pair hashes"
 
+# An ambient variable cannot change the default live check. The option in the
+# immutable Loom input alone can shorten the five-minute minimum.
+HOME="$mock_home" \
+  SAFE_LOG="$safe_log" \
+  LASTDB_SAFE_UPGRADE_ZERO_LIVE_SOAK=1 \
+  LOOM_LIVE=1 \
+  LOOM_EXEC_ID=lx-test-default-soak \
+  LOOM_INPUT="$forward_input" \
+  LASTDB_SAFE_UPGRADE_CURRENT_BIN="$tmp/current-a/lastdbd" \
+  LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
+  "$STEP" CUTOVER >/dev/null
+tail -n 1 "$safe_log" | grep -q 'zero_live_soak=0$' \
+  || fail "ambient zero-live-soak reached default cutover"
+
+zero_soak_input="$(printf '%s' "$forward_input" | jq -c '. + {zero_live_soak:true}')"
+HOME="$mock_home" \
+  SAFE_LOG="$safe_log" \
+  LOOM_LIVE=1 \
+  LOOM_EXEC_ID=lx-test-zero-soak \
+  LOOM_INPUT="$zero_soak_input" \
+  LASTDB_SAFE_UPGRADE_CURRENT_BIN="$tmp/current-a/lastdbd" \
+  LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
+  "$STEP" CUTOVER >/dev/null
+tail -n 1 "$safe_log" | grep -q 'zero_live_soak=1$' \
+  || fail "Loom did not pass explicit zero-live-soak to cutover"
+
 set +e
 out="$("$DRIVER" --candidate "$tmp/candidate-b/lastdbd" --yes 2>&1)"
 rc=$?
@@ -973,6 +1007,8 @@ dry_a="$(LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
   "$LAUNCHER" --candidate "$tmp/candidate-a/lastdbd" --source-git-oid "$oid_a" --dry-run --json)"
 dry_b="$(LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
   "$LAUNCHER" --candidate "$tmp/candidate-b/lastdbd" --source-git-oid "$oid_b" --dry-run --json)"
+dry_b_zero="$(LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
+  "$LAUNCHER" --candidate "$tmp/candidate-b/lastdbd" --source-git-oid "$oid_b" --zero-live-soak --dry-run --json)"
 [ "$(printf '%s\n' "$dry_a" | jq -r .graph)" = "lastdb-safe-upgrade" ] \
   || fail "launcher did not select the safe-upgrade graph"
 version_a="$("$tmp/candidate-a/lastdbd" --version | awk '{print $NF}')"
@@ -983,6 +1019,12 @@ digest_b="$(artifact_digest "$oid_b" "$tmp/candidate-b/lastdbd" "$tmp/candidate-
   || fail "launcher key did not bind candidate A full tuple digest"
 [ "$(printf '%s\n' "$dry_b" | jq -r .key)" = "safe-upgrade-v6-$digest_b" ] \
   || fail "launcher key did not bind candidate B full tuple digest"
+[ "$(printf '%s\n' "$dry_b_zero" | jq -r .key)" = "safe-upgrade-v6-$digest_b-zero-live-soak" ] \
+  || fail "zero-live-soak reused the default Loom key"
+[ "$(printf '%s\n' "$dry_b_zero" | jq -r .zero_live_soak)" = true ] \
+  || fail "zero-live-soak receipt omitted the explicit policy"
+[ "$(printf '%s\n' "$dry_b" | jq -r .zero_live_soak)" = false ] \
+  || fail "default receipt reported zero-live-soak"
 [ "$(printf '%s\n' "$dry_a" | jq -r .candidate_artifact_digest)" = "$digest_a" ] \
   || fail "launcher output omitted candidate A artifact digest"
 [ "$(printf '%s\n' "$dry_a" | jq -r .safe_upgrade_protocol_version)" = 6 ] \

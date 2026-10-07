@@ -58,6 +58,14 @@ post_cutover_soak_green_in_bounds 300 300 3600 1 || {
   echo 'FAIL: GREEN at the minimum soak time was rejected' >&2
   exit 1
 }
+post_cutover_soak_green_in_bounds 0 0 3600 1 || {
+  echo 'FAIL: explicit zero-minute GREEN was rejected' >&2
+  exit 1
+}
+if post_cutover_soak_green_in_bounds 0 0 3600 0; then
+  echo 'FAIL: zero-minute cutover released rollback without a GREEN status' >&2
+  exit 1
+fi
 post_cutover_soak_green_in_bounds 3600 300 3600 1 || {
   echo 'FAIL: GREEN at the soak deadline was rejected' >&2
   exit 1
@@ -85,6 +93,10 @@ if post_cutover_status_check "$scratch/off.json" 100 1 1000 >/dev/null; then
   exit 1
 fi
 driver="$root/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh"
+rg -q '^SOAK_MIN_SECS=300$' "$driver" \
+  || { echo 'FAIL: default five-minute soak changed' >&2; exit 1; }
+rg -q '^    SOAK_MIN_SECS=0$' "$driver" \
+  || { echo 'FAIL: explicit zero-live-soak cannot remove the minimum' >&2; exit 1; }
 last_write_line="$(rg -n '^durability_write_sentinels$' "$driver" | tail -n 1 | cut -d: -f1)"
 last_verify_line="$(rg -n '^durability_verify_after_cutover$' "$driver" | tail -n 1 | cut -d: -f1)"
 soak_line="$(rg -n '^POST_CUTOVER_WRITE_DONE_S=' "$driver" | cut -d: -f1)"
