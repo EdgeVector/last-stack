@@ -39,9 +39,11 @@ baseline_stamp="$(probe_stamp_env_for_label baseline)"
   || fail "timed copies must use the same stamp setup"
 [ -z "$(probe_stamp_env_for_label primary)" ] \
   || fail "primary must not receive the copy stamp flag"
-[ "$(probe_stamp_env_for_label key-cap)" = 'LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1' ] \
-  || fail "the separate key-cap copy must exercise the conflict stamp"
-grep -q 'copy-only conflict stamp requested, completion not asserted' "$DRIVER" \
+[ -z "$(probe_stamp_env_for_label key-cap)" ] \
+  || fail "the key-cap copy must not run the conflict stamp"
+[ "$(probe_stamp_env_for_label smoke)" = 'LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1' ] \
+  || fail "the separate smoke copy must exercise the conflict stamp"
+grep -q 'real-data smoke copy: conflict stamp requested, completion not asserted' "$DRIVER" \
   || fail "the log must state that stamp completion is not checked"
 probe_copy_is_not_primary /tmp/probe-copy /tmp/probe-primary \
   || fail "distinct copy and primary must pass"
@@ -107,6 +109,10 @@ awk '
 ' "$DRIVER" >"$TMP/start.sh"
 grep -Fq 'stamp_env="$(probe_stamp_env_for_label "$label")"' "$TMP/start.sh" \
   || fail "node startup must use the tested stamp label rule"
+grep -Fq 'SMOKE_STAMP_ENV="$(probe_stamp_env_for_label smoke)"' "$DRIVER" \
+  || fail "the smoke copy must use the tested stamp label rule"
+grep -Fq '${SMOKE_STAMP_ENV:+"$SMOKE_STAMP_ENV"}' "$DRIVER" \
+  || fail "the smoke launch must use the copy-only stamp flag"
 if grep 'PlistBuddy' "$DRIVER" | grep -q 'LASTDB_BUILD_CONFLICT_STAMP_ON_COPY'; then
   fail "driver must not write the stamp flag into a plist"
 fi

@@ -5,4 +5,4 @@ path = Path("skills/lastdb-safe-upgrade/scripts/probe-copy-guards.sh")
 source = path.read_text()
 old = "smoke) printf '%s\\n' 'LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1' ;;"
 assert source.count(old) == 1, "expected one smoke copy flag rule"
-path.write_text(source.replace(old, "candidate) printf '%s\\n' 'LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1' ;;", 1))
+path.write_text(source.replace(old, "smoke) printf '\\n' ;;", 1))

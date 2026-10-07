@@ -26,7 +26,7 @@
 #      status.resident.persist_lane_failures and deferred_persist_failed at
 #      0 (incident 2026-10-04: f362b8e72 failed live on a card delete after
 #      every copy bar was GREEN). There is no skip.
-#      LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1 is set on the separate key-cap copy
+#      LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1 is set on the separate smoke copy
 #      and is not installed on the primary.
 #      AND the CANDIDATE CLASS BAR (incident 2026-08-01): refuse Cargo
 #      debug paths (target/debug), -dirty version stamps, and binaries
@@ -1053,8 +1053,8 @@ EOF_ENV
   if [ "${#env_pairs[@]}" -gt 0 ]; then
     log "$label metrics probe: mirroring live env: ${env_pairs[*]}"
   fi
-  # Timed latency copies receive no conflict-stamp job. The separate key-cap
-  # copy exercises it. Do not export the flag or write it into the primary.
+  # Timed latency and key-cap copies receive no conflict-stamp job. The
+  # separate smoke copy exercises it. Do not export the flag to the primary.
   local stamp_env
   stamp_env="$(probe_stamp_env_for_label "$label")"
   env -u SENTRY_DSN -u FOLD_SENTRY_DSN \
@@ -1110,7 +1110,7 @@ probe_key_cap_bar() {
   k_blog="$LAST_PROBE_BLOG"
   dir="${k_copy}.key-cap-samples"
   mkdir -p "$dir"
-  log "key-cap bar: $KEY_CAP_BAR_ENV=$KEY_CAP_BAR_CAP for ${KEY_CAP_BAR_SECS}s; copy-only conflict stamp requested, completion not asserted"
+  log "key-cap bar: $KEY_CAP_BAR_ENV=$KEY_CAP_BAR_CAP for ${KEY_CAP_BAR_SECS}s"
   start="$(date +%s)"
   while true; do
     if ! kill -0 "$k_pid" 2>/dev/null; then
@@ -2122,10 +2122,14 @@ ln -s "$SMOKE_SOURCE" "$SMOKE_HOME/.lastdb" \
   || die "could not bind the cloud-free smoke source"
 set +e
 SMOKE_OUT="$WORK/smoke.out"
+SMOKE_STAMP_ENV="$(probe_stamp_env_for_label smoke)"
+log "real-data smoke copy: conflict stamp requested, completion not asserted"
 env -u LASTDB_HOME -u FOLDDB_HOME -u LASTDB_DATA_DIR -u FOLD_SYNC_DEVICE_ID \
+  -u LASTDB_BUILD_CONFLICT_STAMP_ON_COPY \
   HOME="$SMOKE_HOME" \
   LASTDB_PROBE_ROOT="$PROBE_ROOT/smoke" \
   LASTDB_SMOKE_FAIL_LOG_DIR="$BACKUP/.safe-upgrade" \
+  ${SMOKE_STAMP_ENV:+"$SMOKE_STAMP_ENV"} \
   BIN="$CANDIDATE_BIN" bash "$SMOKE_SH" >"$SMOKE_OUT" 2>&1
 SMOKE_RC=$?
 set -e
@@ -2332,14 +2336,14 @@ else
   warn "latency bar SKIPPED (LASTDB_PROBE_LAT_SKIP=1) — Tom-clearance only; correct-but-slow will NOT be caught"
 fi
 
-# The conflict stamp stays on the separate key-cap copy. The primary plist must not carry it.
+# The conflict stamp stays on the separate smoke copy. The primary plist must not carry it.
 primary_stamp="$(probe_plist_stamp_value "$LAUNCHD_PLIST")"
 if ! probe_stamp_env_allowed primary "$primary_stamp"; then
   echo ""
   echo "VERDICT: RED"
   echo "REASON: primary LaunchAgent sets LASTDB_BUILD_CONFLICT_STAMP_ON_COPY; the ephemeral copy stamp must not be installed on the primary home"
   echo "BACKUP: $BACKUP  (kept; primary NOT upgraded)"
-  echo "NEXT:   remove LASTDB_BUILD_CONFLICT_STAMP_ON_COPY from the primary plist. The driver sets it on the separate key-cap copy only."
+  echo "NEXT:   remove LASTDB_BUILD_CONFLICT_STAMP_ON_COPY from the primary plist. The driver sets it on the separate smoke copy only."
   exit 1
 fi
 set +e
