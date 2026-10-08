@@ -29,6 +29,8 @@ cat >"$tmp/records.json" <<'JSON'
    "body": "Status: OPEN\nRepo: EdgeVector/last-stack\nThe delivered half is done. Residual claim 1 is unchanged and is why this record stays open.\n"},
   {"slug": "papercut-keep-open-structured", "title": "Record uses the structured marker", "status": "open",
    "body": "Status: OPEN\nRepo: EdgeVector/last-stack\nKeep-open: only the instrument shipped; the titled claim stands\n"},
+  {"slug": "papercut-keep-open-definite-article", "title": "Reopen restated as a fact, not a directive", "status": "open",
+   "body": "Status: OPEN\nRepo: EdgeVector/last-stack\nSo the row stays OPEN, for a reason adjacent to the one I wrote: the structural remedy was never shipped.\n"},
   {"slug": "papercut-describes-staying-open", "title": "Its DEFECT is about things staying open", "status": "open",
    "body": "Status: OPEN\nRepo: EdgeVector/last-stack\nSymptom: papercuts stay open after the card that names them merges; the closer skips no-review-ref.\n"},
   {"slug": "papercut-verb-no-card", "title": "A repair VERB needs no card markers", "status": "open",
@@ -73,9 +75,11 @@ case "$route" in
     printf '['; pr last-stack 17 true 'Papercut: papercut-keeps-itself-open'; printf ']\n' ;;
   "repos/issues/search?q=papercut-keep-open-structured&"*)
     printf '['; pr last-stack 18 true 'Papercut: papercut-keep-open-structured'; printf ']\n' ;;
+  "repos/issues/search?q=papercut-keep-open-definite-article&"*)
+    printf '['; pr last-stack 20 true 'Papercut: papercut-keep-open-definite-article'; printf ']\n' ;;
   "repos/issues/search?q=papercut-describes-staying-open&"*)
     printf '['; pr last-stack 19 true 'Papercut: papercut-describes-staying-open'; printf ']\n' ;;
-  repos/EdgeVector/last-stack/pulls/11|repos/EdgeVector/last-stack/pulls/15|repos/EdgeVector/last-stack/pulls/16|repos/EdgeVector/last-stack/pulls/17|repos/EdgeVector/last-stack/pulls/18|repos/EdgeVector/last-stack/pulls/19)
+  repos/EdgeVector/last-stack/pulls/11|repos/EdgeVector/last-stack/pulls/15|repos/EdgeVector/last-stack/pulls/16|repos/EdgeVector/last-stack/pulls/17|repos/EdgeVector/last-stack/pulls/18|repos/EdgeVector/last-stack/pulls/19|repos/EdgeVector/last-stack/pulls/20)
     printf '{"state":"closed","merged":true}\n' ;;
   *)
     echo "404 Not Found: $route" >&2
@@ -116,7 +120,14 @@ assert set(fixed) == {
     "papercut-describes-staying-open",
 }, sorted(fixed)
 keep = {s["slug"]: s for s in data["skipped"] if s.get("slug")}
-for slug in ("papercut-keeps-itself-open", "papercut-keep-open-structured"):
+for slug in (
+    "papercut-keeps-itself-open",
+    "papercut-keep-open-structured",
+    # "the row stays OPEN" — a reopen restated as a fact with the definite
+    # article, not "this record ...". Must be kept open by the widened prose
+    # arm (papercut-lifecycle-closer-silently-reverts-a-reopen-without-the-exact-keep-open-phrase-20261007).
+    "papercut-keep-open-definite-article",
+):
     assert keep[slug]["reason"] == "keep-open-asserted", (slug, keep.get(slug))
     assert keep[slug].get("marker"), (slug, keep[slug])
 f = fixed["papercut-labeled-fix"]
@@ -148,7 +159,11 @@ python3 - "$tmp/override.json" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 fixed = {f["slug"] for f in data["fixed"]}
-assert {"papercut-keeps-itself-open", "papercut-keep-open-structured"} <= fixed, sorted(fixed)
+assert {
+    "papercut-keeps-itself-open",
+    "papercut-keep-open-structured",
+    "papercut-keep-open-definite-article",
+} <= fixed, sorted(fixed)
 PY
 
 echo "ok: lifecycle closer closes on a labeled repair line in a merged PR, never on prose, unmerged, or prefix matches, and never against a record that asserts it must stay open"
