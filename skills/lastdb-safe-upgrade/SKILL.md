@@ -291,7 +291,9 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
 7d. **Hard-delete bar (the purge lane must not fail).** On the candidate's
    latency copy, after every timed read, the driver writes a scratch kanban
    card (`lastdb-safe-upgrade-hard-delete-probe-<pid>`, column `backlog`) and
-   hard-deletes it with `kanban rm`. The CLI reaches the copy through
+   hard-deletes it with `kanban rm`. The gate gives `kanban rm` 180 s.
+   The `kanban add` and `kanban show` calls each keep a 90 s limit.
+   The CLI reaches the copy through
    `FOLDDB_SOCKET_PATH=<copy>/data/folddb.sock`. The driver then samples
    `/api/status` every 10 s for at most 150 s
    (`LASTDB_PROBE_HARD_DELETE_SECS`). The window covers the keep_small

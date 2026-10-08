@@ -28,7 +28,9 @@ HARD_DELETE_BAR_POLL_SECS="${LASTDB_PROBE_HARD_DELETE_POLL_SECS:-10}"
 # AND this much time: one keep_small persist interval (30 s) plus margin.
 HARD_DELETE_BAR_MIN_SECS="${LASTDB_PROBE_HARD_DELETE_MIN_SECS:-40}"
 HARD_DELETE_SLUG_PREFIX="lastdb-safe-upgrade-hard-delete-probe"
+# Kanban rm reads by key before the exact delete, so it has its own limit.
 HARD_DELETE_KANBAN_DEADLINE_SECS=90
+HARD_DELETE_RM_DEADLINE_SECS=180
 
 # $1 = one /api/status capture. Prints "<persist_lane_failures>
 # <deferred_persist_failed> <keep_small_last_compacted_at_unix_s>", with -1 for
@@ -180,9 +182,10 @@ hard_delete_bar_eval() {
 # socket source in the kanban CLI (src/config.ts resolveSocketPath), the same
 # route op_lat_scan uses. $1 = copy, $2 = copy socket, rest = kanban args.
 hd_kanban_on_copy() {
-  local copy="$1" sock="$2"
+  local copy="$1" sock="$2" deadline="$HARD_DELETE_KANBAN_DEADLINE_SECS"
   shift 2
-  run_op_with_deadline "$HARD_DELETE_KANBAN_DEADLINE_SECS" env FOLDDB_SOCKET_PATH="$sock" LASTDB_HOME="$copy" FOLDDB_HOME="$copy" \
+  [ "${1:-}" != rm ] || deadline="$HARD_DELETE_RM_DEADLINE_SECS"
+  run_op_with_deadline "$deadline" env FOLDDB_SOCKET_PATH="$sock" LASTDB_HOME="$copy" FOLDDB_HOME="$copy" \
     kanban "$@"
 }
 
@@ -249,12 +252,12 @@ probe_hard_delete_bar() {
   fi
   if [ "$present" -eq 1 ]; then
     del_at="$(date +%s)"
-    log "hard-delete bar: stage=rm start_unix_s=$del_at deadline_s=$HARD_DELETE_KANBAN_DEADLINE_SECS"
+    log "hard-delete bar: stage=rm start_unix_s=$del_at deadline_s=$HARD_DELETE_RM_DEADLINE_SECS"
     rm_rc=0
     hd_kanban_on_copy "$copy" "$sock" rm "$slug" >"$dir/rm.out" 2>"$dir/rm.err" || rm_rc=$?
     hd_log_step rm "$rm_rc" "$del_at" "$dir/rm.out" "$dir/rm.err"
     if [ "$rm_rc" -eq 124 ]; then
-      warn "hard-delete bar: stage=rm deadline_result=124 deadline_s=$HARD_DELETE_KANBAN_DEADLINE_SECS; the CLI may still have an active request on the candidate copy"
+      warn "hard-delete bar: stage=rm deadline_result=124 deadline_s=$HARD_DELETE_RM_DEADLINE_SECS; the CLI may still have an active request on the candidate copy"
     fi
     if [ "$rm_rc" -eq 0 ]; then
       step_started="$(date +%s)"

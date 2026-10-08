@@ -202,15 +202,32 @@ fi
 if want 11; then
   FAKE_RM_TIMEOUT=1 run_case 11 0:0 0:0
   expect 11 red 'kanban rm lastdb-safe-upgrade-hard-delete-probe-[0-9]* failed on the copy (rc=124)'
-  grep -q 'hard-delete bar: stage=rm start_unix_s=.* deadline_s=90' "$TMP/11.probe.log" \
+  grep -q 'hard-delete bar: stage=rm start_unix_s=.* deadline_s=180' "$TMP/11.probe.log" \
     || fail "case 11: the rm start marker is absent"
   grep -q 'hard-delete bar: stage=rm rc=124 elapsed_s=[0-9]* stdout_bytes=0 stderr_bytes=[1-9][0-9]*' "$TMP/11.probe.log" \
     || fail "case 11: the rm result marker is absent"
-  grep -q 'hard-delete bar: stage=rm deadline_result=124 deadline_s=90' "$TMP/11.probe.log" \
+  grep -q 'hard-delete bar: stage=rm deadline_result=124 deadline_s=180' "$TMP/11.probe.log" \
     || fail "case 11: the deadline marker is absent"
   if grep -q 'private probe error text' "$TMP/11.probe.log"; then
     fail "case 11: raw CLI error text leaked into the retained log"
   fi
+fi
+
+# 12. Only rm gets the longer deadline. The other calls stay at 90 seconds.
+if want 12; then
+  (
+    # shellcheck disable=SC2329 # probe_hard_delete_bar calls this override.
+    run_op_with_deadline() {
+      local seconds="$1"
+      shift
+      printf '%s\n' "$seconds" >>"$TMP/12.deadlines"
+      "$@"
+    }
+    run_case 12 0:0 0:0
+    expect 12 green 'hard-delete bar GREEN:'
+    actual="$(paste -sd, "$TMP/12.deadlines")"
+    [ "$actual" = '90,90,180,90' ] || fail "case 12: deadlines for add, show-before, rm, show-after must be 90,90,180,90; actual=$actual"
+  )
 fi
 
 # --- driver wiring -----------------------------------------------------------
