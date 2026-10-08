@@ -191,13 +191,9 @@ if [ ! -d "$PRIMARY_HOME" ] || [ ! -f "$PRIMARY_HOME/identity.key" ]; then
   fail_red "live home missing identity.key at $PRIMARY_HOME"
 fi
 
-log "cloning $PRIMARY_HOME -> $copy (cp -R)"
+log "cloning $PRIMARY_HOME -> $copy (cp -R, without $(probe_copy_excluded_path))"
 rm -rf "$copy"
-if stat --version >/dev/null 2>&1; then
-  cp -R "$PRIMARY_HOME" "$copy" 2>/dev/null || true
-else
-  cp -cR "$PRIMARY_HOME" "$copy" 2>/dev/null || true
-fi
+probe_clone_home "$PRIMARY_HOME" "$copy" || true
 if [ ! -d "$copy" ] || [ ! -f "$copy/identity.key" ] || [ ! -d "$copy/data" ]; then
   fail_red "CoW clone incomplete at $copy"
 fi

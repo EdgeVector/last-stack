@@ -1132,11 +1132,9 @@ clone_probe_home() {
     return 1
   fi
   remove_probe_copy "$copy" || return 1
-  if stat --version >/dev/null 2>&1; then
-    cp -R "$PRIMARY_HOME" "$copy" 2>/dev/null || true
-  else
-    cp -cR "$PRIMARY_HOME" "$copy" 2>/dev/null || true
-  fi
+  # Leaves out apps/search/inbox/done (see probe_copy_excluded_path). The
+  # rollback point below is a full clone and keeps it.
+  probe_clone_home "$PRIMARY_HOME" "$copy" || true
   if [ ! -d "$copy" ] || [ ! -f "$copy/identity.key" ] || [ ! -d "$copy/data" ]; then
     warn "$label metrics probe: CoW clone incomplete"
     remove_probe_copy "$copy" || return 1

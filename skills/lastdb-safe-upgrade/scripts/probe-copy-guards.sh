@@ -134,3 +134,97 @@ probe_strip_cloud_state() {
     [ ! -e "$path" ] && [ ! -L "$path" ] || return 1
   done
 }
+
+# The one path, relative to the home, that a PROBE copy leaves out.
+#
+# apps/search/inbox/done holds the Search app's processed batches (215,628
+# files on 2026-10-08). The daemon only writes the Search inbox. It never reads
+# done/. A probe boots the daemon and the CLIs, never the Search app, so nothing
+# on a probe reads done/. One APFS clone of it took about 13 minutes and one
+# removal about 8 minutes
+# (papercut-safe-upgrade-probes-copy-search-receipts-20261007).
+#
+# The rollback point (step 1), the DEV photograph copy and the stopped-home
+# backup copy do NOT use this list. done/ is the replay source of
+# `search bootstrap`, so a copy that can restore the primary keeps it.
+probe_copy_excluded_path() {
+  printf '%s\n' 'apps/search/inbox/done'
+}
+
+# $1 = path. Print its permission bits in octal (BSD or GNU stat).
+probe_clone_mode_of() {
+  if stat --version >/dev/null 2>&1; then
+    stat -c '%a' "$1"
+  else
+    stat -f '%Lp' "$1"
+  fi
+}
+
+# $1 = source path, $2 = destination (must not exist). One clone of one entry.
+# The exit code is ignored on purpose: a live socket under data/ cannot be
+# copied and makes cp exit non-zero. The caller checks the copy is complete.
+probe_clone_entry() {
+  if stat --version >/dev/null 2>&1; then
+    cp -R "$1" "$2" 2>/dev/null || true
+  else
+    cp -cR "$1" "$2" 2>/dev/null || true
+  fi
+}
+
+# $1 = source dir, $2 = destination dir (created), $3 = path of $1 relative to
+# the home ("" for the home), $4 = relative path to leave out.
+# Clone every entry of $1 except $4. A directory on the way to $4 is created and
+# filled one level at a time. Every other entry is one clone. A symlink on the
+# way to $4 is copied as a link and never followed, so nothing outside the home
+# is read through it.
+probe_clone_dir_without() {
+  local src="$1" dst="$2" rel="$3" skip="$4" entry name child_rel mode
+  mode="$(probe_clone_mode_of "$src")" || mode=""
+  mkdir "$dst" || return 1
+  for entry in "$src"/* "$src"/.[!.]* "$src"/..?*; do
+    if [ ! -e "$entry" ] && [ ! -L "$entry" ]; then
+      continue
+    fi
+    name="${entry##*/}"
+    if [ -n "$rel" ]; then
+      child_rel="$rel/$name"
+    else
+      child_rel="$name"
+    fi
+    if [ "$child_rel" = "$skip" ]; then
+      continue
+    fi
+    case "$skip" in
+      "$child_rel"/*)
+        if [ -d "$entry" ] && [ ! -L "$entry" ]; then
+          probe_clone_dir_without "$entry" "$dst/$name" "$child_rel" "$skip" \
+            || return 1
+          continue
+        fi
+        ;;
+    esac
+    probe_clone_entry "$entry" "$dst/$name"
+  done
+  if [ -n "$mode" ]; then
+    chmod "$mode" "$dst" || return 1
+  fi
+}
+
+# $1 = primary home, $2 = probe copy (must not exist). Clone the home for a
+# probe, without probe_copy_excluded_path. Each top-level entry is its own
+# clone, so the entries are not one point in time; data/ is still one clone.
+# LASTDB_PROBE_COPY_FULL=1 clones everything (the behaviour before 2026-10-08),
+# to reproduce a problem on a full copy. Returns non-zero when the copy cannot
+# start; the caller still checks identity.key and data/ afterwards.
+probe_clone_home() {
+  local src="$1" dst="$2"
+  if [ ! -d "$src" ] || [ -e "$dst" ] || [ -L "$dst" ]; then
+    return 1
+  fi
+  probe_copy_is_not_primary "$dst" "$src" || return 1
+  if [ "${LASTDB_PROBE_COPY_FULL:-0}" = "1" ]; then
+    probe_clone_entry "$src" "$dst"
+    return 0
+  fi
+  probe_clone_dir_without "$src" "$dst" "" "$(probe_copy_excluded_path)"
+}
