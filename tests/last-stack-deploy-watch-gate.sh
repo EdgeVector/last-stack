@@ -105,4 +105,12 @@ grep -q -- "--repo site --oid $D" "$tmp/deploy.log" || fail "github deploy args"
 E="$(printf 'e%.0s' {1..40})"; echo "$E" >"$tmp/tip.txt"; echo pending >"$tmp/gstatus.txt"
 out="$(grun)"; grep -q "site=ci_pending@${E:0:12}" <<<"$out" || fail "github pending: $out"
 
+# The shipped config reads every repo from GitHub: no Forgejo root, no forgejo venue
+# (lastgit, the last Forgejo repo, moved to GitHub on 2026-10-08).
+SHIPPED="$ROOT/config/deploy/repos.json"
+jq -e '(.defaults | has("forge_root") | not) and .defaults.venue == "github"
+       and ([.repos[] | select((.venue // "github") != "github")] | length == 0)' "$SHIPPED" >/dev/null \
+  || fail "shipped config/deploy/repos.json still names a Forgejo root or a non-GitHub venue"
+if jq -r '.. | strings' "$SHIPPED" | grep -q 'localhost:3300'; then fail "shipped config still names localhost:3300"; fi
+
 echo "PASS last-stack-deploy-watch-gate"

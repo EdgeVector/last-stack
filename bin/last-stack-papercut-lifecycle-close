@@ -140,8 +140,10 @@ REF_TOKEN_TRIM = "`'\"*_~,;:.!?()[]{}<>"
 # Repos whose PRs have a Forgejo history. A ref that says "Forgejo" (a `PR: Forgejo #N`
 # line, a `papercut-pipeline-stuck-forge-*` slug, a `-cr-<repo>-<n>` slug, an aggregate
 # row's own repo) still resolves against the Forge API: a moved repo's Forgejo copy is
-# archived read-only and keeps every old PR. `lastgit` is the one repo whose PRs are
-# still live on Forgejo.
+# archived read-only and keeps every old PR. `lastgit` joined them on 2026-10-08 (it
+# moved to GitHub with EdgeVector/lastgit#5): its Forgejo PRs are history too, reached
+# only by an explicit Forgejo ref. A generic `stuck-pr` ref for lastgit is a LIVE PR, so
+# github_venue_repos() (config/merge-demand-github-repos) sends it to GitHub.
 FORGE_VENUE_REPOS = frozenset({"fold", "lastgit", "exemem-infra", "exemem-workspace"})
 GITHUB_REPOS_FILE_DEFAULT = Path(__file__).resolve().parent.parent / "config" / "merge-demand-github-repos"
 
@@ -149,8 +151,8 @@ GITHUB_REPOS_FILE_DEFAULT = Path(__file__).resolve().parent.parent / "config" / 
 def github_venue_repos() -> frozenset[str]:
     """Repo names (no owner) whose CURRENT PRs live on GitHub.
 
-    Every EdgeVector repo except lastgit moved to GitHub by 2026-09-30
-    (decision-2026-09-29-retire-lastgit-all-repos-to-github). A stuck-PR slug that
+    Every EdgeVector repo moved to GitHub (lastgit, the last one, on 2026-10-08;
+    decision-2026-09-29-retire-lastgit-all-repos-to-github). A stuck-PR slug that
     does not say "forge" names a live PR, so for these repos it is a GitHub PR.
     Source: LAST_STACK_MERGE_DEMAND_GITHUB_REPOS (comma list) or config/merge-demand-github-repos.
     """

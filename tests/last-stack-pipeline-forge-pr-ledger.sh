@@ -728,4 +728,83 @@ jq -e '[.prs[] | select(.repo == "EdgeVector/fold")] | length == 1' "$tmp/gh-sca
   || { echo "FAIL fold not scanned from the GitHub list"; cat "$tmp/gh-scan2.json"; exit 1; }
 echo "ok   fold demand is non-zero when a GitHub PR is open (no Forgejo call)"
 
+# 13. lastgit moved to GitHub (2026-10-08). With NO env override of either list the
+# shipped config and the code defaults must read EdgeVector/lastgit through gh and
+# never call the Forge API. Before this change FALLBACK_REPOS and FORGEJO_ONLY_REPOS
+# named lastgit, so the scan raised ForgeError for it as soon as Forgejo stopped
+# (pipeline-health went red).
+cat >"$tmp/gh-all" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = api ] || { echo "fake gh: unsupported $*" >&2; exit 2; }
+echo "$2" >>"$FAKE_GH_ALL_LOG"
+case "$2" in
+  repos/EdgeVector/lastgit/pulls\?state=open*)
+    printf '%s\n' '[{"number":5,"state":"open","draft":false,"title":"migrate","created_at":"2026-09-22T10:00:00Z","updated_at":"2026-09-22T10:30:00Z","head":{"sha":"ccc333","ref":"gh/migrate"},"base":{"ref":"main"}}]' ;;
+  repos/EdgeVector/*/pulls\?state=open*) printf '%s\n' '[]' ;;
+  repos/EdgeVector/lastgit/pulls/5) printf '%s\n' '{"number":5,"mergeable":true,"auto_merge":null}' ;;
+  repos/EdgeVector/*/branches/main/protection/required_status_checks)
+    printf '%s\n' '{"contexts":["ci-required"],"checks":[]}' ;;
+  repos/EdgeVector/*/branches/main) printf '%s\n' '{"commit":{"sha":"bbb222"}}' ;;
+  repos/EdgeVector/*/commits/ccc333/check-runs*)
+    printf '%s\n' '{"check_runs":[{"name":"ci-required","status":"queued","conclusion":null}]}' ;;
+  repos/EdgeVector/*/commits/bbb222/check-runs*)
+    printf '%s\n' '{"check_runs":[{"name":"ci-required","status":"completed","conclusion":"success","completed_at":"2026-09-22T09:00:00Z"}]}' ;;
+  *) echo "fake gh: no fixture for $2" >&2; exit 1 ;;
+esac
+SH
+cat >"$tmp/forge-dead" <<'SH'
+#!/usr/bin/env bash
+echo "forge api must not be called once every repo is on GitHub: $*" >>"$FAKE_FORGE_DEAD_LOG"
+exit 9
+SH
+chmod +x "$tmp/gh-all" "$tmp/forge-dead"
+export FAKE_GH_ALL_LOG="$tmp/gh-all.log" FAKE_FORGE_DEAD_LOG="$tmp/forge-dead.log"
+: >"$FAKE_GH_ALL_LOG"; : >"$FAKE_FORGE_DEAD_LOG"
+set +e
+env -u LAST_STACK_MERGE_DEMAND_GITHUB_REPOS -u LAST_STACK_MERGE_DEMAND_FORGE_REPOS \
+  LAST_STACK_LEDGER_GH="$tmp/gh-all" LAST_STACK_FORGE_API="$tmp/forge-dead" \
+  "$LEDGER" scan --json >"$tmp/lastgit-default.json"
+scan_rc=$?
+set -e
+[ "$scan_rc" -eq 0 ] \
+  || { echo "FAIL default scan must read EdgeVector/lastgit from GitHub (scan rc=$scan_rc)"; cat "$tmp/lastgit-default.json" "$FAKE_FORGE_DEAD_LOG"; exit 1; }
+jq -e '(.unreadable | length) == 0
+       and ([.repos[].repo] | index("EdgeVector/lastgit") != null)
+       and ([.prs[] | select(.repo == "EdgeVector/lastgit" and .number == 5)] | length == 1)' \
+  "$tmp/lastgit-default.json" >/dev/null \
+  || { echo "FAIL default scan must read EdgeVector/lastgit from GitHub"; cat "$tmp/lastgit-default.json"; exit 1; }
+[ ! -s "$FAKE_FORGE_DEAD_LOG" ] \
+  || { echo "FAIL default scan called the Forge API"; cat "$FAKE_FORGE_DEAD_LOG"; exit 1; }
+grep -q '^repos/EdgeVector/lastgit/pulls?state=open' "$FAKE_GH_ALL_LOG" \
+  || { echo "FAIL default scan did not read lastgit through gh"; cat "$FAKE_GH_ALL_LOG"; exit 1; }
+# An empty Forge list adds no Forgejo repo of its own: with an exact GitHub list of one
+# repo, the scan reads that repo and nothing else, and never calls the Forge API.
+# (Before, FALLBACK_REPOS put EdgeVector/lastgit back on the Forgejo path here.)
+: >"$FAKE_GH_ALL_LOG"; : >"$FAKE_FORGE_DEAD_LOG"
+set +e
+env -u LAST_STACK_MERGE_DEMAND_FORGE_REPOS LAST_STACK_MERGE_DEMAND_GITHUB_REPOS="EdgeVector/fold" \
+  LAST_STACK_LEDGER_GH="$tmp/gh-all" LAST_STACK_FORGE_API="$tmp/forge-dead" \
+  "$LEDGER" scan --json >"$tmp/fold-only.json"
+scan_rc=$?
+set -e
+[ "$scan_rc" -eq 0 ] \
+  || { echo "FAIL an empty Forge list must add no repo of its own (scan rc=$scan_rc)"; cat "$tmp/fold-only.json" "$FAKE_FORGE_DEAD_LOG"; exit 1; }
+jq -e '([.repos[].repo] == ["EdgeVector/fold"]) and (.unreadable | length) == 0' "$tmp/fold-only.json" >/dev/null \
+  || { echo "FAIL an empty Forge list must add no repo of its own"; cat "$tmp/fold-only.json"; exit 1; }
+[ ! -s "$FAKE_FORGE_DEAD_LOG" ] \
+  || { echo "FAIL an empty Forge list led to a Forge API call"; cat "$FAKE_FORGE_DEAD_LOG"; exit 1; }
+# is_github_repo: lastgit is a GitHub repo, not a Forgejo-only one.
+python3 - "$LEDGER" <<'PY'
+import importlib.machinery, importlib.util, os, sys
+os.environ.pop("LAST_STACK_MERGE_DEMAND_GITHUB_REPOS", None)
+loader = importlib.machinery.SourceFileLoader("ledger", sys.argv[1])
+spec = importlib.util.spec_from_loader("ledger", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+assert mod.is_github_repo("EdgeVector/lastgit") is True, "lastgit must be a GitHub repo"
+assert mod.is_github_repo("EdgeVector/fold") is True
+print("ok")
+PY
+echo "ok   lastgit is a GitHub repo: default scan reads it through gh, no Forgejo call"
+
 echo "PASS last-stack-pipeline-forge-pr-ledger"

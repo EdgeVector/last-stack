@@ -10,6 +10,8 @@
 #          from the merge-gate homes (no `heavy` label on merge-gate homes).
 #          A policy with heavy.retired=true needs no heavy lane (the repos it
 #          served moved to GitHub) and is judged on the separation alone.
+#          A policy with merge_gate.retired=true (no repo is gated on Forgejo)
+#          demands no merge-gate runner under --live either.
 # --live   also poll Forgejo API (admin + repo runners) when reachable.
 # --json   machine-readable report.
 #
@@ -288,6 +290,9 @@ heavy_ok_local = any(
 # served moved to GitHub. --check then judges only that no merge-gate home
 # advertises a heavy label.
 heavy_retired = bool(policy.get("heavy", {}).get("retired", False))
+# A retired merge-gate lane (policy merge_gate.retired = true: no repo is gated on
+# Forgejo) demands no runner: --live does not flag mac-forge-runner as offline.
+merge_gate_retired = bool(policy.get("merge_gate", {}).get("retired", False))
 if heavy_retired:
     heavy_ok_local = True
 
@@ -482,7 +487,12 @@ if live and live_report.get("ok"):
     heavy_ok_live = any(not runner_down(r) for r in live_report.get("heavy_online") or [])
     # The merge-gate runners the policy names (mac-forge-runner)
     # carry labels that required jobs pin; one of them offline is a lane down.
-    expected = [str(n) for n in policy.get("merge_gate", {}).get("expected_global_runners") or []]
+    # A retired merge gate (no repo is gated on Forgejo) demands no runner.
+    expected = (
+        []
+        if merge_gate_retired
+        else [str(n) for n in policy.get("merge_gate", {}).get("expected_global_runners") or []]
+    )
     by_name = {str(r.get("name")): r for r in live_report.get("merge_gate_online") or []}
     for name in expected:
         row = by_name.get(name)
@@ -513,6 +523,7 @@ report = {
     "heavy_ok_local": heavy_ok_local,
     "heavy_ok_live": heavy_ok_live if live else None,
     "heavy_retired": heavy_retired,
+    "merge_gate_retired": merge_gate_retired,
     "merge_gate_has_heavy": merge_gate_has_heavy,
     "separated_from_merge_gate": separated,
     "heavy_ok": heavy_ok,

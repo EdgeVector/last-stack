@@ -4,7 +4,8 @@
 #
 #   1. read the tip of `ref` (default refs/heads/main) from the repo's venue
 #      (github by default, via `gh`; forgejo only for a repo whose entry says
-#      "venue": "forgejo", which today is only the `lastgit` repo)
+#      "venue": "forgejo", which today is no repo: `lastgit`, the last one, moved
+#      to GitHub on 2026-10-08)
 #   2. if it differs from the last receipt for that repo and the commit's
 #      CI state is `success` (GitHub: the `ci-required` check run; Forgejo:
 #      the combined commit status), start the deploy-main Loom

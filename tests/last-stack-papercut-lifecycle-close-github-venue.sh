@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A generic `papercut-pipeline-stuck-pr-<repo>-<n>` slug names a LIVE PR. Since
-# 2026-09-30 every EdgeVector repo except lastgit is on GitHub, so for a moved
-# repo the ref is a GitHub PR, not a Forgejo one. An explicit Forgejo ref
+# 2026-10-08 every EdgeVector repo is on GitHub (lastgit was the last), so for a
+# moved repo the ref is a GitHub PR, not a Forgejo one. An explicit Forgejo ref
 # (`stuck-forge` slug) still resolves on the archived Forgejo copy. Fixture only.
 set -euo pipefail
 
@@ -29,9 +29,15 @@ assert got == [("github", "https://github.com/EdgeVector/fold/pull/1902")], got
 # Moved repo, no Repo header: still GitHub (the repo is on the GitHub list).
 got = refs("papercut-pipeline-stuck-pr-loom-12", "Status: OPEN\n")
 assert got == [("github", "https://github.com/EdgeVector/loom/pull/12")], got
-# lastgit stays Forgejo.
+# lastgit moved to GitHub on 2026-10-08 (it was the last Forgejo repo): a generic
+# stuck-pr slug names a live PR, so it is a GitHub PR like every other repo.
 got = refs("papercut-pipeline-stuck-pr-lastgit-90", "Status: OPEN\n")
-assert got == [("forge", "EdgeVector/lastgit/pulls/90")], got
+assert got == [("github", "https://github.com/EdgeVector/lastgit/pull/90")], got
+got = refs("papercut-pipeline-stuck-pr-lastgit-7", "Status: OPEN\nRepo: EdgeVector/lastgit\n")
+assert got == [("github", "https://github.com/EdgeVector/lastgit/pull/7")], got
+# Its Forgejo history is still reachable by an explicit Forgejo slug.
+got = refs("papercut-pipeline-stuck-forge-lastgit-pr-90", "Status: OPEN\nRepo: EdgeVector/lastgit\nPR: Forgejo #90\n")
+assert ("forge", "EdgeVector/lastgit/pulls/90") in got, got
 # An explicit Forgejo slug for a moved repo still resolves on the archived copy.
 got = refs("papercut-pipeline-stuck-forge-fold-pr-826", "Status: OPEN\nRepo: EdgeVector/fold\nPR: Forgejo #826\n")
 assert ("forge", "EdgeVector/fold/pulls/826") in got, got

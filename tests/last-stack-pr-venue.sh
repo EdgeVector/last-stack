@@ -46,15 +46,21 @@ git -C "$repo" update-ref refs/remotes/origin/main "$initial_head"
 # the machine it happens to run on.
 unset LAST_STACK_LASTGIT_NATIVE_REPOS
 
-# Defaults without marker. 2026-09-30 (Tom): every EdgeVector repo is on GitHub,
-# including an unknown one. Only the `lastgit` repo stays on Forgejo. LastGit is
-# retired (decision-2026-09-29-retire-lastgit-all-repos-to-github).
-for name in last-stack fkanban routines loom brain fold exemem-infra schema-infra configurations situations never-heard-of-it Keepside_Desktop; do
+# Defaults without marker. 2026-10-08 (Tom): every EdgeVector repo is on GitHub,
+# including an unknown one and `lastgit` (the last repo on the local Forgejo, which
+# is being retired). LastGit is retired
+# (decision-2026-09-29-retire-lastgit-all-repos-to-github).
+for name in last-stack fkanban routines loom brain fold exemem-infra schema-infra configurations situations never-heard-of-it Keepside_Desktop lastgit; do
   test "$("$ROOT/bin/last-stack-pr-venue" "EdgeVector/$name" "$repo")" = "github" \
     || { echo "FAIL: EdgeVector/$name must default to github" >&2; exit 1; }
 done
-test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/lastgit "$repo")" = "forgejo"
-test "$("$ROOT/bin/last-stack-pr-venue" --json EdgeVector/lastgit "$repo" | jq -r .reason)" = "default:forgejo-lastgit-repo"
+# lastgit used to be the one `default:forgejo-lastgit-repo` case. It is a plain
+# GitHub repo now, with the same reason as every other default.
+test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/lastgit "$repo")" = "github"
+test "$("$ROOT/bin/last-stack-pr-venue" --json EdgeVector/lastgit "$repo" | jq -r .reason)" = "default:github"
+test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/lastgit)" = "github"
+# Forgejo stays reachable only as an explicit per-repo opt-in.
+test "$(LAST_STACK_FORGEJO_REPOS="EdgeVector/lastgit" "$ROOT/bin/last-stack-pr-venue" EdgeVector/lastgit)" = "forgejo"
 test "$("$ROOT/bin/last-stack-pr-venue" --json EdgeVector/never-heard-of-it "$repo" | jq -r .reason)" = "default:github"
 # No repo root at all still answers github (a routine shell has none).
 test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/loom)" = "github"
