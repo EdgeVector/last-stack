@@ -20,6 +20,10 @@ grep -Fq 'probe_clone_home_without_search_receipts "$PRIMARY_HOME" "$copy"' "$dr
 # shellcheck disable=SC2016
 grep -Fq 'probe_clone_home_without_search_receipts "$PRIMARY_HOME" "$copy"' "$write_probe" \
   || fail 'write-path probe does not use the receipt-free copy'
+grep -Fq '[ "$copy_rc" -gt 1 ]' "$driver" \
+  || fail 'safe-upgrade metrics probe ignores an unsafe copy status'
+grep -Fq '[ "$copy_rc" -le 1 ] || fail_red' "$write_probe" \
+  || fail 'write-path probe ignores an unsafe copy status'
 
 tmp="$(mktemp -d "${TMPDIR:-/private/tmp}/probe-search-receipts.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
@@ -44,6 +48,7 @@ printf 'search state\n' >"$source_home/apps/search/state"
 cat >"$tmp/bin/cp" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$2" >>"$PROBE_CP_TRACE"
+[ "${PROBE_FAIL_SOURCE:-}" != "$2" ] || exit 17
 exec /bin/cp "$@"
 EOF
 chmod 700 "$tmp/bin/cp"
@@ -76,5 +81,32 @@ while IFS= read -r copied_source; do
       ;;
   esac
 done <"$PROBE_CP_TRACE"
+
+failure_home="$tmp/failure-copy"
+failure_rc=0
+PROBE_FAIL_SOURCE="$source_home/apps/search/inbox/pending" \
+  PROBE_CP_TRACE="$tmp/failure-cp-sources" PATH="$tmp/bin:$PATH" \
+  probe_clone_home_without_search_receipts "$source_home" "$failure_home" \
+  || failure_rc=$?
+[ "$failure_rc" -eq 1 ] || fail 'cp failure did not return its tolerated status'
+for relative in identity.key data/atom apps/other/inbox/done/item.json \
+  apps/search/state; do
+  cmp -s "$source_home/$relative" "$failure_home/$relative" \
+    || fail 'cp failure stopped later entries'
+done
+
+for link_path in apps apps/search apps/search/inbox apps/search/inbox/done; do
+  link_home="$tmp/link-${link_path//\//-}-source"
+  link_copy="$tmp/link-${link_path//\//-}-copy"
+  mkdir -p "$link_home/data" "$(dirname "$link_home/$link_path")"
+  printf 'identity\n' >"$link_home/identity.key"
+  printf 'database\n' >"$link_home/data/atom"
+  ln -s "$source_home/$link_path" "$link_home/$link_path"
+  link_rc=0
+  probe_clone_home_without_search_receipts "$link_home" "$link_copy" \
+    || link_rc=$?
+  [ "$link_rc" -eq 2 ] || fail 'symlink chain accepted'
+  [ ! -e "$link_copy" ] || fail 'symlink chain copied before refusal'
+done
 
 printf '%s\n' 'ok: probe copy excludes only completed Search receipts before cp'

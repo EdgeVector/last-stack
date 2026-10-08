@@ -193,7 +193,9 @@ fi
 
 log "cloning $PRIMARY_HOME -> $copy (probe CoW copy)"
 rm -rf "$copy"
-probe_clone_home_without_search_receipts "$PRIMARY_HOME" "$copy" 2>/dev/null || true
+copy_rc=0
+probe_clone_home_without_search_receipts "$PRIMARY_HOME" "$copy" 2>/dev/null || copy_rc=$?
+[ "$copy_rc" -le 1 ] || fail_red "CoW clone refused an unsafe path at $copy"
 if [ ! -d "$copy" ] || [ ! -f "$copy/identity.key" ] || [ ! -d "$copy/data" ]; then
   fail_red "CoW clone incomplete at $copy"
 fi

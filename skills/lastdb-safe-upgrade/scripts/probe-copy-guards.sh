@@ -118,41 +118,69 @@ probe_clone_entry() {
   fi
 }
 
+# Refuse a link at any part of the excluded path. A copied link could let a
+# candidate follow the probe path back into the live Search files.
+probe_receipt_chain_is_safe() {
+  local path="$1" component
+  shift
+  for component in "$@"; do
+    path="$path/$component"
+    [ ! -L "$path" ] || return 1
+    [ -d "$path" ] || return 0
+  done
+}
+
 # Copy a directory one level at a time along one fixed path. Siblings use
-# clonefile on macOS. The final selected directory is never traversed.
+# clonefile on macOS. The final selected directory is never traversed. Return
+# 1 for a copy error after all siblings have been tried; 2 for an unsafe path.
 probe_clone_except_child() {
-  local source="$1" destination="$2" selected="$3" entry mode
+  local source="$1" destination="$2" selected="$3" entry mode rc=0 child_rc
   shift 3
-  mkdir -m 700 "$destination" || return 1
+  mkdir -m 700 "$destination" || return 2
   for entry in "$source"/*; do
-    if [ "${entry##*/}" = "$selected" ] && [ -d "$entry" ] && [ ! -L "$entry" ]; then
-      if [ "$#" -gt 0 ]; then
-        probe_clone_except_child "$entry" "$destination/$selected" "$@" || return 1
+    if [ "${entry##*/}" = "$selected" ]; then
+      [ ! -L "$entry" ] || return 2
+      if [ -d "$entry" ]; then
+        if [ "$#" -gt 0 ]; then
+          if probe_clone_except_child "$entry" "$destination/$selected" "$@"; then
+            :
+          else
+            child_rc=$?
+            [ "$child_rc" -ne 2 ] || return 2
+            rc=1
+          fi
+        fi
+        # The last path component is apps/search/inbox/done. Skip it before cp.
+        continue
       fi
-      # The last path component is apps/search/inbox/done. Skip it before cp.
-      continue
     fi
-    probe_clone_entry "$entry" "$destination/" || return 1
+    probe_clone_entry "$entry" "$destination/" || rc=1
   done
   if stat --version >/dev/null 2>&1; then
-    mode="$(stat -c '%a' "$source")" || return 1
+    mode="$(stat -c '%a' "$source")" || return 2
   else
-    mode="$(stat -f '%Lp' "$source")" || return 1
+    mode="$(stat -f '%Lp' "$source")" || return 2
   fi
-  chmod "$mode" "$destination"
+  chmod "$mode" "$destination" || return 2
+  return "$rc"
 }
 
 # $1 = primary home, $2 = new temporary probe home. Keep every source path
 # except the unrelated Search receipt output directory. Never change source.
+# Return 1 for a tolerated copy error, 2 for an unsafe path or structure.
 probe_clone_home_without_search_receipts() (
-  local source="$1" destination="$2"
-  probe_copy_is_not_primary "$destination" "$source" || return 1
-  [ -d "$source" ] && [ ! -L "$source" ] || return 1
-  [ ! -e "$destination" ] && [ ! -L "$destination" ] || return 1
+  local source="$1" destination="$2" rc=0
+  probe_copy_is_not_primary "$destination" "$source" || return 2
+  [ -d "$source" ] && [ ! -L "$source" ] || return 2
+  [ ! -e "$destination" ] && [ ! -L "$destination" ] || return 2
+  probe_receipt_chain_is_safe "$source" apps search inbox 'done' || return 2
   umask 077
   shopt -s dotglob nullglob
-  probe_clone_except_child "$source" "$destination" apps search inbox 'done' || return 1
-  chmod 700 "$destination"
+  probe_clone_except_child "$source" "$destination" apps search inbox 'done' || rc=$?
+  [ "$rc" -ne 2 ] || return 2
+  probe_receipt_chain_is_safe "$destination" apps search inbox 'done' || return 2
+  chmod 700 "$destination" || return 2
+  return "$rc"
 )
 
 # $1 = probe copy, $2 = primary home. Remove all copied production cloud
