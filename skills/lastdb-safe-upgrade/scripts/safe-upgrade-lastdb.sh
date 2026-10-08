@@ -1120,7 +1120,7 @@ remove_probe_copy() {
 # Leaf must stay short: the node refuses a data dir over 82 bytes (103-byte
 # sockaddr_un limit minus socket name + atomic temp sibling). $$ keeps uniqueness.
 clone_probe_home() {
-  local label="$1" copy
+  local label="$1" copy copy_rc=0
   if ! probe_copy_is_not_primary "$PROBE_ROOT" "$PRIMARY_HOME"; then
     warn "$label metrics probe: probe root is the primary home or inside it: $PROBE_ROOT"
     return 1
@@ -1132,9 +1132,12 @@ clone_probe_home() {
     return 1
   fi
   remove_probe_copy "$copy" || return 1
-  # Leaves out apps/search/inbox/done (see probe_copy_excluded_path). The
-  # rollback point below is a full clone and keeps it.
-  probe_clone_home "$PRIMARY_HOME" "$copy" || true
+  probe_clone_home_without_search_receipts "$PRIMARY_HOME" "$copy" 2>/dev/null || copy_rc=$?
+  if [ "$copy_rc" -gt 1 ]; then
+    warn "$label metrics probe: CoW clone refused an unsafe path"
+    remove_probe_copy "$copy" || return 1
+    return 1
+  fi
   if [ ! -d "$copy" ] || [ ! -f "$copy/identity.key" ] || [ ! -d "$copy/data" ]; then
     warn "$label metrics probe: CoW clone incomplete"
     remove_probe_copy "$copy" || return 1
