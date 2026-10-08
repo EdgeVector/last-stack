@@ -64,14 +64,20 @@ REPAIR_LINE_RE = re.compile(r"(?im)^[ \t>*-]*(?:papercut|papercuts|fixes|fixed|c
 # already contains. A `#`-commented line does not count, so a record can quote
 # the marker while explaining it.
 KEEP_OPEN_STRUCTURED_RE = re.compile(r"(?im)^(?![ \t]*#)[ \t>*-]*Keep-open[ \t]*:[ \t]*(?P<rest>.*)$")
-# The prose arm demands a SELF-reference. Measured false positive 2026-09-26:
-# papercut-card-merge-does-not-close-its-named-papercuts-20260926 opens with
-# "Symptom: papercuts stay open after the card that names them merges" — a
-# description of its own defect, on a record that is legitimately fixed. Half the
-# defects in this ledger are about something staying open, so a bare
-# "stays open" would hold a large slice of the corpus open forever.
+# The prose arm demands a SELF-reference: "this record ..." or the definite
+# article "the record/row/papercut ...", singular. Measured false positive
+# 2026-09-26: papercut-card-merge-does-not-close-its-named-papercuts-20260926
+# opens with "Symptom: papercuts stay open after the card that names them
+# merges" — plural "papercuts" with no determiner directly in front of it,
+# a description of its own defect on a record that is legitimately fixed.
+# Half the defects in this ledger are about something staying open, so a
+# bare "stays open" would hold a large slice of the corpus open forever.
+# The definite-article arm was added because an agent restating a fact
+# ("So the row stays OPEN, for a reason adjacent to...") reaches for "the",
+# not "this", and that reopen was silently reverted on the next pass
+# (papercut-lifecycle-closer-silently-reverts-a-reopen-without-the-exact-keep-open-phrase-20261007).
 KEEP_OPEN_PROSE_RE = re.compile(
-    r"(?i)\bthis[ \t]+(?:record|row|papercut)[ \t]+(?:must[ \t]+)?"
+    r"(?i)\b(?:this|the)[ \t]+(?:record|row|papercut)[ \t]+(?:must[ \t]+)?"
     r"(?:stays?|remains?|stay|remain)[ \t]+open\b"
 )
 GITHUB_RE = re.compile(r"https?://github\.com/([^/\s)>\]]+)/([^/\s)>\]]+)/pull/(\d+)")
