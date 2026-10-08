@@ -108,6 +108,53 @@ probe_copy_is_not_primary() {
   return 0
 }
 
+# Clone one entry with the same platform choice as the existing probe copies.
+probe_clone_entry() {
+  local source="$1" destination="$2"
+  if stat --version >/dev/null 2>&1; then
+    cp -R "$source" "$destination"
+  else
+    cp -cR "$source" "$destination"
+  fi
+}
+
+# Copy a directory one level at a time along one fixed path. Siblings use
+# clonefile on macOS. The final selected directory is never traversed.
+probe_clone_except_child() {
+  local source="$1" destination="$2" selected="$3" entry mode
+  shift 3
+  mkdir -m 700 "$destination" || return 1
+  for entry in "$source"/*; do
+    if [ "${entry##*/}" = "$selected" ] && [ -d "$entry" ] && [ ! -L "$entry" ]; then
+      if [ "$#" -gt 0 ]; then
+        probe_clone_except_child "$entry" "$destination/$selected" "$@" || return 1
+      fi
+      # The last path component is apps/search/inbox/done. Skip it before cp.
+      continue
+    fi
+    probe_clone_entry "$entry" "$destination/" || return 1
+  done
+  if stat --version >/dev/null 2>&1; then
+    mode="$(stat -c '%a' "$source")" || return 1
+  else
+    mode="$(stat -f '%Lp' "$source")" || return 1
+  fi
+  chmod "$mode" "$destination"
+}
+
+# $1 = primary home, $2 = new temporary probe home. Keep every source path
+# except the unrelated Search receipt output directory. Never change source.
+probe_clone_home_without_search_receipts() (
+  local source="$1" destination="$2"
+  probe_copy_is_not_primary "$destination" "$source" || return 1
+  [ -d "$source" ] && [ ! -L "$source" ] || return 1
+  [ ! -e "$destination" ] && [ ! -L "$destination" ] || return 1
+  umask 077
+  shopt -s dotglob nullglob
+  probe_clone_except_child "$source" "$destination" apps search inbox 'done' || return 1
+  chmod 700 "$destination"
+)
+
 # $1 = probe copy, $2 = primary home. Remove all copied production cloud
 # credentials and resume intent before any candidate process can boot.
 probe_strip_cloud_state() {

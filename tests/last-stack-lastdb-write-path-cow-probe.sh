@@ -122,8 +122,10 @@ RC=$?
 set -e
 [ "$RC" -ne 0 ] || fail "correct-but-slow must RED; out=$OUT"
 
-# Probe clones into TMPDIR, never $HOME. Portable: cp -cR (macOS) or cp -R (Linux).
-grep -qE 'cp -R' "$PROBE" || fail "probe must clone with cp -R"
+# Probe clones into TMPDIR with the shared receipt-free CoW copy helper.
+# shellcheck disable=SC2016
+grep -Fq 'probe_clone_home_without_search_receipts "$PRIMARY_HOME" "$copy"' "$PROBE" \
+  || fail "probe must use the shared CoW copy helper"
 grep -q 'TMPDIR' "$PROBE" || fail "probe must clone under TMPDIR"
 grep -q 'cloud_sync.json' "$PROBE" || fail "probe must strip production cloud_sync.json"
 if grep -E -- '--data-dir[~ ]*/\.lastdb|"--data-dir ~/.lastdb"' "$PROBE" | grep -vq 'refuse\|RED\|never\|live-home'; then
