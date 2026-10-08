@@ -621,6 +621,27 @@ The script:
 | **4b. Release** | After GREEN, delete the rollback point and its empty root. GREEN probe-only and operator abort release it too. |
 | RED | Exit 1, retain the one rollback point, print its path, TTL, and cleanup owner; primary untouched if class/probe failed |
 
+### What a probe copy leaves out
+
+Every probe copy leaves out one path: `apps/search/inbox/done`. The copies are
+smoke, candidate, baseline, key cap, and write path. The path holds the Search
+app's processed batches (217,761 files on 2026-10-08). The daemon only writes
+the Search inbox. It never reads `done/`, and a probe never runs the Search app.
+The papercut measured about 13 minutes for one clone and about 8 minutes for
+one removal. On 2026-10-08 one filtered clone of the live home took 125
+seconds and its removal took 34 seconds. An earlier run of an equal filter took
+263 and 207 seconds, so expect a wide range. I did not time a full clone in
+those runs.
+
+The rollback point, the DEV photograph copy, and the stopped-home backup copy
+keep `done/`. `search bootstrap` replays it, so a copy that can restore the
+primary must hold it. Helper: `probe_clone_home_without_search_receipts` in
+`scripts/probe-copy-guards.sh`. Tests: the exclusion itself in
+`tests/last-stack-lastdb-safe-upgrade-probe-copy-search-receipts.sh`, and where
+it may appear in
+`tests/last-stack-lastdb-safe-upgrade-recovery-copies-keep-receipts.sh`. Brain:
+`papercut-safe-upgrade-probes-copy-search-receipts-20261007`.
+
 ### Release one retained RED point without a new probe
 
 Use `scripts/cleanup-retained-rollback.sh` only when the failed run ended
