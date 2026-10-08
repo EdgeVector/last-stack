@@ -66,7 +66,9 @@ case "$verb" in
     [ "${FAKE_RM_TIMEOUT:-0}" = "1" ] && { echo "private probe error text" >&2; exit 124; }
     [ "${FAKE_RM_FAIL:-0}" = "1" ] && { echo "kanban: persist lane rejected" >&2; exit 4; }
     [ "${FAKE_RM_KEEP:-0}" = "1" ] && exit 0
-    rm -f "$FAKE_STATE/card-$slug"; exit 0 ;;
+    rm -f "$FAKE_STATE/card-$slug"
+    [ "${FAKE_RM_MARK:-0}" != "1" ] || : >"$FAKE_STATE/rm-acked"
+    exit 0 ;;
 esac
 exit 2
 EOF_KANBAN
@@ -79,7 +81,12 @@ n=$((n + 1))
 printf '%s\n' "$n" >"$FAKE_STATE/curl-n"
 f="$FAKE_STATE/status-$n.json"
 [ -f "$f" ] || f="$(ls "$FAKE_STATE"/status-*.json | sort | tail -1)"
-cat "$f"
+if [ -n "${FAKE_KEEP_SMALL_STAMP:-}" ]; then
+  jq --argjson stamp "$FAKE_KEEP_SMALL_STAMP" \
+    '.status.sync.capture.automatic_compactions.keep_small.last_compacted_at_unix_s = $stamp' "$f"
+else
+  cat "$f"
+fi
 EOF_CURL
 chmod +x "$FAKE_BIN/kanban" "$FAKE_BIN/curl"
 export PATH="$FAKE_BIN:$PATH"
@@ -202,15 +209,59 @@ fi
 if want 11; then
   FAKE_RM_TIMEOUT=1 run_case 11 0:0 0:0
   expect 11 red 'kanban rm lastdb-safe-upgrade-hard-delete-probe-[0-9]* failed on the copy (rc=124)'
-  grep -q 'hard-delete bar: stage=rm start_unix_s=.* deadline_s=90' "$TMP/11.probe.log" \
+  grep -q 'hard-delete bar: stage=rm start_unix_s=.* deadline_s=180' "$TMP/11.probe.log" \
     || fail "case 11: the rm start marker is absent"
   grep -q 'hard-delete bar: stage=rm rc=124 elapsed_s=[0-9]* stdout_bytes=0 stderr_bytes=[1-9][0-9]*' "$TMP/11.probe.log" \
     || fail "case 11: the rm result marker is absent"
-  grep -q 'hard-delete bar: stage=rm deadline_result=124 deadline_s=90' "$TMP/11.probe.log" \
+  grep -q 'hard-delete bar: stage=rm deadline_result=124 deadline_s=180' "$TMP/11.probe.log" \
     || fail "case 11: the deadline marker is absent"
   if grep -q 'private probe error text' "$TMP/11.probe.log"; then
     fail "case 11: raw CLI error text leaked into the retained log"
   fi
+fi
+
+# 12. Only rm gets the longer deadline. The other calls stay at 90 seconds.
+if want 12; then
+  (
+    # shellcheck disable=SC2329 # probe_hard_delete_bar calls this override.
+    run_op_with_deadline() {
+      local seconds="$1"
+      shift
+      printf '%s\n' "$seconds" >>"$TMP/12.deadlines"
+      "$@"
+    }
+    run_case 12 0:0 0:0
+    expect 12 green 'hard-delete bar GREEN:'
+    actual="$(paste -sd, "$TMP/12.deadlines")"
+    [ "$actual" = '90,90,180,90' ] || fail "case 12: deadlines for add, show-before, rm, show-after must be 90,90,180,90; actual=$actual"
+  )
+fi
+
+# 13. A compaction during rm prechecks does not count as a post-delete pass.
+if want 13; then
+  (
+    # shellcheck disable=SC2034 # probe_hard_delete_bar reads this override.
+    HARD_DELETE_BAR_SECS=5
+    export FAKE_RM_MARK=1 FAKE_KEEP_SMALL_STAMP=150
+    # shellcheck disable=SC2329 # probe_hard_delete_bar calls this override.
+    date() {
+      if [ "$#" -ne 1 ] || [ "$1" != '+%s' ]; then
+        command date "$@"
+        return
+      fi
+      if [ ! -f "$FAKE_STATE/rm-acked" ]; then
+        printf '%s\n' 100
+        return
+      fi
+      local sample=0
+      [ ! -f "$FAKE_STATE/curl-n" ] || sample="$(cat "$FAKE_STATE/curl-n")"
+      printf '%s\n' "$((200 + sample))"
+    }
+    run_case 13 0:0 0:0
+    expect 13 green 'hard-delete bar GREEN:'
+    jq -e '.delete_at_unix_s == 200 and .samples == 5' "$TMP/13.json" >/dev/null \
+      || fail "case 13: the delete time must follow rm, and the pre-rm compaction must not end the sample window"
+  )
 fi
 
 # --- driver wiring -----------------------------------------------------------
