@@ -209,7 +209,7 @@ hd_log_step() {
 # papercut-safe-upgrade-probe-runs-no-hard-delete-so-a-purge-lane-defect-reaches-the-primary-20261004.
 probe_hard_delete_bar() {
   local copy="$1" sock="$2" pid="$3" out="$4"
-  local dir steps slug body add_rc=-1 present=0 rm_rc=-1 gone=0 del_at=0 start now n=0 triple plf dpf ks waited=0
+  local dir steps slug body add_rc=-1 present=0 rm_rc=-1 gone=0 del_at=0 rm_started=0 start now n=0 triple plf dpf ks waited=0
   local step_started show_rc=0
   [ -n "$out" ] || return 1
   if [ -z "$copy" ] || ! probe_copy_is_not_primary "$copy" "$PRIMARY_HOME"; then
@@ -251,11 +251,16 @@ probe_hard_delete_bar() {
     [ "$show_rc" -ne 0 ] || present=1
   fi
   if [ "$present" -eq 1 ]; then
-    del_at="$(date +%s)"
-    log "hard-delete bar: stage=rm start_unix_s=$del_at deadline_s=$HARD_DELETE_RM_DEADLINE_SECS"
+    rm_started="$(date +%s)"
+    log "hard-delete bar: stage=rm start_unix_s=$rm_started deadline_s=$HARD_DELETE_RM_DEADLINE_SECS"
     rm_rc=0
     hd_kanban_on_copy "$copy" "$sock" rm "$slug" >"$dir/rm.out" 2>"$dir/rm.err" || rm_rc=$?
-    hd_log_step rm "$rm_rc" "$del_at" "$dir/rm.out" "$dir/rm.err"
+    if [ "$rm_rc" -eq 0 ]; then
+      # The CLI can read for a long time before it sends Delete. Count only
+      # a compaction after its successful ack as a post-delete compaction.
+      del_at="$(date +%s)"
+    fi
+    hd_log_step rm "$rm_rc" "$rm_started" "$dir/rm.out" "$dir/rm.err"
     if [ "$rm_rc" -eq 124 ]; then
       warn "hard-delete bar: stage=rm deadline_result=124 deadline_s=$HARD_DELETE_RM_DEADLINE_SECS; the CLI may still have an active request on the candidate copy"
     fi
