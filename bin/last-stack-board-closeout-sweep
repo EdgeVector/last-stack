@@ -686,7 +686,13 @@ function hydrateDoingCards(cards) {
       if (!out.ok) continue;
       const data = parseJsonLoose(out.stdout);
       if (!data || typeof data !== "object") continue;
-      rows.push(data.card && typeof data.card === "object" ? data.card : data);
+      const card = Object.assign(
+        {},
+        data.card && typeof data.card === "object" ? data.card : data
+      );
+      // Serial show is keyed by the requested slug. Fixtures often omit it.
+      if (!String(card.slug || "").trim()) card.slug = slug;
+      rows.push(card);
     }
   }
   if (!Array.isArray(rows)) return;
@@ -1694,7 +1700,13 @@ def hydrate_doing_cards(cards):
             except Exception:
                 continue
             if isinstance(data, dict):
-                rows.append(data.get("card") if isinstance(data.get("card"), dict) else data)
+                card = data.get("card") if isinstance(data.get("card"), dict) else data
+                if isinstance(card, dict):
+                    card = dict(card)
+                    # Serial show is keyed by the requested slug. Fixtures often omit it.
+                    if not str(card.get("slug") or "").strip():
+                        card["slug"] = slug
+                    rows.append(card)
     if not isinstance(rows, list):
         return
     for row in rows:

@@ -116,4 +116,39 @@ fi
 grep -q '^show a --json$' "$fx/calls.log" || grep -q '^show --json a$' "$fx/calls.log" \
   || fail "one-item did not call show a: $(cat "$fx/calls.log")"
 
+# Serial fixture that omits slug (column-only show). The requested slug is the
+# key; attach it so callers can map the row. A batch query still omits missing.
+cat >"$tmp/nslug" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${NSLUG_CALLS:?}"
+case "$1" in
+  show)
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --help|-h) echo "fixture show: slug then --json"; exit 0 ;;
+        --json) shift ;;
+        --slugs) echo "unknown option --slugs" >&2; exit 2 ;;
+        *) shift ;;
+      esac
+    done
+    printf '{"column":"doing"}\n'
+    ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod +x "$tmp/nslug"
+NSLUG_CALLS="$tmp/nslug.calls"
+: >"$NSLUG_CALLS"
+export NSLUG_CALLS
+"$BIN" --board-cli "$tmp/nslug" a b >"$tmp/nslug.json" 2>"$tmp/nslug.err" \
+  || fail "slug-less serial show exited $? err=$(cat "$tmp/nslug.err")"
+jq -e 'type=="array" and length==2 and .[0].slug=="a" and .[1].slug=="b" and .[0].column=="doing" and .[1].column=="doing"' \
+  "$tmp/nslug.json" >/dev/null \
+  || fail "slug-less serial payload: $(cat "$tmp/nslug.json") err=$(cat "$tmp/nslug.err")"
+grep -q 'via=cli-show' "$tmp/nslug.err" || fail "slug-less via: $(cat "$tmp/nslug.err")"
+if grep -q -- '--slugs' "$NSLUG_CALLS"; then
+  fail "slug-less fixture used --slugs: $(cat "$NSLUG_CALLS")"
+fi
+
 echo "ok last-stack-kanban-show-batch"

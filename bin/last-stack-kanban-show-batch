@@ -183,6 +183,27 @@ def via_cli_slugs(board_cli: str, slugs: list[str]) -> tuple[list[dict[str, Any]
     return cards_from_payload(payload), ""
 
 
+def card_from_serial_payload(payload: Any, slug: str) -> dict[str, Any] | None:
+    """Serial show is keyed by the requested slug.
+
+    Fixtures often emit only ``{"column":"..."}``. Attach the requested slug so
+    callers can map the row. A missing slug in a batch query still means omit.
+    """
+    card = None
+    cards = cards_from_payload(payload)
+    if cards:
+        card = dict(cards[0])
+    elif isinstance(payload, dict):
+        raw = payload.get("card") if isinstance(payload.get("card"), dict) else payload
+        if isinstance(raw, dict):
+            card = dict(raw)
+    if card is None:
+        return None
+    if not str(card.get("slug") or "").strip():
+        card["slug"] = slug
+    return card if str(card.get("slug") or "").strip() else None
+
+
 def via_cli_serial(board_cli: str, slugs: list[str]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for slug in slugs:
@@ -193,9 +214,9 @@ def via_cli_serial(board_cli: str, slugs: list[str]) -> list[dict[str, Any]]:
             payload = parse_json(proc.stdout or "{}")
         except json.JSONDecodeError:
             continue
-        cards = cards_from_payload(payload)
-        if cards:
-            out.append(cards[0])
+        card = card_from_serial_payload(payload, slug)
+        if card:
+            out.append(card)
     return out
 
 
