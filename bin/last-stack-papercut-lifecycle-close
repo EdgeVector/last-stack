@@ -492,6 +492,14 @@ def try_registry_close(args: argparse.Namespace, iso: str) -> dict[str, Any] | N
             if str(typed_record.get("status") or "") != "open":
                 skipped.append(f"{entry.slug}:not_open")
                 continue
+            # The record is the authority on whether its own claim is resolved
+            # (same reasoning as close_review_records). A COVERED registry
+            # entry and a done card say the GUARD landed; they say nothing
+            # about a separate claim the record body still asserts.
+            keep_open = keep_open_marker(str(typed_record.get("body") or ""))
+            if keep_open and not getattr(args, "ignore_keep_open", False):
+                skipped.append(f"{entry.slug}:keep_open_asserted")
+                continue
             if args.dry_run:
                 skipped.append(f"{entry.slug}:dry_run")
                 continue
