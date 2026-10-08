@@ -170,6 +170,9 @@ if [ -z "$CLONE_ROOT" ]; then
   CLONE_ROOT="$(mktemp -d "${tmp%/}/w.XXXXXX")"
 fi
 copy="$CLONE_ROOT/h"
+if ! probe_copy_is_not_primary "$copy" "$PRIMARY_HOME"; then
+  fail_red "refusing to remove a probe path that aliases or is inside the primary home: $copy"
+fi
 sock="$copy/data/folddb.sock"
 blog="$CLONE_ROOT/boot.log"
 phase_log="$CLONE_ROOT/phase.json"
@@ -191,13 +194,11 @@ if [ ! -d "$PRIMARY_HOME" ] || [ ! -f "$PRIMARY_HOME/identity.key" ]; then
   fail_red "live home missing identity.key at $PRIMARY_HOME"
 fi
 
-log "cloning $PRIMARY_HOME -> $copy (cp -R)"
+log "cloning $PRIMARY_HOME -> $copy (probe CoW copy)"
 rm -rf "$copy"
-if stat --version >/dev/null 2>&1; then
-  cp -R "$PRIMARY_HOME" "$copy" 2>/dev/null || true
-else
-  cp -cR "$PRIMARY_HOME" "$copy" 2>/dev/null || true
-fi
+copy_rc=0
+probe_clone_home_without_search_receipts "$PRIMARY_HOME" "$copy" 2>/dev/null || copy_rc=$?
+[ "$copy_rc" -le 1 ] || fail_red "CoW clone refused an unsafe path at $copy"
 if [ ! -d "$copy" ] || [ ! -f "$copy/identity.key" ] || [ ! -d "$copy/data" ]; then
   fail_red "CoW clone incomplete at $copy"
 fi
