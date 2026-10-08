@@ -118,6 +118,10 @@
           "target": "$HOME/.local/bin/last-stack-kanban-done-when-sweep"
         },
         {
+          "source": "bin/last-stack-kanban-show-batch",
+          "target": "$HOME/.local/bin/last-stack-kanban-show-batch"
+        },
+        {
           "source": "bin/last-stack-pipeline-stuck-papercut-file",
           "target": "$HOME/.local/bin/last-stack-pipeline-stuck-papercut-file"
         },

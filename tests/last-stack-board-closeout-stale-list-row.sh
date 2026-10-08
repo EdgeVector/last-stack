@@ -76,15 +76,51 @@ case "$cmd" in
 JSON
     ;;
   show)
-    case "${2:-}" in
-      done-but-listed)
-        printf '{"slug":"done-but-listed","column":"done","board":"default"}\n' ;;
-      truly-doing-park)
-        printf '{"slug":"truly-doing-park","column":"doing","board":"default"}\n' ;;
-      *)
-        echo "show unavailable" >&2
-        exit 3 ;;
-    esac
+    printf '%s\n' "$*" >>"${BOARD_CALLS:?}"
+    slugs=""
+    pos=""
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --json) shift ;;
+        --slugs) slugs="$2"; shift 2 ;;
+        --help|-h) echo "Options: --json --slugs"; exit 0 ;;
+        *) pos="$1"; shift ;;
+      esac
+    done
+    emit() {
+      case "$1" in
+        done-but-listed)
+          printf '{"slug":"done-but-listed","column":"done","board":"default"}' ;;
+        truly-doing-park)
+          printf '{"slug":"truly-doing-park","column":"doing","board":"default"}' ;;
+        *)
+          return 1 ;;
+      esac
+    }
+    if [ -n "$slugs" ]; then
+      printf '['
+      sep=""
+      old_ifs="$IFS"
+      IFS=','
+      set -f
+      # shellcheck disable=SC2086
+      set -- $slugs
+      set +f
+      IFS="$old_ifs"
+      for s in "$@"; do
+        [ -n "$s" ] || continue
+        if chunk="$(emit "$s")"; then
+          printf '%s%s' "$sep" "$chunk"
+          sep=","
+        fi
+      done
+      printf ']\n'
+      exit 0
+    fi
+    emit "$pos" && printf '\n' && exit 0
+    echo "show unavailable" >&2
+    exit 3
     ;;
   add|tag|set|mark)
     : ;;
@@ -100,6 +136,8 @@ BOARD
 chmod +x "$board"
 
 export BOARD_MOVES="$moves"
+export BOARD_CALLS="$tmp/calls.log"
+: >"$tmp/calls.log"
 
 out="$("$sweep" --board-cli "$board" --grace-min 1 --max-actions 20 2>&1 || true)"
 echo "$out"
@@ -130,6 +168,16 @@ if grep -q '^show-fails-park ' "$moves" 2>/dev/null; then
 fi
 if ! printf '%s\n' "$out" | grep -q 'card-read-failed:show-fails-park'; then
   echo "FAIL: expected card-read-failed flag for show-fails-park" >&2
+  exit 1
+fi
+
+batch_n="$(grep -c '^show --slugs ' "$tmp/calls.log" || true)"
+[ "$batch_n" = 1 ] || {
+  echo "FAIL: want 1 show --slugs, got $batch_n: $(cat "$tmp/calls.log")" >&2
+  exit 1
+}
+if grep -E '^show ' "$tmp/calls.log" | grep -v -- '--slugs' | grep -v -- '--help' | grep -q .; then
+  echo "FAIL: per-slug show was used: $(cat "$tmp/calls.log")" >&2
   exit 1
 fi
 

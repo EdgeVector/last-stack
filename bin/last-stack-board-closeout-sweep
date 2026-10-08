@@ -640,19 +640,74 @@ function ensureAwaitingDeployTag(slug, card) {
 /**
  * `kanban list --column doing` serves BoardCards rows that can lag the Card
  * tip: a card already moved to done can still be listed in doing. Confirm the
- * column against `show` (Card truth) before any move. Fail CLOSED: when show
- * is unavailable or unparsable, return null and let the caller skip the card
+ * column against one batch Card read before any move. Fail CLOSED: a missing
+ * slug or a failed batch returns null, and the caller must skip the card
  * rather than mutate it against a stale preview.
  */
-function confirmDoing(slug) {
-  const out = run(boardCli, ["show", slug, "--json"], { timeout: 45000 });
-  if (!out.ok) return null;
-  const data = parseJsonLoose(out.stdout);
-  if (!data || typeof data !== "object") return null;
-  const card = data.card && typeof data.card === "object" ? data.card : data;
+let cardTruthBySlug = null;
+
+function truthFromCard(card) {
+  if (!card || typeof card !== "object") return null;
   const column = String(card.column || "").trim().toLowerCase();
   if (!column) return null;
   return { column, card };
+}
+
+function hydrateDoingCards(cards) {
+  const slugs = [];
+  const seen = new Set();
+  for (const c of cards) {
+    const s = String(c.slug || "").trim();
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    slugs.push(s);
+  }
+  cardTruthBySlug = new Map();
+  for (const s of slugs) cardTruthBySlug.set(s, null);
+  if (slugs.length === 0) return;
+  const batchBin = path.join(lastStack, "bin", "last-stack-kanban-show-batch");
+  let rows = null;
+  if (fs.existsSync(batchBin)) {
+    const slugsFile = path.join(os.tmpdir(), `board-closeout-slugs.${process.pid}.txt`);
+    fs.writeFileSync(slugsFile, slugs.join("\n") + "\n");
+    const out = run(batchBin, ["--board-cli", boardCli, "--slugs-file", slugsFile], { timeout: 120000 });
+    try {
+      fs.unlinkSync(slugsFile);
+    } catch (_) {}
+    if (out.ok) {
+      const data = parseJsonLoose(out.stdout);
+      if (Array.isArray(data)) rows = data;
+      else if (data && Array.isArray(data.cards)) rows = data.cards;
+    }
+  } else {
+    rows = [];
+    for (const slug of slugs) {
+      const out = run(boardCli, ["show", slug, "--json"], { timeout: 45000 });
+      if (!out.ok) continue;
+      const data = parseJsonLoose(out.stdout);
+      if (!data || typeof data !== "object") continue;
+      const card = Object.assign(
+        {},
+        data.card && typeof data.card === "object" ? data.card : data
+      );
+      // Serial show is keyed by the requested slug. Fixtures often omit it.
+      if (!String(card.slug || "").trim()) card.slug = slug;
+      rows.push(card);
+    }
+  }
+  if (!Array.isArray(rows)) return;
+  for (const row of rows) {
+    const card = row && row.card && typeof row.card === "object" ? row.card : row;
+    const slug = String((card && card.slug) || "").trim();
+    if (!slug || !cardTruthBySlug.has(slug)) continue;
+    cardTruthBySlug.set(slug, truthFromCard(card));
+  }
+}
+
+function confirmDoing(slug) {
+  if (!cardTruthBySlug) return null;
+  if (!cardTruthBySlug.has(slug)) return null;
+  return cardTruthBySlug.get(slug);
 }
 
 function worktreeFor(slug) {
@@ -1167,6 +1222,7 @@ if (cards === null) {
   process.exit(0);
 }
 seenDoingSlugs = new Set(cards.map((c) => String(c.slug || "")));
+hydrateDoingCards(cards);
 
 let actions = 0;
 const graceMs = graceMin * 60 * 1000;
@@ -1586,26 +1642,92 @@ def clear_close_failure(slug):
 def strip(s):
     return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", s or "")
 
+def truth_from_card(card):
+    if not isinstance(card, dict):
+        return None
+    column = str(card.get("column") or "").strip().lower()
+    return {"column": column, "card": card} if column else None
+
+card_truth_by_slug = None
+
+def hydrate_doing_cards(cards):
+    """One batch Card read for the doing slugs. Missing slugs stay None."""
+    global card_truth_by_slug
+    slugs = []
+    seen = set()
+    for c in cards:
+        s = str(c.get("slug") or "").strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        slugs.append(s)
+    card_truth_by_slug = {s: None for s in slugs}
+    if not slugs:
+        return
+    batch_bin = last_stack / "bin" / "last-stack-kanban-show-batch"
+    rows = None
+    if batch_bin.is_file():
+        tmpdir = os.environ.get("TMPDIR") or os.environ.get("TMP") or os.environ.get("TEMP") or "/tmp"
+        slugs_path = subprocess.check_output(
+            ["mktemp", f"{tmpdir}/board-closeout-slugs.XXXXXX"], text=True
+        ).strip()
+        Path(slugs_path).write_text("".join(f"{s}\n" for s in slugs))
+        ok, out, _ = run(
+            [str(batch_bin), "--board-cli", board_cli, "--slugs-file", slugs_path],
+            timeout=120,
+        )
+        try:
+            os.unlink(slugs_path)
+        except OSError:
+            pass
+        if ok:
+            try:
+                data = json.loads(strip(out))
+            except Exception:
+                data = None
+            if isinstance(data, list):
+                rows = data
+            elif isinstance(data, dict) and isinstance(data.get("cards"), list):
+                rows = data["cards"]
+    else:
+        rows = []
+        for slug in slugs:
+            ok, out, _ = run([board_cli, "show", slug, "--json"], timeout=45)
+            if not ok:
+                continue
+            try:
+                data = json.loads(strip(out))
+            except Exception:
+                continue
+            if isinstance(data, dict):
+                card = data.get("card") if isinstance(data.get("card"), dict) else data
+                if isinstance(card, dict):
+                    card = dict(card)
+                    # Serial show is keyed by the requested slug. Fixtures often omit it.
+                    if not str(card.get("slug") or "").strip():
+                        card["slug"] = slug
+                    rows.append(card)
+    if not isinstance(rows, list):
+        return
+    for row in rows:
+        card = row.get("card") if isinstance(row, dict) and isinstance(row.get("card"), dict) else row
+        if not isinstance(card, dict):
+            continue
+        slug = str(card.get("slug") or "").strip()
+        if slug in card_truth_by_slug:
+            card_truth_by_slug[slug] = truth_from_card(card)
+
 def confirm_doing(slug):
-    """Confirm the column against `show` (Card truth) before any move.
+    """Confirm the column against one batch Card read before any move.
 
     `kanban list --column doing` serves a lightweight BoardCards preview that
     can lag the Card tip. Return the keyed Card read for body-only headers.
-    Fail CLOSED: an unavailable or unparsable show returns None, and the
+    Fail CLOSED: a missing slug or a failed batch returns None, and the
     caller must skip the card rather than mutate it against a stale preview.
     """
-    ok, out, _ = run([board_cli, "show", slug, "--json"], timeout=45)
-    if not ok:
+    if card_truth_by_slug is None:
         return None
-    try:
-        data = json.loads(strip(out))
-    except Exception:
-        return None
-    if not isinstance(data, dict):
-        return None
-    card = data.get("card") if isinstance(data.get("card"), dict) else data
-    column = str(card.get("column") or "").strip().lower()
-    return {"column": column, "card": card} if column else None
+    return card_truth_by_slug.get(slug)
 
 def list_doing():
     ok, out, err = run(
@@ -2292,6 +2414,7 @@ if cards is None:
     print(f"board-closeout {iso} {st} closed=0 rolled_back=0 skipped=0 flagged={flags}")
     sys.exit(0)
 seen_doing_slugs = {str(c.get("slug") or "") for c in cards}
+hydrate_doing_cards(cards)
 
 actions = 0
 grace_s = grace_min * 60
