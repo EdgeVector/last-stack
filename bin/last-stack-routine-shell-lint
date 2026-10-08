@@ -67,6 +67,17 @@
 #                     roots, canary trees and artifact version dirs come and go
 #                     with delivery state; /usr/bin, /bin and /opt/homebrew are
 #                     excluded, and CLAUDE.md tells agents to call /usr/bin/grep.
+#   grep-binary-false-zero  grep -c (or -q/--count) against a bun-compiled
+#                     binary (a host-track current/canary tree, a last-stack
+#                     artifacts/current tree, or a path ending in /dist/<name>
+#                     with no extension) answers 0/exit-1 on a symbol that IS
+#                     present: grep's binary-content sniff suppresses normal
+#                     match counting (measured 2026-10-08 on the installed
+#                     routines binary -- grep -c found 0, grep -ac and
+#                     strings | grep -c both found 2). Same one-directional
+#                     "the fix never shipped" shape as piped-count-false-zero.
+#                     strings <path> | grep -c <sym>, or grep -ac, are correct
+#                     and not refused.
 #
 # Text inside a heredoc body is data, so only heredoc-backticks looks there.
 # Escape hatch: put "shell-lint-ok: <reason>" anywhere in the command.
@@ -105,7 +116,7 @@ while [ "$#" -gt 0 ]; do
     --list-rules)
       printf '%s\n' spin-wait heredoc-backticks dquote-backticks jq-optional-call jq-escaped-quote \
         awk-match-array sed-inplace date-nanos stat-local-zulu printf-dash bin-path mktemp-suffix zsh-status zsh-mapfile \
-        zsh-word-split home-root-scan piped-count-false-zero
+        zsh-word-split home-root-scan piped-count-false-zero grep-binary-false-zero
       exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 64 ;;
@@ -151,6 +162,7 @@ rule_slug() {
     zsh-word-split) echo papercut-claude-zsh-for-loop-over-an-unquoted-scalar-does-not-word-split-20260926 ;;
     home-root-scan) echo papercut-codex-routines-lack-home-root-scan-guard-20260927 ;;
     piped-count-false-zero) echo papercut-piped-count-from-a-home-path-producer-answers-zero-when-the-path-is-absent-20261003 ;;
+    grep-binary-false-zero) echo papercut-grep-c-symbol-on-bun-binary-answers-zero-false-negative-20261008 ;;
   esac
 }
 
@@ -214,6 +226,9 @@ rule_fix() {
       "Capture the producer's own exit code, then count from the file: <path> --flags > out 2> err; echo \"rc=\$?\"; grep -c <sym> out" \
       "Or assert the path first: [ -x <path> ] || { echo MISSING; exit 1; }" \
       "To prove a merge installed, count from the resolved tree -- grep -c <sym> \"\$(readlink -f ~/.last-stack/bin/<cmd>)\" -- because a missing FILE makes grep itself exit 2 and say so, where a missing PRODUCER says nothing." ;;
+    grep-binary-false-zero) printf '%s\n' \
+      "grep's binary-content heuristic suppresses normal match counting on a file it sniffs as binary, so grep -c/-q/--count against a bun-compiled executable answers 0/exit-1 even when the symbol IS present. That is the same answer as the symbol being absent, so the verdict silently inverts toward 'not delivered'." \
+      "Read it as text: strings <path> | grep -c <sym>   or   grep -ac <sym> <path>" ;;
   esac
 }
 
@@ -353,6 +368,32 @@ re_piped_count_exec='(bash|sh|zsh|strings|python3|python|perl|ruby|node|bun)[[:s
 re_piped_count_sink='(grep[[:space:]]+(-[[:alnum:]]*[cq][[:alnum:]]*|--count|--quiet|--silent)|wc[[:space:]]+-l)'
 re_piped_count="${re_home_anchor}[[:space:]]*(${re_piped_count_exec})?[\"']?${home}/[^|]*\|[[:space:]]*${re_piped_count_sink}"
 
+# grep-binary-false-zero: grep's own COUNT/QUIET flag and a binary-tree path
+# argument must belong to the SAME grep invocation, so the path scan is
+# bounded by `[^;|&]*` -- it cannot cross a `;`, `|` or `&` into an earlier or
+# later command on the line. That bound is what keeps
+# `p=$(readlink -f ~/.host-track/apps/x/current/bin/x); grep -c sym "$p"` safe
+# (the literal "current" text sits before the `;`, outside the bound) while
+# still catching `grep -c sym ~/.host-track/apps/x/current/bin/x` on one line.
+# It is also what makes the prescribed-safe `strings <path> | grep -c sym`
+# form safe without a separate exclusion: the path text is on the OTHER side
+# of the `|`, so it is never inside grep's own bounded argument span.
+#
+# Binary-tree path shapes (named in the papercut this rule ships):
+#   .../dist/<name>        -- a bun-compiled single-file executable's own
+#                              output path, with no dot in <name> (a real
+#                              extension like dist/foo.json is excluded: the
+#                              required trailing boundary cannot follow a '.')
+#   host-track/apps/*/(current|canary)/...  -- the two live app-binary trees
+#   .../artifacts/current/...               -- last-stack's own artifact tree
+re_grep_binary_path='(/dist/[A-Za-z0-9_-]+([[:space:]"'"'"']|$)|host-track/apps/[^[:space:]/]+/(current|canary)/|artifacts/current/)'
+re_grep_count_binary="(^|[^[:alnum:]_-])grep[[:space:]]+(-[[:alnum:]]*[cq][[:alnum:]]*|--count|--quiet|--silent)[[:space:]]+[^;|&]*${re_grep_binary_path}"
+# -a (or --text / --binary-files=text) tells grep to treat the file as text,
+# which is correct and must not be refused. Checked anywhere on the line, the
+# same precedent as re_tz_utc above: a flag that fixes the whole class is not
+# worth re-deriving which specific grep invocation it was attached to.
+re_grep_binary_safe='(^|[^[:alnum:]_-])grep[[:space:]]+-[[:alnum:]]*a[[:alnum:]]*([[:space:]]|$)|--text([[:space:]]|$)|--binary-files[=[:space:]]+text'
+
 check_command_line() {
   local line="$1"
   if [[ $line =~ $re_spin ]] || [[ $line =~ $re_spin_b ]]; then
@@ -390,6 +431,9 @@ check_command_line() {
   fi
   if [[ $line =~ $re_mktemp_suffix ]]; then
     reject mktemp-suffix "$line"
+  fi
+  if [[ $line =~ $re_grep_count_binary ]] && ! [[ $line =~ $re_grep_binary_safe ]]; then
+    reject grep-binary-false-zero "$line"
   fi
   if [ "$shell_kind" = zsh ]; then
     if [[ $line =~ $re_zsh_status ]]; then

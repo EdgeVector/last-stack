@@ -596,6 +596,61 @@ expect 2 bash piped-count-home-scan-ok-does-not-silence <<'EOF'
 bash ~/.local/bin/x --list | grep -c sym   # home-scan-ok: unrelated
 EOF
 
+# --- grep-binary-false-zero ---------------------------------------------------
+# grep's binary-content sniff suppresses normal match counting, so
+# grep -c/-q/--count against a bun-compiled binary answers 0/exit-1 on a
+# symbol that IS present. Measured 2026-10-08 on the installed routines
+# binary: grep -c answered 0 (exit 1), grep -ac and strings | grep -c both
+# answered 2.
+expect 2 bash grep-binary-dist-path <<'EOF'
+grep -c FENCING_SEVERITIES "$cur/dist/routines"
+EOF
+expect 2 bash grep-binary-host-track-canary-direct <<'EOF'
+grep -c newSymbol ~/.host-track/apps/loom/canary/dist/loom
+EOF
+expect 2 bash grep-binary-host-track-current-quiet <<'EOF'
+grep -q newSymbol ~/.host-track/apps/loom/current/dist/loom
+EOF
+expect 2 bash grep-binary-artifacts-current <<'EOF'
+grep --count sym ~/.local/state/last-stack/artifacts/current/bin/last-stack
+EOF
+# The prescribed-safe forms must not be refused. A $HOME path here would
+# also be correctly caught by piped-count-false-zero (an unrelated,
+# pre-existing rule: the producer itself might be missing) -- use a non-$HOME
+# path so this case isolates grep-binary-false-zero's own exclusion: the
+# binary-tree text sits on the strings side of the pipe, never inside grep's
+# own bounded argument span.
+expect 0 bash grep-binary-strings-piped-ok <<'EOF'
+strings /opt/last-stack/dist/loom | grep -c newSymbol
+EOF
+expect 0 bash grep-binary-dash-a-ok <<'EOF'
+grep -ac FENCING_SEVERITIES "$cur/dist/routines"
+EOF
+expect 0 bash grep-binary-dash-ca-ok <<'EOF'
+grep -ca FENCING_SEVERITIES "$cur/dist/routines"
+EOF
+# The binary-tree text must belong to the SAME grep invocation: text that
+# merely appears earlier on a compound line, separated by `;`, must not leak
+# into a later, unrelated grep -c call.
+expect 0 bash grep-binary-unrelated-earlier-command-ok <<'EOF'
+p=$(readlink -f ~/.host-track/apps/loom/current/bin/loom); grep -c sym "$p"
+EOF
+# A regular script/text file (no /dist/, no current|canary tree, no
+# artifacts/current) is unaffected -- this is the existing
+# piped-count-file-arg-ok shape and must still pass under the new rule.
+expect 0 bash grep-binary-text-file-ok <<'EOF'
+grep -c sym "$(readlink -f ~/.last-stack/bin/last-stack-routine-shell-lint)"
+EOF
+# host-track trees that are neither current nor canary (e.g. a pinned
+# versions/<digest> dir) are out of this rule's scope.
+expect 0 bash grep-binary-host-track-versions-dir-ok <<'EOF'
+grep -c sym ~/.host-track/apps/loom/versions/abc123/bin/loom
+EOF
+# dist/<name>.<ext> carries a real extension, not a bun single-file binary.
+expect 0 bash grep-binary-dist-with-extension-ok <<'EOF'
+grep -c sym "$cur/dist/manifest.json"
+EOF
+
 # --- escape hatch and usage --------------------------------------------------
 expect 0 bash escape-hatch <<'EOF'
 sed -i 's/a/b/' f   # shell-lint-ok: GNU sed on the PC
