@@ -45,6 +45,38 @@ grep -q 'live_lastdb_env_pairs' "$DRIVER" \
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/write-path-cow-unit.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
+# --clone-root PATH makes the copy PATH/h. Reject a source at that exact path
+# before the probe removes any old copy.
+alias_root="$TMP/alias"
+alias_home="$alias_root/h"
+mkdir -p "$alias_home/data"
+printf 'identity\n' >"$alias_home/identity.key"
+printf 'source data\n' >"$alias_home/data/sentinel"
+set +e
+OUT="$(LASTDB_HOME="$alias_home" bash "$PROBE" --lastdbd /usr/bin/true --clone-root "$alias_root" 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "alias copy path must RED; out=$OUT"
+echo "$OUT" | grep -q 'VERDICT: RED' || fail "alias copy path needs VERDICT: RED; out=$OUT"
+[ -f "$alias_home/identity.key" ] && [ -f "$alias_home/data/sentinel" ] \
+  || fail 'write-path probe deleted source home'
+echo "$OUT" | grep -q 'refusing to remove a probe path' \
+  || fail "alias copy path did not reach the pre-delete guard; out=$OUT"
+
+nested_home="$TMP/nested/h"
+nested_root="$nested_home/probes"
+mkdir -p "$nested_home/data" "$nested_root/h"
+printf 'identity\n' >"$nested_home/identity.key"
+printf 'source data\n' >"$nested_root/h/sentinel"
+set +e
+OUT="$(LASTDB_HOME="$nested_home" bash "$PROBE" --lastdbd /usr/bin/true --clone-root "$nested_root" 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "nested copy path must RED; out=$OUT"
+[ -f "$nested_root/h/sentinel" ] || fail 'write-path probe deleted a child of source home'
+echo "$OUT" | grep -q 'refusing to remove a probe path' \
+  || fail "nested copy path did not reach the pre-delete guard; out=$OUT"
+
 set +e
 OUT="$(bash "$PROBE" --refuse-data-dir "$HOME/.lastdb" 2>&1)"
 RC=$?

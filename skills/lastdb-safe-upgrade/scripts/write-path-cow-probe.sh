@@ -170,6 +170,9 @@ if [ -z "$CLONE_ROOT" ]; then
   CLONE_ROOT="$(mktemp -d "${tmp%/}/w.XXXXXX")"
 fi
 copy="$CLONE_ROOT/h"
+if ! probe_copy_is_not_primary "$copy" "$PRIMARY_HOME"; then
+  fail_red "refusing to remove a probe path that aliases or is inside the primary home: $copy"
+fi
 sock="$copy/data/folddb.sock"
 blog="$CLONE_ROOT/boot.log"
 phase_log="$CLONE_ROOT/phase.json"
