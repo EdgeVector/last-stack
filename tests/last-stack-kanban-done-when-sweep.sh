@@ -35,6 +35,7 @@ cat > "$tmp/kanban" <<EOF
 fx="$fx"
 EOF
 cat >> "$tmp/kanban" <<'EOF'
+printf '%s\n' "$*" >> "$fx/calls.log"
 case "$1" in
   list)
     col=""
@@ -44,8 +45,43 @@ case "$1" in
     [ -f "$fx/list-$col.json" ] || { echo "node did not respond within 30000ms" >&2; exit 1; }
     cat "$fx/list-$col.json" ;;
   show)
-    [ -f "$fx/show-$2.json" ] || { echo "No card with slug \"$2\"" >&2; exit 1; }
-    cat "$fx/show-$2.json" ;;
+    slugs=""
+    pos=""
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --json) shift ;;
+        --slugs) slugs="$2"; shift 2 ;;
+        --slugs=*) slugs="${1#--slugs=}"; shift ;;
+        --help|-h)
+          echo "Options: --json --slugs"
+          exit 0
+          ;;
+        *) pos="$1"; shift ;;
+      esac
+    done
+    if [ -n "$slugs" ]; then
+      printf '['
+      sep=""
+      old_ifs="$IFS"
+      IFS=','
+      set -f
+      # shellcheck disable=SC2086
+      set -- $slugs
+      set +f
+      IFS="$old_ifs"
+      for s in "$@"; do
+        [ -n "$s" ] || continue
+        [ -f "$fx/show-$s.json" ] || continue
+        printf '%s' "$sep"
+        cat "$fx/show-$s.json"
+        sep=","
+      done
+      printf ']\n'
+      exit 0
+    fi
+    [ -f "$fx/show-$pos.json" ] || { echo "No card with slug \"$pos\"" >&2; exit 1; }
+    cat "$fx/show-$pos.json" ;;
   *) exit 2 ;;
 esac
 EOF
@@ -76,6 +112,15 @@ while IFS=$'\t' read -r verdict slug kind pred; do
     echo "FAIL [fields] empty field in row: $verdict|$slug|$kind|$pred" >&2; exit 1
   fi
 done < "$out"
+
+# N listed slugs produce one Card batch read and zero per-slug show.
+batch_n="$(grep -c '^show --slugs ' "$fx/calls.log" || true)"
+[ "$batch_n" = 1 ] || { echo "FAIL [batch] want 1 show --slugs, got $batch_n: $(cat "$fx/calls.log")" >&2; exit 1; }
+if grep -E '^show ' "$fx/calls.log" | grep -v -- '--slugs' | grep -v -- '--help' | grep -q .; then
+  echo "FAIL [batch] per-slug show was used: $(grep -E '^show ' "$fx/calls.log")" >&2
+  exit 1
+fi
+: > "$fx/calls.log"
 
 # --max caps the point reads.
 "$SWEEP" --board-cli "$tmp/kanban" --max 2 > "$out" 2> "$tmp/err"

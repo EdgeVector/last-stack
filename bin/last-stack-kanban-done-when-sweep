@@ -13,9 +13,11 @@
 # What it does:
 #   1. kanban list --column C --json --limit N for each column (capped reads).
 #   2. keeps Kind validation|tracker|capstone|meta, in list order, up to --max.
-#   3. kanban show <slug> --json for each, takes the first `DONE-WHEN:` line.
-#   4. runs last-stack-kanban-done-when-eval --kind K --predicate P.
+#   3. hydrates those Card records with one batch read (HashKeys / show --slugs).
+#   4. takes the first `DONE-WHEN:` line from each body.
+#   5. runs last-stack-kanban-done-when-eval --kind K --predicate P.
 # It never moves or marks a card. The caller acts on `satisfied` rows.
+# A missing slug in the batch is read-error; it is not a mutation.
 #
 # Output: one line per card, four TAB-separated fields, never empty:
 #   <verdict>\t<slug>\t<kind>\t<predicate or ->
@@ -118,18 +120,56 @@ fi
 checked=0
 n_satisfied=0; n_pending=0; n_malformed=0; n_ignored=0; n_none=0; n_readerr=0
 
+capped="$work/capped.tsv"
+: > "$capped"
 while IFS=$'\t' read -r slug kind; do
   [ -n "$slug" ] || continue
   [ "$checked" -lt "$max" ] || break
   checked=$((checked + 1))
-  card_json="$work/card-$checked.json"
-  if ! "$board_cli" show "$slug" --json > "$card_json" 2> "$card_json.err"; then
+  printf '%s\t%s\n' "$slug" "$kind" >> "$capped"
+done < "$candidates"
+
+batch_bin="$here/last-stack-kanban-show-batch"
+slugs_file="$work/slugs.txt"
+cards_json="$work/cards.json"
+cut -f1 "$capped" > "$slugs_file"
+batch_ok=0
+if [ ! -s "$slugs_file" ]; then
+  batch_ok=1
+  printf '[]\n' > "$cards_json"
+elif [ -x "$batch_bin" ]; then
+  if "$batch_bin" --board-cli "$board_cli" --slugs-file "$slugs_file" > "$cards_json" 2> "$cards_json.err"; then
+    batch_ok=1
+  fi
+else
+  echo "done-when-sweep: batch helper not executable: $batch_bin" >&2
+fi
+
+if [ "$batch_ok" -ne 1 ]; then
+  while IFS=$'\t' read -r slug kind; do
+    [ -n "$slug" ] || continue
+    printf 'read-error\t%s\t%s\t-\n' "$slug" "$kind"
+    n_readerr=$((n_readerr + 1))
+  done < "$capped"
+  echo "done-when-sweep checked=$checked satisfied=$n_satisfied pending=$n_pending malformed=$n_malformed ignored=$n_ignored no_predicate=$n_none read_error=$n_readerr column_read_fail=$read_fail" >&2
+  exit 0
+fi
+
+while IFS=$'\t' read -r slug kind; do
+  [ -n "$slug" ] || continue
+  card_json="$work/card-$slug.json"
+  if ! jq -e --arg s "$slug" '
+      (if type == "array" then . else (.cards // .results // []) end)
+      | map(select((.slug // .card.slug // "") == $s))
+      | .[0]
+    ' "$cards_json" > "$card_json" 2> "$card_json.err"; then
     printf 'read-error\t%s\t%s\t-\n' "$slug" "$kind"
     n_readerr=$((n_readerr + 1))
     continue
   fi
   predicate="$(jq -r '
       (if type == "array" then (.[0] // {}) else . end)
+      | (.card // .)
       | (.body // "")
       | split("\n")
       | map(select(startswith("DONE-WHEN:")))
@@ -154,7 +194,7 @@ while IFS=$'\t' read -r slug kind; do
   predicate="${predicate//$'\t'/ }"
   predicate="${predicate//$'\n'/ }"
   printf '%s\t%s\t%s\t%s\n' "$verdict" "$slug" "$kind" "$predicate"
-done < "$candidates"
+done < "$capped"
 
 echo "done-when-sweep checked=$checked satisfied=$n_satisfied pending=$n_pending malformed=$n_malformed ignored=$n_ignored no_predicate=$n_none read_error=$n_readerr column_read_fail=$read_fail" >&2
 exit 0

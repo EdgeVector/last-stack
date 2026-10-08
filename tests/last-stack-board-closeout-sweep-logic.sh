@@ -730,4 +730,109 @@ echo "$merged_park_out" | grep -q 'deploy-parked-demoted:merged-deploy-park' || 
   exit 1
 }
 
+# N doing slugs: one show --slugs batch, zero per-slug show. A missing slug
+# in the batch is skip, not a move.
+batch_calls="$tmp/batch-calls"
+batch_moves="$tmp/batch-moves"
+: >"$batch_calls"
+: >"$batch_moves"
+batch_board="$tmp/batch-board"
+cat >"$batch_board" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${BOARD_CALLS:?}"
+case "${1:-}" in
+  list)
+    cat <<'JSON'
+[
+  {"slug":"batch-doing","title":"t","column":"doing","position":"1","assignee":"","tags":["awaiting-deploy"],"pr_url":"","branch":"","repo":"EdgeVector/fold","updated_at":"2020-01-01T00:00:00.000Z","body":"Repo: EdgeVector/fold\nKind: pr\nRequires-Deploy: deploy-pipeline\n"},
+  {"slug":"batch-missing","title":"t","column":"doing","position":"2","assignee":"","tags":["awaiting-deploy"],"pr_url":"","branch":"","repo":"EdgeVector/fold","updated_at":"2020-01-01T00:00:00.000Z","body":"Repo: EdgeVector/fold\nKind: pr\nRequires-Deploy: deploy-pipeline\n"},
+  {"slug":"batch-stale","title":"t","column":"doing","position":"3","assignee":"","tags":["awaiting-deploy"],"pr_url":"","branch":"","repo":"EdgeVector/fold","updated_at":"2020-01-01T00:00:00.000Z","body":"Repo: EdgeVector/fold\nKind: pr\nRequires-Deploy: deploy-pipeline\n"}
+]
+JSON
+    ;;
+  show)
+    slugs=""
+    pos=""
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --json) shift ;;
+        --slugs) slugs="$2"; shift 2 ;;
+        --help|-h) echo "Options: --json --slugs"; exit 0 ;;
+        *) pos="$1"; shift ;;
+      esac
+    done
+    emit() {
+      case "$1" in
+        batch-doing) printf '{"slug":"batch-doing","column":"doing"}' ;;
+        batch-stale) printf '{"slug":"batch-stale","column":"done"}' ;;
+        *) return 1 ;;
+      esac
+    }
+    if [ -n "$slugs" ]; then
+      printf '['
+      sep=""
+      old_ifs="$IFS"
+      IFS=','
+      set -f
+      # shellcheck disable=SC2086
+      set -- $slugs
+      set +f
+      IFS="$old_ifs"
+      for s in "$@"; do
+        [ -n "$s" ] || continue
+        if chunk="$(emit "$s")"; then
+          printf '%s%s' "$sep" "$chunk"
+          sep=","
+        fi
+      done
+      printf ']\n'
+      exit 0
+    fi
+    emit "$pos" && printf '\n' && exit 0
+    echo "show unavailable" >&2
+    exit 3
+    ;;
+  add|tag|set|mark) : ;;
+  move)
+    printf '%s %s %s\n' "${2:-}" "${3:-}" "${4:-}" >>"${BOARD_MOVES:?}"
+    ;;
+  *)
+    echo "unexpected batch-board: $*" >&2
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$batch_board"
+export BOARD_CALLS="$batch_calls"
+export BOARD_MOVES="$batch_moves"
+batch_out="$("$sweep" --board-cli "$batch_board" --grace-min 1 --max-actions 20 2>&1 || true)"
+echo "$batch_out"
+if ! grep -q '^batch-doing backlog' "$batch_moves"; then
+  echo "FAIL: batch-doing should demote: $(cat "$batch_moves")" >&2
+  exit 1
+fi
+if grep -q '^batch-missing ' "$batch_moves" 2>/dev/null; then
+  echo "FAIL: missing slug in the batch was mutated: $(cat "$batch_moves")" >&2
+  exit 1
+fi
+if grep -q '^batch-stale ' "$batch_moves" 2>/dev/null; then
+  echo "FAIL: stale-list slug was mutated: $(cat "$batch_moves")" >&2
+  exit 1
+fi
+printf '%s\n' "$batch_out" | grep -q 'card-read-failed:batch-missing' || {
+  echo "FAIL: expected card-read-failed for batch-missing: $batch_out" >&2
+  exit 1
+}
+batch_n="$(grep -c '^show --slugs ' "$batch_calls" || true)"
+[ "$batch_n" = 1 ] || {
+  echo "FAIL: want 1 show --slugs, got $batch_n: $(cat "$batch_calls")" >&2
+  exit 1
+}
+if grep -E '^show ' "$batch_calls" | grep -v -- '--slugs' | grep -v -- '--help' | grep -q .; then
+  echo "FAIL: per-slug show was used: $(cat "$batch_calls")" >&2
+  exit 1
+fi
+
 echo "ok last-stack-board-closeout-sweep-logic"

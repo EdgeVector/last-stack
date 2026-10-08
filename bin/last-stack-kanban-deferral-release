@@ -6,8 +6,8 @@ block_status=deferred for more than a day. Its block_reason named two
 papercuts. One was fixed and the premise of the other was gone, but no
 routine re-checked the reason, so the hold outlived its cause.
 
-This sweep reads the backlog and todo columns (capped list reads), point-reads
-each held card, and parses its release conditions:
+This sweep reads the backlog and todo columns (capped list reads), hydrates
+those held Card records with one batch read, and parses its release conditions:
 
   * a body line `RELEASE-WHEN: <cond>[, <cond>...]` (the last line wins), or,
     when the body has no such line, the conditions named in `block_reason` --
@@ -107,6 +107,50 @@ def cards_from(value: Any) -> tuple[list[dict[str, Any]], bool]:
         if isinstance(cards, list):
             return [c for c in cards if isinstance(c, dict)], bool(value.get("truncated"))
     return [], False
+
+
+def batch_bin() -> Path:
+    return Path(__file__).resolve().parent / "last-stack-kanban-show-batch"
+
+
+def show_batch(board_cli: str, slugs: list[str]) -> dict[str, dict[str, Any] | None]:
+    """One Card batch read. Missing slugs map to None (read-error / skip)."""
+    found: dict[str, dict[str, Any] | None] = {slug: None for slug in slugs}
+    if not slugs:
+        return found
+    helper = batch_bin()
+    if not helper.is_file():
+        return found
+    tmpdir = os.environ.get("TMPDIR") or os.environ.get("TMP") or os.environ.get("TEMP") or "/tmp"
+    slugs_path = Path(
+        subprocess.check_output(["mktemp", f"{tmpdir}/deferral-release-slugs.XXXXXX"], text=True).strip()
+    )
+    slugs_path.write_text("".join(f"{slug}\n" for slug in slugs))
+    try:
+        argv = [str(helper), "--board-cli", board_cli, "--slugs-file", str(slugs_path)]
+        shown = run(argv, timeout=120)
+    finally:
+        try:
+            slugs_path.unlink()
+        except OSError:
+            pass
+    if shown.returncode != 0:
+        return found
+    try:
+        payload = parse_json(shown.stdout or "[]")
+    except json.JSONDecodeError:
+        return found
+    rows = payload if isinstance(payload, list) else (payload.get("cards") if isinstance(payload, dict) else [])
+    if not isinstance(rows, list):
+        rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        card = row.get("card") if isinstance(row.get("card"), dict) else row
+        slug = str(card.get("slug") or "").strip()
+        if slug in found:
+            found[slug] = card
+    return found
 
 
 def tags(card: dict[str, Any]) -> set[str]:
@@ -341,6 +385,16 @@ def sweep(args: argparse.Namespace) -> dict[str, Any]:
         candidates = candidates[: args.max_cards]
     report["scanned"] = len(candidates)
 
+    hydrate_slugs: list[str] = []
+    for preview in candidates:
+        slug = str(preview.get("slug") or "").strip()
+        if not slug:
+            continue
+        if tags(preview) & DEPLOY_TAGS:
+            continue
+        hydrate_slugs.append(slug)
+    hydrated = show_batch(args.board_cli, hydrate_slugs)
+
     for preview in candidates:
         slug = str(preview.get("slug") or "").strip()
         if not slug:
@@ -348,14 +402,9 @@ def sweep(args: argparse.Namespace) -> dict[str, Any]:
         if tags(preview) & DEPLOY_TAGS:
             report["deploy_owned"].append({"slug": slug})
             continue
-        shown = run([args.board_cli, "show", slug, "--json"], timeout=60)
-        if shown.returncode != 0:
+        card = hydrated.get(slug)
+        if card is None:
             report["errors"].append({"slug": slug, "reason": "show-failed"})
-            continue
-        try:
-            card = parse_json(shown.stdout)
-        except json.JSONDecodeError:
-            report["errors"].append({"slug": slug, "reason": "show-json-unparsed"})
             continue
         body = str(card.get("body") or "")
         reason = str(card.get("block_reason") or preview.get("block_reason") or "")
@@ -468,7 +517,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--gh", default=os.environ.get("GH_BIN", "gh"), help="GitHub CLI (default gh)")
     parser.add_argument("--columns", default="backlog,todo", help="comma list (default backlog,todo)")
     parser.add_argument("--limit", type=int, default=300, help="per-column list cap (default 300)")
-    parser.add_argument("--max-cards", type=int, default=120, help="point-read cap per run (default 120)")
+    parser.add_argument("--max-cards", type=int, default=120, help="hydrate cap per run (default 120)")
     parser.add_argument("--now", default="", help="ISO time override (tests)")
     args = parser.parse_args(argv)
     args.columns = [c.strip() for c in args.columns.split(",") if c.strip()]

@@ -56,6 +56,8 @@ cat >"$tmp/bin/kanban" <<SH
 set -euo pipefail
 cards="$tmp/cards"
 log="$tmp/board.log"
+calls="$tmp/calls.log"
+printf '%s\\n' "\$*" >>"\$calls"
 case "\$1" in
   list)
     col="\$3"
@@ -66,11 +68,46 @@ case "\$1" in
         printf '%s' "\$sep"; jq -c '.body = ""' "\$f"; sep=","
       fi
     done
+    if [ "\$col" = "backlog" ]; then
+      printf '%s{"slug":"gone-held","column":"backlog","block_status":"deferred","kind":"pr","tags":[],"block_reason":"awaiting papercut-fixed-one","body":""}' "\$sep"
+    fi
     printf '],"truncated":false}\n'
     ;;
   show)
-    [ -f "\$cards/\$2.json" ] || { echo "no card \$2" >&2; exit 1; }
-    cat "\$cards/\$2.json"
+    slugs=""
+    pos=""
+    shift
+    while [ "\$#" -gt 0 ]; do
+      case "\$1" in
+        --json) shift ;;
+        --slugs) slugs="\$2"; shift 2 ;;
+        --slugs=*) slugs="\${1#--slugs=}"; shift ;;
+        --help|-h) echo "Options: --json --slugs"; exit 0 ;;
+        *) pos="\$1"; shift ;;
+      esac
+    done
+    if [ -n "\$slugs" ]; then
+      printf '['
+      sep=""
+      old_ifs="\$IFS"
+      IFS=','
+      set -f
+      # shellcheck disable=SC2086
+      set -- \$slugs
+      set +f
+      IFS="\$old_ifs"
+      for s in "\$@"; do
+        [ -n "\$s" ] || continue
+        [ -f "\$cards/\$s.json" ] || continue
+        printf '%s' "\$sep"
+        cat "\$cards/\$s.json"
+        sep=","
+      done
+      printf ']\\n'
+      exit 0
+    fi
+    [ -f "\$cards/\$pos.json" ] || { echo "no card \$pos" >&2; exit 1; }
+    cat "\$cards/\$pos.json"
     ;;
   pickup)
     printf '{"slug":"%s","ready":true,"write_guard":{"ok":true}}\n' "\$3"
@@ -127,6 +164,16 @@ slugs() { jq -r --arg k "$1" '[.[$k][].slug] | sort | join(",")' "$tmp/dry.json"
 [ "$(slugs held)" = "held-none" ] || fail "held=$(slugs held)"
 [ "$(slugs deploy_owned)" = "deploy-park" ] || fail "deploy_owned=$(slugs deploy_owned)"
 [ "$(slugs malformed)" = "bad-token" ] || fail "malformed=$(slugs malformed)"
+[ "$(slugs errors)" = "gone-held" ] || fail "errors=$(slugs errors)"
+batch_n="$(grep -c '^show --slugs ' "$tmp/calls.log" || true)"
+[ "$batch_n" = 1 ] || fail "want 1 show --slugs, got $batch_n: $(cat "$tmp/calls.log")"
+# Held candidates must not be point-read. card:done-card* shows are RELEASE-WHEN checks.
+for s in bad-token blocked-on gh-merged held-none incidental keep-two pr-open rel-papercut uncond gone-held body-mixed deploy-park; do
+  if grep -E "^show $s( |$)" "$tmp/calls.log" >/dev/null; then
+    fail "held slug $s was point-read: $(grep -E '^show ' "$tmp/calls.log")"
+  fi
+done
+: >"$tmp/calls.log"
 jq -e '.kept[] | select(.slug=="keep-two") | .open | join(" ") | test("papercut-open-one")' "$tmp/dry.json" >/dev/null \
   || fail "keep-two does not name its open papercut"
 jq -e '.kept[] | select(.slug=="keep-two") | .met | join(" ") | test("papercut-fixed-one")' "$tmp/dry.json" >/dev/null \
@@ -140,7 +187,7 @@ grep -qx 'set body-mixed --block-status none' "$tmp/board.log" || fail "body-mix
 grep -q '^mark rel-papercut RELEASED .*papercut-fixed-one status=fixed' "$tmp/board.log" || fail "rel-papercut evidence mark missing"
 grep -qx 'move rel-papercut todo' "$tmp/board.log" || fail "rel-papercut not moved to todo"
 if grep -q '^move body-mixed' "$tmp/board.log"; then fail "body-mixed already in todo was moved"; fi
-for s in keep-two uncond incidental held-none pr-open deploy-park bad-token done-card free-card; do
+for s in keep-two uncond incidental held-none pr-open deploy-park bad-token done-card free-card gone-held; do
   if grep -Eq "^[a-z]+ $s( |\$)" "$tmp/board.log"; then fail "$s was touched: $(cat "$tmp/board.log")"; fi
 done
 
