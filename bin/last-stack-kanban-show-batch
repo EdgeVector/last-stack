@@ -150,7 +150,7 @@ def read_slugs(args: argparse.Namespace) -> list[str]:
 
 
 def chunks(items: list[str], size: int) -> list[list[str]]:
-    if size < 1:
+    if size < 1 or size > PAGE_CAP:
         size = PAGE_CAP
     return [items[i : i + size] for i in range(0, len(items), size)]
 
@@ -236,13 +236,35 @@ def lastdb_socket(explicit: str) -> str:
     return os.path.join(home, "data", "folddb.sock")
 
 
+def query_limit(slugs: list[str]) -> int:
+    """Node default limit is 100; omit that and a >100 slug set is truncated."""
+    return min(len(slugs), PAGE_CAP)
+
+
+def query_truncated(payload: dict[str, Any]) -> bool:
+    """True when the node says this page is short of the requested keys."""
+    if payload.get("has_more") is True:
+        return True
+    page = payload.get("page")
+    if isinstance(page, dict) and (
+        page.get("has_more") is True or page.get("hasMore") is True
+    ):
+        return True
+    return False
+
+
 def query_body(schema_name: str, slugs: list[str], filter_kind: str) -> str:
     if filter_kind == "HashKeys":
         filt: dict[str, Any] = {"HashKeys": slugs}
     else:
         filt = {"HashRangeKeys": [[slug, ""] for slug in slugs]}
     return json.dumps(
-        {"schema_name": schema_name, "fields": CARD_FIELDS, "filter": filt},
+        {
+            "schema_name": schema_name,
+            "fields": CARD_FIELDS,
+            "filter": filt,
+            "limit": query_limit(slugs),
+        },
         separators=(",", ":"),
     )
 
@@ -317,6 +339,12 @@ def via_query(slugs: list[str], socket: str, chunk_size: int) -> tuple[list[dict
                     continue
                 if payload.get("ok") is False:
                     continue
+                if query_truncated(payload):
+                    return (
+                        None,
+                        "Card batch query truncated (has_more=true)",
+                        f"query-{kind.lower()}",
+                    )
                 used = f"query-{kind.lower()}"
                 got.extend(cards_from_payload(payload))
                 payload = {"ok": True}
@@ -370,7 +398,7 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument("--board-cli", default=os.environ.get("BOARD_CLI", ""), help="kanban CLI (fixture or live)")
     parser.add_argument("--socket", default="", help="LastDB unix socket (query path)")
-    parser.add_argument("--chunk", type=int, default=PAGE_CAP, help="node page cap (default 1000)")
+    parser.add_argument("--chunk", type=int, default=PAGE_CAP, help="keys per query (default 1000, max 1000)")
     parser.add_argument("--slugs", default="", help="comma-separated slugs")
     parser.add_argument("--slugs-file", default="", help="file of slugs, one per line")
     parser.add_argument("slug", nargs="*", help="slug arguments")

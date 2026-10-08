@@ -98,11 +98,52 @@ printf '%s\n' "$out" | jq -e 'type=="array" and length==2' >/dev/null \
 grep -q 'via=query-hashkeys' "$tmp/q.err" || fail "via=query-hashkeys missing: $(cat "$tmp/q.err")"
 jq -e '.filter.HashKeys == ["a","b","missing"]' "$QUERY_LOG" >/dev/null \
   || fail "want HashKeys filter, got: $(cat "$QUERY_LOG")"
+jq -e '.limit == 3' "$QUERY_LOG" >/dev/null \
+  || fail "want limit=chunk length 3, got: $(cat "$QUERY_LOG")"
 if jq -e '.filter.HashKey' "$QUERY_LOG" >/dev/null 2>&1; then
   fail "per-slug HashKey was used: $(cat "$QUERY_LOG")"
 fi
 printf '%s\n' "$out" | jq -e '[.[].slug] | index("missing") == null' >/dev/null \
   || fail "query path returned missing slug"
+
+# Truncated page (has_more) is a batch failure, not a short slug set.
+cat >"$tmp/query-more" <<'EOF'
+#!/usr/bin/env bash
+cat >"${QUERY_LOG:?}"
+cat <<'JSON'
+{"ok":true,"has_more":true,"results":[{"slug":"a","body":"A","column":"backlog"}]}
+JSON
+EOF
+chmod +x "$tmp/query-more"
+QUERY_LOG="$tmp/query-more-body.json"
+export QUERY_LOG
+set +e
+LAST_STACK_KANBAN_SHOW_BATCH_VIA=query \
+LAST_STACK_LASTDB_QUERY_CMD="$tmp/query-more" \
+  "$BIN" --slugs a,b,c >"$tmp/more.out" 2>"$tmp/more.err"
+more_rc=$?
+set -e
+[ "$more_rc" = 1 ] || fail "has_more want exit 1, got $more_rc err=$(cat "$tmp/more.err")"
+grep -q 'has_more=true' "$tmp/more.err" || fail "has_more error missing: $(cat "$tmp/more.err")"
+jq -e '.limit == 3' "$QUERY_LOG" >/dev/null \
+  || fail "has_more path want limit=3, got: $(cat "$QUERY_LOG")"
+
+python3 - "$BIN" <<'PY' || fail "query_limit / query_truncated unit"
+import sys
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
+
+loader = SourceFileLoader("show_batch", sys.argv[1])
+spec = spec_from_loader("show_batch", loader)
+assert spec is not None
+mod = module_from_spec(spec)
+loader.exec_module(mod)
+assert mod.query_limit(["a", "b", "c"]) == 3
+assert mod.query_limit(["s"] * 1001) == 1000
+assert mod.query_truncated({"has_more": True})
+assert not mod.query_truncated({"ok": True, "results": []})
+assert mod.query_truncated({"page": {"hasMore": True}})
+PY
 
 # One-item path keeps single-slug show.
 : >"$fx/calls.log"
