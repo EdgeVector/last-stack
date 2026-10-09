@@ -36,6 +36,12 @@ printf 'dist/\nnode_modules/\nbuild/\n!/vendor/sdk/dist/\n' > "$repo/.gitignore"
 git -C "$repo" add -A
 git -C "$repo" commit -qm init
 
+# Age the tree past the 60 minute fresh grace. The strip honors that grace (a
+# fresh tree is never stripped; tests/last-stack-reclaim-keeps-safe-upgrade-
+# candidate.sh covers it), so a brand-new fixture would skip the strip this test
+# needs to exercise.
+touch -t 202001010000 "$repo"
+
 # Sanity: the fixture is what the test claims it is.
 [ -n "$(git -C "$repo" ls-files -- vendor/sdk/dist)" ] || {
   echo "fixture broken: vendor/sdk/dist is not tracked" >&2; exit 1; }

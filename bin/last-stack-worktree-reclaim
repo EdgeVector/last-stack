@@ -493,6 +493,39 @@ build_live_index() {
   fi
 }
 
+# A LastDB safe-upgrade run reserves the candidate pair it will cut over to.
+# The pair lives in a managed worktree's target/, which the pressure strip
+# deletes. PROBE and CUTOVER can be an hour apart (papercut-worktree-reclaim-
+# strips-safe-upgrade-candidate-before-fresh-grace-20261008), so a live process
+# is not enough: nothing runs in that tree between the two steps.
+# Reservation file: one line per path, "<expires_epoch><TAB><absolute path>".
+reserve_dir="${LAST_STACK_RECLAIM_RESERVE_DIR:-$HOME/.local/state/last-stack/lastdb-safe-upgrade/candidate-reservations}"
+
+# candidate_reserved <worktree>: rc 0 and reserve_reason set when an unexpired
+# reservation names a path inside the worktree. A missing dir reserves nothing.
+candidate_reserved() {
+  local wt="$1" wt_real f exp path now
+  reserve_reason=""
+  [ -d "$reserve_dir" ] || return 1
+  wt_real="$(cd "$wt" 2>/dev/null && pwd -P)" || wt_real="$wt"
+  now="$(date -u +%s)"
+  for f in "$reserve_dir"/*.reserve; do
+    [ -f "$f" ] || continue
+    while IFS=$'\t' read -r exp path; do
+      case "$exp" in ''|*[!0-9]*) continue ;; esac
+      [ -n "$path" ] || continue
+      [ "$exp" -gt "$now" ] || continue
+      case "$path" in
+        "$wt"|"$wt"/*|"$wt_real"|"$wt_real"/*)
+          reserve_reason="safe_upgrade_reservation:$(basename "$f")"
+          return 0
+          ;;
+      esac
+    done <"$f"
+  done
+  return 1
+}
+
 strip_generated() {
   local wt="$1"
   local d tracked
@@ -502,6 +535,13 @@ strip_generated() {
   # refuse when the worktree is live. --force-live bypasses for explicit ops.
   if [ "$force_live" -eq 0 ] && has_live_cwd "$wt"; then
     log "skip strip reason=${live_reason:-live} $wt"
+    return 0
+  fi
+  # A reserved safe-upgrade candidate is not bypassed by --force-live: that flag
+  # answers "is a process using the tree", and a reservation is the answer for
+  # work that is between two steps.
+  if candidate_reserved "$wt"; then
+    log "skip strip reason=${reserve_reason} $wt"
     return 0
   fi
 
@@ -694,6 +734,10 @@ remove_worktree() {
   [ -d "$wt" ] || return 0
   if [ "$force_live" -eq 0 ] && has_live_cwd "$wt"; then
     log "skip remove reason=${live_reason:-live} $wt"
+    return 0
+  fi
+  if candidate_reserved "$wt"; then
+    log "skip remove reason=${reserve_reason} $wt"
     return 0
   fi
   strip_generated "$wt"
@@ -891,6 +935,19 @@ if [ "$sweep_stale" -eq 1 ]; then
       [ -d "$d" ] || continue
       name="$(basename "$d")"
 
+      # age by directory mtime. Computed BEFORE the strip: the short grace
+      # below exists so a sweep never races a tree its owner has just used, and
+      # a strip races it harder than a removal does (it deletes the build
+      # output, and the tree stays). The strip used to run first and ignore the
+      # grace (papercut-worktree-reclaim-strips-safe-upgrade-candidate-before-
+      # fresh-grace-20261008).
+      if stat --version >/dev/null 2>&1; then
+        mtime="$(stat -c %Y "$d" 2>/dev/null || echo 0)"
+      else
+        mtime="$(stat -f %m "$d" 2>/dev/null || echo 0)"
+      fi
+      age=$((now_epoch - mtime))
+
       # Generated-cache strip: only under disk pressure, and never for live trees.
       # Pressure-gating is deliberate — stripping a tree we KEEP costs its owner
       # a full rebuild, so it waits for real scarcity. Removal of finished work
@@ -898,6 +955,12 @@ if [ "$sweep_stale" -eq 1 ]; then
       if [ "$do_strip" -eq 1 ]; then
         if [ "$force_live" -eq 0 ] && has_live_cwd "$d"; then
           log "keep strip-skip reason=${live_reason:-live} $name"
+          strip_skipped_live=$((strip_skipped_live + 1))
+        elif [ "$age" -lt "$min_age_sec" ]; then
+          log "keep strip-skip reason=fresh age_min=$((age / 60)) grace_min=${min_age_minutes} $name"
+          strip_skipped_live=$((strip_skipped_live + 1))
+        elif candidate_reserved "$d"; then
+          log "keep strip-skip reason=${reserve_reason} $name"
           strip_skipped_live=$((strip_skipped_live + 1))
         else
           strip_generated "$d"
@@ -947,17 +1010,14 @@ if [ "$sweep_stale" -eq 1 ]; then
       if [ "$force_live" -eq 0 ] && has_live_cwd "$d"; then
         prot=1
       fi
+      if candidate_reserved "$d"; then
+        prot=1
+        log "keep reserved ${reserve_reason} $name"
+      fi
       if [ "$prot" -eq 1 ]; then
         log "keep protected $name"
         continue
       fi
-      # age by directory mtime
-      if stat --version >/dev/null 2>&1; then
-        mtime="$(stat -c %Y "$d" 2>/dev/null || echo 0)"
-      else
-        mtime="$(stat -f %m "$d" 2>/dev/null || echo 0)"
-      fi
-      age=$((now_epoch - mtime))
 
       # Short grace: never race a worktree created moments before this sweep,
       # whose owning process may not have opened it yet.

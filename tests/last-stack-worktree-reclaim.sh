@@ -70,6 +70,10 @@ echo exec-marker >"$WORKTREES_DIR/exec-wt/target/KEEP_ME"
 # Fresh cargo fingerprint for the marker-only tree (no live process)
 : >"$WORKTREES_DIR/fresh-marker-wt/target/debug/.fingerprint/crate/invoked.timestamp"
 touch "$WORKTREES_DIR/fresh-marker-wt/target/.rustc_info.json"
+# The idle tree must be older than the 60 minute fresh grace: the strip honors
+# the grace (tests/last-stack-reclaim-keeps-safe-upgrade-candidate.sh), so a
+# brand-new directory is correctly left alone.
+touch -t 202001010000 "$WORKTREES_DIR/idle-wt"
 
 # Start a long-lived process with cwd = live-wt (sleep is not in old allowlist —
 # expanded guard must still see it via full pgrep + lsof cwd).
