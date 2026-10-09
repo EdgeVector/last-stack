@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Filtered public decision gate cases. All clients and files are private."""
 import argparse
+import contextlib
+import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -9,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +26,37 @@ DECISION = 'decision-20260907-approve-lastdb-memory-footprint-guard-design'
 
 def check(value, message):
     if not value: raise AssertionError(message)
+
+def backend_resolution(finite):
+    # Exercise main's no-option path without a store call. The raw None option
+    # remains finite authority; the resolved value alone selects the client.
+    loader=importlib.machinery.SourceFileLoader('decision_backend_resolution',str(ROOT/'bin/last-stack-kanban-decision-check'))
+    spec=importlib.util.spec_from_loader(loader.name,loader);module=importlib.util.module_from_spec(spec)
+    sys.modules[loader.name]=module;loader.exec_module(module)
+    expected=str(Path.home()/'.local/bin/brain') if finite else '/private/default-brain'
+    pack={'verdict':'clear','stamp':'private stamp'}
+    client=SimpleNamespace(degraded_types=[],search_failures={})
+    def assemble(*args):
+        if finite:check(args[-1].brain is None,'finite default replaced the raw Brain option')
+        return pack
+    default=AssertionError('finite mode read generic backend default') if finite else expected
+    with patch.object(module,'default_brain_bin',side_effect=default if finite else None,return_value=expected), \
+         patch.object(module,'read_body_or_fail',return_value='private body'), \
+         patch.object(module,'Brain',return_value=client) as constructor, \
+         patch.object(module,'factory_reviewed_assemble' if finite else 'assemble',side_effect=assemble), \
+         contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
+        try:rc=module.main(['--factory-reviewed-decision'] if finite else [])
+        except TypeError as error:raise AssertionError(('finite' if finite else 'ordinary')+' default backend resolution refused a missing option') from error
+    check(rc==0,('finite' if finite else 'ordinary')+' default backend resolution failed')
+    check(constructor.call_args.args==(expected,None),('finite' if finite else 'ordinary')+' default backend client differs from retirement admission')
+    if not finite:
+        # Refuse the resolved retired name before stdin or fixtures. No retired
+        # client exists here, so a failed guard cannot execute it.
+        with patch.object(module,'default_brain_bin',return_value='/private/retired/gbrain'), \
+             patch.object(module,'read_body_or_fail',side_effect=AssertionError('retired default reached body read')), \
+             patch.object(module,'Brain',side_effect=AssertionError('retired default reached client construction')), \
+             contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
+            check(module.main([])==1,'retired default backend was not refused')
 
 def fixture():
     home = Path(tempfile.mkdtemp(prefix='factory-reviewed-gate-'))
@@ -80,6 +115,7 @@ def decision(home, artifact, environment, extra=(), body=None, generic=False):
     return result
 
 def positive():
+    backend_resolution(True)
     home, artifact, env = fixture(); result = decision(home,artifact,env)
     check(result.returncode==0, 'reviewed named gate refused: '+result.stderr.decode())
     text=result.stdout.decode()
@@ -88,6 +124,7 @@ def positive():
     f.validate_admitted_body(text, {'card':SLUG,'repo':'EdgeVector/loom','base':'main','brief_sha256':f.sha((ROOT/'config/factory-canonical-active-counts.md').read_bytes())})
 
 def generic():
+    backend_resolution(False)
     home,artifact,env=fixture(); result=decision(home,artifact,env,generic=True)
     check(result.returncode==0 and b'verdict: clear\nslugs: none' in result.stdout,'ordinary generic search behavior changed')
     try:f.validate_admitted_body(result.stdout.decode(),{'card':SLUG,'repo':'EdgeVector/loom','base':'main','brief_sha256':f.sha((ROOT/'config/factory-canonical-active-counts.md').read_bytes())})

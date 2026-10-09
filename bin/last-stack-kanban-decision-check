@@ -739,6 +739,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
+    # Keep the raw option for the finite override fence. Resolve the backend
+    # once so retirement admission and the Brain client use the same value.
+    effective_brain = args.brain
+    if effective_brain is None:
+        effective_brain = (str(Path.home() / ".local/bin/brain")
+                           if args.factory_reviewed_decision else default_brain_bin())
+
     # gbrain is retired (won't-undo, Tom 2026-09-25: "the brain is LastDB
     # only ... Re-enabling gbrain needs Tom"). Refuse here, before any brain
     # subprocess runs and before any fixture addressing happens, so an
@@ -746,10 +753,10 @@ def main(argv: list[str] | None = None) -> int:
     # ~/.claude/brain-config.json, or an explicit `--brain .../gbrain` can
     # never select it (papercut-last-stack-decision-check-old-config-
     # selects-retired-brain-20261009).
-    if Path(args.brain).name.startswith("gbrain"):
+    if Path(effective_brain).name.startswith("gbrain"):
         print(
             "last-stack-kanban-decision-check: refusing --brain "
-            f"{args.brain!r} -- gbrain is retired "
+            f"{effective_brain!r} -- gbrain is retired "
             "(decision-2026-09-25-revert-primary-brain-to-lastdb); "
             "re-enabling it needs Tom.",
             file=sys.stderr,
@@ -762,7 +769,7 @@ def main(argv: list[str] | None = None) -> int:
         env_fix = os.environ.get("LAST_STACK_DECISION_FIXTURE", "")
         if env_fix:
             fixture = Path(env_fix)
-    brain = Brain(str(Path.home() / ".local/bin/brain") if args.factory_reviewed_decision else (args.brain if args.brain is not None else default_brain_bin()), fixture)
+    brain = Brain(effective_brain, fixture)
     try:
         if args.factory_reviewed_decision:
             try:
