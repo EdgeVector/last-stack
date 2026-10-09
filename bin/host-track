@@ -437,9 +437,15 @@ expand_commit_oid() {
 }
 
 commit_distance() {
-  local cache="$1" installed="$2" gate="$3"
+  local cache="$1" installed="$2" gate="$3" count
   [ -d "$cache" ] && [ -n "$installed" ] && [ -n "$gate" ] || return 0
-  git --git-dir="$cache" rev-list --count "$installed..$gate" 2>/dev/null || true
+  # A missing revision in a stale local mirror and "nothing to report"
+  # must not render the same: the caller needs to tell them apart.
+  if count="$(git --git-dir="$cache" rev-list --count "$installed..$gate" 2>/dev/null)"; then
+    printf '%s\n' "$count"
+  else
+    printf '%s\n' "stale-mirror"
+  fi
 }
 
 command_path() {
@@ -1444,7 +1450,7 @@ status_json_for() {
   local stamp_digest stamp_oid live_digest stamp_diverged
   local exemption_kind deployment_binary deployment_peer_binary deployment_repo_cache
   local deployment_version deployment_head deployment_peer_version deployment_peer_head
-  local deployment_pair_match deployment_problem behind_by distance deployment_expanded
+  local deployment_pair_match deployment_problem behind_by behind_by_unknown distance deployment_expanded
   local main_unpublished freshness soak_state soak_checks soak_min post_flip_ticks_left
   local soak_elapsed_secs soak_need_secs soak_abandoned soak_checks_total
   local soak_last_check_at soak_last_check_age_secs soak_gate
@@ -1525,6 +1531,7 @@ status_json_for() {
   deployment_pair_match="null"
   deployment_problem=""
   behind_by="null"
+  behind_by_unknown=""
   if [ "$install_mode" = "artifact" ]; then
     IFS=$'\t' read -r artifact_app artifact_channel artifact_root install_root < <(artifact_paths "$app" "$json")
     host_track="$install_root/current"
@@ -1980,7 +1987,11 @@ status_json_for() {
       deployment_pair_match="true"
       if [ "$host_head" = "$gate_tip" ]; then stale="false"; fi
       distance="$(commit_distance "$deployment_repo_cache" "$host_head" "$gate_tip")"
-      if [ -n "$distance" ]; then behind_by="$distance"; fi
+      case "$distance" in
+        '') ;;
+        stale-mirror) behind_by_unknown="stale-mirror" ;;
+        *) behind_by="$distance" ;;
+      esac
     fi
   else
     host_head="$(git_head "$host_track")"
@@ -2072,6 +2083,7 @@ status_json_for() {
     --argjson stale "$stale" \
     --argjson main_unpublished "$main_unpublished" \
     --argjson behind_by "$behind_by" \
+    --arg behind_by_unknown "$behind_by_unknown" \
     --argjson binary_pair_match "$deployment_pair_match" \
     --arg registry_channel "$registry_channel" \
     --arg registry_pin_oid "$registry_pin_oid" \
@@ -2119,6 +2131,7 @@ status_json_for() {
       channel_order: $channel_order,
       channel_previous_oid: ($channel_previous_oid | select(length > 0) // null),
       behind_by: $behind_by,
+      behind_by_unknown_reason: ($behind_by_unknown | select(length > 0) // null),
       binary_pair_match: $binary_pair_match,
       paired_version: ($deployment_peer_version | select(length > 0) // null),
       paired_head: ($deployment_peer_head | select(length > 0) // null),
@@ -2166,7 +2179,7 @@ status_plain_for() {
       "version=" + (.version // "-"),
       "host_head=" + (.host_head // "-"),
       "gate_head=" + (.gate_head // "-"),
-      "behind_by=" + ((.behind_by // "-") | tostring),
+      "behind_by=" + (if .behind_by != null then (.behind_by | tostring) elif .behind_by_unknown_reason then ("unknown(" + .behind_by_unknown_reason + ")") else "-" end),
       "binary_pair_match=" + ((.binary_pair_match // "-") | tostring),
       "deployment_problem=" + (.deployment_problem // "-"),
       "stale=" + (.stale | tostring),
