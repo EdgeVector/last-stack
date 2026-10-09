@@ -71,6 +71,7 @@
 # Env (ephemeral rollback):
 #   LASTDB_ROLLBACK_ROOT=<path>    # defaults under TMPDIR, never under $HOME
 #   LASTDB_ROLLBACK_TTL_HOURS=24   # RED retention contract; next run reclaims
+#   LASTDB_ROLLBACK_REUSE_MAX_AGE_S=3600  # a kept point older than this is re-cloned
 #
 set -euo pipefail
 
@@ -91,6 +92,9 @@ case "$(cd "$_rollback_default_tmp" 2>/dev/null && pwd -P || printf '%s' "$_roll
 esac
 ROLLBACK_ROOT="${LASTDB_ROLLBACK_ROOT:-${LASTDB_BACKUP_ROOT:-${_rollback_default_tmp}/lastdb-safe-upgrade-rollback-${UID:-$(id -u)}}}"
 ROLLBACK_TTL_HOURS="${LASTDB_ROLLBACK_TTL_HOURS:-24}"
+# A kept point is the data the primary is restored from. STEP 1 reuses it only
+# while it is this young (see rollback_point_reusable); otherwise it is re-cloned.
+ROLLBACK_REUSE_MAX_AGE_S="${LASTDB_ROLLBACK_REUSE_MAX_AGE_S:-3600}"
 # Resolved under this run's WORK directory after mktemp unless explicitly set.
 PROBE_ROOT="${LASTDB_PROBE_ROOT:-}"
 SMOKE_SH="${LASTDB_SMOKE_SH:-$HOME/code/edgevector/.claude/run-lastdb-mini-smoke.sh}"
@@ -494,6 +498,58 @@ newest_routine_rollback_point() {
   done
   [ -n "$newest" ] && printf '%s\n' "$newest"
   return 0
+}
+
+# Epoch seconds of a rollback point clone stamp (YYYYMMDDTHHMMSSZ, UTC).
+rollback_stamp_epoch() {
+  local stamp="$1"
+  if date --version >/dev/null 2>&1; then
+    date -u -d "${stamp:0:4}-${stamp:4:2}-${stamp:6:2} ${stamp:9:2}:${stamp:11:2}:${stamp:13:2}" +%s
+  else
+    date -j -u -f '%Y%m%dT%H%M%SZ' "$stamp" +%s
+  fi
+}
+
+# May STEP 1 restore the primary from this kept point? Args: dir candidate_ver
+# from_ver max_age_s [now_s]. Prints ROLLBACK_REUSE=<verdict>; returns 0 only
+# for GREEN. Fails closed: the point must be named for THIS candidate and THIS
+# incumbent, and its clone stamp must be a readable time no older than max_age_s.
+# Anything else is a refusal, and the caller clones a fresh point.
+rollback_point_reusable() {
+  local dir="$1" cand="$2" cur="$3" max_age="$4" now="${5:-}"
+  local base prefix stamp clone_s
+  base="$(basename "$dir")"
+  prefix="pre-${cand}-from-${cur}-"
+  if [ -z "$cand" ] || [ -z "$cur" ]; then
+    printf 'ROLLBACK_REUSE=name-mismatch\n'; return 1
+  fi
+  case "$base" in
+    "$prefix"*) ;;
+    *) printf 'ROLLBACK_REUSE=name-mismatch\n'; return 1 ;;
+  esac
+  stamp="${base#"$prefix"}"
+  case "$stamp" in
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z) ;;
+    *) printf 'ROLLBACK_REUSE=name-mismatch\n'; return 1 ;;
+  esac
+  case "$max_age" in
+    ''|*[!0-9]*) printf 'ROLLBACK_REUSE=max-age-invalid\n'; return 1 ;;
+  esac
+  [ -n "$now" ] || now="$(date +%s)"
+  case "$now" in
+    ''|*[!0-9]*) printf 'ROLLBACK_REUSE=clock-unreadable\n'; return 1 ;;
+  esac
+  clone_s="$(rollback_stamp_epoch "$stamp" 2>/dev/null)" || clone_s=""
+  case "$clone_s" in
+    ''|*[!0-9]*) printf 'ROLLBACK_REUSE=stamp-unreadable\n'; return 1 ;;
+  esac
+  if [ "$clone_s" -gt "$now" ]; then
+    printf 'ROLLBACK_REUSE=stamp-in-future\n'; return 1
+  fi
+  if [ $((now - clone_s)) -gt "$max_age" ]; then
+    printf 'ROLLBACK_REUSE=stale\n'; return 1
+  fi
+  printf 'ROLLBACK_REUSE=GREEN\n'
 }
 
 prepare_rollback_root() {
@@ -2239,14 +2295,24 @@ log "candidate class GREEN: path/version/size ok (vs baseline ${BASELINE_FOR_CLA
 
 prepare_rollback_root
 kept="$(newest_routine_rollback_point)"
-if [ -n "$kept" ] && backup_essentials_ok "$kept" && backup_data_is_not_live "$kept"; then
+# A kept point is reused only for this candidate and incumbent, and only while
+# young: a stale copy restores old data if the live step fails.
+kept_reuse=""
+if [ -n "$kept" ]; then
+  kept_reuse="$(rollback_point_reusable "$kept" "$CAND_VER" "$CURRENT_VER" "$ROLLBACK_REUSE_MAX_AGE_S" || true)"
+  if [ "$kept_reuse" = "ROLLBACK_REUSE=GREEN" ]; then
+    backup_essentials_ok "$kept" && backup_data_is_not_live "$kept" \
+      || kept_reuse="ROLLBACK_REUSE=incomplete-or-live"
+  fi
+fi
+if [ "$kept_reuse" = "ROLLBACK_REUSE=GREEN" ]; then
   BACKUP="$kept"
   ROLLBACK_READY=1
   log "STEP 1/4: reused newest rollback point → $BACKUP"
   log "rollback: skipped cp -cR; kept newest point from a prior driver-ended step"
 else
   if [ -n "$kept" ]; then
-    log "rollback: newest point unusable; cloning a fresh one"
+    log "rollback: newest point unusable (${kept_reuse:-ROLLBACK_REUSE=unchecked}); cloning a fresh one"
     rm -rf "$kept"
   fi
   TS="$(date -u +%Y%m%dT%H%M%SZ)"
