@@ -44,6 +44,7 @@ verdict for anyone to misread.
 | 4 | the restore did not return every `--target` to its original bytes. The snapshot directory is kept and printed |
 | 5 | **the patch mutated a file the helper never snapshotted.** That file is still mutated and cannot be restored; the paths are named. Checked before 3 |
 | 6 | **THE RED WAS NOT THE ONE YOU ASKED FOR.** `--expect-red-on` was given, the test went RED, and nothing in its output matched. The probe has no verdict about the assertion it targeted |
+| 7 | **NO VERDICT: THE TEST PASSED AND NEVER NAMED THE ASSERTION.** `--expect-red-on` was given, the test went GREEN, and nothing in its output matched. The test command may have selected no assertion your probe targets. This is NOT evidence that the guard is blind: widen the filter, or fix the pattern |
 
 ### The rules
 
@@ -91,6 +92,16 @@ verdict for anyone to misread.
    `expect_red_on=` — `-` when none was given — so a probe without a pattern
    is visibly the weaker claim rather than indistinguishable from a targeted
    one. It is opt-in: a single-assertion guard does not need it.
+
+   Name the assertion in a form that shows up whether it passes or fails (a
+   test name, `case B`), not only in its failure text. A GREEN run is evidence
+   about the guard only if the assertion RAN. When the output never mentions
+   the pattern the probe cannot tell a blind guard from a name filter that
+   selected other tests, so it exits **7** (no verdict) instead of claiming the
+   guard does not catch the defect. Measured 2026-10-07: two probes with
+   `--test 'cargo test ... held'` selected 4 unrelated tests, passed, and got
+   the "does not catch this defect" sentence about guards that were fine.
+   `papercut-mutation-probe-reports-a-blind-guard-when-the-test-filter-selected-no-assertion-20261007`
 
    When the pattern cannot be made to match because the cases share a
    predicate, the fix is on the TEST side — give the guard test a positional
