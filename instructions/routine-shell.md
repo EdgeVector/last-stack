@@ -24,6 +24,7 @@ fix, and the command does not run.
 | zsh-status (Claude) | `status` is read-only in zsh | `rc`, `pr_state`, `ci_state` |
 | zsh-mapfile (Claude) | zsh has no `mapfile` | `while IFS= read -r x; do ...; done < "$file"` |
 | zsh-word-split (Claude) | `for x in $VAR` does not split; one pass over the whole string | `FILES=(a b c)` and `for x in "${FILES[@]}"`, in a bash script file |
+| zsh-cond-flag-expansion (Claude) | `${v:+--flag "$x"}` unquoted stays ONE word in zsh (bash splits it); a CLI sees one bad argument, not two | `args=(); [ -n "$x" ] && args+=(--flag "$x"); cmd "${args[@]}"` |
 | home-root-scan | a scanner walks `$HOME`/`~` itself, or reads Desktop/Documents/Downloads/Pictures/Movies/Music — macOS BLOCKS on a privacy prompt attributed to `routines` | `find "$HOME/code" -maxdepth 4 ...`; escape with `# shell-lint-ok: <reason>` or `# home-scan-ok: <reason>` |
 
 Hazards that no guard can see:

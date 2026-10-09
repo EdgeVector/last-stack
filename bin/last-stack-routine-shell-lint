@@ -43,6 +43,18 @@
 #   zsh-status        (--shell zsh only) status is read-only in zsh
 #   zsh-mapfile       (--shell zsh only) mapfile/readarray do not exist in zsh
 #   zsh-word-split    (--shell zsh only) for x in $VAR does not split; one pass over the whole string
+#   zsh-cond-flag-expansion  (--shell zsh only) an unquoted ${var:+--flag "$v"}
+#                     composes a flag and a quoted value inside one parameter
+#                     expansion. zsh has no SH_WORD_SPLIT, so the WHOLE
+#                     substitution stays one word even though the embedded
+#                     quotes look like they separate two tokens; bash DOES
+#                     split it into two (measured: both shells agree the
+#                     nested quotes are honored, but only bash then
+#                     word-splits the unquoted result). A CLI then sees one
+#                     argument '--flag value' instead of two and reports an
+#                     unknown option (measured 2026-10-08: brain papercut
+#                     close --fixed-by silently no-opped on 14 rows, with the
+#                     wrapper's own rc/echo still reporting success).
 #   home-root-scan    a scanner walks $HOME itself, or reads a macOS
 #                     TCC-protected folder (Desktop/Documents/Downloads/
 #                     Pictures/Movies/Music); the walk BLOCKS on a privacy
@@ -116,7 +128,7 @@ while [ "$#" -gt 0 ]; do
     --list-rules)
       printf '%s\n' spin-wait heredoc-backticks dquote-backticks jq-optional-call jq-escaped-quote \
         awk-match-array sed-inplace date-nanos stat-local-zulu printf-dash bin-path mktemp-suffix zsh-status zsh-mapfile \
-        zsh-word-split home-root-scan piped-count-false-zero grep-binary-false-zero
+        zsh-word-split zsh-cond-flag-expansion home-root-scan piped-count-false-zero grep-binary-false-zero
       exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 64 ;;
@@ -160,6 +172,7 @@ rule_slug() {
     mktemp-suffix) echo papercut-mktemp-same-template-collides-within-one-second-20260925 ;;
     zsh-status|zsh-mapfile) echo papercut-routine-shell-word-splitting ;;
     zsh-word-split) echo papercut-claude-zsh-for-loop-over-an-unquoted-scalar-does-not-word-split-20260926 ;;
+    zsh-cond-flag-expansion) echo papercut-zsh-conditional-flag-expansion-silently-mangles-brain-close-fixedby-20261008 ;;
     home-root-scan) echo papercut-codex-routines-lack-home-root-scan-guard-20260927 ;;
     piped-count-false-zero) echo papercut-piped-count-from-a-home-path-producer-answers-zero-when-the-path-is-absent-20261003 ;;
     grep-binary-false-zero) echo papercut-grep-c-symbol-on-bun-binary-answers-zero-false-negative-20261008 ;;
@@ -217,6 +230,10 @@ rule_fix() {
     zsh-word-split) printf '%s\n' \
       "zsh has no SH_WORD_SPLIT: an unquoted \$VAR in a for-list is ONE word, so the loop runs once over the whole string (bash would split it)." \
       "Use an array: FILES=(a b c); for x in \"\${FILES[@]}\"; do ...; done -- or a line reader: printf '%s\n' \$FILES | while IFS= read -r x; do ...; done" ;;
+    zsh-cond-flag-expansion) printf '%s\n' \
+      "zsh has no SH_WORD_SPLIT: \${var:+--flag \"\$val\"} keeps the flag and the quoted value as ONE word, so a CLI sees a single argument '--flag value' and reports an unknown option. bash would split this into two words; zsh never does, with no error." \
+      "Pass the flag and its value as two separate literal arguments, built with an array: args=(); [ -n \"\$val\" ] && args+=(--flag \"\$val\"); cmd \"\${args[@]}\"" \
+      "Then NEVER trust a wrapper's rc/echo after a brain/kanban mutation -- point-read the record back before reporting success." ;;
     home-root-scan) printf '%s\n' \
       "macOS treats \$HOME/Desktop, \$HOME/Documents, \$HOME/Downloads and the Photos library as protected. A routine agent runs under routinesd, so the walk raises a privacy prompt attributed to \`routines\` and BLOCKS until a human clicks it." \
       "Name the root you actually need: find \"\$HOME/code\" -maxdepth 4 -name '<what>'   or   find \"\$HOME/.routines\" \"\$HOME/.last-stack\" \"\$HOME/.fkanban\" -maxdepth 4 -name '<what>'" \
@@ -294,6 +311,18 @@ re_zsh_mapfile='(^|[;&|({[:space:]])(mapfile|readarray)[[:space:]]'
 # $(...)/`...` command substitution (the char after $ is not a letter/_/{),
 # or a quoted "$VAR" (the " before $ breaks the immediately-preceding `in `).
 re_zsh_word_split='(^|[^[:alnum:]_])for[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]+in[[:space:]]+\$\{?[A-Za-z_][A-Za-z0-9_]*\}?([[:space:]]|;|$)'
+# zsh-cond-flag-expansion: ${name:+--flag "$val"} or ${name:-...}, where the
+# conditional's word composes a flag token (one or two leading dashes) and a
+# double-quoted variable. zsh has no SH_WORD_SPLIT, so when this expansion is
+# used unquoted as command arguments, the whole substitution stays ONE word
+# even though the nested quotes look like they mark two tokens -- bash DOES
+# split it into two (measured empirically: both shells honor the nested
+# quotes; only bash then word-splits the unquoted result). A single short
+# flag with no trailing quoted value (${v:+-x}) is one word in both shells
+# and is not this hazard, so the trailing quoted-variable requirement is
+# what scopes the match to the composed-flag shape.
+# Brain: papercut-zsh-conditional-flag-expansion-silently-mangles-brain-close-fixedby-20261008
+re_zsh_cond_flag_expansion='\$\{[A-Za-z_][A-Za-z0-9_]*:[+-][[:space:]]*--?[A-Za-z][A-Za-z0-9_-]*[[:space:]]+"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?[^}]*"'
 
 # home-root-scan: normalize $HOME / ${HOME} / ~ to the real home path (as
 # text, not by expanding anything) so a scanner pointed at any written form
@@ -444,6 +473,9 @@ check_command_line() {
     fi
     if [[ $line =~ $re_zsh_word_split ]]; then
       reject zsh-word-split "$line"
+    fi
+    if [[ $line =~ $re_zsh_cond_flag_expansion ]]; then
+      reject zsh-cond-flag-expansion "$line"
     fi
   fi
   if [ -n "$home" ]; then

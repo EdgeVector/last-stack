@@ -336,6 +336,32 @@ expect 0 zsh zsh-word-split-positional-ok <<'EOF'
 for arg in "$@"; do echo "$arg"; done
 EOF
 
+# --- zsh-cond-flag-expansion --------------------------------------------------
+# Measured 2026-10-08: ${fixedby:+--fixed-by "$fixedby"} unquoted in zsh
+# collapses to ONE argument ("--fixed-by value"), so brain papercut close
+# reported "Unknown option --fixed-by ..." for 14 consecutive rows while the
+# wrapper's own rc/echo still said "closed". bash splits the identical
+# expression into two words, so this is zsh-only.
+# Brain: papercut-zsh-conditional-flag-expansion-silently-mangles-brain-close-fixedby-20261008
+expect 2 zsh zsh-cond-flag-plus-long <<'EOF'
+brain papercut close "$slug" ${fixedby:+--fixed-by "$fixedby"}
+EOF
+expect 2 zsh zsh-cond-flag-minus-short <<'EOF'
+cmd ${opts:+-o "$val"}
+EOF
+expect 0 bash bash-cond-flag-expansion-ok <<'EOF'
+brain papercut close "$slug" ${fixedby:+--fixed-by "$fixedby"}
+EOF
+expect 0 zsh zsh-cond-flag-single-word-ok <<'EOF'
+cmd ${verbose:+--verbose}
+EOF
+expect 0 zsh zsh-cond-flag-no-leading-dash-ok <<'EOF'
+greeting="${name:-World}"
+EOF
+expect 0 zsh zsh-cond-flag-two-literal-args-ok <<'EOF'
+args=(); [ -n "$fixedby" ] && args+=(--fixed-by "$fixedby"); cmd "${args[@]}"
+EOF
+
 # --- mktemp-suffix ------------------------------------------------------------
 # BSD mktemp substitutes a run of X's only at the END of the template. The suffix
 # form creates the LITERAL name, so the first call succeeds and every later call
