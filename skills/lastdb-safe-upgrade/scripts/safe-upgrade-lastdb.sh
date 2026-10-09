@@ -71,6 +71,7 @@
 # Env (ephemeral rollback):
 #   LASTDB_ROLLBACK_ROOT=<path>    # defaults under TMPDIR, never under $HOME
 #   LASTDB_ROLLBACK_TTL_HOURS=24   # RED retention contract; next run reclaims
+#   LASTDB_ROLLBACK_REUSE_MAX_AGE_S=3600  # a kept point older than this is re-cloned
 #
 set -euo pipefail
 
@@ -91,6 +92,9 @@ case "$(cd "$_rollback_default_tmp" 2>/dev/null && pwd -P || printf '%s' "$_roll
 esac
 ROLLBACK_ROOT="${LASTDB_ROLLBACK_ROOT:-${LASTDB_BACKUP_ROOT:-${_rollback_default_tmp}/lastdb-safe-upgrade-rollback-${UID:-$(id -u)}}}"
 ROLLBACK_TTL_HOURS="${LASTDB_ROLLBACK_TTL_HOURS:-24}"
+# A kept point is the data the primary is restored from. STEP 1 reuses it only
+# while it is this young (see rollback_point_reusable); otherwise it is re-cloned.
+ROLLBACK_REUSE_MAX_AGE_S="${LASTDB_ROLLBACK_REUSE_MAX_AGE_S:-3600}"
 # Resolved under this run's WORK directory after mktemp unless explicitly set.
 PROBE_ROOT="${LASTDB_PROBE_ROOT:-}"
 SMOKE_SH="${LASTDB_SMOKE_SH:-$HOME/code/edgevector/.claude/run-lastdb-mini-smoke.sh}"
@@ -342,7 +346,22 @@ retain_rollback_point() {
     printf 'ttl_hours=%s\n' "$ROLLBACK_TTL_HOURS"
     printf 'cleanup_owner=next-lastdb-safe-upgrade-run\n'
   } >"$BACKUP/.safe-upgrade/retention"
+  retain_status_evidence
   warn "rollback: RED retained at $BACKUP ttl_hours=$ROLLBACK_TTL_HOURS cleanup_owner=next-lastdb-safe-upgrade-run"
+}
+
+# The last pre-live and soak status samples are the only record of the frontier
+# and sync.last_error a RED run saw; $WORK is deleted at exit. Best effort: this
+# runs from the EXIT trap and must never stop the rest of the cleanup.
+retain_status_evidence() {
+  local f dest="$BACKUP/.safe-upgrade/evidence"
+  [ -n "${WORK:-}" ] && [ -d "$WORK" ] || return 0
+  for f in pre-live-status.json post-cutover-soak-status.json; do
+    [ -s "$WORK/$f" ] || continue
+    { mkdir -p "$dest" && cp -p "$WORK/$f" "$dest/$f"; } 2>/dev/null \
+      || warn "rollback: could not keep $f under $dest"
+  done
+  return 0
 }
 
 OWNER_LOCK_DIR="${LASTDB_SAFE_UPGRADE_OWNER_LOCK_DIR:-/tmp/lastdb-safe-upgrade-owner-${UID:-$(id -u)}.lock.d}"
@@ -357,21 +376,23 @@ CUTOVER_RECOVERY_STATE_TMP=""
 
 cleanup_work() {
   local rc=$?
+  # GREEN / probe-only / operator abort call release_rollback_point first
+  # (ROLLBACK_READY=0). Any other end — including a loom drive deadline that
+  # reparents this script and then SIGTERM/SIGHUP with a false-zero EXIT —
+  # keeps the newest rollback point so a later attempt can reuse it. This runs
+  # BEFORE $WORK is deleted: retention copies the last status samples out of it.
+  # A failed retention must not skip the lock and work-dir cleanup below.
+  if [ "${ROLLBACK_READY:-0}" -eq 1 ]; then
+    retain_rollback_point || warn "rollback: retention failed for ${BACKUP:-none}"
+    if [ "${DRIVER_ENDED_STEP:-0}" -eq 1 ]; then
+      warn "rollback: driver ended the step; kept newest point ${BACKUP:-none}"
+    fi
+  fi
   [ -n "${WORK:-}" ] && [ -d "$WORK" ] && rm -rf "$WORK"
   [ -n "${CUTOVER_LOCK:-}" ] && rm -f "$CUTOVER_LOCK"
   [ -n "${CUTOVER_RECOVERY_STATE_TMP:-}" ] && rm -f "$CUTOVER_RECOVERY_STATE_TMP"
   if type cleanup_upgrade_restart_intent >/dev/null 2>&1; then
     cleanup_upgrade_restart_intent
-  fi
-  # GREEN / probe-only / operator abort call release_rollback_point first
-  # (ROLLBACK_READY=0). Any other end — including a loom drive deadline that
-  # reparents this script and then SIGTERM/SIGHUP with a false-zero EXIT —
-  # keeps the newest rollback point so a later attempt can reuse it.
-  if [ "${ROLLBACK_READY:-0}" -eq 1 ]; then
-    retain_rollback_point
-    if [ "${DRIVER_ENDED_STEP:-0}" -eq 1 ]; then
-      warn "rollback: driver ended the step; kept newest point ${BACKUP:-none}"
-    fi
   fi
   if type safe_upgrade_owner_lock_release >/dev/null 2>&1; then
     safe_upgrade_owner_lock_release "$OWNER_LOCK_DIR" "$OWNER_LOCK_TOKEN" "$OWNER_LOCK_HELD" \
@@ -494,6 +515,58 @@ newest_routine_rollback_point() {
   done
   [ -n "$newest" ] && printf '%s\n' "$newest"
   return 0
+}
+
+# Epoch seconds of a rollback point clone stamp (YYYYMMDDTHHMMSSZ, UTC).
+rollback_stamp_epoch() {
+  local stamp="$1"
+  if date --version >/dev/null 2>&1; then
+    date -u -d "${stamp:0:4}-${stamp:4:2}-${stamp:6:2} ${stamp:9:2}:${stamp:11:2}:${stamp:13:2}" +%s
+  else
+    date -j -u -f '%Y%m%dT%H%M%SZ' "$stamp" +%s
+  fi
+}
+
+# May STEP 1 restore the primary from this kept point? Args: dir candidate_ver
+# from_ver max_age_s [now_s]. Prints ROLLBACK_REUSE=<verdict>; returns 0 only
+# for GREEN. Fails closed: the point must be named for THIS candidate and THIS
+# incumbent, and its clone stamp must be a readable time no older than max_age_s.
+# Anything else is a refusal, and the caller clones a fresh point.
+rollback_point_reusable() {
+  local dir="$1" cand="$2" cur="$3" max_age="$4" now="${5:-}"
+  local base prefix stamp clone_s
+  base="$(basename "$dir")"
+  prefix="pre-${cand}-from-${cur}-"
+  if [ -z "$cand" ] || [ -z "$cur" ]; then
+    printf 'ROLLBACK_REUSE=name-mismatch\n'; return 1
+  fi
+  case "$base" in
+    "$prefix"*) ;;
+    *) printf 'ROLLBACK_REUSE=name-mismatch\n'; return 1 ;;
+  esac
+  stamp="${base#"$prefix"}"
+  case "$stamp" in
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z) ;;
+    *) printf 'ROLLBACK_REUSE=name-mismatch\n'; return 1 ;;
+  esac
+  case "$max_age" in
+    ''|*[!0-9]*) printf 'ROLLBACK_REUSE=max-age-invalid\n'; return 1 ;;
+  esac
+  [ -n "$now" ] || now="$(date +%s)"
+  case "$now" in
+    ''|*[!0-9]*) printf 'ROLLBACK_REUSE=clock-unreadable\n'; return 1 ;;
+  esac
+  clone_s="$(rollback_stamp_epoch "$stamp" 2>/dev/null)" || clone_s=""
+  case "$clone_s" in
+    ''|*[!0-9]*) printf 'ROLLBACK_REUSE=stamp-unreadable\n'; return 1 ;;
+  esac
+  if [ "$clone_s" -gt "$now" ]; then
+    printf 'ROLLBACK_REUSE=stamp-in-future\n'; return 1
+  fi
+  if [ $((now - clone_s)) -gt "$max_age" ]; then
+    printf 'ROLLBACK_REUSE=stale\n'; return 1
+  fi
+  printf 'ROLLBACK_REUSE=GREEN\n'
 }
 
 prepare_rollback_root() {
@@ -2239,14 +2312,24 @@ log "candidate class GREEN: path/version/size ok (vs baseline ${BASELINE_FOR_CLA
 
 prepare_rollback_root
 kept="$(newest_routine_rollback_point)"
-if [ -n "$kept" ] && backup_essentials_ok "$kept" && backup_data_is_not_live "$kept"; then
+# A kept point is reused only for this candidate and incumbent, and only while
+# young: a stale copy restores old data if the live step fails.
+kept_reuse=""
+if [ -n "$kept" ]; then
+  kept_reuse="$(rollback_point_reusable "$kept" "$CAND_VER" "$CURRENT_VER" "$ROLLBACK_REUSE_MAX_AGE_S" || true)"
+  if [ "$kept_reuse" = "ROLLBACK_REUSE=GREEN" ]; then
+    backup_essentials_ok "$kept" && backup_data_is_not_live "$kept" \
+      || kept_reuse="ROLLBACK_REUSE=incomplete-or-live"
+  fi
+fi
+if [ "$kept_reuse" = "ROLLBACK_REUSE=GREEN" ]; then
   BACKUP="$kept"
   ROLLBACK_READY=1
   log "STEP 1/4: reused newest rollback point → $BACKUP"
   log "rollback: skipped cp -cR; kept newest point from a prior driver-ended step"
 else
   if [ -n "$kept" ]; then
-    log "rollback: newest point unusable; cloning a fresh one"
+    log "rollback: newest point unusable (${kept_reuse:-ROLLBACK_REUSE=unchecked}); cloning a fresh one"
     rm -rf "$kept"
   fi
   TS="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -2657,6 +2740,27 @@ jq -e '.status.sync.enabled | type == "boolean"' "$PRELIVE_STATUS" >/dev/null \
   || die "pre-live status cannot determine whether Cloud Sync is enabled"
 SOAK_REQUIRE_CLOUD="$(jq -r 'if .status.sync.enabled == true then 1 else 0 end' "$PRELIVE_STATUS")"
 log "pre-live status bar $PRELIVE_STATUS_OUT (meter plane below 1.5 GiB)"
+# The soak below needs the cloud frontier to pass the first post-cutover write
+# within SOAK_MAX_SECS. An uploader that has a backlog and a frontier hours
+# behind (2026-10-05: cut over, one hour live, rolled back with no proof) cannot,
+# so refuse before any change. The bar gates on the BACKLOG: an idle node that is
+# caught up (mutation_log_lag == 0) has an old frontier and passes at any age.
+#
+# The soak window is set here, not at the soak, because the default bound derives
+# from it. A real-data rollback needed about 43 minutes to republish its cloud
+# frontier, so the soak keeps its rollback point and health checks for an hour.
+SOAK_MAX_SECS=3600
+# Default bound: half of the soak window (1800 s). The two healthy-primary
+# samples recorded in fold (recoverability.rs, 2026-09-06) were 837 s and
+# 1490 s behind, both above the 900 s the papercut suggested. The bound is
+# derived from the soak budget, NOT measured on this node. Widen it with
+# LASTDB_SAFE_UPGRADE_PRELIVE_CLOUD_LAG_S if a healthy node is refused.
+PRELIVE_CLOUD_LAG_S="${LASTDB_SAFE_UPGRADE_PRELIVE_CLOUD_LAG_S:-$((SOAK_MAX_SECS / 2))}"
+if [ "$SOAK_REQUIRE_CLOUD" = 1 ]; then
+  PRELIVE_CLOUD_OUT="$(prelive_cloud_status_check "$PRELIVE_STATUS" "$(date +%s)" "$PRELIVE_CLOUD_LAG_S")" \
+    || die "pre-live cloud bar failed: $PRELIVE_CLOUD_OUT (bound ${PRELIVE_CLOUD_LAG_S}s on a nonzero backlog); the cloud backlog would keep the post-cutover soak from passing, or the status is unreadable; wait for the uploader to publish and run again; primary was not changed"
+  log "pre-live cloud bar $PRELIVE_CLOUD_OUT (bound ${PRELIVE_CLOUD_LAG_S}s applies only while mutation_log_lag is not 0)"
+fi
 
 detect_live_venue
 assert_exact_candidate_live_venue
@@ -3008,9 +3112,8 @@ case "${LASTDB_SAFE_UPGRADE_ZERO_LIVE_SOAK:-0}" in
     ;;
   *) die "LASTDB_SAFE_UPGRADE_ZERO_LIVE_SOAK must be 0 or 1" ;;
 esac
-# A real-data rollback needed about 43 minutes to republish its cloud frontier.
-# Keep the rollback point and health checks active until that startup work ends.
-SOAK_MAX_SECS=3600
+# SOAK_MAX_SECS (one hour) is set in the pre-live cloud bar above. Keep the
+# rollback point and health checks active until that startup work ends.
 SOAK_START="$(date +%s)"
 SOAK_STATUS="$WORK/post-cutover-soak-status.json"
 SOAK_CONFIRMED=0
@@ -3044,7 +3147,7 @@ while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
   sleep 15
 done
 post_cutover_soak_green_in_bounds "$SOAK_ELAPSED" "$SOAK_MIN_SECS" "$SOAK_MAX_SECS" "$SOAK_CONFIRMED" \
-  || die "post-cutover soak did not confirm fresh cloud progress within ${SOAK_MAX_SECS}s; rollback point retained"
+  || die "post-cutover soak did not confirm fresh cloud progress within ${SOAK_MAX_SECS}s ($(post_cutover_soak_evidence "$SOAK_STATUS" "${SOAK_OUT:-unavailable}")); status samples kept under $BACKUP/.safe-upgrade/evidence; rollback point retained"
 
 # After this point the driver proved the live primary healthy and supervised.
 # A later wrapper timeout must not restart that already-green primary.
