@@ -1,22 +1,53 @@
 #!/usr/bin/env python3
-"""Validate finite factory files without any shared read."""
+"""Validate finite factory files without any shared read, or re-pin them after an edit."""
 import argparse
 import json
 import sys
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'lib'))
-from factory_repair import Refusal, validate_local
+from factory_repair import Refusal, refresh_local, validate_local
+
+# A stale pin is the usual cause of these refusals: bin/ and lib/ files are pinned in config/factory-repair-contract.json.
+STALE_PIN = ('runtime-file-mismatch', 'manifest-digest-mismatch', 'runtime-unbound-bin-file')
+# Two PRs that pinned different files conflict on the one contract line. --refresh resolves that conflict and re-pins.
+CONFLICTED = 'contract-has-merge-conflict-markers'
+UNREADABLE_CONFLICT = 'contract-conflict'
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--local', action='store_true', required=True)
-    parser.add_argument('--json', action='store_true', required=True)
-    parser.parse_args()
+    parser.add_argument('--local', action='store_true')
+    parser.add_argument('--json', action='store_true')
+    parser.add_argument('--refresh', action='store_true', help='re-pin config/factory-repair-contract.json to the files in this git checkout; also resolves a merge conflict in that file')
+    parser.add_argument('--add', action='append', default=[], metavar='PATH', help='with --refresh: pin a new bin/ file')
+    args = parser.parse_args()
+    if args.refresh and (args.local or args.json):
+        parser.error('--refresh does not combine with --local or --json')
+    if args.add and not args.refresh:
+        parser.error('--add needs --refresh')
+    if not args.refresh and not (args.local and args.json):
+        parser.error('the following arguments are required: ' + ', '.join(
+            flag for flag, given in (('--local', args.local), ('--json', args.json)) if not given))
     try:
-        result = validate_local(ROOT)
+        result = refresh_local(ROOT, args.add) if args.refresh else validate_local(ROOT)
     except (Refusal, OSError, ValueError, KeyError, TypeError) as error:
-        print('factory-contract: ' + str(error), file=sys.stderr); return 1
+        reason = str(error)
+        print('factory-contract: ' + reason, file=sys.stderr)
+        if not args.refresh and reason.startswith(CONFLICTED):
+            print('factory-contract: hint: config/factory-repair-contract.json holds merge conflict markers; in a git worktree run '
+                  'bin/last-stack-factory-repair-contract --refresh (it resolves the conflict and re-pins), then git add '
+                  'config/factory-repair-contract.json', file=sys.stderr)
+        elif not args.refresh and reason.startswith(STALE_PIN):
+            print('factory-contract: hint: in a git worktree run bin/last-stack-factory-repair-contract --refresh '
+                  'and commit config/factory-repair-contract.json', file=sys.stderr)
+        elif args.refresh and reason.startswith(UNREADABLE_CONFLICT):
+            print('factory-contract: hint: this conflict is not one plain hunk that the tool can resolve. Keep one whole side '
+                  '(git checkout --ours config/factory-repair-contract.json), then run --refresh again. '
+                  'A path that only the other side pinned comes back with --add PATH.', file=sys.stderr)
+        return 1
+    if result.get('resolved_conflict'):
+        print('factory-contract: resolved the merge conflict in config/factory-repair-contract.json; run '
+              'git add config/factory-repair-contract.json and finish the merge or rebase', file=sys.stderr)
     print(json.dumps(result, sort_keys=True)); return 0
 
 if __name__ == '__main__':

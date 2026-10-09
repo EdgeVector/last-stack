@@ -93,6 +93,12 @@ GITHUB_RE = re.compile(r"https?://github\.com/([^/\s)>\]]+)/([^/\s)>\]]+)/pull/(
 # repair claim, and must not satisfy this.
 # (papercut-lifecycle-closer-forge-url-in-free-prose-treated-as-repair-ref-20261007)
 DIRECT_REF_LABEL_RE = re.compile(r"(?im)^[ \t>*-]*[A-Za-z][A-Za-z0-9 /_-]{0,40}:[ \t]*[`'\"]?")
+# A reopen leaves a `## open — <date>` heading in the record body (em dash, en dash or hyphen).
+# A merged PR is evidence for the record only if it merged after the latest one: a PR that merged
+# before the reopen is the fix that did not hold, and citing it again closes the record again after
+# every reopen (fold#2186 three times, routines#38 five times, fold#1374, fold#1507, last-stack#255).
+# (papercut-lifecycle-closer-treats-incident-pr-as-fix-20260925)
+REOPEN_STAMP_RE = re.compile(r"(?im)^##[ \t]+open[ \t]*[-\u2013\u2014][ \t]*(\d{4}-\d{2}-\d{2})\b")
 PIPELINE_STUCK_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-(cr|forge|pr|merges)-")
 # `pipeline-health` also files an AGGREGATE row per repo (`...-merges-<repo>`,
 # optionally with a wake stamp). It names its reviews in the BODY, never in the
@@ -777,6 +783,28 @@ def keep_open_marker(body: str) -> str:
     return line[:200]
 
 
+def reopen_watermark(body: str) -> str:
+    """The date (YYYY-MM-DD) of the record's latest `## open — <date>` reopen heading, or "".
+
+    Date granularity only: the heading carries no time. `merged_after_reopen` is conservative
+    about it. A `Reconfirmed <time>` line is not read: it has no fixed grammar, and a PR can
+    be merged but not yet installed when the defect reproduces.
+    """
+    return max(REOPEN_STAMP_RE.findall(body), default="")
+
+
+def merged_after_reopen(merged_at: str, watermark: str) -> bool:
+    """True when the merge is provably later than the latest reopen day (or there was no reopen).
+
+    A merge on the reopen day, or one with no readable time, is not later: a missed close shows up in
+    `papercut list --status open` and gets a human look, while a false close hides the defect.
+    """
+    if not watermark:
+        return True
+    day = merged_at[:10]
+    return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", day)) and day > watermark
+
+
 def status_is_open(body: str) -> bool:
     statuses = [m.group(1).upper() for m in re.finditer(r"(?im)^\s*Status:\s*([A-Z_]+)", body)]
     if not statuses:
@@ -1119,8 +1147,11 @@ def is_absent_ref_error(text: str) -> bool:
     return "cr_not_found" in lowered or "http 404" in lowered or "404 not found" in lowered
 
 
-def review_state(args: argparse.Namespace, ref: ReviewRef) -> tuple[str, str]:
+def review_state(args: argparse.Namespace, ref: ReviewRef) -> tuple[str, str, str]:
     """Normalized review state: `merged`, `closed`, `open`, `absent`, `unknown`.
+
+    Returns (state, detail, merged_at). `merged_at` is the venue's merge time, or "" when
+    the review is not merged or the venue gave none.
 
     `merged` and `closed` are both TERMINAL — the review will not move again.
     Only a `pipeline-stuck` papercut may act on `closed`; see
@@ -1132,15 +1163,16 @@ def review_state(args: argparse.Namespace, ref: ReviewRef) -> tuple[str, str]:
         # LastGit is retired (decision-2026-09-29-retire-lastgit-all-repos-to-github):
         # a CR cannot be read any more. `absent` = not a review this closer can
         # act on: it never closes a papercut and never blocks an aggregate row.
-        return "absent", f"lastgit-retired:{ref.repo}/{ref.ident}"
+        return "absent", f"lastgit-retired:{ref.repo}/{ref.ident}", ""
     if ref.kind == "forge":
         data = run_json([args.forge_api_bin, f"repos/{ref.owner}/{ref.repo}/pulls/{ref.ident}"], timeout=60)
         state = str(data.get("state") or "").lower() if isinstance(data, dict) else ""
         merged = bool(data.get("merged")) if isinstance(data, dict) else False
         detail = f"forge:{ref.owner}/{ref.repo}#{ref.ident}"
         if merged or state == "merged":
-            return "merged", detail
-        return (state if state in ("closed", "open") else "unknown"), detail
+            merged_at = str(data.get("merged_at") or "") if isinstance(data, dict) else ""
+            return "merged", detail, merged_at
+        return (state if state in ("closed", "open") else "unknown"), detail, ""
     data = run_json(
         [
             args.gh_bin,
@@ -1162,10 +1194,10 @@ def review_state(args: argparse.Namespace, ref: ReviewRef) -> tuple[str, str]:
         if not isinstance(data, dict) or not isinstance(data.get("body"), str) or data.get("url") != ref.url:
             raise RuntimeError("github canonical repair body is unavailable")
         if not names_repair(data["body"], claim) or pr_keeps_open(data["body"], claim):
-            return "unknown", detail + " labeled repair withdrawn or Keep-open"
+            return "unknown", detail + " labeled repair withdrawn or Keep-open", ""
     if state == "merged" or merged_at:
-        return "merged", detail
-    return (state if state in ("closed", "open") else "unknown"), detail
+        return "merged", detail, merged_at
+    return (state if state in ("closed", "open") else "unknown"), detail, ""
 
 
 def append_brain(args: argparse.Namespace, slug: str, text: str) -> None:
@@ -1297,7 +1329,7 @@ def close_aggregate_record(
     # append, so the common case costs one venue call instead of one per ref.
     for ref in reversed(refs):
         try:
-            state, detail = review_state(args, ref)
+            state, detail, _merged_at = review_state(args, ref)
         except BudgetExhausted:
             result["skipped"].append({"slug": slug, "reason": "budget-exhausted"})
             return True
@@ -1429,12 +1461,14 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
             continue
         fixed = False
         last_state = ""
+        watermark = reopen_watermark(body)
+        stale_merged_at = ""
         for ref in refs:
             args.repair_claim_slug = slug if searched or getattr(args, "require_labeled_repair", False) else ""
             if getattr(args, "require_labeled_repair", False) and ref.kind != "github":
                 result["errors"].append({"slug": slug, "ref": ref.url, "error": "finite labeled repair requires GitHub"}); continue
             try:
-                state, detail = review_state(args, ref)
+                state, detail, merged_at = review_state(args, ref)
             except BudgetExhausted:
                 result["skipped"].append({"slug": slug, "reason": "budget-exhausted"})
                 return result
@@ -1442,6 +1476,12 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
                 result["errors"].append({"slug": slug, "ref": ref.url, "error": str(exc)})
                 continue
             last_state = state
+            if state == "merged" and not merged_after_reopen(merged_at, watermark):
+                # Merged before the record was last reopened: the fix that did not hold, not evidence for it.
+                # A later ref in this loop that merged after the reopen can still close the record.
+                last_state = "merged-before-reopen"
+                stale_merged_at = merged_at or "unknown"
+                continue
             if searched:
                 detail += " (PR carries a labeled repair line for this papercut)"
             if state == "merged" or (state == "closed" and closed_is_terminal):
@@ -1464,6 +1504,11 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
                 fixed = True
                 break
         if not fixed:
+            if last_state == "merged-before-reopen":
+                result["skipped"].append(
+                    {"slug": slug, "reason": "merged-before-reopen", "reopened": watermark, "merged_at": stale_merged_at}
+                )
+                continue
             if last_state == "closed":
                 # Not a pipeline-stuck row: the cited fix was abandoned, so this
                 # papercut needs a human decision, not an automatic close.
