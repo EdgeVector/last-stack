@@ -5,8 +5,8 @@ Markdown code spans leak wrapping backticks and trailing punctuation into
 `pr_url` and `north_star`. Closeout lookup already strips those for LastGit
 view, but a dirty stored field still breaks restamp and pipeline oid resolve.
 
-Keep this file free of I/O besides the CLI / --self-test so table tests drive
-the same functions the helpers import.
+Keep this file free of I/O besides the CLI so the helpers import the same
+functions the CLI calls.
 """
 from __future__ import annotations
 
@@ -46,59 +46,10 @@ def pr_url_needs_heal(raw_field: str, normalized: str) -> bool:
     return bool(clean) and stored != clean
 
 
-_PR_URL_CASES = (
-    ("", ""),
-    ("lastgit://last-stack/cr/cr-mskqwa3y-78c9", "lastgit://last-stack/cr/cr-mskqwa3y-78c9"),
-    ("lastgit://last-stack/cr/cr-mskqwa3y-78c9`", "lastgit://last-stack/cr/cr-mskqwa3y-78c9"),
-    ("`lastgit://last-stack/cr/cr-mskqwa3y-78c9`", "lastgit://last-stack/cr/cr-mskqwa3y-78c9"),
-    ("lastgit://brain/cr/cr-ms8mz1xt-981a`.", "lastgit://brain/cr/cr-ms8mz1xt-981a"),
-    ("https://example.test/pull/1)", "https://example.test/pull/1"),
-)
-
-_NORTH_STAR_CASES = (
-    ("", ""),
-    ("north-star-org-cloud-principal-membership", "north-star-org-cloud-principal-membership"),
-    ("`north-star-org-cloud-principal-membership`", "north-star-org-cloud-principal-membership"),
-)
-
-_HEAL_CASES = (
-    ("", "lastgit://last-stack/cr/cr-x", True),
-    ("lastgit://last-stack/cr/cr-x`", "lastgit://last-stack/cr/cr-x", True),
-    ("lastgit://last-stack/cr/cr-x", "lastgit://last-stack/cr/cr-x", False),
-    ("", "", False),
-)
-
-
-def self_test() -> int:
-    failed: list[str] = []
-    for raw, want in _PR_URL_CASES:
-        got = sanitize_pr_url(raw)
-        if got != want:
-            failed.append(f"pr_url {raw!r}: got {got!r} want {want!r}")
-    for raw, want in _NORTH_STAR_CASES:
-        got = sanitize_north_star(raw)
-        if got != want:
-            failed.append(f"north_star {raw!r}: got {got!r} want {want!r}")
-    for stored, normalized, want in _HEAL_CASES:
-        got = pr_url_needs_heal(stored, normalized)
-        if got != want:
-            failed.append(
-                f"heal stored={stored!r} norm={normalized!r}: got {got!r} want {want!r}"
-            )
-    if failed:
-        for line in failed:
-            print(f"FAIL: {line}", file=sys.stderr)
-        return 1
-    print(f"ok sanitize_structured_fields n={len(_PR_URL_CASES)+len(_NORTH_STAR_CASES)+len(_HEAL_CASES)}")
-    return 0
-
-
 def main(argv: list[str]) -> int:
     if not argv or argv[0] in ("-h", "--help"):
-        print("usage: sanitize_structured_fields.py --self-test | pr-url VALUE | north-star VALUE", file=sys.stderr)
+        print("usage: sanitize_structured_fields.py pr-url VALUE | north-star VALUE", file=sys.stderr)
         return 2
-    if argv[0] == "--self-test":
-        return self_test()
     if len(argv) < 2:
         print("usage: sanitize_structured_fields.py pr-url|north-star VALUE", file=sys.stderr)
         return 2

@@ -16,3 +16,7 @@
   credential to one child process, resolve it at exec time with
   `bin/last-stack-secret-env-run --env NAME --ref lastsecrets://SLUG -- CMD`;
   the caller then holds a locator, not a value.
+
+- **This repo has no tests (deleted 2026-10-09, Tom).** The gate `.lastgit/ci.sh`
+  runs `bash -n` and the global lint passes only. Do not add a `tests/` dir or a
+  CI step that runs tests.
