@@ -2723,6 +2723,15 @@ jq -e '.status.sync.enabled | type == "boolean"' "$PRELIVE_STATUS" >/dev/null \
   || die "pre-live status cannot determine whether Cloud Sync is enabled"
 SOAK_REQUIRE_CLOUD="$(jq -r 'if .status.sync.enabled == true then 1 else 0 end' "$PRELIVE_STATUS")"
 log "pre-live status bar $PRELIVE_STATUS_OUT (meter plane below 1.5 GiB)"
+# The soak below needs the cloud frontier to pass the first post-cutover write
+# within SOAK_MAX_SECS. A frontier already hours behind (2026-10-05: cut over,
+# one hour live, rolled back with no proof) cannot, so refuse before any change.
+PRELIVE_CLOUD_LAG_S="${LASTDB_SAFE_UPGRADE_PRELIVE_CLOUD_LAG_S:-900}"
+if [ "$SOAK_REQUIRE_CLOUD" = 1 ]; then
+  PRELIVE_CLOUD_OUT="$(prelive_cloud_status_check "$PRELIVE_STATUS" "$(date +%s)" "$PRELIVE_CLOUD_LAG_S")" \
+    || die "pre-live cloud bar failed: $PRELIVE_CLOUD_OUT (bound ${PRELIVE_CLOUD_LAG_S}s); the cloud backlog would keep the post-cutover soak from passing; primary was not changed"
+  log "pre-live cloud bar $PRELIVE_CLOUD_OUT (frontier within ${PRELIVE_CLOUD_LAG_S}s)"
+fi
 
 detect_live_venue
 assert_exact_candidate_live_venue

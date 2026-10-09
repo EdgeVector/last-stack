@@ -26,6 +26,36 @@ post_cutover_status_check() {
   [ "$verdict" = GREEN ]
 }
 
+prelive_cloud_status_check() {
+  # Args: status.json now_s max_lag_s. Reads the OLD primary's status before the
+  # live step. The soak needs a frontier newer than the first post-cutover write
+  # within SOAK_MAX_SECS, so a frontier already hours behind cannot pass it.
+  # The frontier is epoch nanoseconds. Any doubt is a refusal. Cloud Sync off is
+  # not applicable (the soak does not require cloud then).
+  local file="$1" now_s="$2" max_lag_s="$3"
+  local verdict
+  case "$now_s$max_lag_s" in
+    ''|*[!0-9]*) printf 'PRELIVE_CLOUD=status-invalid\n'; return 1 ;;
+  esac
+  [ -n "$now_s" ] && [ -n "$max_lag_s" ] \
+    || { printf 'PRELIVE_CLOUD=status-invalid\n'; return 1; }
+  verdict="$(jq -r \
+    --argjson now_s "$now_s" \
+    --argjson max_lag_s "$max_lag_s" '
+      if .ok != true then "status-not-ok"
+      elif (.status.sync.enabled | type) != "boolean" then "status-invalid"
+      elif .status.sync.enabled == false then "cloud-off"
+      elif .status.sync.sync_degraded != false then "cloud-degraded"
+      elif (.status.sync.mutation_log_frontier_f | type) != "number" then "cloud-frontier-unavailable"
+      elif .status.sync.mutation_log_frontier_f < (($now_s - $max_lag_s) * 1000000000) then "cloud-frontier-lag"
+      elif .status.sync.mutation_log_frontier_f > (($now_s + $max_lag_s) * 1000000000) then "cloud-frontier-in-future"
+      else "GREEN" end
+    ' "$file" 2>/dev/null)" || verdict="status-invalid"
+  [ -n "$verdict" ] || verdict="status-invalid"
+  printf 'PRELIVE_CLOUD=%s\n' "$verdict"
+  [ "$verdict" = GREEN ] || [ "$verdict" = cloud-off ]
+}
+
 post_cutover_status_retryable() {
   case "$1" in
     POST_CUTOVER_STATUS=cloud-capture-unregistered|\
