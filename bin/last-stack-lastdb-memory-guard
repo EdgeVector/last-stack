@@ -979,14 +979,18 @@ restart_primary() {
   if post_shed; then
     local shed_deadline current_reading current_mb
     shed_deadline=$(($(date +%s) + SHED_WAIT_SEC))
-    while [ "$(date +%s)" -lt "$shed_deadline" ]; do
+    # Observe the shed result once even if the whole-second deadline expires
+    # before this first read. Later reads remain inside the configured window.
+    while :; do
       current_reading=$(phys_footprint_mb_of "$pid")
       current_mb="${current_reading%% *}"
       if [ -n "$current_mb" ] && [ "$current_mb" -lt "$RSS_LIMIT_MB" ] 2>/dev/null; then
         log "shed_recovered pid=$pid footprint_mb=$current_mb limit_mb=$RSS_LIMIT_MB"
         return 0
       fi
+      if [ "$(date +%s)" -ge "$shed_deadline" ]; then break; fi
       sleep 1
+      if [ "$(date +%s)" -ge "$shed_deadline" ]; then break; fi
     done
     log "shed_timeout pid=$pid footprint_mb=${current_mb:-unavailable} limit_mb=$RSS_LIMIT_MB wait_sec=$SHED_WAIT_SEC"
   fi
