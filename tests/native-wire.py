@@ -24,8 +24,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         flt=request['filter'];mode=self.server.mode
         if 'HashKey' in flt:
             status=flt['HashKey'];ident='lx-20261008T191927.569-'+status+'-1'
-            key={'hash':'wrong' if mode=='wrong-hash' else status,'range':'foreign' if mode=='wrong-range' else ident}
-            rows=[{'key':key,'fields':{'id':ident}}]
+            sort='land-card#2026-10-08T19:19:27.569Z#'+ident
+            key={'hash':'wrong' if mode=='wrong-hash' else status,'range':'foreign' if mode=='wrong-range' else sort}
+            rows=[{'key':key,'fields':{'id':ident,'definition_name':'land-card','by_status_sort':sort}}]
             if mode=='empty-page':rows=[]
         else:
             keys=[key for key,range_value in flt['HashRangeKeys']]
@@ -84,6 +85,7 @@ def mixed_hashes():
     def action(config,server):
         keys=f.active_candidate_keys(config)
         check(len(keys)==3 and len(server.calls)==3 and {body['filter']['HashKey'] for route,body in server.calls}==f.ACTIVE,'supported active-hash reads lost a hash')
+        check(all(route=='/api/query' and body['fields']==['id','definition_name','by_status_sort'] for route,body in server.calls),'native status wire lost the supported fields')
     fixture('ok',action)
 
 def negative(mode,membership=False):
