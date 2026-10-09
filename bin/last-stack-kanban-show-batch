@@ -1,428 +1,49 @@
 #!/usr/bin/env python3
-"""Hydrate known Card slugs with one LastDB batch read.
+"""Read collected Card keys with the public authenticated raw23 batch CLI.
 
-Collect slugs first. Then send one Card query with filter HashKeys (or
-HashRangeKeys with an empty range, the multi-key form the node accepts for a
-Hash schema). Do not send one `kanban show` per slug.
-
-When --board-cli is a fixture that already speaks `show --slugs`, use that
-one call. When the CLI is live kanban/fkanban (help has no --slugs), query
-LastDB. A fixture that only implements single-slug show stays on that path
-so existing tests stay green.
-
-A missing slug is omitted from the array. Callers treat absence as
-read-error / skip and do not mutate that card.
-
-Usage:
-  last-stack-kanban-show-batch [--board-cli PATH] [--socket PATH]
-      [--chunk 1000] [--slugs s1,s2] [--slugs-file PATH] [slug ...]
-
-Stdout: JSON array of card objects (the same shape as `kanban show --json`).
-Stderr: one summary line `kanban-show-batch n=N via=... chunks=C`.
-Exit: 0 the batch ran (some slugs may be missing), 1 the query failed, 64 usage.
+Legacy stdout is a complete stored-field array. Envelope mode keeps exact
+snapshot bytes and explicit missing items. No derived fields or fallback.
 """
-
-from __future__ import annotations
-
 import argparse
 import json
-import os
-import re
-import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'lib'))
+from factory_repair import Refusal, public_card_batch, validate_snapshot, MAX_KEYS, read_bytes, set_deadline
 
-
-PAGE_CAP = 1000
-CARD_FIELDS = [
-    "slug",
-    "title",
-    "body",
-    "board",
-    "column",
-    "position",
-    "assignee",
-    "tags",
-    "deps",
-    "repo",
-    "base",
-    "kind",
-    "block_status",
-    "block_reason",
-    "north_star",
-    "milestone",
-    "pr_url",
-    "branch",
-    "updated_at",
-]
-SCHEMA_NAMES = ("Card", "fkanban/Card")
-LIVE_HELP_MARKERS = (
-    "fkanban show",
-    "print one card in detail",
-    "card slugs are global",
-)
-UNKNOWN_OPTION_RE = re.compile(
-    r"unknown option|unrecognized (option|argument)|unexpected argument|unexpected option",
-    re.I,
-)
-
-
-def run(argv: list[str], timeout: int = 60, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('slug', nargs='*'); parser.add_argument('--slugs')
+    parser.add_argument('--slugs-file', type=Path)
+    parser.add_argument('--board-cli', default=str(Path.home() / '.local/bin/kanban'))
+    parser.add_argument('--chunk', type=int, default=256)
+    parser.add_argument('--snapshot-envelope', action='store_true')
+    parser.add_argument('--socket', help=argparse.SUPPRESS)
+    args = parser.parse_args(); set_deadline(120)
     try:
-        return subprocess.run(
-            argv,
-            text=True,
-            input=stdin,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return subprocess.CompletedProcess(argv, 124, "", str(exc))
-
-
-def parse_json(text: str) -> Any:
-    cleaned = "".join(" " if 0 <= ord(ch) < 32 and ch not in "\n\r\t" else ch for ch in text)
-    return json.loads(cleaned)
-
-
-def unwrap_card(value: Any) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    card = value.get("card") if isinstance(value.get("card"), dict) else value
-    fields = card.get("fields") if isinstance(card.get("fields"), dict) else None
-    if fields and "slug" not in card:
-        merged = dict(fields)
-        for key, val in card.items():
-            if key != "fields":
-                merged[key] = val
-        card = merged
-    slug = str(card.get("slug") or "").strip()
-    return card if slug else None
-
-
-def cards_from_payload(value: Any) -> list[dict[str, Any]]:
-    rows: list[Any]
-    if isinstance(value, list):
-        rows = value
-    elif isinstance(value, dict):
-        for key in ("cards", "results", "items"):
-            found = value.get(key)
-            if isinstance(found, list):
-                rows = found
-                break
+        if args.socket:
+            raise Refusal('socket override is unsupported; use public CLI config')
+        keys = list(args.slug)
+        if args.slugs:
+            keys += args.slugs.split(',')
+        if args.slugs_file:
+            keys += read_bytes(args.slugs_file, 1024 * 1024).decode('utf-8').splitlines()
+        keys = list(dict.fromkeys(k.strip() for k in keys if k.strip()))
+        if len(keys) > MAX_KEYS:
+            raise Refusal('collected Card key limit')
+        reply = public_card_batch(args.board_cli, keys, args.chunk)
+        if args.snapshot_envelope:
+            result = reply
         else:
-            one = unwrap_card(value)
-            return [one] if one else []
-    else:
-        return []
-    out: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for row in rows:
-        card = unwrap_card(row)
-        if card is None:
-            continue
-        slug = str(card["slug"]).strip()
-        if slug in seen:
-            continue
-        seen.add(slug)
-        out.append(card)
-    return out
-
-
-def read_slugs(args: argparse.Namespace) -> list[str]:
-    slugs: list[str] = []
-    if args.slugs:
-        slugs.extend(part.strip() for part in args.slugs.split(",") if part.strip())
-    if args.slugs_file:
-        text = Path(args.slugs_file).read_text()
-        slugs.extend(line.strip() for line in text.splitlines() if line.strip())
-    slugs.extend(str(s).strip() for s in args.slug if str(s).strip())
-    seen: set[str] = set()
-    out: list[str] = []
-    for slug in slugs:
-        if slug in seen:
-            continue
-        seen.add(slug)
-        out.append(slug)
-    return out
-
-
-def chunks(items: list[str], size: int) -> list[list[str]]:
-    if size < 1 or size > PAGE_CAP:
-        size = PAGE_CAP
-    return [items[i : i + size] for i in range(0, len(items), size)]
-
-
-def board_help(board_cli: str) -> str:
-    proc = run([board_cli, "show", "--help"], timeout=15)
-    return f"{proc.stdout or ''}\n{proc.stderr or ''}"
-
-
-def looks_like_live_kanban(help_text: str) -> bool:
-    lowered = help_text.lower()
-    return any(marker.lower() in lowered for marker in LIVE_HELP_MARKERS)
-
-
-def emit_cards(cards: list[dict[str, Any]]) -> None:
-    json.dump(cards, sys.stdout, separators=(",", ":"))
-    sys.stdout.write("\n")
-
-
-def via_cli_slugs(board_cli: str, slugs: list[str]) -> tuple[list[dict[str, Any]] | None, str]:
-    joined = ",".join(slugs)
-    proc = run([board_cli, "show", "--slugs", joined, "--json"], timeout=120)
-    if proc.returncode != 0:
-        err = f"{proc.stderr or ''}\n{proc.stdout or ''}"
-        return None, err
-    try:
-        payload = parse_json(proc.stdout or "[]")
-    except json.JSONDecodeError as exc:
-        return None, f"show --slugs JSON parse failed: {exc}"
-    return cards_from_payload(payload), ""
-
-
-def card_from_serial_payload(payload: Any, slug: str) -> dict[str, Any] | None:
-    """Serial show is keyed by the requested slug.
-
-    Fixtures often emit only ``{"column":"..."}``. Attach the requested slug so
-    callers can map the row. A missing slug in a batch query still means omit.
-    """
-    card = None
-    cards = cards_from_payload(payload)
-    if cards:
-        card = dict(cards[0])
-    elif isinstance(payload, dict):
-        raw = payload.get("card") if isinstance(payload.get("card"), dict) else payload
-        if isinstance(raw, dict):
-            card = dict(raw)
-    if card is None:
-        return None
-    if not str(card.get("slug") or "").strip():
-        card["slug"] = slug
-    return card if str(card.get("slug") or "").strip() else None
-
-
-def via_cli_serial(board_cli: str, slugs: list[str]) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for slug in slugs:
-        proc = run([board_cli, "show", slug, "--json"], timeout=60)
-        if proc.returncode != 0:
-            continue
-        try:
-            payload = parse_json(proc.stdout or "{}")
-        except json.JSONDecodeError:
-            continue
-        card = card_from_serial_payload(payload, slug)
-        if card:
-            out.append(card)
-    return out
-
-
-def lastdb_socket(explicit: str) -> str:
-    if explicit:
-        return explicit
-    for key in (
-        "LAST_STACK_LASTDB_SOCKET",
-        "LASTDB_SOCKET_PATH",
-        "FOLDDB_SOCKET_PATH",
-        "FBRAIN_FOLDDB_SOCKET",
-    ):
-        value = os.environ.get(key, "").strip()
-        if value:
-            return value
-    home = os.environ.get("LASTDB_HOME", os.path.join(os.path.expanduser("~"), ".lastdb"))
-    return os.path.join(home, "data", "folddb.sock")
-
-
-def query_limit(slugs: list[str]) -> int:
-    """Node default limit is 100; omit that and a >100 slug set is truncated."""
-    return min(len(slugs), PAGE_CAP)
-
-
-def query_truncated(payload: dict[str, Any]) -> bool:
-    """True when the node says this page is short of the requested keys."""
-    if payload.get("has_more") is True:
-        return True
-    page = payload.get("page")
-    if isinstance(page, dict) and (
-        page.get("has_more") is True or page.get("hasMore") is True
-    ):
-        return True
-    return False
-
-
-def query_body(schema_name: str, slugs: list[str], filter_kind: str) -> str:
-    if filter_kind == "HashKeys":
-        filt: dict[str, Any] = {"HashKeys": slugs}
-    else:
-        filt = {"HashRangeKeys": [[slug, ""] for slug in slugs]}
-    return json.dumps(
-        {
-            "schema_name": schema_name,
-            "fields": CARD_FIELDS,
-            "filter": filt,
-            "limit": query_limit(slugs),
-        },
-        separators=(",", ":"),
-    )
-
-
-def post_query(body: str, socket: str) -> tuple[dict[str, Any] | None, str, int]:
-    override = os.environ.get("LAST_STACK_LASTDB_QUERY_CMD", "").strip()
-    if override:
-        proc = run([override], timeout=120, stdin=body)
-        if proc.returncode != 0:
-            return None, proc.stderr or proc.stdout or "query cmd failed", proc.returncode
-        try:
-            return parse_json(proc.stdout or "{}"), "", 200
-        except json.JSONDecodeError as exc:
-            return None, f"query JSON parse failed: {exc}", 1
-    tmp = os.environ.get("TMPDIR") or os.environ.get("TMP") or os.environ.get("TEMP") or "/tmp"
-    hdr = subprocess.check_output(["mktemp", f"{tmp}/kanban-show-batch-hdr.XXXXXX"], text=True).strip()
-    out = subprocess.check_output(["mktemp", f"{tmp}/kanban-show-batch-body.XXXXXX"], text=True).strip()
-    try:
-        curl = [
-            "curl",
-            "-sS",
-            "-D",
-            hdr,
-            "-o",
-            out,
-            "-w",
-            "%{http_code}",
-            "-X",
-            "POST",
-            "-H",
-            "X-LastDB-Client: last-stack",
-            "-H",
-            "Content-Type: application/json",
-            "-d",
-            body,
-            "--unix-socket",
-            socket,
-            "http://localhost/api/query",
-        ]
-        proc = run(curl, timeout=120)
-        code_text = (proc.stdout or "").strip()
-        try:
-            http_code = int(code_text)
-        except ValueError:
-            http_code = 0
-        raw = Path(out).read_text() if Path(out).is_file() else ""
-        if proc.returncode != 0 or http_code < 200 or http_code >= 300:
-            return None, raw or proc.stderr or f"HTTP {http_code or '000'}", http_code or proc.returncode
-        try:
-            return parse_json(raw or "{}"), "", http_code
-        except json.JSONDecodeError as exc:
-            return None, f"query JSON parse failed: {exc}", http_code
-    finally:
-        for path in (hdr, out):
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
-
-
-def via_query(slugs: list[str], socket: str, chunk_size: int) -> tuple[list[dict[str, Any]] | None, str, str]:
-    got: list[dict[str, Any]] = []
-    used = ""
-    for group in chunks(slugs, chunk_size):
-        payload = None
-        err = ""
-        for schema_name in SCHEMA_NAMES:
-            for kind in ("HashKeys", "HashRangeKeys"):
-                body = query_body(schema_name, group, kind)
-                payload, err, _code = post_query(body, socket)
-                if payload is None:
-                    continue
-                if payload.get("ok") is False:
-                    continue
-                if query_truncated(payload):
-                    return (
-                        None,
-                        "Card batch query truncated (has_more=true)",
-                        f"query-{kind.lower()}",
-                    )
-                used = f"query-{kind.lower()}"
-                got.extend(cards_from_payload(payload))
-                payload = {"ok": True}
-                err = ""
-                break
-            if payload is not None and err == "":
-                break
-        if payload is None or err:
-            return None, err or "Card batch query failed", used
-    return got, "", used or "query-hashkeys"
-
-
-def hydrate(args: argparse.Namespace, slugs: list[str]) -> tuple[list[dict[str, Any]] | None, str, int]:
-    via_override = os.environ.get("LAST_STACK_KANBAN_SHOW_BATCH_VIA", "").strip()
-    if len(slugs) == 1 and via_override in ("", "auto") and args.board_cli:
-        cards = via_cli_serial(args.board_cli, slugs)
-        return cards, "cli-show", 1
-    groups = chunks(slugs, args.chunk)
-    if via_override == "query" or (via_override == "" and not args.board_cli):
-        cards, err, used = via_query(slugs, lastdb_socket(args.socket), args.chunk)
-        if cards is None:
-            return None, err, len(groups)
-        return cards, used, len(groups)
-    if not args.board_cli:
-        return None, "kanban-show-batch: pass --board-cli or set LAST_STACK_KANBAN_SHOW_BATCH_VIA=query", 0
-    help_text = board_help(args.board_cli)
-    if via_override == "cli-slugs" or "--slugs" in help_text:
-        cards, err = via_cli_slugs(args.board_cli, slugs)
-        if cards is not None:
-            return cards, "cli-slugs", len(groups)
-        if UNKNOWN_OPTION_RE.search(err) or looks_like_live_kanban(help_text):
-            qcards, qerr, used = via_query(slugs, lastdb_socket(args.socket), args.chunk)
-            if qcards is None:
-                return None, qerr, len(groups)
-            return qcards, used, len(groups)
-        return None, err, len(groups)
-    if via_override == "cli-serial":
-        return via_cli_serial(args.board_cli, slugs), "cli-show", len(slugs)
-    if looks_like_live_kanban(help_text) or via_override == "query":
-        cards, err, used = via_query(slugs, lastdb_socket(args.socket), args.chunk)
-        if cards is None:
-            return None, err, len(groups)
-        return cards, used, len(groups)
-    return via_cli_serial(args.board_cli, slugs), "cli-show", len(slugs)
-
-
-def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("--board-cli", default=os.environ.get("BOARD_CLI", ""), help="kanban CLI (fixture or live)")
-    parser.add_argument("--socket", default="", help="LastDB unix socket (query path)")
-    parser.add_argument("--chunk", type=int, default=PAGE_CAP, help="keys per query (default 1000, max 1000)")
-    parser.add_argument("--slugs", default="", help="comma-separated slugs")
-    parser.add_argument("--slugs-file", default="", help="file of slugs, one per line")
-    parser.add_argument("slug", nargs="*", help="slug arguments")
-    args = parser.parse_args(argv)
-    if args.chunk < 1:
-        print("kanban-show-batch: --chunk must be a positive integer", file=sys.stderr)
-        return 64
-    try:
-        slugs = read_slugs(args)
-    except OSError as exc:
-        print(f"kanban-show-batch: {exc}", file=sys.stderr)
-        return 64
-    if not slugs:
-        emit_cards([])
-        print("kanban-show-batch n=0 via=none chunks=0", file=sys.stderr)
-        return 0
-    cards, via, n_chunks = hydrate(args, slugs)
-    if cards is None:
-        print(f"kanban-show-batch n={len(slugs)} via=error chunks={n_chunks} error={via}", file=sys.stderr)
-        return 1
-    emit_cards(cards)
-    print(f"kanban-show-batch n={len(slugs)} via={via} chunks={n_chunks} returned={len(cards)}", file=sys.stderr)
+            if any(item.get('missing') is True for item in reply['items']):
+                raise Refusal('canonical Card missing; no partial record array')
+            result = [validate_snapshot(item, item['slug'])['fields'] for item in reply['items']]
+    except (Refusal, OSError, ValueError, KeyError, TypeError) as error:
+        print('kanban-show-batch: ' + str(error), file=sys.stderr); return 1
+    print(json.dumps(result, ensure_ascii=False))
+    print(f'kanban-show-batch n={len(keys)} via=public-guarded-snapshot chunks={(len(keys) + args.chunk - 1) // args.chunk}', file=sys.stderr)
     return 0
 
-
-if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+if __name__ == '__main__':
+    sys.exit(main())

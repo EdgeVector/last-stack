@@ -13,7 +13,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 sweep="$ROOT/bin/last-stack-board-closeout-sweep"
-chmod +x "$sweep"
+source "$ROOT/tests/fixtures/factory-closeout-dependencies.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -25,6 +25,9 @@ card() {
   printf '{"slug":"%s","title":"t","column":"doing","position":"%s","assignee":"","tags":[],"pr_url":"%s","branch":"%s","repo":"EdgeVector/widget","updated_at":"2020-01-01T00:00:00.000Z","body":"Repo: EdgeVector/widget\\nBase: main\\nKind: pr\\n"}' "$1" "$2" "$3" "$4"
 }
 case "${1:-}" in
+  guarded-snapshot)
+    exec "${FACTORY_CLOSEOUT_FIXTURE_NATIVE:?}" --cards-file "$0.cards.json" "$@"
+    ;;
   list)
     printf '['
     card gh-merged 1 https://github.com/EdgeVector/widget/pull/10 kanban/gh-merged; printf ','
@@ -81,6 +84,9 @@ printf '%s\n' "$1" >>"${BOARD_CLOSED:?}"
 exit 0
 EOF
 chmod +x "$stack/bin/last-stack-board-closeout-sweep" "$stack/bin/last-stack-card-closeout"
+fixture_closeout_native_dependencies "$stack" "$board"
+fixture_closeout_prepare_native_cards "$board"
+export BOARD_CLOSEOUT_STATE_DIR="$tmp/closeout-state"
 export PATH="$bin:$PATH"
 
 fail=0

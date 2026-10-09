@@ -62,6 +62,11 @@ esac
 LOOM
 chmod +x "$loom"
 export BOARD_CLOSEOUT_LOOM_BIN="$loom"
+mkdir -p "$tmp/stack/bin"
+cp "$sweep" "$tmp/stack/bin/last-stack-board-closeout-sweep"
+sweep="$tmp/stack/bin/last-stack-board-closeout-sweep"
+source "$ROOT/tests/fixtures/factory-closeout-dependencies.sh"
+fixture_closeout_dependencies "$tmp/stack" "$board"
 
 for engine in node python3; do
   if [ "$engine" = node ] && ! command -v node >/dev/null 2>&1; then continue; fi

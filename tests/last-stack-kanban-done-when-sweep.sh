@@ -16,9 +16,8 @@ jq -n '{cards: [
   {slug: "pr-card", kind: "pr", column: "backlog"},
   {slug: "tracker-pending", kind: "Tracker", column: "backlog"},
   {slug: "meta-none", kind: "meta", column: "backlog"},
-  {slug: "cap-malformed", kind: "capstone", column: "backlog"},
-  {slug: "val-missing", kind: "validation", column: "backlog"}
-], total: 6, truncated: false}' > "$fx/list-backlog.json"
+  {slug: "cap-malformed", kind: "capstone", column: "backlog"}
+], total: 5, truncated: false}' > "$fx/list-backlog.json"
 jq -n '[{slug: "val-todo", kind: "validation", column: "todo", block_status: ""}]' > "$fx/list-todo.json"
 
 card() {
@@ -31,59 +30,37 @@ card cap-malformed $'DONE-WHEN: run rm -rf / please'
 card val-todo $'DONE-WHEN:\tdate >= 2001-01-01'
 
 cat > "$tmp/kanban" <<EOF
-#!/usr/bin/env bash
-fx="$fx"
+#!/usr/bin/env python3
+import hashlib, json, sys
+from pathlib import Path
+fx = Path("$fx")
 EOF
 cat >> "$tmp/kanban" <<'EOF'
-printf '%s\n' "$*" >> "$fx/calls.log"
-case "$1" in
-  list)
-    col=""
-    while [ "$#" -gt 0 ]; do
-      case "$1" in --column) col="$2"; shift 2 ;; *) shift ;; esac
-    done
-    [ -f "$fx/list-$col.json" ] || { echo "node did not respond within 30000ms" >&2; exit 1; }
-    cat "$fx/list-$col.json" ;;
-  show)
-    slugs=""
-    pos=""
-    shift
-    while [ "$#" -gt 0 ]; do
-      case "$1" in
-        --json) shift ;;
-        --slugs) slugs="$2"; shift 2 ;;
-        --slugs=*) slugs="${1#--slugs=}"; shift ;;
-        --help|-h)
-          echo "Options: --json --slugs"
-          exit 0
-          ;;
-        *) pos="$1"; shift ;;
-      esac
-    done
-    if [ -n "$slugs" ]; then
-      printf '['
-      sep=""
-      old_ifs="$IFS"
-      IFS=','
-      set -f
-      # shellcheck disable=SC2086
-      set -- $slugs
-      set +f
-      IFS="$old_ifs"
-      for s in "$@"; do
-        [ -n "$s" ] || continue
-        [ -f "$fx/show-$s.json" ] || continue
-        printf '%s' "$sep"
-        cat "$fx/show-$s.json"
-        sep=","
-      done
-      printf ']\n'
-      exit 0
-    fi
-    [ -f "$fx/show-$pos.json" ] || { echo "No card with slug \"$pos\"" >&2; exit 1; }
-    cat "$fx/show-$pos.json" ;;
-  *) exit 2 ;;
-esac
+args = sys.argv[1:]
+with (fx / 'calls.log').open('a') as stream:
+    stream.write(' '.join(args) + '\n')
+if args and args[0] == 'list':
+    column = args[args.index('--column') + 1]
+    path = fx / ('list-' + column + '.json')
+    if not path.exists():
+        print('node did not respond within 30000ms', file=sys.stderr); sys.exit(1)
+    print(path.read_text()); sys.exit(0)
+if len(args) != 4 or args[0:2] != ['guarded-snapshot', '--slugs-file'] or args[3] != '--json':
+    print('private board accepts the native known-key batch only', file=sys.stderr); sys.exit(2)
+keys = json.loads(Path(args[2]).read_text())
+if not isinstance(keys, list) or not 1 <= len(keys) <= 256 or len(keys) != len(set(keys)):
+    sys.exit(2)
+items = []
+for key in keys:
+    path = fx / ('show-' + key + '.json')
+    if not path.exists():
+        items.append({'slug': key, 'missing': True}); continue
+    source = json.loads(path.read_text())
+    fields = dict.fromkeys(('slug','title','body','board','column','position','assignee','created_at','created_by','updated_at','db','repo','base','kind','block_status','block_reason','north_star','milestone','pr_url','branch'), '')
+    fields.update(slug=key, body=source['body'], board='default', tags=[], deps=[], surfaces=[])
+    raw = json.dumps({'version':1,'schema_hash':'a'*64,'fields':fields}, ensure_ascii=False) + '\n'
+    items.append({'slug':key,'snapshot_json':raw,'snapshot_sha256':hashlib.sha256(raw.encode()).hexdigest()})
+print(json.dumps({'version':1,'schema_hash':'a'*64,'items':items}))
 EOF
 chmod +x "$tmp/kanban"
 
@@ -96,14 +73,13 @@ printf '%s\t%s\t%s\t%s\n' \
   pending tracker-pending tracker 'date >= 2999-01-01' \
   no-predicate meta-none meta - \
   malformed cap-malformed capstone 'run rm -rf / please' \
-  read-error val-missing validation - \
   satisfied val-todo validation 'date >= 2001-01-01' > "$want"
 
 if ! diff -u "$want" "$out"; then
   echo "FAIL [rows] sweep output differs" >&2
   exit 1
 fi
-grep -q 'done-when-sweep checked=6 satisfied=2 pending=1 malformed=1 ignored=0 no_predicate=1 read_error=1 column_read_fail=1' "$tmp/err" || {
+grep -q 'done-when-sweep checked=5 satisfied=2 pending=1 malformed=1 ignored=0 no_predicate=1 read_error=0 column_read_fail=1' "$tmp/err" || {
   echo "FAIL [summary] got: $(cat "$tmp/err")" >&2; exit 1; }
 
 # Every row has exactly four non-empty fields, so a TSV read never shifts.
@@ -113,13 +89,28 @@ while IFS=$'\t' read -r verdict slug kind pred; do
   fi
 done < "$out"
 
-# N listed slugs produce one Card batch read and zero per-slug show.
-batch_n="$(grep -c '^show --slugs ' "$fx/calls.log" || true)"
-[ "$batch_n" = 1 ] || { echo "FAIL [batch] want 1 show --slugs, got $batch_n: $(cat "$fx/calls.log")" >&2; exit 1; }
-if grep -E '^show ' "$fx/calls.log" | grep -v -- '--slugs' | grep -v -- '--help' | grep -q .; then
-  echo "FAIL [batch] per-slug show was used: $(grep -E '^show ' "$fx/calls.log")" >&2
+# Collected known keys use one complete native raw23 batch and no show fallback.
+batch_n="$(grep -c '^guarded-snapshot --slugs-file ' "$fx/calls.log" || true)"
+[ "$batch_n" = 1 ] || { echo "FAIL [batch] want 1 native raw23 batch, got $batch_n: $(cat "$fx/calls.log")" >&2; exit 1; }
+if grep -q '^show ' "$fx/calls.log"; then
+  echo "FAIL [batch] obsolete or per-slug show was used: $(cat "$fx/calls.log")" >&2
   exit 1
 fi
+# A missing canonical key refuses the entire flat-array response. Other
+# bodies must not authorize a predicate result from a partial batch.
+jq '.cards += [{slug:"val-missing",kind:"validation",column:"backlog"}] | .total=6' "$fx/list-backlog.json" > "$fx/with-missing.json"
+cp "$fx/with-missing.json" "$fx/list-backlog.json"
+"$SWEEP" --board-cli "$tmp/kanban" > "$out" 2> "$tmp/err"
+printf '%s\t%s\t%s\t%s\n' \
+  read-error val-satisfied validation - \
+  read-error tracker-pending tracker - \
+  read-error meta-none meta - \
+  read-error cap-malformed capstone - \
+  read-error val-missing validation - \
+  read-error val-todo validation - > "$want"
+diff -u "$want" "$out" || { echo "FAIL [missing] partial native read authorized a predicate" >&2; exit 1; }
+grep -q 'done-when-sweep checked=6 satisfied=0 pending=0 malformed=0 ignored=0 no_predicate=0 read_error=6 column_read_fail=1' "$tmp/err" || {
+  echo "FAIL [missing-summary] got: $(cat "$tmp/err")" >&2; exit 1; }
 : > "$fx/calls.log"
 
 # --max caps the point reads.

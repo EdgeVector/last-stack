@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Classify a complete keyed queue; admit only the reviewed finite repair."""
+import argparse
+import json
+import sys
+import tempfile
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'lib'))
+from factory_repair import Refusal, read_json, validate_local, set_deadline, routine_report, require_report_ready, routine_heartbeat
+from factory_reconcile import Reconciler, ReconcileRuntime
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--once', action='store_true', required=True)
+    parser.add_argument('--json', action='store_true')
+    parser.add_argument('--routine-result', action='store_true')
+    args = parser.parse_args(); set_deadline(600); local = None
+    try:
+        local = validate_local(ROOT); config = read_json(ROOT / 'config/factory-repair-slot.json')
+        directory = Path.home() / '.local/state/last-stack/factory-repair-slot'
+        require_report_ready(directory, 'papercut-reconciler')
+        capture = Path(tempfile.mkdtemp(prefix='papercut-finite-'))
+        result = Reconciler(ROOT, config, directory, ReconcileRuntime(ROOT, config, directory, capture), local['contract_sha256']).once()
+    except (Refusal, OSError, ValueError, KeyError, TypeError) as error:
+        result = {'version': 1, 'result': 'error', 'reason': str(error), 'classification': 'unavailable'}
+    if args.routine_result:
+        set_deadline(120)
+        if local is not None:
+            result = routine_report(ROOT, 'papercut-reconciler', result)
+            try: routine_heartbeat(ROOT, 'papercut-reconciler', result)
+            except (Refusal, OSError, ValueError): result = {**result, 'result': 'error', 'reason': 'routine-heartbeat-unavailable'}
+        outcome = 'ok' if result['result'] == 'ok' else ('noop' if result['result'] == 'noop' else 'error')
+        print('ROUTINE_RESULT outcome=' + outcome + ' detail=' + result.get('reason', 'retained').replace(' ', '-'))
+        return 0
+    print(json.dumps(result, sort_keys=True)); return 1 if result['result'] == 'error' else 0
+
+if __name__ == '__main__':
+    sys.exit(main())

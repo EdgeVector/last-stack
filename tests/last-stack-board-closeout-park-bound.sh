@@ -6,7 +6,7 @@
 # cards to backlog. --max-park-hours still bounds NON-deploy close-failed
 # parks; deploy parks are not sent to todo (pickup thrash).
 #
-# Asserts, on both engines (node + python3 fallback):
+# Asserts, on both engines (node + python3):
 #   1. parked card (old or fresh) → moved to backlog, flagged deploy-parked-demoted
 #   2. parked card is NOT rolled back to todo
 #   3. transient board failure    → NEVER demoted/expired (board was sick,
@@ -15,7 +15,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 sweep="$ROOT/bin/last-stack-board-closeout-sweep"
-chmod +x "$sweep"
+source "$ROOT/tests/fixtures/factory-closeout-dependencies.sh"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -25,6 +25,9 @@ cat >"$board" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-}" in
+  guarded-snapshot)
+    exec "${FACTORY_CLOSEOUT_FIXTURE_NATIVE:?}" --cards-file "$0.cards.json" "$@"
+    ;;
   list)
     # Two deploy-parked cards, no resolvable PR. `old` predates any sane bound;
     # `fresh` is stamped by the harness to "now".
@@ -85,31 +88,27 @@ chmod +x "$board"
 
 PARK_FRESH_TS="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
 export PARK_FRESH_TS
+stack="$tmp/stack"
+mkdir -p "$stack/bin"
+cp "$sweep" "$stack/bin/last-stack-board-closeout-sweep"
+fixture_closeout_native_dependencies "$stack" "$board"
+fixture_closeout_prepare_native_cards "$board"
 
-# Engine matrix: default PATH picks node; a node-free PATH exercises python3.
-node_free_path="$(dirname "$(command -v python3)"):/usr/bin:/bin:/usr/sbin:/sbin"
+# Pin each engine explicitly; a Python parity pass must not skip when Node exists.
 
 for engine in node python3; do
   moves="$tmp/moves.$engine"
   : >"$moves"
   export BOARD_MOVES="$moves"
 
-  if [ "$engine" = python3 ]; then
-    if ! env PATH="$node_free_path" sh -c 'command -v python3 >/dev/null'; then
-      echo "skip: no python3 on the node-free PATH" >&2
-      continue
-    fi
-    if env PATH="$node_free_path" sh -c 'command -v node >/dev/null'; then
-      echo "skip: could not build a node-free PATH for the fallback engine" >&2
-      continue
-    fi
-    run_env=(env PATH="$node_free_path")
-  else
+  if [ "$engine" = node ]; then
     command -v node >/dev/null || { echo "skip: no node" >&2; continue; }
-    run_env=(env)
+  else
+    command -v python3 >/dev/null || { echo "skip: no python3" >&2; continue; }
   fi
+  run_env=(env BOARD_CLOSEOUT_ENGINE="$engine" BOARD_CLOSEOUT_STATE_DIR="$tmp/state.$engine")
 
-  out="$("${run_env[@]}" "$sweep" --board-cli "$board" --grace-min 1 \
+  out="$("${run_env[@]}" "$stack/bin/last-stack-board-closeout-sweep" --board-cli "$board" --grace-min 1 \
     --max-park-hours 24 --max-actions 20 2>&1 || true)"
   echo "[$engine] $out"
 
@@ -151,7 +150,7 @@ for engine in node python3; do
 
   # 3. Deploy parks must not be expired to todo even with a tiny bound.
   : >"$moves"
-  wide="$("${run_env[@]}" "$sweep" --board-cli "$board" --grace-min 1 \
+  wide="$("${run_env[@]}" "$stack/bin/last-stack-board-closeout-sweep" --board-cli "$board" --grace-min 1 \
     --max-park-hours 1 --max-actions 20 2>&1 || true)"
   if echo "$wide" | grep -q 'park-expired:'; then
     echo "FAIL[$engine]: deploy-parked card was park-expired to todo: $wide" >&2
@@ -181,6 +180,9 @@ cat >"$transient_board" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-}" in
+  guarded-snapshot)
+    exec "${FACTORY_CLOSEOUT_FIXTURE_NATIVE:?}" --cards-file "$0.cards.json" "$@"
+    ;;
   list)
     cat <<'JSON'
 [
@@ -223,6 +225,8 @@ JSON
 esac
 EOF
 chmod +x "$transient_board"
+fixture_closeout_native_dependencies "$transient_stack" "$transient_board"
+fixture_closeout_prepare_native_cards "$transient_board"
 
 binwrap="$tmp/bin"
 mkdir -p "$binwrap"
@@ -238,7 +242,7 @@ chmod +x "$binwrap/gh"
 
 moves="$tmp/moves.transient"
 : >"$moves"
-transient_out="$(env PATH="$binwrap:$PATH" BOARD_MOVES="$moves" \
+transient_out="$(env PATH="$binwrap:$PATH" BOARD_MOVES="$moves" BOARD_CLOSEOUT_STATE_DIR="$tmp/state.transient" \
   "$transient_stack/bin/last-stack-board-closeout-sweep" \
   --board-cli "$transient_board" --grace-min 1 --max-park-hours 24 \
   --max-actions 20 2>&1 || true)"

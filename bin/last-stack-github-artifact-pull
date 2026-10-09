@@ -26,8 +26,10 @@ publish` + `lastgit artifact promote` did after a green LastGit gate:
      bytes. The pre-sign digest stays checked against provenance (step 5) and
      is recorded in the result. No identity or a failed sign is a Fail: the
      tool never promotes an ad-hoc binary for a signed app.
-  6. `lastgit artifact publish` into a STAGING CAS, then the manifest files must
-     equal the provenance files and `lastgit artifact verify` must pass.
+  6. Reuse the known source/platform build manifest only when every checked file
+     tuple and app/repo/source/platform identity equals it, and public verify
+     passes. Otherwise publish into a STAGING CAS and verify it. A signed local
+     derivative may change its bytes; an exact caller refuses that new pair.
   7. Only then blobs, manifest, and builds/ row are copied into the real CAS and
      the channel pointer is written, atomically, like promoteArtifact does. The
      channel file carries `promote_order` and `previous_source_oid` on top of the
@@ -38,7 +40,9 @@ publish` + `lastgit artifact promote` did after a green LastGit gate:
 Nothing is written to the real CAS before every check has passed. The tool never
 touches an install root; activation stays host-track's soak-gated flow.
 
-Exit: 0 promoted or already current, 3 hold (nothing to promote yet), 1 failure.
+Exit: 0 promoted or text status current, 3 hold, 1 failure. JSON same-head pulls
+repeat all gates and return complete provenance. The ordinary text current
+result is only a cheap status fact and supplies no exact install authority.
 Brain: design-github-artifact-publish-path
 """
 import argparse
@@ -47,6 +51,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -331,6 +336,89 @@ def sign_files(src, specs, identity, codesign, security):
     return pre
 
 
+
+CANONICAL_MANIFEST_MAX_BYTES = 8 * 1024 * 1024
+
+
+def canonical_json_file(path):
+    """Read one known canonical file; refuse aliases, devices, and unbounded input."""
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > CANONICAL_MANIFEST_MAX_BYTES:
+            raise Hold("canonical manifest is not a bounded regular file")
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            data = fh.read(CANONICAL_MANIFEST_MAX_BYTES + 1)
+        if len(data) > CANONICAL_MANIFEST_MAX_BYTES:
+            raise Hold("canonical manifest exceeds the byte cap")
+        return json.loads(data.decode("utf-8"), object_pairs_hook=unique_object)
+    finally:
+        os.close(fd)
+
+
+def canonical_file_tuples(manifest):
+    files = manifest.get("files")
+    if not isinstance(files, list) or not files:
+        raise Hold("canonical manifest files are malformed")
+    tuples, seen = [], set()
+    for item in files:
+        if not isinstance(item, dict) or set(item) != {"path", "sha256", "size", "mode"}:
+            raise Hold("canonical manifest file is malformed")
+        path, digest, size, mode = item["path"], item["sha256"], item["size"], item["mode"]
+        if (not isinstance(path, str) or not isinstance(digest, str)
+                or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)
+                or type(size) is not int or size < 0 or type(mode) is not int or not 0 <= mode <= 0o777):
+            raise Hold("canonical manifest file tuple is malformed")
+        safe_rel(path)
+        if path in seen:
+            raise Hold("canonical manifest lists a path twice")
+        seen.add(path)
+        tuples.append((path, digest, size, mode))
+    return sorted(tuples)
+
+
+def reuse_canonical_manifest(root, app, repo_name, oid, plat, expected_files, signed, lg):
+    """Keep the source/build identity after fresh GitHub provenance and file checks."""
+    build = os.path.join(root, "builds", app, oid, plat + ".json")
+    try:
+        manifest = canonical_json_file(build)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise Hold("canonical build manifest is unreadable: %s" % exc)
+    if (not isinstance(manifest, dict) or type(manifest.get("schema_version")) is not int
+            or manifest["schema_version"] != 1 or manifest.get("app") != app
+            or manifest.get("repo") != repo_name or manifest.get("source_oid") != oid
+            or manifest.get("platform") != plat):
+        raise Hold("canonical build manifest identity does not match the checked artifact")
+    digest = manifest.get("manifest_digest")
+    if (not isinstance(digest, str) or len(digest) != 64
+            or any(c not in "0123456789abcdef" for c in digest)):
+        raise Hold("canonical build manifest digest is malformed")
+    expected = sorted((f["path"], f["sha256"], f["size"], f["mode"]) for f in expected_files)
+    if canonical_file_tuples(manifest) != expected:
+        if signed:
+            # A local Developer ID derivative may legitimately change its bytes.
+            # Keep the existing publish behavior; exact consumers refuse a changed pair.
+            return None
+        raise Hold("canonical build manifest file tuples differ from the checked artifact")
+    try:
+        canonical = canonical_json_file(os.path.join(root, "manifests", digest + ".json"))
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise Hold("canonical manifest is unreadable: %s" % exc)
+    if canonical != manifest:
+        raise Hold("canonical build and manifest disagree")
+    lastgit(lg, "verify", "--manifest", digest, "--root", root, "--json")
+    return manifest
+
 def merge_cas(staging, root, app, oid, plat, digest):
     """Copy blobs, then the manifest, then the builds row. Content-addressed, atomic renames."""
     def put(src, dst, keep_existing):
@@ -368,7 +456,9 @@ def pull(args):
     if not args.allow_non_tip and oid != tip:
         raise Fail("--oid %s is not the %s tip %s (rollback needs --allow-non-tip)" % (oid[:12], args.branch, tip[:12]))
     head = channel_oid(root, args.app, args.channel)
-    if head == oid:
+    # Text refresh preserves its cheap status check; it supplies no exact authority.
+    # JSON callers repeat every gate and receive complete freshly verified provenance.
+    if head == oid and not args.json:
         specs = sign_specs(args)
         if not specs or channel_is_signed(root, args.app, args.channel, specs, args.codesign):
             return {"status": "current", "oid": oid, "channel": args.channel}
@@ -462,17 +552,20 @@ def pull(args):
                 p = os.path.join(src, f["path"])
                 f["sha256"], f["size"] = sha256_file(p), os.path.getsize(p)
 
-        out = lastgit(lg, "publish", "--app", args.app, "--repo", name, "--oid", oid, "--input", src,
-                      "--paths", ",".join(prov["paths"]), "--platform", plat, "--root", stage, "--json")
-        manifest = first_json(out)
-        if not manifest:
-            raise Fail("lastgit artifact publish printed no manifest")
+        manifest = reuse_canonical_manifest(root, args.app, name, oid, plat, exp_files, bool(pre_sign), lg)
+        reused = manifest is not None
+        if not reused:
+            out = lastgit(lg, "publish", "--app", args.app, "--repo", name, "--oid", oid, "--input", src,
+                          "--paths", ",".join(prov["paths"]), "--platform", plat, "--root", stage, "--json")
+            manifest = first_json(out)
+            if not manifest:
+                raise Fail("lastgit artifact publish printed no manifest")
+            got = sorted((f["path"], f["sha256"], f["size"], f["mode"]) for f in manifest["files"])
+            exp = sorted((f["path"], f["sha256"], f["size"], f["mode"]) for f in exp_files)
+            if got != exp or manifest.get("source_oid") != oid or manifest.get("app") != args.app:
+                raise Fail("CAS manifest does not equal the GitHub provenance")
+            lastgit(lg, "verify", "--manifest", manifest["manifest_digest"], "--root", stage, "--json")
         mdigest = manifest["manifest_digest"]
-        got = sorted((f["path"], f["sha256"], f["size"], f["mode"]) for f in manifest["files"])
-        exp = sorted((f["path"], f["sha256"], f["size"], f["mode"]) for f in exp_files)
-        if got != exp or manifest.get("source_oid") != oid or manifest.get("app") != args.app:
-            raise Fail("CAS manifest does not equal the GitHub provenance")
-        lastgit(lg, "verify", "--manifest", mdigest, "--root", stage, "--json")
 
         result = {"status": "verified", "oid": oid, "tree_oid": tree, "manifest_digest": mdigest,
                   "platform": plat, "channel": args.channel, "artifact_id": art["id"], "run_id": run.get("id")}
@@ -488,7 +581,8 @@ def pull(args):
             now = gh.api_json("repos/%s/git/ref/heads/%s" % (repo, args.branch))["object"]["sha"].lower()
             if now != oid:
                 raise Hold("%s moved to %s while pulling %s; rerun" % (args.branch, now[:12], oid[:12]))
-        merge_cas(stage, root, args.app, oid, plat, mdigest)
+        if not reused:
+            merge_cas(stage, root, args.app, oid, plat, mdigest)
         lastgit(lg, "verify", "--manifest", mdigest, "--root", root, "--json")
         dst = os.path.join(root, "channels", args.app, args.channel + ".json")
         os.makedirs(os.path.dirname(dst), exist_ok=True)

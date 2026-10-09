@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""Fixed installed count proof against bounded exact canonical execution keys."""
+import argparse
+import json
+import sys
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'lib'))
+from factory_repair import (Refusal, require, read_json, validate_local, verify_loom, value_sha,
+    active_candidate_keys, canonical_execution_batch, compare_count, json_call, Controller, set_deadline)
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--state', type=Path, required=True); parser.add_argument('--json', action='store_true', required=True)
+    args = parser.parse_args(); set_deadline(150)
+    try:
+        local = validate_local(ROOT); config = read_json(ROOT / 'config/factory-repair-slot.json'); state = read_json(args.state)
+        controller = Controller(config, args.state.parent, None, local['contract_sha256'])
+        controller.validate_state(state)
+        require(state.get('phase') == 'proof' and state.get('proof_attempt'), 'proof-phase-identity')
+        require(controller.validate_install(state, state['install']), 'proof-install-not-complete')
+        candidate = state['candidate']; root = verify_loom(candidate['authority'])
+        require(candidate['intent_sha256'] == state['intent_sha256'] and candidate['dispatch_authority_sha256'] == value_sha(state['dispatch_authority']) and
+                candidate['completed_execution_sha256'] == state['completed_execution_sha256'], 'proof-retained-dispatch-chain')
+        before = json_call([str(root / 'dist/loom'), 'status', '--json'], 30)
+        keys = active_candidate_keys(config); rows = canonical_execution_batch(config, keys)
+        after = json_call([str(root / 'dist/loom'), 'status', '--json'], 30)
+        require(value_sha(before) == value_sha(after) and keys == active_candidate_keys(config), 'proof-current-state-changed')
+        comparison = compare_count(after, rows)
+        result = {'version': 1, 'result': 'positive', 'card': state['card'], 'execution_id': state['execution_id'],
+                  'action_attempt': state['proof_attempt'], 'intent_sha256': state['intent_sha256'],
+                  'candidate_sha256': value_sha(candidate), 'candidate_source_oid': candidate['source_oid'],
+                  'candidate_contract_sha256': candidate['contract_sha256'], 'candidate_manifest_sha256': candidate['manifest_sha256'],
+                  'canonical_keys_sha256': value_sha(keys), 'canonical_rows_sha256': value_sha(rows),
+                  'status_sha256': value_sha(after), 'comparison': comparison}
+        result['signal'] = value_sha(result)
+    except (Refusal, OSError, ValueError, KeyError, TypeError) as error:
+        print('factory-proof: ' + str(error), file=sys.stderr); return 1
+    print(json.dumps(result, sort_keys=True)); return 0
+
+if __name__ == '__main__':
+    sys.exit(main())

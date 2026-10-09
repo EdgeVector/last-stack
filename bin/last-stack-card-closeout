@@ -113,89 +113,46 @@ if [ -z "$card_json" ]; then
   exit 1
 fi
 
-deploy_info="$(CARD_JSON="$card_json" python3 - <<'PY'
-import json, re, sys
-import os
+proof_module="$self_dir/../lib/closeout_evidence.py"
+contract_bin="$self_dir/last-stack-factory-repair-contract"
+if [ ! -f "$proof_module" ] || [ ! -x "$contract_bin" ]; then
+  echo "last-stack-card-closeout: FAILED factory-contract-refused slug=$slug" >&2
+  exit 1
+fi
+if ! factory_contract_json="$("$contract_bin" --local --json)"; then
+  echo "last-stack-card-closeout: FAILED factory-contract-refused slug=$slug" >&2
+  exit 1
+fi
+if ! finite_info="$(CARD_JSON="$card_json" FACTORY_CONTRACT_JSON="$factory_contract_json" python3 "$proof_module" --mode finite-card --slug "$slug")"; then
+  echo "last-stack-card-closeout: FAILED factory-contract-refused slug=$slug" >&2
+  exit 1
+fi
+eval "$finite_info"
+if [ "${factory_excluded:-}" = "1" ]; then
+  echo "last-stack-card-closeout: FAILED factory-finite-excluded slug=$slug" >&2
+  exit 1
+fi
+if [ "${factory_excluded:-}" != "0" ]; then
+  echo "last-stack-card-closeout: FAILED factory-contract-refused slug=$slug" >&2
+  exit 1
+fi
 
-try:
-    raw = json.loads(os.environ.get("CARD_JSON", "{}"))
-except Exception:
-    sys.exit(0)
-card = raw.get("card") if isinstance(raw, dict) else None
-if not isinstance(card, dict):
-    card = raw if isinstance(raw, dict) else {}
-body = str(card.get("body") or "")
-repo = str(card.get("repo") or "")
-if not repo:
-    m = re.search(r"(?im)^\s*Repo:\s*(\S+)\s*$", body)
-    if m:
-        repo = m.group(1)
-repo_name = repo.rsplit("/", 1)[-1] if repo else ""
-print(f"repo={repo_name}")
-seen = set()
-for line in body.splitlines():
-    m = re.match(r"^\s*Requires-Deploy:\s*(.+?)\s*$", line)
-    if not m:
-        continue
-    for part in re.split(r"[, ]+", m.group(1).strip()):
-        if not part:
-            continue
-        if part in seen:
-            continue
-        seen.add(part)
-        print(f"requires={part}")
-
-tags = card.get("tags") or []
-if isinstance(tags, str):
-    tags = [p for p in re.split(r"[,\s]+", tags) if p]
-parked = {
-    "awaiting-deploy",
-    "live-proof",
-    "deploy-gate",
-    "needs-safe-upgrade",
-    "awaiting-validation",
-}
-has_parked_tag = any(str(t).strip().lower() in parked for t in tags)
-print(f"parked_tag={1 if has_parked_tag else 0}")
-
-section_lines = []
-in_end = False
-for line in body.splitlines():
-    if re.match(r"^##[ \t]+", line):
-        in_end = bool(re.match(r"^##[ \t]+END[ \t]+STATE\b", line, re.I))
-    if in_end:
-        section_lines.append(line)
-    if re.match(r"^\s*DONE-WHEN\s*:", line, re.I):
-        section_lines.append(line)
-section = "\n".join(section_lines)
-cutover_re = re.compile(
-    r"(?i)\b(helper[ -]?cutover|host-track|live\s+scheduled[- ]fire|"
-    r"installed\s+(?:helper|binary|cli)|safe-upgrade|awaiting-deploy)\b"
-)
-print(f"helper_cutover_end_state={1 if cutover_re.search(section) else 0}")
-
-positive_words = re.compile(
-    r"(?i)\b(pass|passed|verified|proven|green|satisfied|met|confirmed|"
-    r"success|successful|complete|completed)\b"
-)
-proof = False
-for line in body.splitlines():
-    match = re.match(r"(?i)^\s*(?:[-*]\s*)?PROOF\s*:\s*(.*?)\s*$", line)
-    if match and positive_words.search(match.group(1)):
-        proof = True
-        break
-print(f"positive_proof={1 if proof else 0}")
-PY
-)"
-
-deploy_repo="$(printf '%s\n' "$deploy_info" | sed -n 's/^repo=//p' | head -n 1)"
-deploy_reqs="$(printf '%s\n' "$deploy_info" | sed -n 's/^requires=//p')"
-parked_tag="$(printf '%s\n' "$deploy_info" | sed -n 's/^parked_tag=//p' | head -n 1)"
-helper_cutover_end_state="$(printf '%s\n' "$deploy_info" | sed -n 's/^helper_cutover_end_state=//p' | head -n 1)"
-positive_proof="$(printf '%s\n' "$deploy_info" | sed -n 's/^positive_proof=//p' | head -n 1)"
-parked_tag="${parked_tag:-0}"
-helper_cutover_end_state="${helper_cutover_end_state:-0}"
-positive_proof="${positive_proof:-0}"
+# The current explicit claim is independent of merge/deploy success.
+if ! deploy_info="$(CARD_JSON="$card_json" EFFECTIVE_PR_URL="$pr_url" python3 "$proof_module" --mode deploy)"; then
+  echo "last-stack-card-closeout: FAILED proof-error slug=$slug" >&2
+  exit 1
+fi
+eval "$deploy_info"
+case "${proof_verdict:-error}" in
+  negative|pending|error)
+    echo "last-stack-card-closeout: FAILED proof-${proof_verdict:-error} slug=$slug" >&2
+    exit 1
+    ;;
+esac
+if [ "${reopened_same_signal:-0}" = "1" ]; then
+  echo "last-stack-card-closeout: FAILED reopened-same-signal slug=$slug" >&2
+  exit 1
+fi
 deploy_pipeline_ok=0
 
 # host_track_gate <repo-name>: is the PR's merge commit installed?
@@ -558,72 +515,10 @@ fi
 # The signal changes only when the merged review URL or positive proof changes.
 # A reopened card cannot close again on the same signal.
 end_state_gate="${LAST_STACK_CARD_CLOSEOUT_END_STATE_GATE:-0}"
-end_state_info="$(CARD_JSON="$card_json" EFFECTIVE_PR_URL="$effective_pr_url" python3 - <<'PY'
-import hashlib
-import json
-import os
-import re
-import sys
-
-try:
-    raw = json.loads(os.environ.get("CARD_JSON", "{}"))
-except Exception:
-    sys.exit(0)
-
-card = raw.get("card") if isinstance(raw, dict) else None
-if not isinstance(card, dict):
-    card = raw if isinstance(raw, dict) else {}
-
-body = str(card.get("body") or "")
-column = str(card.get("column") or "")
-
-has_end_state = bool(
-    re.search(r"(?im)^##[ \t]+END[ \t]+STATE\b", body)
-    or re.search(r"(?im)^\s*DONE-WHEN\s*:", body)
-)
-print(f"end_state_required={1 if has_end_state else 0}")
-
-outcome_match = re.search(r"(?ims)^##[ \t]+OUTCOME\b.*?(?=^##[ \t]+|\Z)", body)
-outcome = outcome_match.group(0) if outcome_match else ""
-outcome_claimed = bool(
-    re.search(r"(?i)\bEND[ \t]+STATE\b|\bDONE-WHEN\b", outcome)
-    and re.search(
-        r"(?i)\b(met|unmet|satisfied|verified|proven|holds|confirmed|measured|passed|green)\b",
-        outcome,
-    )
-)
-
-positive_words = re.compile(
-    r"(?i)\b(pass|passed|verified|proven|green|satisfied|met|confirmed|success|successful|complete|completed)\b"
-)
-proof_lines = []
-for line in body.splitlines():
-    match = re.match(r"(?i)^\s*(?:[-*]\s*)?PROOF\s*:\s*(.*?)\s*$", line)
-    if match and positive_words.search(match.group(1)):
-        proof_lines.append(" ".join(match.group(1).split()))
-
-claimed = outcome_claimed or bool(proof_lines)
-effective_pr_url = os.environ.get("EFFECTIVE_PR_URL", "")
-signal_material = "closeout-v1\npr=" + effective_pr_url + "\nproof=" + "\n".join(proof_lines)
-signal = hashlib.sha256(signal_material.encode("utf-8")).hexdigest()
-markers = re.findall(
-    r"(?im)^\s*CLOSEOUT-DECISION\s+signal=([0-9a-f]{64})\s+state=closed\b",
-    body,
-)
-
-print(f"end_state_claimed={1 if claimed else 0}")
-done_when = ""
-for line in body.splitlines():
-    m = re.match(r"(?i)^\s*DONE-WHEN\s*:\s*(.*?)\s*$", line)
-    if m and m.group(1):
-        done_when = m.group(1)
-        break
-print("done_when_b64=" + __import__("base64").b64encode(done_when.encode("utf-8")).decode("ascii"))
-print(f"closeout_initial_column={column}")
-print(f"closeout_previous_signal={markers[-1] if markers else ''}")
-print(f"closeout_signal={signal}")
-PY
-)"
+if ! end_state_info="$(CARD_JSON="$card_json" EFFECTIVE_PR_URL="$effective_pr_url" python3 "$proof_module" --mode end-state)"; then
+  echo "last-stack-card-closeout: FAILED proof-error slug=$slug" >&2
+  exit 1
+fi
 
 end_state_required=0
 end_state_claimed=0
@@ -650,7 +545,7 @@ fi
 # (papercut-kanban-closeout-end-state-warning-20260921).
 done_when_b64="${done_when_b64:-}"
 done_when_verdict="absent"
-if [ "$end_state_required" = "1" ] && [ "$end_state_claimed" != "1" ] && [ -n "$done_when_b64" ]; then
+if [ "$end_state_required" = "1" ] && [ -n "$done_when_b64" ]; then
   done_when="$(printf '%s' "$done_when_b64" | base64 -d 2>/dev/null || printf '%s' "$done_when_b64" | base64 -D 2>/dev/null || true)"
   evaluator="$self_dir/last-stack-kanban-done-when-eval"
   if [ -n "$done_when" ] && [ -x "$evaluator" ]; then
@@ -680,7 +575,7 @@ fi
 if [ "$done_when_verdict" = "pending" ]; then
   echo "last-stack-card-closeout: FAILED done-when-pending slug=$slug" >&2
   echo "  The card's DONE-WHEN evaluated NOT met. The card stays in $closeout_initial_column." >&2
-  echo "  Close it after the DONE-WHEN holds, or add a positive PROOF: line." >&2
+  echo "  Close it after the DONE-WHEN holds." >&2
   deferred_marker="CLOSEOUT-DEFERRED: DONE-WHEN pending"
   if ! printf '%s' "$card_json" | grep -qF "$deferred_marker"; then
     run "$board_cli" mark "$slug" \

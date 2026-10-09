@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""Exact factory read/claim shim. The intent retains the original witness."""
+import json
+import os
+import sys
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'lib'))
+from factory_repair import (Refusal, require, read_json, validate_local, validate_snapshot,
+    verify_fk, public_card_batch, bounded_call, atomic_json, value_sha, file_sha, strict_json, version1, set_deadline,
+    read_bytes, sha, validate_claim_stage_one, validate_admitted_body)
+
+def main():
+    set_deadline(90)
+    try:
+        local = validate_local(ROOT)
+        path = Path(os.environ['LAST_STACK_FACTORY_INTENT']).resolve()
+        require(path.name == 'dispatch-intent.json' and path.parent.stat().st_uid == os.getuid(), 'adapter-intent-path')
+        intent = read_json(path)
+        require(intent.get('contract_sha256') == local['contract_sha256'] and value_sha(intent.get('intent')) == intent.get('intent_sha256'), 'adapter-intent-authority')
+        config = read_json(ROOT / 'config/factory-repair-slot.json')
+        require(intent.get('config_sha256') == value_sha(config) and intent.get('fkanban_authority') == config['fkanban_authority'] and
+                intent.get('dispatch_authority') == config['dispatch_authority'] and intent.get('card') == config['admitted'][0]['card'] and
+                intent.get('owner') == 'loom:factory-repair-slot', 'adapter-finite-identity')
+        binary = verify_fk(intent['fkanban_authority'])
+        args = sys.argv[1:]; card = intent['card']; owner = intent['owner']
+        witness = validate_snapshot(intent['witness'], card)
+        original = validate_snapshot(intent['original_witness'], card)
+        require(original['sha256'] == intent['intent']['witness_sha256'] and
+                validate_admitted_body(original['fields']['body'], config['admitted'][0]) == intent['intent']['factory_decision_receipt'], 'adapter-original-reviewed-brief')
+        if args == ['show', card, '--canonical', '--json']:
+            item = public_card_batch(binary, [card])['items'][0]
+            print(json.dumps(validate_snapshot(item, card)['fields'], ensure_ascii=False)); return 0
+        if args == ['guarded-snapshot', card, '--json']:
+            rc, out, err = bounded_call([str(binary), *args], 30, cap=65536)
+            require(rc == 0, 'adapter-snapshot-unavailable')
+            require(out == witness['text'].encode() and sha(out) == witness['sha256'], 'adapter-snapshot-retained-witness-drift')
+            validate_snapshot({'slug': card, 'snapshot_json': out.decode(), 'snapshot_sha256': sha(out)}, card)
+            sys.stdout.buffer.write(out); return 0
+        plain = ['pickup', 'claim-v2', '--only-card', card, '--worker', owner, '--json']
+        supplied = ['pickup', 'claim', '--claim-v2', '--only-card', card, '--worker', owner, '--json']
+        if len(args) == 12 and args[:8] == supplied and args[8] == '--guard-snapshot' and args[10] == '--snapshot-sha256':
+            require(intent.get('phase') == 'dispatch-pending' and witness['sha256'] == original['sha256'], 'adapter-fresh-claim-phase')
+            provided = read_bytes(args[9], 65536)
+            require(args[11] == witness['sha256'] and sha(provided) == witness['sha256'] and provided == witness['text'].encode(), 'adapter-supplied-witness-drift')
+            delegated = supplied
+        else:
+            require(args == plain and intent.get('phase') == 'claim-recovery-pending' and intent.get('accepted_held'), 'adapter-command-refused')
+            validate_claim_stage_one(intent['original_witness'], intent['witness'], owner)
+            delegated = plain
+        witness_path = path.parent / ('claim-witness-' + witness['sha256'] + '.json')
+        if not witness_path.exists():
+            witness_path.write_bytes(witness['text'].encode())
+        require(file_sha(witness_path) == witness['sha256'], 'adapter-witness-file')
+        rc, out, err = bounded_call([str(binary), *delegated, '--guard-snapshot', str(witness_path), '--snapshot-sha256', witness['sha256']], 60)
+        receipt = strict_json(out)
+        receipt_path = Path(intent['receipt_path']).resolve()
+        require(receipt_path.parent == path.parent and receipt_path.name == 'claim-' + intent['intent']['attempt'] + '.json', 'adapter-receipt-path')
+        if rc == 0:
+            require(receipt.get('result') == 'claimed' and receipt.get('durability') == 'durable' and
+                    receipt.get('guard_snapshot_sha256') == witness['sha256'] and receipt.get('contract_sha256') == intent['fkanban_authority']['contract_sha256'], 'adapter-claim-receipt')
+            next_item = {'slug': card, 'snapshot_json': receipt.get('next_snapshot_json'), 'snapshot_sha256': receipt.get('next_snapshot_sha256')}
+            fields = validate_snapshot(next_item, card)['fields']
+            require(fields['column'] == 'doing' and fields['assignee'] == owner, 'adapter-claim-owner-column')
+            atomic_json(receipt_path, receipt)
+        elif receipt.get('code') == 'claim_recovery_pending':
+            accepted = receipt.get('accepted_held', {})
+            require(version1(accepted.get('version')) and accepted.get('stage') == 'accepted-held' and accepted.get('durability') == 'durable' and
+                    accepted.get('contract_sha256') == intent['fkanban_authority']['contract_sha256'] and accepted.get('guard_snapshot_sha256') == witness['sha256'], 'adapter-accepted-held-receipt')
+            validate_claim_stage_one(intent['witness'], {'slug': card, 'snapshot_json': accepted.get('snapshot_json'), 'snapshot_sha256': accepted.get('snapshot_sha256')}, owner)
+            atomic_json(receipt_path, receipt)
+        sys.stdout.buffer.write(out); sys.stderr.buffer.write(err); return rc
+    except (Refusal, OSError, ValueError, KeyError, TypeError) as error:
+        print('factory-kanban-adapter: ' + str(error), file=sys.stderr); return 1
+
+if __name__ == '__main__':
+    sys.exit(main())

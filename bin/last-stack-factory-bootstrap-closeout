@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""Advance one explicit reviewed bootstrap closeout phase."""
+import argparse
+import json
+import sys
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[1]; sys.path.insert(0, str(ROOT / 'lib'))
+from factory_repair import Refusal, validate_local, read_json, set_deadline
+from factory_bootstrap import BootstrapController, BootstrapRuntime, BOOTSTRAP_KEYS
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--card', required=True, choices=sorted(BOOTSTRAP_KEYS)); parser.add_argument('--once', action='store_true', required=True)
+    parser.add_argument('--json', action='store_true', required=True); args = parser.parse_args(); set_deadline(180)
+    try:
+        local = validate_local(ROOT); config = read_json(ROOT / 'config/factory-bootstrap-closeout.json')
+        directory = Path.home() / '.local/state/last-stack/factory-repair-slot'
+        result = BootstrapController(config, directory, BootstrapRuntime(ROOT, config, directory), local['contract_sha256'], args.card).once()
+    except (Refusal, OSError, ValueError, KeyError, TypeError) as error:
+        result = {'version': 1, 'result': 'error', 'reason': str(error), 'intent': 'retained'}
+    print(json.dumps(result, sort_keys=True)); return 1 if result['result'] == 'error' else 0
+
+if __name__ == '__main__': sys.exit(main())

@@ -154,10 +154,54 @@ chmod +x "$binwrap/gh"
 # Every invocation below runs a COPY of the sweep out of a temp stack, so the
 # helpers it resolves from lastStack/bin (closeout, forge-api) are stubs. gh
 # comes from the PATH stub above.
+stub_factory_contract() {
+  cat >"$1/bin/last-stack-factory-repair-contract" <<'EOF'
+#!/bin/sh
+printf '%s\n' '{"version":1,"result":"ok","contract_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","protected_card_keys":["factory-scoped-dispatch-20261008","factory-guarded-closeout-20261008","factory-canonical-active-counts-20261008","factory-repair-controller-20261009"]}'
+EOF
+  chmod +x "$1/bin/last-stack-factory-repair-contract"
+  # These legacy sweep cases isolate classification and URL repair. The
+  # dedicated consumer fixture checks an absent helper with zero writes.
+  cat >"$1/bin/last-stack-card-closeout" <<'EOF'
+#!/bin/sh
+slug="$1"
+shift
+board_cli=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --board-cli) board_cli="$2"; shift 2 ;;
+    --pr-url|--branch) shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$board_cli" ] || exit 2
+"$board_cli" move "$slug" done
+EOF
+  chmod +x "$1/bin/last-stack-card-closeout"
+  cat >"$1/bin/last-stack-kanban-show-batch" <<'EOF'
+#!/usr/bin/env python3
+import json,os,subprocess,sys
+from pathlib import Path
+args=sys.argv[1:]
+board=args[args.index('--board-cli')+1]
+keys=Path(args[args.index('--slugs-file')+1]).read_text().splitlines()
+if os.environ.get('BOARD_CALLS'):
+    with open(os.environ['BOARD_CALLS'],'a') as out:
+        out.write('batch-read '+','.join(keys)+'\n')
+if 'batch-missing' in keys:
+    print('canonical Card missing; no partial record array',file=sys.stderr)
+    sys.exit(1)
+records=json.loads(subprocess.check_output([board,'list','--column','doing','--json','--all'],text=True))
+if isinstance(records,dict): records=records['cards']
+print(json.dumps(records))
+EOF
+  chmod +x "$1/bin/last-stack-kanban-show-batch"
+}
 stub_stack() {
   local dir="$1"
   mkdir -p "$dir/bin"
   cp "$sweep" "$dir/bin/last-stack-board-closeout-sweep"
+  stub_factory_contract "$dir"
   chmod +x "$dir/bin/last-stack-board-closeout-sweep"
   printf '%s\n' "$dir/bin/last-stack-board-closeout-sweep"
 }
@@ -167,6 +211,7 @@ stub_stack() {
 first_stack="$tmp/first-stack"
 mkdir -p "$first_stack/bin"
 cp "$sweep" "$first_stack/bin/last-stack-board-closeout-sweep"
+stub_factory_contract "$first_stack"
 chmod +x "$first_stack/bin/last-stack-board-closeout-sweep"
 cat >"$first_stack/bin/last-stack-forge-api" <<'EOF'
 #!/usr/bin/env bash
@@ -367,6 +412,7 @@ echo "$dirty_out" | grep -q 'pr-url-healed:dirty-nonempty-pr-url' || {
 transient_stack="$tmp/transient-stack"
 mkdir -p "$transient_stack/bin"
 cp "$sweep" "$transient_stack/bin/last-stack-board-closeout-sweep"
+stub_factory_contract "$transient_stack"
 cat >"$transient_stack/bin/last-stack-card-closeout" <<'EOF'
 #!/usr/bin/env bash
 echo "service_timeout: board point read failed" >&2
@@ -527,6 +573,7 @@ chmod +x "$binwrap/last-stack-forge-api"
 closed_stack="$tmp/closed-stack"
 mkdir -p "$closed_stack/bin"
 cp "$sweep" "$closed_stack/bin/last-stack-board-closeout-sweep"
+stub_factory_contract "$closed_stack"
 cp "$binwrap/last-stack-forge-api" "$closed_stack/bin/last-stack-forge-api"
 chmod +x "$closed_stack/bin/last-stack-board-closeout-sweep" "$closed_stack/bin/last-stack-forge-api"
 
@@ -652,6 +699,7 @@ fi
 merged_park_stack="$tmp/merged-park-stack"
 mkdir -p "$merged_park_stack/bin"
 cp "$sweep" "$merged_park_stack/bin/last-stack-board-closeout-sweep"
+stub_factory_contract "$merged_park_stack"
 cat >"$merged_park_stack/bin/last-stack-card-closeout" <<'EOF'
 #!/usr/bin/env bash
 echo "last-stack-card-closeout: deploy gate pending slug=merged-deploy-park repo=fold requires=deploy-pipeline status=missing" >&2
@@ -730,8 +778,8 @@ echo "$merged_park_out" | grep -q 'deploy-parked-demoted:merged-deploy-park' || 
   exit 1
 }
 
-# N doing slugs: one show --slugs batch, zero per-slug show. A missing slug
-# in the batch is skip, not a move.
+# N doing slugs: one strict batch, zero per-slug show. A missing Card refuses
+# the complete legacy array, so every Card in that read stays unchanged.
 batch_calls="$tmp/batch-calls"
 batch_moves="$tmp/batch-moves"
 : >"$batch_calls"
@@ -807,30 +855,23 @@ EOF
 chmod +x "$batch_board"
 export BOARD_CALLS="$batch_calls"
 export BOARD_MOVES="$batch_moves"
-batch_out="$("$sweep" --board-cli "$batch_board" --grace-min 1 --max-actions 20 2>&1 || true)"
+batch_sweep="$(stub_stack "$tmp/batch-stack")"
+batch_out="$("$batch_sweep" --board-cli "$batch_board" --grace-min 1 --max-actions 20 2>&1 || true)"
 echo "$batch_out"
-if ! grep -q '^batch-doing backlog' "$batch_moves"; then
-  echo "FAIL: batch-doing should demote: $(cat "$batch_moves")" >&2
-  exit 1
-fi
-if grep -q '^batch-missing ' "$batch_moves" 2>/dev/null; then
-  echo "FAIL: missing slug in the batch was mutated: $(cat "$batch_moves")" >&2
-  exit 1
-fi
-if grep -q '^batch-stale ' "$batch_moves" 2>/dev/null; then
-  echo "FAIL: stale-list slug was mutated: $(cat "$batch_moves")" >&2
+if [ -s "$batch_moves" ]; then
+  echo "FAIL: an incomplete canonical batch caused a move: $(cat "$batch_moves")" >&2
   exit 1
 fi
 printf '%s\n' "$batch_out" | grep -q 'card-read-failed:batch-missing' || {
   echo "FAIL: expected card-read-failed for batch-missing: $batch_out" >&2
   exit 1
 }
-batch_n="$(grep -c '^show --slugs ' "$batch_calls" || true)"
+batch_n="$(grep -c '^batch-read ' "$batch_calls" || true)"
 [ "$batch_n" = 1 ] || {
-  echo "FAIL: want 1 show --slugs, got $batch_n: $(cat "$batch_calls")" >&2
+  echo "FAIL: want 1 strict batch, got $batch_n: $(cat "$batch_calls")" >&2
   exit 1
 }
-if grep -E '^show ' "$batch_calls" | grep -v -- '--slugs' | grep -v -- '--help' | grep -q .; then
+if grep -q '^show ' "$batch_calls"; then
   echo "FAIL: per-slug show was used: $(cat "$batch_calls")" >&2
   exit 1
 fi

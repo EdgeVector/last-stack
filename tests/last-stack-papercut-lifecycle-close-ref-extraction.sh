@@ -100,8 +100,12 @@ mkdir -p "$bin_dir"
 
 export LASTGIT_CALL_LOG="$tmp/lastgit-calls.log"
 export FORGE_CALL_LOG="$tmp/forge-calls.log"
+export GH_CALL_LOG="$tmp/gh-calls.log"
+export GH_DEFAULT_CALL_LOG="$tmp/gh-default-calls.log"
 : >"$LASTGIT_CALL_LOG"
 : >"$FORGE_CALL_LOG"
+: >"$GH_CALL_LOG"
+: >"$GH_DEFAULT_CALL_LOG"
 
 # LastGit is retired: any call is a regression.
 cat >"$bin_dir/lastgit" <<'SH'
@@ -143,12 +147,53 @@ exit 2
 SH
 chmod +x "$bin_dir/brain"
 
+# Missing explicit GitHub isolation must refuse before any network call.
+cat >"$bin_dir/gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$GH_DEFAULT_CALL_LOG"
+echo "default gh must not be called by this fixture" >&2
+exit 2
+SH
+chmod +x "$bin_dir/gh"
+
+cat >"$bin_dir/gh-repair-search" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$GH_CALL_LOG"
+case "$*" in
+  'search prs papercut-lifecycle-ref-prose-mention --owner EdgeVector --merged --limit 10 --json number,repository,url,body'|'search prs papercut-lifecycle-ref-bare-url-in-symptom-prose --owner EdgeVector --merged --limit 10 --json number,repository,url,body')
+    printf '[]\n'
+    ;;
+  *)
+    echo "unexpected fixture GitHub call: $*" >&2
+    exit 2
+    ;;
+esac
+SH
+chmod +x "$bin_dir/gh-repair-search"
+
+command_rc=0
 PATH="$bin_dir:$PATH" "$ROOT/bin/last-stack-papercut-lifecycle-close" \
   --records-json "$tmp/records.json" \
   --forge-api-bin "$bin_dir/forge-api" \
   --brain-bin "$bin_dir/brain" \
+  --gh-bin "$bin_dir/gh-repair-search" \
   --dry-run \
-  --json >"$tmp/result.json"
+  --json >"$tmp/result.json" 2>"$tmp/result.err" || command_rc=$?
+if [ "$command_rc" -ne 0 ]; then
+  echo "FAIL: ref extraction GH dependency command failed rc=$command_rc" >&2
+  cat "$tmp/result.json" >&2
+  cat "$tmp/result.err" >&2
+  exit "$command_rc"
+fi
+
+expected_gh=$'search prs papercut-lifecycle-ref-prose-mention --owner EdgeVector --merged --limit 10 --json number,repository,url,body\nsearch prs papercut-lifecycle-ref-bare-url-in-symptom-prose --owner EdgeVector --merged --limit 10 --json number,repository,url,body'
+if [ -s "$GH_DEFAULT_CALL_LOG" ] || [ "$(cat "$GH_CALL_LOG")" != "$expected_gh" ]; then
+  echo "FAIL: ref extraction GH dependency must use only the two exact repair searches" >&2
+  cat "$GH_CALL_LOG" >&2
+  cat "$GH_DEFAULT_CALL_LOG" >&2
+  exit 1
+fi
 
 python3 - "$tmp/result.json" <<'PY'
 import json

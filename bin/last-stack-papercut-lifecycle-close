@@ -1052,43 +1052,58 @@ def names_repair(text: str, slug: str) -> bool:
     is ALSO how prose cites a record for context, and this function cannot tell
     the two apart from the label. `honors_keep_open` carries that discrimination.
     """
-    token = re.compile(r"(?<![a-z0-9-])" + re.escape(slug) + r"(?![a-z0-9-])")
+    token = re.compile(r"(?<![a-z0-9_-])" + re.escape(slug) + r"(?![a-z0-9_-])")
     return any(token.search(m.group("rest")) for m in REPAIR_LINE_RE.finditer(text))
 
 
-def search_repair_prs(args: argparse.Namespace, slug: str) -> list[ReviewRef]:
-    """Merged forge PRs whose body carries a labeled repair line for `slug`.
+def pr_keeps_open(body: str, slug: str) -> bool:
+    token = re.compile(r"(?<![a-z0-9_-])" + re.escape(slug) + r"(?![a-z0-9_-])")
+    return any(token.search(match.group(1)) for match in re.finditer(r"(?im)^\s*(?:[-*]\s*)?Keep-open:\s*(.*)$", body))
 
-    The papercut body is not the only place a repair is recorded. A reconciler
-    card lists `Papercut: <slug>` for each member, and a Loom PR body carries
-    the card body, so the PR names the papercut while the papercut never names
-    the PR. Before this, every such papercut skipped `no-review-ref` and stayed
-    open after its fix merged (papercut-card-merge-does-not-close-its-named-papercuts-20260926).
-    The forge search is fuzzy, so each hit is re-checked for the exact slug on
-    a labeled line.
-    """
+
+def search_repair_prs(args: argparse.Namespace, slug: str) -> list[ReviewRef]:
+    """Discover exact labeled merged GitHub repairs; LastGit alone uses Forgejo."""
     if not getattr(args, "forge_search", True):
         return []
-    data = run_json(
-        [args.forge_api_bin, f"repos/issues/search?q={slug}&type=pulls&state=closed&limit=10"],
-        timeout=30,
-    )
-    refs: list[ReviewRef] = []
-    for item in data if isinstance(data, list) else []:
+    if getattr(args, "search_repo", "") == "lastgit":
+        data = run_json([args.forge_api_bin, f"repos/issues/search?q={slug}&type=pulls&state=closed&limit=10"], timeout=30)
+        if not isinstance(data, list):
+            raise RuntimeError("forge repair search returned an incomplete result")
+        refs = []
+        for item in data:
+            if not isinstance(item, dict):
+                raise RuntimeError("forge repair search returned a malformed item")
+            body = str(item.get("body") or "")
+            if (item.get("repository") or {}).get("full_name") != "EdgeVector/lastgit":
+                continue
+            pr = item.get("pull_request") or {}
+            if not pr.get("merged") or not names_repair(body, slug) or pr_keeps_open(body, slug):
+                continue
+            number = str(item.get("number") or "")
+            if number.isdigit():
+                refs.append(ReviewRef("forge", str(item.get("html_url") or f"forge:EdgeVector/lastgit#{number}"), "lastgit", number, "EdgeVector"))
+        return refs
+    data = run_json([args.gh_bin, "search", "prs", slug, "--owner", "EdgeVector", "--merged", "--limit", "10",
+                     "--json", "number,repository,url,body"], timeout=30)
+    if not isinstance(data, list) or len(data) > 10:
+        raise RuntimeError("github repair search returned an incomplete result")
+    refs = []
+    for item in data:
         if not isinstance(item, dict):
+            raise RuntimeError("github repair search returned a malformed item")
+        body = item.get("body")
+        if not isinstance(body, str):
+            raise RuntimeError("github repair search omitted the body")
+        if not names_repair(body, slug) or pr_keeps_open(body, slug):
             continue
-        pr = item.get("pull_request") or {}
-        if not isinstance(pr, dict) or not pr.get("merged"):
-            continue
-        if not names_repair(f"{item.get('title') or ''}\n{item.get('body') or ''}", slug):
-            continue
-        full = str((item.get("repository") or {}).get("full_name") or "")
-        owner, _, repo = full.partition("/")
-        num = str(item.get("number") or "")
-        if not owner or not repo or not num.isdigit():
-            continue
-        url = str(item.get("html_url") or f"forge:{full}#{num}")
-        refs.append(ReviewRef("forge", url, repo, num, owner))
+        full = (item.get("repository") or {}).get("nameWithOwner", "")
+        number = item.get("number"); url = item.get("url", "")
+        if not re.fullmatch(r"EdgeVector/[a-zA-Z0-9_.-]+", full) or type(number) is not int or number <= 0:
+            raise RuntimeError("github repair search key is malformed")
+        repo = full.split("/", 1)[1]
+        if repo == "lastgit" or url != f"https://github.com/{full}/pull/{number}":
+            raise RuntimeError("github repair search venue is invalid")
+        refs.append(ReviewRef("github", url, repo, str(number), "EdgeVector"))
     return refs
 
 
@@ -1133,13 +1148,19 @@ def review_state(args: argparse.Namespace, ref: ReviewRef) -> tuple[str, str]:
             "-R",
             f"{ref.owner}/{ref.repo}",
             "--json",
-            "state,mergedAt",
+            "state,mergedAt,body,url",
         ],
         timeout=60,
     )
     state = str(data.get("state") or "").lower() if isinstance(data, dict) else ""
     merged_at = str(data.get("mergedAt") or "") if isinstance(data, dict) else ""
     detail = f"github:{ref.owner}/{ref.repo}#{ref.ident}"
+    claim = getattr(args, "repair_claim_slug", "")
+    if claim:
+        if not isinstance(data, dict) or not isinstance(data.get("body"), str) or data.get("url") != ref.url:
+            raise RuntimeError("github canonical repair body is unavailable")
+        if not names_repair(data["body"], claim) or pr_keeps_open(data["body"], claim):
+            return "unknown", detail + " labeled repair withdrawn or Keep-open"
     if state == "merged" or merged_at:
         return "merged", detail
     return (state if state in ("closed", "open") else "unknown"), detail
@@ -1231,9 +1252,12 @@ def close_record(
     ]
     if status == "fixed":
         close_argv += ["--fixed-by", detail]
+    if getattr(args, "durable", False): close_argv.append("--durable")
     proc = run(close_argv, timeout=60)
     if proc.returncode != 0:
         raise RuntimeError(f"brain papercut close {slug} failed: {proc.stderr.strip()}")
+    if getattr(args, "durable", False) and not re.search(r"(?m)^papercut " + re.escape(slug) + r":[^\n]*\bdurability=durable(?:\s|$)", proc.stdout):
+        raise RuntimeError(f"brain papercut close {slug} did not return the exact durable receipt")
     ledger = f"{iso} {slug} -> card:none | pattern:lifecycle-auto-close | skip:{status}:{detail}\n"
     append_brain(args, args.ledger_slug, ledger)
     line = f"{status} {slug} via {detail}: {title}"
@@ -1368,15 +1392,16 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
         searched = False
         search_error = ""
         if not refs and not ref_skips and not agg_repo:
-            # Best effort: a failed search leaves the old no-review-ref skip.
+            # A failed search is unavailable evidence, never a measured absence.
+            args.search_repo = repo_name
             try:
                 refs = search_repair_prs(args, slug)
             except BudgetExhausted:
                 result["skipped"].append({"slug": slug, "reason": "budget-exhausted"})
                 return result
             except Exception as exc:
-                search_error = str(exc)[:200]
-                refs = []
+                result["errors"].append({"slug": slug, "stage": "repair-search", "error": str(exc)[:200]})
+                continue
             searched = bool(refs)
         if not refs:
             entry: dict[str, Any] = {"slug": slug, "reason": "no-review-ref"}
@@ -1395,7 +1420,7 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
         # 43 open p0 pipeline-stuck rows skipped `review-not-merged`, and 41 of
         # them named a review that was already closed. `merged`-only made the
         # whole cluster permanently unclosable.
-        closed_is_terminal = bool(PIPELINE_STUCK_SLUG_RE.match(slug))
+        closed_is_terminal = bool(PIPELINE_STUCK_SLUG_RE.match(slug)) and not getattr(args, "require_labeled_repair", False)
         if agg_repo:
             if close_aggregate_record(args, record, refs, iso, result):
                 return result
@@ -1403,6 +1428,9 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
         fixed = False
         last_state = ""
         for ref in refs:
+            args.repair_claim_slug = slug if searched or getattr(args, "require_labeled_repair", False) else ""
+            if getattr(args, "require_labeled_repair", False) and ref.kind != "github":
+                result["errors"].append({"slug": slug, "ref": ref.url, "error": "finite labeled repair requires GitHub"}); continue
             try:
                 state, detail = review_state(args, ref)
             except BudgetExhausted:
@@ -1420,7 +1448,13 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
                 except BudgetExhausted:
                     result["skipped"].append({"slug": slug, "reason": "budget-exhausted-before-close"})
                     return result
-                entry = {"slug": slug, "ref": ref.url, "detail": detail, "review_state": state}
+                except Exception as exc:
+                    result["errors"].append({"slug": slug, "ref": ref.url, "stage": "close", "error": str(exc)[:200]})
+                    # A close without a confirmed receipt must never advance to
+                    # another ref or another mutation in this pass.
+                    return result
+                entry = {"slug": slug, "ref": ref.url, "detail": detail, "review_state": state,
+                         "durability": "durable" if getattr(args, "durable", False) and not args.dry_run else "unreported"}
                 if state == "merged":
                     result["fixed"].append(entry)
                 else:
@@ -1510,6 +1544,8 @@ def main() -> int:
         help="overall wall-clock budget for the pass; 0 disables the budget",
     )
     parser.add_argument("--records-json")
+    parser.add_argument("--require-labeled-repair", action="store_true", help="require the exact Papercut/Fixes label in the canonical merged GitHub PR")
+    parser.add_argument("--durable", action="store_true", help="require the public Brain close command's exact durable ack")
     parser.add_argument("--brain-bin", default="brain")
     # Accepted and ignored: LastGit is retired. Callers still pass it.
     parser.add_argument("--lastgit-bin", default="lastgit", help=argparse.SUPPRESS)
@@ -1519,7 +1555,7 @@ def main() -> int:
         "--no-forge-search",
         action="store_false",
         dest="forge_search",
-        help="do not search merged forge PRs for a labeled repair line when a papercut names no review",
+        help="do not search merged repair PRs (GitHub, or Forgejo for LastGit); legacy option name",
     )
     parser.add_argument(
         "--ignore-keep-open",

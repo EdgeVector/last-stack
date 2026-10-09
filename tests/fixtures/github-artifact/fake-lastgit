@@ -31,6 +31,8 @@ if argv[:1] != ["artifact"] or len(argv) < 2:
     sys.exit(2)
 verb, args = argv[1], argv[2:]
 root = flag(args, "root")
+if os.environ.get("FAKE_ARTIFACT_LOG"):
+    with open(os.environ["FAKE_ARTIFACT_LOG"], "a") as fh: fh.write(json.dumps({"verb":verb,"argv":args}) + "\n")
 if verb == "publish":
     inp = flag(args, "input")
     files = []
@@ -51,7 +53,7 @@ if verb == "publish":
             files.append({"path": r, "sha256": d, "size": len(data), "mode": os.lstat(p).st_mode & 0o777})
     m = {"schema_version": 1, "app": flag(args, "app"), "repo": flag(args, "repo"),
          "source_oid": flag(args, "oid").lower(), "platform": flag(args, "platform") or "test-x64",
-         "created_at": "2026-09-30T00:00:00.000Z", "files": sorted(files, key=lambda f: f["path"])}
+         "created_at": os.environ.get("FAKE_ARTIFACT_CREATED_AT", "2026-09-30T00:00:00.000Z"), "files": sorted(files, key=lambda f: f["path"])}
     m["manifest_digest"] = body_digest(m)
     enc = json.dumps(m, indent=2) + "\n"
     for dst in (os.path.join(root, "manifests", m["manifest_digest"] + ".json"),

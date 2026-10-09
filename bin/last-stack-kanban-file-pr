@@ -51,11 +51,15 @@
 #                           protects todo must not also starve the fix.
 #                           papercut-file-pr-refuses-backlog-under-blocked-milestone-20261006
 #   --board-cli PATH        kanban/fkanban binary (tests)
+#   --factory-reviewed-decision  exact reviewed Count/pr/repair/backlog creation gate
 #   --decision-fixture DIR  offline brain for last-stack-kanban-decision-check
 #   --skip-decision-check   tests/operator only — generators must not pass this
 #   --work-class CLASS      feature (default, gated) | closeout | proof |
 #                           repair | incident (not gated by admission)
 #   --admission-fixture DIR offline brain for last-stack-feature-portfolio-admission
+#   --create-only           forward public atomic absence creation; requires
+#                           backlog, the decision gate, and an existing milestone
+#   --json                  return only the public Card CLI JSON result
 #   --dry-run
 #
 # Body (stdin), checked FIRST, before admission and decision-check:
@@ -140,6 +144,9 @@ decision_fixture=""
 skip_decision_check=0
 work_class=""
 admission_fixture=""
+create_only=0
+json_output=0
+factory_reviewed_decision=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -164,6 +171,9 @@ while [ "$#" -gt 0 ]; do
     --skip-decision-check) skip_decision_check=1; shift ;;
     --work-class) work_class="${2:-}"; shift 2 ;;
     --admission-fixture) admission_fixture="${2:-}"; shift 2 ;;
+    --create-only) create_only=1; shift ;;
+    --json) json_output=1; shift ;;
+    --factory-reviewed-decision) factory_reviewed_decision=1; shift ;;
     --dry-run) dry=1; shift ;;
     -h|--help) help_text; exit 0 ;;
     *)
@@ -213,6 +223,22 @@ case "$work_class" in
   feature|closeout|proof|repair|incident) ;;
   *) die "work-class must be feature, closeout, proof, repair, or incident (got $work_class)" ;;
 esac
+
+if [ "$factory_reviewed_decision" -eq 1 ]; then
+  [ "$slug" = "factory-canonical-active-counts-20261008" ] || die "factory decision requires the exact Count Card"
+  [ "$repo" = "EdgeVector/loom" ] && [ "$base" = "main" ] || die "factory decision requires the exact repo/base"
+  [ "$kind" = "pr" ] && [ "$work_class" = "repair" ] && [ "$column" = "backlog" ] || die "factory decision requires pr/repair/backlog"
+  [ "$create_only" -eq 1 ] && [ "$json_output" -eq 1 ] || die "factory decision requires create-only/JSON"
+  [ "$skip_decision_check" -eq 0 ] && [ "$ensure_ms" -eq 0 ] && [ "$dry" -eq 0 ] || die "factory decision refuses skip/milestone/dry options"
+  [ -z "$decision_fixture" ] && [ -z "$admission_fixture" ] && [ "${LAST_STACK_DECISION_FIXTURE+x}" != x ] && [ "${LAST_STACK_ADMISSION_FIXTURE+x}" != x ] || die "factory decision refuses fixtures"
+fi
+
+if [ "$create_only" -eq 1 ]; then
+  [ "$column" = "backlog" ] || die "--create-only requires --column backlog"
+  [ "$skip_decision_check" -eq 0 ] || die "--create-only requires the decision gate"
+  [ "$ensure_ms" -eq 0 ] || die "--create-only requires an existing milestone"
+fi
+[ "$json_output" -eq 0 ] || [ "$dry" -eq 0 ] || die "--json cannot use --dry-run"
 
 if [ -z "$board_cli" ]; then
   if command -v kanban >/dev/null 2>&1; then
@@ -288,6 +314,7 @@ if [ "$skip_decision_check" -ne 1 ]; then
   check_bin="$ROOT/bin/last-stack-kanban-decision-check"
   [ -x "$check_bin" ] || die "missing $check_bin"
   check_args=(--title "$title" --kind "$kind" --column "$column" --inject)
+  [ "$factory_reviewed_decision" -eq 0 ] || check_args+=(--factory-reviewed-decision)
   if [ -n "$decision_fixture" ]; then
     check_args+=(--fixture-dir "$decision_fixture")
   elif [ -n "${LAST_STACK_DECISION_FIXTURE:-}" ]; then
@@ -304,6 +331,7 @@ if [ "$skip_decision_check" -ne 1 ]; then
     fi
     check_reason="$(head -1 "$check_err" 2>/dev/null | tr -d '\r' | cut -c1-300 || true)"
     rm -f "$check_err"
+    [ "$factory_reviewed_decision" -eq 0 ] || die "factory reviewed decision gate failed (exit $check_rc) — not filing"
     if [ "$check_rc" -eq 2 ]; then
       die "decision-check refused this card (conflicts with a settled brain record)"
     fi
@@ -505,6 +533,8 @@ add_args=(
 [ -n "$tags" ] && add_args+=(--tags "$tags")
 [ -n "$deps" ] && add_args+=(--deps "$deps")
 [ -n "$surfaces" ] && add_args+=(--surfaces "$surfaces")
+[ "$create_only" -eq 1 ] && add_args+=(--create-only)
+[ "$json_output" -eq 1 ] && add_args+=(--json)
 
 if [ "$dry" -eq 1 ]; then
   printf 'DRY %s' "$board_cli"
@@ -518,6 +548,8 @@ if ! printf '%s' "$body" | "$board_cli" "${add_args[@]}"; then
   exit 1
 fi
 
-printf 'filed %s column=%s north_star=%s milestone=%s\n' \
-  "$slug" "$column" "$north_star" "$milestone"
+if [ "$json_output" -eq 0 ]; then
+  printf 'filed %s column=%s north_star=%s milestone=%s\n' \
+    "$slug" "$column" "$north_star" "$milestone"
+fi
 exit 0

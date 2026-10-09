@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Seed the finite factory routine paused; never replace an existing entry."""
+import argparse
+import os
+import sys
+from pathlib import Path
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--registry-dir', type=Path)
+    parser.add_argument('--dry-run', action='store_true')
+    args = parser.parse_args()
+    home = Path.home(); registry = args.registry_dir or home / '.routines/registry'
+    path = registry / 'last-stack-factory-repair.toml'
+    if path.exists():
+        print('unchanged ' + str(path)); return 0
+    stable = home / '.last-stack'
+    text = ('# PAUSED-REASON: installed finite contracts and positive proof require review.\n'
+            '# PAUSED-UNTIL: root confirms the installed E2E proof.\n'
+            'id = "last-stack-factory-repair"\nstatus = "paused"\n'
+            'rrule = "FREQ=MINUTELY;INTERVAL=15"\ntimeout_min = 20\n'
+            'harness = "codex"\ndifficulty = "normal"\neffort = "medium"\n'
+            f'cwd = "{home}/code/edgevector"\n'
+            f'prompt_path = "{stable}/routines/factory-repair.md"\n'
+            f'gate_command = "{stable}/bin/last-stack-factory-repair-controller --once --routine-result"\n')
+    if args.dry_run:
+        print(text, end=''); return 0
+    registry.mkdir(parents=True, exist_ok=True)
+    # O_EXCL makes an install race preserve the other writer's exact bytes.
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        print('unchanged ' + str(path)); return 0
+    with os.fdopen(fd, 'w') as stream:
+        stream.write(text); stream.flush(); os.fsync(stream.fileno())
+    print('configured ' + str(path)); return 0
+
+if __name__ == '__main__':
+    sys.exit(main())

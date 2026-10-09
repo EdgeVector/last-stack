@@ -39,6 +39,19 @@ HOST_TRACK_INSTALL_LOCK_WAIT_S="${HOST_TRACK_INSTALL_LOCK_WAIT_S:-300}"
 HOST_TRACK_INSTALL_LOCK_STALE_S="${HOST_TRACK_INSTALL_LOCK_STALE_S:-900}"
 INSTALL_LOCK_HELD=""
 REGISTRY_SYNC_ATTEMPTED=0
+# An exact public request stays fixed through resolution, probes, and soak.
+EXACT_INSTALL_ACTIVE=0
+EXACT_INSTALL_JSON=0
+EXACT_INSTALL_EMITTED=0
+EXACT_INSTALL_APP=""
+EXACT_INSTALL_CHANNEL=""
+EXACT_INSTALL_OID=""
+EXACT_INSTALL_MANIFEST=""
+EXACT_INSTALL_OFFICIAL='null'
+EXACT_INSTALL_INSTALLED='null'
+EXACT_INSTALL_CODE="install_failed"
+EXACT_INSTALL_SOAK_REQUIRED=false
+EXACT_INSTALL_SOAK_STATUS="not_required"
 
 # Re-exec from a private temp copy for install mutations so replacing
 # ~/.local/bin/host-track (or deleting the live versions/* tree mid-restage)
@@ -73,7 +86,7 @@ Usage:
   host-track validate-registry [--json]
   host-track refresh [--force] [--force-if-stale] [--activate] (<app>|--all)
   host-track soak-watch [<app>|--all]
-  host-track install [--channel candidate|canary|stable] <app>
+  host-track install [--channel candidate|canary|stable] [--expected-oid SHA40 --expected-manifest SHA256] [--json] <app>
   host-track rollback <app>
 
 Environment:
@@ -99,6 +112,7 @@ die() {
   # Always drop the install lock before process exit (RETURN traps do not run on exit).
   release_install_lock 2>/dev/null || true
   printf 'host-track: %s\n' "$*" >&2
+  exact_install_emit failed "$EXACT_INSTALL_CODE"
   exit 2
 }
 
@@ -1156,17 +1170,43 @@ artifact_deployable_main_oid() {
 # effort like the LastGit path: a hold or failure leaves the channel unchanged
 # and the install can still use the last good one.
 artifact_pull_from_github() {
-  local app="$1" slug="$2" ref="$3" artifact_app="$4" channel="$5" artifact_root="$6" puller rc
+  local app="$1" slug="$2" ref="$3" artifact_app="$4" channel="$5" artifact_root="$6" expected_oid="${7:-}" puller rc out
   puller="${HOST_TRACK_GITHUB_PULL:-$ROOT/bin/last-stack-github-artifact-pull}"
   [ -x "$puller" ] || {
     printf 'host-track: %s github pull tool missing (%s); keeping channel=%s\n' "$app" "$puller" "$channel" >&2
+    if [ -n "$expected_oid" ]; then EXACT_INSTALL_CODE=pull_tool_missing; return 1; fi
     return 0
   }
   set +e
-  "$puller" --app "$artifact_app" --repo "$slug" --branch "$ref" --channel "$channel" \
-    --root "$artifact_root" --platform "$(artifact_platform_name)" >&2
-  rc=$?
+  if [ -n "$expected_oid" ]; then
+    out="$("$puller" --app "$artifact_app" --repo "$slug" --branch "$ref" --channel "$channel" \
+      --root "$artifact_root" --platform "$(artifact_platform_name)" --oid "$expected_oid" --json)"
+    rc=$?
+  else
+    "$puller" --app "$artifact_app" --repo "$slug" --branch "$ref" --channel "$channel" \
+      --root "$artifact_root" --platform "$(artifact_platform_name)" >&2
+    rc=$?
+  fi
   set -e
+  if [ -n "$expected_oid" ]; then
+    case "$rc" in
+      0) ;;
+      3) EXACT_INSTALL_CODE=pull_held; return 75 ;;
+      *) EXACT_INSTALL_CODE=pull_failed; return 1 ;;
+    esac
+    if ! printf '%s\n' "$out" | jq -se --arg oid "$expected_oid" --arg digest "$EXACT_INSTALL_MANIFEST" --arg channel "$channel" '
+      length == 1 and (.[0] |
+      type == "object" and .status == "promoted" and .oid == $oid and .manifest_digest == $digest
+      and .channel == $channel and (.tree_oid | type == "string" and test("^[0-9a-f]{40}$"))
+      and (.platform | type == "string" and length > 0)
+      and (.run_id | type == "number" and . > 0 and floor == .)
+      and (.artifact_id | type == "number" and . > 0 and floor == .))' >/dev/null; then
+      EXACT_INSTALL_CODE=provenance_mismatch
+      return 75
+    fi
+    EXACT_INSTALL_OFFICIAL="$(printf '%s\n' "$out" | jq -c --arg repo "$slug" '{repo:$repo,source_oid:.oid,tree_oid,run_id,artifact_id,platform,channel,manifest_sha256:.manifest_digest}')"
+    return 0
+  fi
   case "$rc" in
     0) ;;
     3) printf 'host-track: %s github main not yet green+published; keeping channel=%s\n' "$app" "$channel" >&2 ;;
@@ -1178,17 +1218,18 @@ artifact_pull_from_github() {
 # Promote stable (or channel) to deployable main oid when it is ahead of channel.
 # Best-effort: failures leave channel unchanged so install can still use last good.
 artifact_promote_channel_to_main() {
-  local app="$1" json="$2" channel_override="${3:-}"
+  local app="$1" json="$2" channel_override="${3:-}" expected_oid="${4:-}"
   local artifact_app channel artifact_root install_root gate_main repo ref
   local main_tip deploy_oid digest channel_oid channel_path
-  artifact_tracks_gate_main "$json" || return 0
+  if [ -z "$expected_oid" ]; then artifact_tracks_gate_main "$json" || return 0; fi
   IFS=$'\t' read -r artifact_app channel artifact_root install_root < <(artifact_paths "$app" "$json")
   [ -z "$channel_override" ] || channel="$channel_override"
   gate_main="$(field "$json" gate_main)"
   if IFS=$'\t' read -r repo ref < <(parse_github_gate_main "$gate_main" || true) && [ -n "$repo" ]; then
-    artifact_pull_from_github "$app" "$repo" "$ref" "$artifact_app" "$channel" "$artifact_root"
-    return 0
+    artifact_pull_from_github "$app" "$repo" "$ref" "$artifact_app" "$channel" "$artifact_root" "$expected_oid"
+    return $?
   fi
+  if [ -n "$expected_oid" ]; then EXACT_INSTALL_CODE=official_github_required; return 75; fi
   IFS=$'\t' read -r repo ref < <(parse_lastdb_gate_main "$gate_main" || true)
   [ -n "$repo" ] || return 0
   main_tip="$(artifact_main_tip "$repo" "$ref" || true)"
@@ -3508,9 +3549,16 @@ write_soak_stamp() {
   # Args: app digest status soak_h [checks] [started] [card_slug] [abandoned] [source_oid] [checks_total]
   local app="$1" digest="$2" status="$3" soak_h="$4" checks="${5:-1}" started="${6:-}" card_slug="${7:-}"
   local abandoned="${8:-}" source_oid="${9:-}" checks_total="${10:-}"
-  local now path
+  local now path exact_request exact_official
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   path="$(soak_stamp_path "$app")"
+  exact_request="$(exact_install_request_json "$app")"
+  exact_official="$EXACT_INSTALL_OFFICIAL"
+  if [ "$exact_request" = null ] && [ -f "$path" ]; then
+    exact_request="$(jq -c --arg app "$app" 'if .exact_request.app == $app then .exact_request else null end' "$path")"
+    exact_official="$(jq -c '.exact_official // null' "$path")"
+  fi
+  if [ "$exact_request" = null ]; then exact_official=null; fi
   mkdir -p "$STAMP_DIR"
   if [ -z "$started" ]; then
     started="$(date +%s)"
@@ -3539,13 +3587,13 @@ write_soak_stamp() {
     --arg now "$now" --argjson soak "$soak_h" --argjson checks "$checks" \
     --argjson started "$started" --arg card "$card_slug" \
     --argjson abandoned "$abandoned" --arg source_oid "$source_oid" \
-    --argjson checks_total "$checks_total" \
+    --argjson checks_total "$checks_total" --argjson exact_request "$exact_request" --argjson exact_official "$exact_official" \
     '{app:$app, digest:$digest, status:$status, soak_hours:$soak,
       started_epoch:$started, last_check_at:$now, checks:$checks,
       checks_total:$checks_total,
       abandoned_consecutive:$abandoned,
       source_oid: (if $source_oid == "" then null else $source_oid end),
-      card_slug: (if $card == "" then null else $card end)}' \
+      card_slug: (if $card == "" then null else $card end)} + (if $exact_request == null then {} else {exact_request:$exact_request,exact_official:$exact_official} end)' \
     > "$path"
 }
 
@@ -3877,14 +3925,21 @@ should_soak() {
 
 artifact_install_app() {
   local app="$1" channel_override="${2:-}" force_restage="${3:-0}" activate_now="${4:-0}"
-  local expected_digest="${5:-}" reuse_install_lock="${6:-0}"
+  local expected_digest="${5:-}" reuse_install_lock="${6:-0}" expected_oid="${7:-}"
   local json install_mode artifact_app channel artifact_root install_root
   local manifest digest stage target old_target stamp_path need_materialize=0
   local old_digest prev_target prev_digest post_install_phase current_dir soak_h probe_rc
-  local expected_lock lock_pid latest_manifest latest_digest desired_rc
+  local expected_lock lock_pid latest_manifest latest_digest desired_rc promote_rc
   json="$(require_app_json "$app")"
   install_mode="$(setting "$json" install_mode)"
   [ "$install_mode" = "artifact" ] || die "$app is not registered for artifact installs"
+  if [ -n "$expected_oid" ]; then
+    EXACT_INSTALL_ACTIVE=1
+    EXACT_INSTALL_APP="$app"
+    EXACT_INSTALL_CHANNEL="$channel_override"
+    EXACT_INSTALL_OID="$expected_oid"
+    EXACT_INSTALL_MANIFEST="$expected_digest"
+  fi
   [ "${HOST_TRACK_ACTIVATE:-0}" != "1" ] || activate_now=1
   if [ -n "$expected_digest" ] && [[ ! "$expected_digest" =~ ^[0-9a-f]{64}$ ]]; then
     die "expected activation digest is invalid: $expected_digest"
@@ -3908,26 +3963,43 @@ artifact_install_app() {
     acquire_install_lock "$app"
     # Always release a lock owned by this function on unexpected process exit.
     # The soak-watch caller installs its own EXIT trap before lock reuse.
-    trap 'release_install_lock' EXIT
+    trap 'exact_rc=$?; release_install_lock; exact_install_unexpected_exit "$exact_rc"' EXIT
   fi
   # Clean crashed half-stages before materializing a new one.
   gc_stale_stage_dirs "$install_root"
 
   # Track main: promote green+published main tip into the channel before resolve
   # so refresh does not no-op on a stale stable pointer while main has moved.
-  artifact_promote_channel_to_main "$app" "$json" "$channel"
+  promote_rc=0
+  artifact_promote_channel_to_main "$app" "$json" "$channel" "$expected_oid" || promote_rc=$?
+  if [ "$promote_rc" -ne 0 ]; then
+    finish_artifact_install_lock "$reuse_install_lock"
+    return "$promote_rc"
+  fi
+  if [ -n "$expected_oid" ] && [ -n "$(artifact_registry_channel "$json")" ]; then
+    if ! command -v lastdb >/dev/null 2>&1 || ! lastdb app resolve --help >/dev/null 2>&1; then
+      EXACT_INSTALL_CODE=registry_unavailable
+      finish_artifact_install_lock "$reuse_install_lock"
+      return 75
+    fi
+  fi
 
   set +e
   manifest="$(artifact_desired_manifest "$app" "$json" "$artifact_app" "$channel" "$artifact_root")"
   desired_rc=$?
   set -e
   if [ "$desired_rc" -eq 75 ]; then
+    EXACT_INSTALL_CODE=registry_held
     finish_artifact_install_lock "$reuse_install_lock"
     return 75
   fi
   [ "$desired_rc" -eq 0 ] || die "$app artifact resolve failed"
   digest="$(printf '%s\n' "$manifest" | jq -r '.manifest_digest // ""')"
   [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || die "resolved artifact has invalid manifest digest"
+  if [ -n "$expected_oid" ] && ! exact_install_manifest_matches "$manifest"; then
+    finish_artifact_install_lock "$reuse_install_lock"
+    return 75
+  fi
   if [ -n "$expected_digest" ] && [ "$digest" != "$expected_digest" ]; then
     printf 'host-track: %s soak activation deferred; channel advanced expected=%s actual=%s\n' \
       "$app" "${expected_digest:0:12}" "${digest:0:12}" >&2
@@ -4016,18 +4088,34 @@ artifact_install_app() {
     printf 'host-track: %s probe inconclusive; current unchanged; retry on next refresh\n' \
       "$app" >&2
     finish_artifact_install_lock "$reuse_install_lock"
+    EXACT_INSTALL_CODE=probe_inconclusive
+    if [ -n "$expected_oid" ]; then return 75; fi
     return 0
   fi
   if [ "$probe_rc" -ne 0 ]; then
+    EXACT_INSTALL_CODE=probe_failed
     printf 'host-track: %s probe RED; refusing cutover (current unchanged)\n' "$app" >&2
     rollback_current_to_previous "$app" "$install_root" "$digest" "$json"
     finish_artifact_install_lock "$reuse_install_lock"
     return 1
   fi
 
+  # A probe may change a channel or its registry pin. Preserve the pair before
+  # parking and again under the activation lock; never certify a later source.
+  if [ -n "$expected_oid" ]; then
+    latest_manifest="$(artifact_desired_manifest "$app" "$json" "$artifact_app" "$channel" "$artifact_root" || true)"
+    if ! exact_install_manifest_matches "$latest_manifest"; then
+      EXACT_INSTALL_CODE=activation_drift
+      finish_artifact_install_lock "$reuse_install_lock"
+      return 75
+    fi
+  fi
+
   # Canary soak: last-known-good stays on PATH. soak-watch promotes later.
   if should_soak "$json" "$install_root" "$digest" "$activate_now"; then
     soak_h="$(soak_hours_for "$json")"
+    EXACT_INSTALL_SOAK_REQUIRED=true
+    EXACT_INSTALL_SOAK_STATUS=pending
     park_canary "$app" "$install_root" "$digest" "$soak_h" \
       "$(printf '%s\n' "$manifest" | jq -r '.source_oid // empty')"
     finish_artifact_install_lock "$reuse_install_lock"
@@ -4041,6 +4129,11 @@ artifact_install_app() {
   if [ -n "$expected_digest" ]; then
     latest_manifest="$(artifact_desired_manifest "$app" "$json" "$artifact_app" "$channel" "$artifact_root" || true)"
     latest_digest="$(printf '%s\n' "$latest_manifest" | jq -r '.manifest_digest // ""')"
+    if [ -n "$expected_oid" ] && ! exact_install_manifest_matches "$latest_manifest"; then
+      EXACT_INSTALL_CODE=activation_drift
+      finish_artifact_install_lock "$reuse_install_lock"
+      return 75
+    fi
     [[ "$latest_digest" =~ ^[0-9a-f]{64}$ ]] || die "resolved artifact has invalid manifest digest"
     if [ "$latest_digest" != "$expected_digest" ]; then
       printf 'host-track: %s soak activation deferred; channel advanced expected=%s actual=%s\n' \
@@ -4125,14 +4218,29 @@ artifact_install_app() {
   printf '%s\n' "$manifest" | jq \
     --arg app "$app" --arg channel "$channel" --arg install_root "$install_root" \
     --arg artifact_root "$artifact_root" \
+    --argjson exact_request "$(exact_install_request_json "$app")" --argjson exact_official "$EXACT_INSTALL_OFFICIAL" \
     --arg installed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '{app: $app, install_mode: "artifact", artifact_app: .app, artifact_channel: $channel,
       artifact_root: $artifact_root, install_root: $install_root, manifest_digest: .manifest_digest,
-      source_oid: .source_oid, repo: .repo, platform: .platform, installed_at: $installed_at}' \
+      source_oid: .source_oid, repo: .repo, platform: .platform, installed_at: $installed_at}
+      + (if $exact_request == null then {} else {exact_request:$exact_request,exact_official:$exact_official,tree_oid:$exact_official.tree_oid} end)' \
       > "$stamp_path"
   printf 'host-track: installed %s channel=%s oid=%s manifest=%s\n' \
     "$app" "$channel" "$(printf '%s\n' "$manifest" | jq -r '.source_oid')" "$digest"
 
+  if [ -n "$expected_oid" ]; then
+    if [ "$(readlink "$install_root/current" 2>/dev/null || true)" != "versions/$expected_digest" ] \
+      || ! jq -e --arg oid "$expected_oid" --arg digest "$expected_digest" --arg tree "$(printf '%s' "$EXACT_INSTALL_OFFICIAL" | jq -r '.tree_oid')" \
+        '.source_oid == $oid and .manifest_digest == $digest and .tree_oid == $tree' "$stamp_path" >/dev/null \
+      || ! verify_active_artifact "$app" "$json"; then
+      EXACT_INSTALL_CODE=installed_verification_failed
+      finish_artifact_install_lock "$reuse_install_lock"
+      return 1
+    fi
+    EXACT_INSTALL_INSTALLED="$(printf '%s\n' "$manifest" | jq -c --arg root "$(cd "$target" && pwd -P)" --arg tree "$(printf '%s' "$EXACT_INSTALL_OFFICIAL" | jq -r '.tree_oid')" '{resolved_root:$root,source_oid,tree_oid:$tree,manifest_sha256:.manifest_digest,files:(.files|map({path,sha256}))}')"
+    EXACT_INSTALL_CODE=exact_installed
+    EXACT_INSTALL_SOAK_STATUS=complete
+  fi
   finish_artifact_install_lock "$reuse_install_lock"
 }
 
@@ -4274,20 +4382,82 @@ refresh_app() {
   fi
 }
 
+exact_install_request_json() {
+  local app="${1:-}"
+  if [ "$EXACT_INSTALL_ACTIVE" != 1 ] || { [ -n "$app" ] && [ "$EXACT_INSTALL_APP" != "$app" ]; }; then printf 'null\n'; return; fi
+  jq -cn --arg app "$EXACT_INSTALL_APP" --arg channel "$EXACT_INSTALL_CHANNEL" --arg oid "$EXACT_INSTALL_OID" --arg manifest "$EXACT_INSTALL_MANIFEST" \
+    '{app:$app,channel:$channel,source_oid:$oid,manifest_sha256:$manifest}'
+}
+
+exact_install_manifest_matches() {
+  local manifest="$1" source digest
+  source="$(printf '%s\n' "$manifest" | jq -r '.source_oid // empty' 2>/dev/null || true)"
+  digest="$(printf '%s\n' "$manifest" | jq -r '.manifest_digest // empty' 2>/dev/null || true)"
+  if [ "$source" != "$EXACT_INSTALL_OID" ]; then EXACT_INSTALL_CODE=source_mismatch; return 1; fi
+  if [ "$digest" != "$EXACT_INSTALL_MANIFEST" ]; then EXACT_INSTALL_CODE=manifest_mismatch; return 1; fi
+}
+
+exact_install_emit() {
+  local result="$1" code="$2" match=false
+  [ "${BASH_SUBSHELL:-0}" -eq 0 ] || return 0
+  [ "$EXACT_INSTALL_JSON" = 1 ] && [ "$EXACT_INSTALL_EMITTED" = 0 ] || return 0
+  EXACT_INSTALL_EMITTED=1
+  if [ "$result" = installed ] && [ "$EXACT_INSTALL_INSTALLED" != null ]; then match=true; fi
+  jq -cn --arg result "$result" --arg code "$code" --argjson request "$(exact_install_request_json)" \
+    --argjson official "$EXACT_INSTALL_OFFICIAL" --argjson installed "$EXACT_INSTALL_INSTALLED" --argjson match "$match" \
+    --argjson required "$EXACT_INSTALL_SOAK_REQUIRED" --arg status "$EXACT_INSTALL_SOAK_STATUS" \
+    '{version:1,result:$result,code:$code,requested:$request,official:$official,installed:$installed,exact_match:$match,soak:{required:$required,status:$status}}' >&3
+}
+
+exact_install_unexpected_exit() {
+  local rc="$1"
+  if [ "$rc" -ne 0 ]; then exact_install_emit failed "$EXACT_INSTALL_CODE"; fi
+}
+
 install_cmd() {
-  local app="" channel=""
+  local app="" channel="" expected_oid="" expected_manifest="" arg pair_seen=0 rc=0
+  # Preserve the result stream even while install progress is redirected.
+  for arg in "$@"; do if [ "$arg" = --json ]; then EXACT_INSTALL_JSON=1; exec 3>&1; fi; done
+  EXACT_INSTALL_CODE=usage
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --channel) [ "$#" -ge 2 ] || die "--channel requires a value"; channel="$2"; shift 2 ;;
+      --expected-oid) [ "$#" -ge 2 ] || die "--expected-oid requires a value"; expected_oid="$2"; pair_seen=1; shift 2 ;;
+      --expected-manifest) [ "$#" -ge 2 ] || die "--expected-manifest requires a value"; expected_manifest="$2"; pair_seen=1; shift 2 ;;
+      --json) shift ;;
       -h|--help) usage; exit 0 ;;
       --*) die "unknown install flag: $1" ;;
-      *) app="$1"; shift ;;
+      *) [ -z "$app" ] || die "install accepts one app"; app="$1"; shift ;;
     esac
   done
   [ -n "$app" ] || die "install requires an app"
-  # Dependencies install on their own registry channel; --channel applies to
-  # <app> only (a canary kanban must not drag loom onto its canary channel).
-  ensure_requires_installed "$app"
+  if [ "$pair_seen" = 1 ] || [ "$EXACT_INSTALL_JSON" = 1 ]; then
+    [[ "$expected_oid" =~ ^[0-9a-f]{40}$ ]] || die "--expected-oid requires a lowercase SHA40 and --expected-manifest"
+    [[ "$expected_manifest" =~ ^[0-9a-f]{64}$ ]] || die "--expected-manifest requires a lowercase SHA256 and --expected-oid"
+    [ -n "$channel" ] || channel="$(setting "$(require_app_json "$app")" artifact_channel)"
+    case "$channel" in candidate|canary|stable) ;; *) die "invalid artifact channel: $channel" ;; esac
+    [ "${HOST_TRACK_ACTIVATE:-0}" != 1 ] && [ "${HOST_TRACK_PROBE_SKIP:-0}" != 1 ] || die "exact install refuses activate/probe overrides"
+    EXACT_INSTALL_ACTIVE=1
+    EXACT_INSTALL_APP="$app"; EXACT_INSTALL_CHANNEL="$channel"
+    EXACT_INSTALL_OID="$expected_oid"; EXACT_INSTALL_MANIFEST="$expected_manifest"
+  elif [ -n "$channel" ]; then
+    case "$channel" in candidate|canary|stable) ;; *) die "invalid artifact channel: $channel" ;; esac
+  fi
+  EXACT_INSTALL_CODE=install_failed
+  # Dependencies retain their own registry channels and all existing gates.
+  if [ "$EXACT_INSTALL_JSON" = 1 ]; then ensure_requires_installed "$app" >&2; else ensure_requires_installed "$app"; fi
+  if [ "$EXACT_INSTALL_ACTIVE" = 1 ]; then
+    if [ "$EXACT_INSTALL_JSON" = 1 ]; then
+      if artifact_install_app "$app" "$channel" 0 0 "$expected_manifest" 0 "$expected_oid" >&2; then rc=0; else rc=$?; fi
+    else
+      if artifact_install_app "$app" "$channel" 0 0 "$expected_manifest" 0 "$expected_oid"; then rc=0; else rc=$?; fi
+    fi
+    if [ "$rc" = 0 ] && [ "$EXACT_INSTALL_INSTALLED" != null ]; then exact_install_emit installed exact_installed
+    elif [ "$rc" = 0 ]; then exact_install_emit pending soak_pending; rc=75
+    elif [ "$rc" = 75 ]; then exact_install_emit refused "$EXACT_INSTALL_CODE"
+    else exact_install_emit failed "$EXACT_INSTALL_CODE"; fi
+    return "$rc"
+  fi
   artifact_install_app "$app" "$channel"
 }
 
@@ -4648,6 +4818,7 @@ validate_registry_cmd() {
 soak_watch_one() {
   local app="$1" json install_root canary_rel canary_dir digest soak_h min_checks stamp checks started now elapsed need current_dir probe_rc probe_log activation_rc
   local active_target install_stamp_digest soak_stamp_digest abandoned source_oid starve_after window_ready starve_ready checks_total
+  local exact_request exact_oid="" exact_channel=""
   json="$(require_app_json "$app")"
   [ "$(setting "$json" install_mode)" = "artifact" ] || return 0
   IFS=$'\t' read -r _ _ _ install_root < <(artifact_paths "$app" "$json")
@@ -4688,6 +4859,20 @@ soak_watch_one() {
     return 1
   }
   digest="${canary_rel#versions/}"
+  exact_request="$(jq -c '.exact_request // null' "$(soak_stamp_path "$app")" 2>/dev/null || printf null)"
+  if [ "$exact_request" != null ]; then
+    if ! printf '%s\n' "$exact_request" | jq -e --arg app "$app" --arg digest "$digest" '
+      type == "object" and .app == $app and .manifest_sha256 == $digest
+      and (.source_oid | type == "string" and test("^[0-9a-f]{40}$"))
+      and (.channel == "candidate" or .channel == "canary" or .channel == "stable")' >/dev/null \
+      || [ "$(jq -r '.source_oid // empty' "$(soak_stamp_path "$app")")" != "$(printf '%s' "$exact_request" | jq -r '.source_oid')" ] \
+      || ! jq -e --argjson request "$exact_request" '.exact_official.source_oid == $request.source_oid and .exact_official.manifest_sha256 == $request.manifest_sha256 and .exact_official.channel == $request.channel' "$(soak_stamp_path "$app")" >/dev/null; then
+      printf 'host-track: %s exact soak request changed; holding current\n' "$app" >&2
+      release_install_lock; trap - EXIT; return 75
+    fi
+    exact_oid="$(printf '%s' "$exact_request" | jq -r '.source_oid')"
+    exact_channel="$(printf '%s' "$exact_request" | jq -r '.channel')"
+  fi
   if [ -L "$install_root/current" ] && [ "$(readlink "$install_root/current")" = "$canary_rel" ]; then
     printf 'host-track: %s soak-watch already current\n' "$app"
     archive_soak_stamp "$app" "activated"
@@ -4792,7 +4977,7 @@ soak_watch_one() {
       "$app" "$elapsed" "$checks" "$min_checks" >&2
   fi
   activation_rc=0
-  if artifact_install_app "$app" "" 0 1 "$digest" 1; then
+  if artifact_install_app "$app" "$exact_channel" 0 1 "$digest" 1 "$exact_oid"; then
     active_target="$(readlink "$install_root/current" 2>/dev/null || true)"
     install_stamp_digest="$(jq -r '.manifest_digest // empty' "$STAMP_DIR/$app.json" 2>/dev/null || true)"
     if [ "$active_target" != "versions/$digest" ] \
@@ -4820,6 +5005,10 @@ soak_watch_one() {
   release_install_lock
   trap - EXIT
   if [ "$activation_rc" -eq 75 ]; then
+    if [ -n "$exact_oid" ]; then
+      printf 'host-track: %s exact soak activation refused; retaining request and current\n' "$app" >&2
+      return 75
+    fi
     printf 'host-track: %s channel changed during activation; parking successor for a fresh soak\n' \
       "$app" >&2
     artifact_install_app "$app" "" 0 0
