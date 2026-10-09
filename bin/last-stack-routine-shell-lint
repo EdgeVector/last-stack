@@ -37,6 +37,11 @@
 #                     13-minute-old log read as 7 hours stale and nearly became
 #                     a p1 "the refresh agent is dead" finding). TZ=UTC on the
 #                     same line is correct and passes.
+#   seq-empty-range   seq A "$var" (the end is a variable): BSD seq counts DOWN
+#                     when the end is below the start, so seq 1 0 prints 1 and
+#                     0 and `for i in $(seq 1 "$n")` runs TWICE at n=0. It only
+#                     fires at zero, the case a zero-iteration control tests.
+#                     GNU gseq prints nothing. Use a C-style loop.
 #   printf-dash       printf '- x' / printf '--- x': a format that starts with - is an option
 #   bin-path          /bin/sed, /bin/grep, the /bin temp-file tool ... do not exist on macOS (they are in /usr/bin)
 #   mktemp-suffix     an X run that is not at the END of a mktemp template never substitutes on BSD mktemp
@@ -142,7 +147,7 @@ while [ "$#" -gt 0 ]; do
     --quiet) quiet=1; shift ;;
     --list-rules)
       printf '%s\n' spin-wait heredoc-backticks dquote-backticks jq-optional-call jq-escaped-quote \
-        awk-match-array sed-inplace date-nanos stat-local-zulu printf-dash bin-path mktemp-suffix zsh-status zsh-mapfile \
+        awk-match-array sed-inplace date-nanos stat-local-zulu seq-empty-range printf-dash bin-path mktemp-suffix zsh-status zsh-mapfile \
         zsh-word-split zsh-cond-flag-expansion zsh-nomatch-query zsh-modifier-expansion home-root-scan \
         piped-count-false-zero grep-binary-false-zero
       exit 0 ;;
@@ -183,6 +188,7 @@ rule_slug() {
     sed-inplace) echo papercut-macos-sed-inplace-requires-extension-20260923 ;;
     date-nanos) echo papercut-routine-zsh-date-percent-n-no-millisecond-timer-20260923 ;;
     stat-local-zulu) echo papercut-stat-t-format-prints-local-time-with-a-literal-z-so-a-fresh-log-reads-as-hours-stale-20261003 ;;
+    seq-empty-range) echo papercut-bsd-seq-counts-down-so-seq-1-0-runs-a-zero-iteration-loop-twice-20261001 ;;
     printf-dash) echo papercut-routine-printf-leading-dash-format-20260923 ;;
     bin-path) echo papercut-routine-hard-coded-bin-mktemp-20260923 ;;  # fix form: mktemp "$TMPDIR/x.XXXXXX"
     mktemp-suffix) echo papercut-mktemp-same-template-collides-within-one-second-20260925 ;;
@@ -228,6 +234,9 @@ rule_fix() {
       "To compare ages, never format: age_s=\$(( \$(date +%s) - \$(stat -f %m -- \"\$f\") ))" \
       "For a human-readable UTC stamp: date -u -r \"\$(stat -f %m -- \"\$f\")\" +%FT%TZ" \
       "TZ=UTC on the same line also gives the right value and is NOT refused, but it is one missing TZ= away from the same lie; prefer date -u -r." ;;
+    seq-empty-range) printf '%s\n' \
+      "BSD/macOS seq counts DOWN when the end is below the start: seq 1 0 prints 1 and then 0, so for i in \$(seq 1 \"\$n\") runs TWICE when n is 0 instead of never. The shape fails only at zero, so a zero-iteration control is the one that breaks. GNU gseq prints nothing, so the result depends on which seq the PATH finds." \
+      "Use a C-style loop, which runs zero times at n=0 in bash and zsh: for ((i = 1; i <= n; i++)); do ...; done" ;;
     printf-dash) printf '%s\n' \
       "A printf format that starts with - is read as an option (bash: printf: --: invalid option)." \
       "Use: printf '%s\\n' '- item'   or   printf -- '- item\\n'" ;;
@@ -304,6 +313,12 @@ re_awk_word='(^|[^[:alnum:]_-])awk([[:space:]]|$)'
 re_awk_match='match\([^,()]*,[[:space:]]*/([^/]|\\/)*/[[:space:]]*,[[:space:]]*[[:alpha:]_]'
 q="'"
 re_sed_inplace='(^|[^[:alnum:]_-])sed[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*-i[[:space:]]+([^'"$q"'"[:space:]-]|'"$q"'[^'"$q"']|"[^"]|-e[[:space:]]|-E[[:space:]])'
+# seq-empty-range: `seq` with up to three plain arguments and then an argument
+# that starts with $ (a variable, ${..} or $((..))). The plain arguments exclude
+# $ | ; & ( ) < >, so the chain stops at a pipe, a list separator or a redirect:
+# `seq 1 5 > "$f"` is not a bound. A leading / is allowed (/usr/bin/seq); an
+# alphanumeric before seq is not (gseq counts correctly).
+re_seq_empty_range='(^|[^[:alnum:]_.-])seq([[:space:]]+[^[:space:]|;&()<>$]+){0,3}[[:space:]]+"?\$'
 re_printf_dash='(^|[;&|({[:space:]])printf[[:space:]]+["'"'"']-'
 # /bin/<tool> names below; the temp-file tool is listed as mk[t]emp (same match). XXXXXX
 # A template whose X run is followed by another TEMPLATE character never
@@ -615,6 +630,9 @@ check_command_line() {
   if [[ $bline =~ $re_stat_word ]] && [[ $bline =~ $re_stat_zulu_fmt ]] \
      && ! [[ $bline =~ $re_tz_utc ]]; then
     reject stat-local-zulu "$line"
+  fi
+  if [[ $bline =~ $re_seq_empty_range ]]; then
+    reject seq-empty-range "$line"
   fi
   if [[ $bline =~ $re_printf_dash ]]; then
     reject printf-dash "$line"

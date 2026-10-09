@@ -19,6 +19,7 @@ fix, and the command does not run.
 | awk-match-array | macOS awk has no `match(s, /re/, arr)` | `sed -n 's/^KEY:[[:space:]]*//p' file` |
 | sed-inplace | macOS `sed -i` takes the next word as an extension | `sed -i '' 's/a/b/' file` |
 | date-nanos | macOS `date` has no `%N` | `gdate +%s%3N` |
+| seq-empty-range | BSD `seq 1 0` counts down and prints `1` and `0`, so `for i in $(seq 1 "$n")` runs twice when `n` is 0 | `for ((i = 1; i <= n; i++)); do ...; done` |
 | printf-dash | `printf '- x'` reads `-` as an option | `printf '%s\n' '- x'` |
 | bin-path | `/bin/mktemp` does not exist on macOS | `mktemp "$TMPDIR/x.XXXXXX"` (a bare call ignores TMPDIR) |
 | zsh-status (Claude) | `status` is read-only in zsh | `rc`, `pr_state`, `ci_state` |
