@@ -42,4 +42,10 @@ bin/last-stack-lint-prompts \
 
 bin/last-stack-lint-prompts --access-sweep .
 
+# config/factory-repair-contract.json pins the sha256 of every bin/ and lib/ file the factory runs, and
+# the factory refuses to run a file whose pin is stale (board closeout: factory-contract-refused). The
+# repo has no tests, so this is the only check before merge. A failure prints the fix:
+# bin/last-stack-factory-repair-contract --refresh, then commit the contract.
+bin/last-stack-factory-repair-contract --local --json >/dev/null
+
 echo "ok last-stack CI lint passes"

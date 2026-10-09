@@ -329,10 +329,10 @@ def validate_admitted_body(body, entry):
     return receipt
 
 
-def validate_local(root):
+def validate_local(root, raw=None):
     root = Path(root).resolve()
     path = root / 'config/factory-repair-contract.json'
-    raw = read_bytes(path); contract = strict_json(raw)
+    raw = read_bytes(path) if raw is None else raw; contract = strict_json(raw)
     require(version1(contract.get('version')), 'runtime-contract-version')
     require(contract.get('manifest_path') == 'config/factory-repair-slot.json', 'manifest-path')
     config_path = relative_file(root, contract['manifest_path'])
@@ -357,6 +357,52 @@ def validate_local(root):
     require(present == {rel for rel in seen if rel.startswith('bin/') and len(Path(rel).parts) == 2}, 'runtime-unbound-bin-file')
     return {'version': 1, 'result': 'ok', 'contract_sha256': sha(raw),
             'manifest_sha256': contract['manifest_sha256'], 'protected_card_keys': config['protected_card_keys']}
+
+
+def refresh_local(root, add=()):
+    # Re-pin the contract to the bytes in this checkout. Every bin/ or lib/ edit changes a pinned sha256 on the one
+    # contract line, so by hand the edit is easy to forget (red main) and conflicts between concurrent PRs.
+    # The path set is never narrowed. A new bin/ file needs --add. The result must pass validate_local before it is written.
+    root = Path(root).resolve()
+    require((root / '.git').exists(), 'refresh-needs-git-checkout: an install tree is not re-pinned')
+    path = root / 'config/factory-repair-contract.json'
+    raw = read_bytes(path); contract = strict_json(raw)
+    require(version1(contract.get('version')) and contract.get('manifest_path') == 'config/factory-repair-slot.json', 'runtime-contract-shape')
+    files = contract.get('runtime_files')
+    require(isinstance(files, list) and 1 <= len(files) <= 512, 'runtime-file-list')
+    known = set()
+    for entry in files:
+        require(isinstance(entry, dict) and isinstance(entry.get('path'), str), 'runtime-file-entry')
+        require(entry['path'] != 'config/factory-repair-contract.json' and entry['path'] not in known, 'runtime-file-duplicate-or-self')
+        known.add(entry['path'])
+    added = []
+    for relative in add:
+        relative_file(root, relative)
+        require(relative != 'config/factory-repair-contract.json', 'runtime-file-duplicate-or-self')
+        if relative not in known:
+            files.append({'path': relative, 'sha256': ''}); known.add(relative); added.append(relative)
+    with os.scandir(root / 'bin') as entries:
+        unbound = sorted('bin/' + entry.name for entry in entries if entry.is_file() and 'bin/' + entry.name not in known)
+    require(not unbound, 'runtime-unbound-bin-file: ' + ', '.join(unbound) + ' (pin a new bin/ file with --add PATH)')
+    files.sort(key=lambda entry: entry['path'])
+    changed = []
+    for entry in files:
+        try:
+            digest = file_sha(relative_file(root, entry['path']))
+        except OSError as error:
+            raise Refusal('runtime-file-missing: ' + entry['path']) from error
+        if digest != entry.get('sha256'):
+            entry['sha256'] = digest; changed.append(entry['path'])
+    manifest = contract['manifest_path']; digest = file_sha(relative_file(root, manifest))
+    if digest != contract.get('manifest_sha256'):
+        contract['manifest_sha256'] = digest; changed.append(manifest)
+    updated = encoded(contract)
+    validate_local(root, raw=updated)
+    if updated != raw:
+        mode = stat.S_IMODE(path.stat().st_mode)
+        atomic_json(path, contract); os.chmod(path, mode)
+    return {'version': 1, 'result': 'refreshed' if updated != raw else 'current', 'changed': sorted(changed), 'added': added,
+            'contract_sha256': sha(updated)}
 
 
 def validate_snapshot(item, slug):
