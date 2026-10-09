@@ -553,12 +553,13 @@ The durable cost fix is carded as
 lands, the deadline is the thing that must be generous.
 
 ```bash
-rank_out="/tmp/kanban-pickup-rank.json"
+rank_dir="$(mktemp -d "${TMPDIR:-/tmp}/kanban-pickup-rank.XXXXXX")"
+rank_out="$rank_dir/rank.json"
 rank_state="ok"
 if command -v gtimeout >/dev/null 2>&1; then TO=gtimeout; else TO=timeout; fi
 set +e
 $TO -k 5s 300s "$last_stack/bin/last-stack-todo-rank" --board-cli <board CLI> \
-  --json >"$rank_out" 2>/tmp/kanban-pickup-rank.err
+  --json >"$rank_out" 2>"$rank_dir/rank.err"
 rank_rc=$?
 set -e
 if [ "$rank_rc" -ne 0 ]; then

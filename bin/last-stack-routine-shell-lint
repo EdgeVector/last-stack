@@ -45,6 +45,13 @@
 #   printf-dash       printf '- x' / printf '--- x': a format that starts with - is an option
 #   bin-path          /bin/sed, /bin/grep, the /bin temp-file tool ... do not exist on macOS (they are in /usr/bin)
 #   mktemp-suffix     an X run that is not at the END of a mktemp template never substitutes on BSD mktemp
+#   tmp-fixed-scratch a fixed /tmp/<name> as a WRITE target: a redirect (> >> 2>
+#                     &>) or the first argument of last-stack-json-capture. /tmp
+#                     is shared by every process of this user, so two agents that
+#                     pick /tmp/card.json read each other's file (measured: an
+#                     agent read /tmp/fetch.err and got another agent's git
+#                     output). Reads, $TMPDIR paths, /tmp/x-$$ and nested
+#                     directories are not refused.
 #   zsh-status        (--shell zsh only) status is read-only in zsh
 #   zsh-mapfile       (--shell zsh only) mapfile/readarray do not exist in zsh
 #   zsh-word-split    (--shell zsh only) for x in $VAR does not split; one pass over the whole string
@@ -147,7 +154,7 @@ while [ "$#" -gt 0 ]; do
     --quiet) quiet=1; shift ;;
     --list-rules)
       printf '%s\n' spin-wait heredoc-backticks dquote-backticks jq-optional-call jq-escaped-quote \
-        awk-match-array sed-inplace date-nanos stat-local-zulu seq-empty-range printf-dash bin-path mktemp-suffix zsh-status zsh-mapfile \
+        awk-match-array sed-inplace date-nanos stat-local-zulu seq-empty-range printf-dash bin-path mktemp-suffix tmp-fixed-scratch zsh-status zsh-mapfile \
         zsh-word-split zsh-cond-flag-expansion zsh-nomatch-query zsh-modifier-expansion home-root-scan \
         piped-count-false-zero grep-binary-false-zero
       exit 0 ;;
@@ -192,6 +199,7 @@ rule_slug() {
     printf-dash) echo papercut-routine-printf-leading-dash-format-20260923 ;;
     bin-path) echo papercut-routine-hard-coded-bin-mktemp-20260923 ;;  # fix form: mktemp "$TMPDIR/x.XXXXXX"
     mktemp-suffix) echo papercut-mktemp-same-template-collides-within-one-second-20260925 ;;
+    tmp-fixed-scratch) echo papercut-fixed-tmp-scratch-name-collides-with-a-concurrent-agent-and-is-read-as-your-own-20261003 ;;
     zsh-status|zsh-mapfile) echo papercut-routine-shell-word-splitting ;;
     zsh-word-split) echo papercut-claude-zsh-for-loop-over-an-unquoted-scalar-does-not-word-split-20260926 ;;
     zsh-cond-flag-expansion) echo papercut-zsh-conditional-flag-expansion-silently-mangles-brain-close-fixedby-20261008 ;;
@@ -247,6 +255,10 @@ rule_fix() {
       "BSD/macOS mktemp substitutes a run of X's only at the END of the template. With anything after it (card.XXXXXX.json) there is NO substitution: the literal name is created, so the FIRST call succeeds and every later call with that template fails 'mkstemp failed ... File exists' until someone deletes the literal file." \
       "Put the X run last: f=\"\$(mktemp \"\${TMPDIR:-/tmp}/card.XXXXXX\")\"" \
       "When the extension matters, take a directory: f=\"\$(mktemp -d \"\${TMPDIR:-/tmp}/card.XXXXXX\")/card.json\"" ;;
+    tmp-fixed-scratch) printf '%s\n' \
+      "A fixed /tmp/<name> is shared by every process of this user. Two agents that pick the same name read each other's file: a board dump, a git log or a card body from another run, taken as your own. A stale /tmp/card.json can feed another card's body into a kanban add --body that REPLACES the card." \
+      "Make a fresh directory per run and write inside it: d=\"\$(mktemp -d \"\$TMPDIR/x.XXXXXX\")\"; last-stack-json-capture \"\$d/sit.json\" -- situations list --json; jq . \"\$d/sit.json\"" \
+      "A lock or a hand-off that another process finds BY NAME needs a fixed path: add '# shell-lint-ok: <reason>'." ;;
     zsh-status) printf '%s\n' \
       "zsh makes status a read-only special variable (same as \$?)." \
       "Use another name: rc, pr_state, ci_state." ;;
@@ -330,6 +342,17 @@ re_printf_dash='(^|[;&|({[:space:]])printf[[:space:]]+["'"'"']-'
 # template that ENDS in X's inside $( ) is not a false positive.
 re_mktemp_suffix='(^|[^[:alnum:]_-])mktemp([[:space:]]+-[^[:space:]]+)*[[:space:]]+["'"'"']?[^[:space:]"'"'"'`]*XXX+[^[:space:]"'"'"'`(){}|&;<>X]'  # mktemp-ok: this is the recogniser for an mktemp call, not a call
 re_bin_path='(^|[^[:alnum:]_./-])/bin/(mk[t]emp|sed|grep|egrep|awk|find|xargs|sort|uniq|head|tail|wc|tr|cut|jq|env|dirname|basename|timeout|readlink|stat)([^[:alnum:]_-]|$)'
+# tmp-fixed-scratch: a literal /tmp/<name> (or /private/tmp/<name>) that is
+# written. <name> is ONE path component with no $ and no quote, so $TMPDIR/..,
+# ${TMPDIR:-/tmp}/.., /tmp/x-$$ and a nested /tmp/claude-501/../x never match,
+# and the terminator stops the match from ending inside a longer path. The
+# write side is a redirect (> >> 2> &>, with or without a space) or the first
+# argument of last-stack-json-capture; reading a fixed name is not refused.
+# Brain: papercut-fixed-tmp-scratch-name-collides-with-a-concurrent-agent-and-is-read-as-your-own-20261003
+tmp_name='(/private)?/tmp/[^/[:space:]"'"'"'`;|&()<>$]+'
+tmp_end='(["'"'"';|&)<>]|[[:space:]]|$)'
+re_tmp_fixed_redirect='>[[:space:]]*["'"'"']?'"$tmp_name$tmp_end"
+re_tmp_fixed_capture='(^|[^[:alnum:]_-])last-stack-json-capture["'"'"']?[[:space:]]+["'"'"']?'"$tmp_name$tmp_end"
 re_date_nanos='(^|[^[:alnum:]_-])date[[:space:]][^;|&]*%[0-9]*N'
 # stat-local-zulu: a `stat` call whose -t format ends in a literal Z. The
 # char before that final Z must not be `%`, because `%Z` is a real strftime
@@ -642,6 +665,9 @@ check_command_line() {
   fi
   if [[ $bline =~ $re_mktemp_suffix ]]; then
     reject mktemp-suffix "$line"
+  fi
+  if [[ $bline =~ $re_tmp_fixed_redirect ]] || [[ $bline =~ $re_tmp_fixed_capture ]]; then
+    reject tmp-fixed-scratch "$line"
   fi
   if [[ $bline =~ $re_grep_count_binary ]] && ! [[ $bline =~ $re_grep_binary_safe ]]; then
     reject grep-binary-false-zero "$line"

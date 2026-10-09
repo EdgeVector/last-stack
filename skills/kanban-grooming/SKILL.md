@@ -75,24 +75,25 @@ Run these checks and repair only when the evidence is clear:
 ```text
 # `kanban list --json` prints an envelope {cards, total, truncated}, not an
 # array. Iterate `.cards[]`; never `.[]` (papercut-kanban-watch-list-json-envelope-20260923).
-last-stack-json-capture /tmp/kanban-todo.json -- kanban list --column todo --limit 200 --json
-last-stack-json-capture /tmp/kanban-doing.json -- kanban list --column doing --limit 100 --json
+d="$(mktemp -d "${TMPDIR:-/tmp}/kanban-grooming.XXXXXX")"   # a fresh directory per run, never a fixed /tmp name
+last-stack-json-capture "$d/todo.json" -- kanban list --column todo --limit 200 --json
+last-stack-json-capture "$d/doing.json" -- kanban list --column doing --limit 100 --json
 jq -s '{cards: [.[].cards[]], truncated: any(.[]; .truncated)}' \
-  /tmp/kanban-todo.json /tmp/kanban-doing.json > /tmp/kanban-active.json
+  "$d/todo.json" "$d/doing.json" > "$d/active.json"
 
 # Active missing dependency slugs
 jq -r '.cards[] | select(.column!="done" and ((.missingDeps//[])|length>0))
-  | [.slug,.column,((.missingDeps//[])|join(","))] | @tsv' /tmp/kanban-active.json
+  | [.slug,.column,((.missingDeps//[])|join(","))] | @tsv' "$d/active.json"
 
 # Stale generated repo blockers
 jq -r '.cards[] | select(.column!="done" and .block_status=="needs_human"
   and ((.block_reason//"")|test("Repo target not resolvable|kanban-pickup cannot resolve Repo")))
-  | [.slug,.column,.repo,.base,.kind,.block_reason] | @tsv' /tmp/kanban-active.json
+  | [.slug,.column,.repo,.base,.kind,.block_reason] | @tsv' "$d/active.json"
 
 # Pickup-ready count
 jq '[.cards[] | select(.column=="todo" and (.blocked|not)
   and (.kind=="pr" or .kind=="validation")
-  and ((.repo//"")!="") and ((.base//"")!=""))] | length' /tmp/kanban-active.json
+  and ((.repo//"")!="") and ((.base//"")!=""))] | length' "$d/active.json"
 ```
 
 ## Human-gate three-bucket model (Tom 2026-07-17)

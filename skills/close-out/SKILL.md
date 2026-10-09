@@ -497,7 +497,8 @@ If the work leaves a follow-up that closes by elapsed time or by someone else
 tracked only in your head.
 
 ```bash
-cat > /tmp/kanban-follow-up.md <<'EOF'
+d="$(mktemp -d "${TMPDIR:-/tmp}/kanban-follow-up.XXXXXX")"   # not a fixed /tmp name: concurrent agents share /tmp
+cat > "$d/follow-up.md" <<'EOF'
 Repo: <owner>/<repo>
 Base: main
 Kind: pr
@@ -514,7 +515,7 @@ EOF
 last-stack-kanban-file-pr <valid-slug> \
   --title "<title>" --repo <owner>/<repo> \
   --north-star "<live-ns>" --milestone "<live-ms>" \
-  --column todo --tags <...> < /tmp/kanban-follow-up.md
+  --column todo --tags <...> < "$d/follow-up.md"
 ```
 
 Kind:pr follow-ups go through `last-stack-kanban-file-pr` so the settled-decision

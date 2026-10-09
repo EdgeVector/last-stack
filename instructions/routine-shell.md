@@ -22,6 +22,7 @@ fix, and the command does not run.
 | seq-empty-range | BSD `seq 1 0` counts down and prints `1` and `0`, so `for i in $(seq 1 "$n")` runs twice when `n` is 0 | `for ((i = 1; i <= n; i++)); do ...; done` |
 | printf-dash | `printf '- x'` reads `-` as an option | `printf '%s\n' '- x'` |
 | bin-path | `/bin/mktemp` does not exist on macOS | `mktemp "$TMPDIR/x.XXXXXX"` (a bare call ignores TMPDIR) |
+| tmp-fixed-scratch | a fixed `/tmp/<name>` as a WRITE target (`> /tmp/x.json`, `2>/tmp/x.err`, `last-stack-json-capture /tmp/x.json`): `/tmp` is shared by every agent, so two runs read each other's file | `d="$(mktemp -d "$TMPDIR/x.XXXXXX")"`, then `> "$d/x.json"`; a lock another process finds by name: `# shell-lint-ok: <reason>` |
 | zsh-status (Claude) | `status` is read-only in zsh | `rc`, `pr_state`, `ci_state` |
 | zsh-mapfile (Claude) | zsh has no `mapfile` | `while IFS= read -r x; do ...; done < "$file"` |
 | zsh-word-split (Claude) | `for x in $VAR` does not split; one pass over the whole string | `FILES=(a b c)` and `for x in "${FILES[@]}"`, in a bash script file |

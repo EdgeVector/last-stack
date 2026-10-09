@@ -41,10 +41,18 @@ Use `last-stack-json-capture`. It writes stdout to the file, stderr to
 status. You keep the error text AND the parser gets clean JSON.
 
 ```bash
-last-stack-json-capture /tmp/sit.json -- situations list --json
-jq -r '.[] | [.slug, .status, (.severity // "-"), .title] | @tsv' /tmp/sit.json
-cat /tmp/sit.json.err        # the stderr you wanted, on its own
+d="$(mktemp -d "$TMPDIR/x.XXXXXX")"          # one fresh directory per run
+last-stack-json-capture "$d/sit.json" -- situations list --json
+jq -r '.[] | [.slug, .status, (.severity // "-"), .title] | @tsv' "$d/sit.json"
+cat "$d/sit.json.err"        # the stderr you wanted, on its own
 ```
+
+Never use a fixed name such as `/tmp/sit.json`. `/tmp` is shared by every
+process of this user, so a second agent that picks the same name reads your file
+(or you read its): measured, an agent read `/tmp/fetch.err` and got another
+agent's `git fetch` output. A stale `/tmp/card.json` can feed another card's
+body into a `kanban add --body`, which REPLACES the card. The lint refuses a
+fixed `/tmp/<name>` as a write target (rule `tmp-fixed-scratch`).
 
 Keep `.title` in that projection. A Situation **slug is immutable** and a
 Situation **body gets amended**, so the slug is the least current field in the
@@ -59,10 +67,11 @@ The helper is on `~/.local/bin`. A sandbox shell can lose `$PATH`; name the
 install path when it does:
 
 ```bash
-"$HOME/.last-stack/bin/last-stack-json-capture" /tmp/board.json -- kanban list --column todo --json
-jq -r '.total, .truncated' /tmp/board.json
-last-stack-json-capture /tmp/card.json -- kanban show <slug> --json
-jq -r '.body' /tmp/card.json
+d="$(mktemp -d "$TMPDIR/x.XXXXXX")"
+"$HOME/.last-stack/bin/last-stack-json-capture" "$d/board.json" -- kanban list --column todo --json
+jq -r '.total, .truncated' "$d/board.json"
+last-stack-json-capture "$d/card.json" -- kanban show <slug> --json
+jq -r '.body' "$d/card.json"
 ```
 
 For one field over a socket or an API, pipe to `last-stack-json-get` instead:
@@ -77,8 +86,9 @@ curl -s --unix-socket "$HOME/.lastdb/data/folddb.sock" http://localhost/api/stat
 `2>` sends stderr somewhere else. Only `2>&1` merges it.
 
 ```bash
-situations list --json > /tmp/sit.json 2>/tmp/sit.err
-jq -r '.[].slug' /tmp/sit.json
+d="$(mktemp -d "$TMPDIR/x.XXXXXX")"
+situations list --json > "$d/sit.json" 2> "$d/sit.err"
+jq -r '.[].slug' "$d/sit.json"
 ```
 
 ### The escape hatch

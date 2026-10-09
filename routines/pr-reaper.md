@@ -120,12 +120,13 @@ command you RUN, not a rule you remember:
 
 ```bash
 close_guard_rc=0
+d="$(mktemp -d "${TMPDIR:-/tmp}/pr-reaper-close-guard.XXXXXX")"
 # GitHub PR (every repo except lastgit) or Forgejo PR (lastgit): the same guard,
 # the same verdicts. --venue auto routes through last-stack-pr-venue; the guard
 # reads the ci-required check run (GitHub) or status (Forgejo).
 "$last_stack/bin/last-stack-pr-reaper-close-guard" \
-  --venue auto --repo <repo> --pr <n> --json >/tmp/pr-reaper-close-guard.json \
-  2>/tmp/pr-reaper-close-guard.err || close_guard_rc=$?
+  --venue auto --repo <repo> --pr <n> --json >"$d/close-guard.json" \
+  2>"$d/close-guard.err" || close_guard_rc=$?
 # Explicit forms: --venue github --repo <repo> --pr <n>, --venue forgejo --repo <repo> --pr <n>
 # 0 = close-ok · 1 = refuse · 3 = indeterminate · 2 = usage
 ```

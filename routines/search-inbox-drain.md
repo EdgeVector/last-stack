@@ -22,18 +22,20 @@ by default). This is a write against Tom's primary node — keep it off the hot
 path with a small, bounded batch per invocation rather than one unbounded run.
 
 ```bash
+d="$(mktemp -d "${TMPDIR:-/tmp}/search-inbox-drain.XXXXXX")"
 set +e
-search drain --max-files 2000 --json > /tmp/search-inbox-drain.json
+search drain --max-files 2000 --json > "$d/drain.json"
 drain_rc=$?
 set -e
-cat /tmp/search-inbox-drain.json
+cat "$d/drain.json"
 ```
 
 Then confirm the resulting depth and doctor status:
 
 ```bash
-search doctor --json > /tmp/search-inbox-doctor.json || true
-depth="$(jq -r '.checks[] | select(.name=="inbox_backlog") | .detail.pending // empty' /tmp/search-inbox-doctor.json)"
+d="$(mktemp -d "${TMPDIR:-/tmp}/search-inbox-drain.XXXXXX")"
+search doctor --json > "$d/doctor.json" || true
+depth="$(jq -r '.checks[] | select(.name=="inbox_backlog") | .detail.pending // empty' "$d/doctor.json")"
 ```
 
 - `drain_rc != 0`: treat as a transient failure (socket flap, LastDB busy). Do

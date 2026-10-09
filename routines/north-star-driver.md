@@ -72,10 +72,11 @@ Before selecting an outcome, count the current live work instead of assuming
 the board is empty or stale:
 
 ```bash
-kanban list --column backlog --json > /tmp/north-star-driver-backlog.json
-kanban list --column todo --json > /tmp/north-star-driver-todo.json
-kanban list --column doing --json > /tmp/north-star-driver-doing.json
-kanban milestone portfolio --json > /tmp/north-star-driver-milestones.json
+d="$(mktemp -d "${TMPDIR:-/tmp}/north-star-driver.XXXXXX")"
+kanban list --column backlog --json > "$d/backlog.json"
+kanban list --column todo --json > "$d/todo.json"
+kanban list --column doing --json > "$d/doing.json"
+kanban milestone portfolio --json > "$d/milestones.json"
 # Count rows from list --json. Prefer the envelope's pre-cap `.total`
 # (fkanban kanban-json-envelope-total-truncated); fall back to bare-array
 # `length` so this prompt still works against older host-track builds.
@@ -89,10 +90,10 @@ _nonterminal_milestone_count() {
   jq '[(if type == "array" then . else (.entries // .milestones // []) end)[]
        | select(.state != "complete" and .state != "abandoned")] | length' "$1"
 }
-backlog_count="$(_json_row_count /tmp/north-star-driver-backlog.json)"
-todo_count="$(_json_row_count /tmp/north-star-driver-todo.json)"
-doing_count="$(_json_row_count /tmp/north-star-driver-doing.json)"
-milestone_count="$(_nonterminal_milestone_count /tmp/north-star-driver-milestones.json)"
+backlog_count="$(_json_row_count "$d/backlog.json")"
+todo_count="$(_json_row_count "$d/todo.json")"
+doing_count="$(_json_row_count "$d/doing.json")"
+milestone_count="$(_nonterminal_milestone_count "$d/milestones.json")"
 printf 'CREATION_INVENTORY backlog=%s todo=%s doing=%s nonterminal_milestones=%s\n' \
   "$backlog_count" "$todo_count" "$doing_count" "$milestone_count"
 ```
@@ -150,14 +151,15 @@ Use the milestone portfolio captured by the creation inventory gate. Then:
    covered" while the Primary had zero runnable cards.) Read the gap report:
 
    ```bash
-   kanban milestone gap-report --json > /tmp/north-star-driver-gap.json
+   d="$(mktemp -d "${TMPDIR:-/tmp}/north-star-driver.XXXXXX")"
+   kanban milestone gap-report --json > "$d/gap.json"
    jq -r --arg ns "$ns_slug" '
      [.milestones[] | select(.north_star == $ns)
       | select(.status != "complete" and .status != "abandoned")] as $m
      | ([$m[] | select(.status == "in_flight" or .status == "idle_promoteable"
           or .status == "needs_next_slice" or .status == "idle_empty")] | length) as $cov
      | "COVERAGE north_star=\($ns) covered=\($cov) reasons=\([$m[] | "\(.slug):\(.status)"] | join(","))"
-   ' /tmp/north-star-driver-gap.json
+   ' "$d/gap.json"
    ```
 
    - **Covered** — the North Star has at least one milestone with gap-report
@@ -182,10 +184,11 @@ admission record's `Paused` field is refused. Read the admission record with
 this gate — enumeration under-reports.
 
 ```bash
+d="$(mktemp -d "${TMPDIR:-/tmp}/north-star-driver.XXXXXX")"
 set +e
 "$last_stack/bin/last-stack-feature-portfolio-admission" \
   --north-star "$ns_slug" --work-class feature --json \
-  >/tmp/north-star-driver-admission.json
+  >"$d/admission.json"
 admission_rc=$?
 set -e
 printf 'ADMISSION north_star=%s rc=%s\n' "$ns_slug" "$admission_rc"

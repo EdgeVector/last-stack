@@ -45,11 +45,12 @@ situations notices --since 6h || true
 ## 1. Load live cutovers
 
 ```bash
-brain get open-cutovers --type reference > /tmp/open-cutovers.md || \
-  brain get open-cutovers > /tmp/open-cutovers.md
-grep -E '^CUTOVER[[:space:]]+[a-z0-9][a-z0-9-]*[[:space:]]*\|' /tmp/open-cutovers.md \
-  | grep 'status=open' > /tmp/open-cutovers-live.txt || true
-live_n=$(wc -l < /tmp/open-cutovers-live.txt | tr -d ' ')
+d="$(mktemp -d "${TMPDIR:-/tmp}/open-cutovers.XXXXXX")"
+brain get open-cutovers --type reference > "$d/open-cutovers.md" || \
+  brain get open-cutovers > "$d/open-cutovers.md"
+grep -E '^CUTOVER[[:space:]]+[a-z0-9][a-z0-9-]*[[:space:]]*\|' "$d/open-cutovers.md" \
+  | grep 'status=open' > "$d/open-cutovers-live.txt" || true
+live_n=$(wc -l < "$d/open-cutovers-live.txt" | tr -d ' ')
 printf 'OPEN_CUTOVERS_LIVE=%s\n' "${live_n:-0}"
 ```
 
