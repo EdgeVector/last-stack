@@ -233,6 +233,33 @@ synth_seed_reclaim_others() {
   printf '%s\n' "$n"
 }
 
+# Where seeds live. The driver and the warm-up script must agree, or a warm
+# seed is never found. Same rule as the driver's probe WORK dir: a TMPDIR under
+# HOME, or one longer than 12 bytes, is too deep for the node's Unix socket, so
+# the base becomes /tmp. LASTDB_SYNTHETIC_SEED_ROOT overrides.
+synth_seed_root_default() {
+  local base="${TMPDIR:-/tmp}" base_real home_real
+  home_real="$(CDPATH= cd -- "$HOME" 2>/dev/null && pwd -P)" || home_real="$HOME"
+  base_real="$(CDPATH= cd -- "$base" 2>/dev/null && pwd -P)" || base_real="$base"
+  case "$base_real" in
+    "$home_real"|"$home_real"/*) base=/tmp ;;
+  esac
+  [ "${#base}" -le 12 ] || base=/tmp
+  printf '%s\n' "${LASTDB_SYNTHETIC_SEED_ROOT:-$base/lastdb-safe-upgrade-synthetic-$(id -u)}"
+}
+
+# $1 = baseline daemon, $2 = primary home, $3 = LaunchAgent plist (may be empty),
+# $4 = cards, $5 = records. Prints the seed key for the installed apps.
+# Needs live_lastdb_env_pairs (live-lastdb-env.sh). Exit 2: no kanban CLI;
+# exit 3: no brain CLI; exit 1: any other input is unusable.
+synth_seed_key_for() {
+  local baseline="${1:-}" primary="${2:-}" plist="${3-}" cards="${4:-}" recs="${5:-}" kt bt envs
+  kt="$(synth_app_token kanban)" || return 2
+  bt="$(synth_app_token brain)" || return 3
+  envs="$(live_lastdb_env_pairs "$plist")"
+  synth_seed_key "$baseline" "$primary/identity.key" "$envs" "$cards" "$recs" "$kt" "$bt"
+}
+
 # $1 = seed root, $2 = key, rest = the builder command. The builder gets
 # --out DIR --key KEY appended. Prints the seed dir. Builder output goes to
 # stderr so a caller can capture the dir with $(...).
@@ -259,6 +286,13 @@ synth_seed_ensure() {
   if [ "$rc" -ne 0 ]; then
     synth_rm_seed_child "$root" "$build" || true
     return 1
+  fi
+  # Another builder (the post-cutover warm-up) may have finished this key while
+  # this one ran. Keep the complete seed; do not nest this build inside it.
+  if synth_seed_is_complete "$dir" "$key"; then
+    synth_rm_seed_child "$root" "$build" || true
+    printf '%s\n' "$dir"
+    return 0
   fi
   mv "$build" "$dir" || { synth_rm_seed_child "$root" "$build" || true; return 1; }
   # A builder that exits 0 but leaves a half seed must not serve a probe.

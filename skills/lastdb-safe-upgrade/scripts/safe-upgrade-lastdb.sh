@@ -82,6 +82,7 @@
 #   LASTDB_SAFE_UPGRADE_DATA=synthetic|real   # default synthetic (same as --data)
 #   LASTDB_SYNTHETIC_SEED_ROOT=<path>         # seed cache; defaults under /tmp
 #   LASTDB_SYNTHETIC_CARDS / _RECORDS         # seed size (changes the seed key)
+#   LASTDB_SAFE_UPGRADE_WARM_SEED=0           # no detached seed warm-up after a GREEN cutover
 #
 set -euo pipefail
 
@@ -2286,18 +2287,19 @@ log "candidate class GREEN: path/version/size ok (vs baseline ${BASELINE_FOR_CLA
 # it. The seed is cached per key, so most runs build nothing. Real: probe
 # copies of the primary home, as before.
 PROBE_DATA_LABEL="the primary home (real data)"
-SEED_ROOT="${LASTDB_SYNTHETIC_SEED_ROOT:-${_work_tmp}/lastdb-safe-upgrade-synthetic-${UID:-$(id -u)}}"
+SEED_ROOT="$(synth_seed_root_default)"
 if [ "$PROBE_DATA" = "synthetic" ]; then
   [ -n "$BASELINE_FOR_CLASS" ] && [ -x "$BASELINE_FOR_CLASS" ] \
     || die "synthetic probe data needs the baseline daemon (the binary the primary runs) and none was found; set LASTDB_PROBE_BASELINE_BIN or use --data real"
-  SEED_KANBAN_TOKEN="$(synth_app_token kanban)" \
-    || die "synthetic probe data: cannot identify the installed kanban CLI"
-  SEED_BRAIN_TOKEN="$(synth_app_token brain)" \
-    || die "synthetic probe data: cannot identify the installed brain CLI"
-  SEED_KEY="$(synth_seed_key "$BASELINE_FOR_CLASS" "$PRIMARY_HOME/identity.key" \
-    "$(live_lastdb_env_pairs)" "$SYNTH_CARDS" "$SYNTH_RECORDS" \
-    "$SEED_KANBAN_TOKEN" "$SEED_BRAIN_TOKEN")" \
-    || die "synthetic probe data: cannot compute the seed key"
+  SEED_KEY_RC=0
+  SEED_KEY="$(synth_seed_key_for "$BASELINE_FOR_CLASS" "$PRIMARY_HOME" "$LAUNCHD_PLIST" \
+    "$SYNTH_CARDS" "$SYNTH_RECORDS")" || SEED_KEY_RC=$?
+  case "$SEED_KEY_RC" in
+    0) ;;
+    2) die "synthetic probe data: cannot identify the installed kanban CLI" ;;
+    3) die "synthetic probe data: cannot identify the installed brain CLI" ;;
+    *) die "synthetic probe data: cannot compute the seed key" ;;
+  esac
   log "synthetic probe data: seed key $SEED_KEY (baseline $CURRENT_VER, cards=$SYNTH_CARDS records=$SYNTH_RECORDS, root $SEED_ROOT)"
   seed_started="$(date +%s)"
   set +e
@@ -3247,6 +3249,22 @@ if [ "${LASTDB_SAFE_UPGRADE_PRIMARY_ROWS:-1}" = 1 ] && [ -x "$primary_rows_gate"
     log "registry rows: ${primary_rows_line:-no output}"
   else
     warn "registry rows step failed after GREEN cutover (${primary_rows_line:-no output}); the hourly reconcile gate retries"
+  fi
+fi
+
+# The primary now runs a new baseline, so the next upgrade needs a seed that
+# THIS build wrote. A cold build took 19 minutes (2026-10-09, 120 cards), and the
+# next PROBE node would pay it. Start the warm-up DETACHED: it waits for this
+# run's owner lock, builds the seed for the installed daemon, and returns at once
+# here. A failed or missed warm-up only means the next run builds cold.
+# LASTDB_SAFE_UPGRADE_WARM_SEED=0 turns it off.
+warm_seed="$_SCRIPT_DIR/warm-synthetic-seed.sh"
+if [ "$PROBE_DATA" = "synthetic" ] && [ "${LASTDB_SAFE_UPGRADE_WARM_SEED:-1}" = 1 ] && [ -f "$warm_seed" ]; then
+  if warm_line="$(bash "$warm_seed" --detach --baseline-bin "$SIDEBIN_DIR/lastdbd" \
+      --plist "$LAUNCHD_PLIST" --cards "$SYNTH_CARDS" --records "$SYNTH_RECORDS" </dev/null 2>/dev/null)"; then
+    log "synthetic seed warm-up: ${warm_line:-no output}"
+  else
+    warn "synthetic seed warm-up did not start (${warm_line:-no output}); the next run builds the seed cold"
   fi
 fi
 

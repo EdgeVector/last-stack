@@ -260,6 +260,21 @@ A failed build is **RED** with `synthetic probe data could not be prepared`, and
 it keeps bounded evidence under
 `~/.local/state/last-stack/lastdb-safe-upgrade/synthetic-build-failures/`.
 
+Cost, measured 2026-10-09 on a loaded host (A/A probe-only on 0.23.3-2708): the
+**cold** seed build took 1156 s, of which 1055 s were the 120 card writes (8.8 s
+each; every write waits for a durable persist, and parallel writers gain
+nothing). With the seed warm, every probe bar together took 447 s, of which
+about 330 s are the fixed waits (settle 45 s, key-cap 120 s, hard-delete 151 s,
+RSS 15 s). Every upgrade changes the baseline, so every upgrade needs a new
+seed. To keep the cold build off the critical path, the driver starts
+`scripts/warm-synthetic-seed.sh --detach` after a **GREEN live cutover**. The
+warm-up waits for the owner lock, builds the seed for the newly installed
+daemon, and logs to
+`~/.local/state/last-stack/lastdb-safe-upgrade/seed-warm/`. A failed or missed
+warm-up changes nothing live; the next run builds cold. Turn it off with
+`LASTDB_SAFE_UPGRADE_WARM_SEED=0`. Run it by hand, with the driver's
+`--baseline-bin` and `--plist` values, when the baseline changed some other way.
+
 What the synthetic probe proves:
 
 - The candidate boots on data that the installed daemon wrote, and the identity
@@ -700,7 +715,7 @@ The script:
 | Resolve candidate | `brew update` / `--version` tarball / `--candidate` |
 | **1. Rollback point** | Before a live change (a synthetic `--probe-only` run makes none): `cp -cR` (APFS only; no full-copy fallback) → `${TMPDIR}/lastdb-safe-upgrade-rollback-<uid>/pre-<new>-from-<old>-<ts>/`; reclaim the prior retained point first |
 | **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before multi-GB backup) |
-| **0b. Probe data** | Synthetic: ensure the seed for this baseline (cache hit builds nothing), then clone its CLI home. Real: the primary home is the clone source |
+| **0b. Probe data** | Synthetic: ensure the seed for this baseline (cache hit builds nothing; the post-cutover warm-up usually built it), then clone its CLI home. Real: the primary home is the clone source |
 | **2. Probe** | `BIN=<candidate>` CoW smoke harness on the probe data (never live home) + **CAS mutation bar** (ephemeral candidate node: false `expected` → 409) + **RSS settle/sample** vs memory-guard limit + **latency bar**: cold Board point-read and cold column list, then hot point-read, one HashRangeKeys batch, and a repeat `brain put` (like-to-like vs baseline CoW; a sample that opens a file is not hot); geo-mean on the hot triple only + **row-count bar**: candidate must not return 0 rows where the baseline returns rows (no skip flag) + **key-cap bar**: candidate on its own CoW with `LASTDB_RESIDENT_KEY_CAP=100`; count within budget, purge ran; no skip + **hard-delete bar**: scratch card `kanban rm` on the candidate copy, then `persist_lane_failures` and `deferred_persist_failed` stay 0 for a bounded window; no skip |
 | Detect venue | sidebin vs brew |
 | **2c. DEV photograph proof** | After all normal bars pass, the exact pair clones the seed (`--data real`: the static rollback point from step 1). It scrubs production state, connects the copied identity to compiled DEV, and runs the manual snapshot CAS. The fresh v2 receipt must match this Loom execution. |
