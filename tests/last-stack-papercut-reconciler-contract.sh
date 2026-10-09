@@ -28,6 +28,17 @@ grep -q 'Do not change the typed papercut repair status merely because it was ca
 grep -q 'kanban milestone gap-report --json' "$prompt"
 grep -q 'situations preflight --action claim-card --repo <Repo>' "$prompt"
 grep -q 'budget_hold=released' "$prompt"
+# Condition 1 (in_flight) must carry its own claimability clause, not just
+# condition 2 (idle_promoteable) — papercut-reconciler-budget-hold-counts-unclaimable-frontier-20260926
+grep -q 'counts.in_flight > 0` AND at least one in-flight child' "$prompt" \
+  || { echo "FAIL: condition 1 claimability clause missing" >&2; exit 1; }
+grep -q 'kanban list --column todo --json' "$prompt" \
+  || { echo "FAIL: condition 1 in-flight repo enumeration (todo) missing" >&2; exit 1; }
+grep -q 'kanban list --column doing --json' "$prompt" \
+  || { echo "FAIL: condition 1 in-flight repo enumeration (doing) missing" >&2; exit 1; }
+claimability_clauses="$(grep -c 'passes `situations preflight --action claim-card --repo <Repo>` (exit 0)' "$prompt")"
+[ "$claimability_clauses" = "2" ] \
+  || { echo "FAIL: expected 2 claim-card preflight clauses (one per condition), found $claimability_clauses" >&2; exit 1; }
 
 queue_helper="$ROOT/bin/last-stack-papercut-queue"
 [ -x "$queue_helper" ] || { echo "missing executable queue helper" >&2; exit 1; }
