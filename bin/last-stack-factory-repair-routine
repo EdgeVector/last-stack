@@ -19,7 +19,7 @@ def main():
             '# PAUSED-UNTIL: root confirms the installed E2E proof.\n'
             'id = "last-stack-factory-repair"\nstatus = "paused"\n'
             'rrule = "FREQ=MINUTELY;INTERVAL=15"\ntimeout_min = 20\n'
-            'harness = "codex"\ndifficulty = "normal"\neffort = "medium"\n'
+            'difficulty = "normal"\neffort = "medium"\n'
             f'cwd = "{home}/code/edgevector"\n'
             f'prompt_path = "{stable}/routines/factory-repair.md"\n'
             f'gate_command = "{stable}/bin/last-stack-factory-repair-controller --once --routine-result"\n')

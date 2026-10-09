@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]; sys.path.insert(0, str(ROOT / 'lib'))
@@ -31,6 +32,12 @@ def seeder():
           'new routine did not start paused and bounded')
     check(str(root / '.last-stack/routines/factory-repair.md') in text and str(root / '.last-stack/bin/last-stack-factory-repair-controller') in text,
           'finite routine did not use stable installed paths')
+    generated = tomllib.loads(text)
+    check(generated['difficulty'] == 'normal' and not any(key in generated for key in ('harness', 'model', 'pin')),
+          'generated route mixes difficulty with an explicit harness')
+    template = tomllib.loads((ROOT / 'config/routines-registry/last-stack-factory-repair.toml').read_text())
+    check(template['difficulty'] == 'normal' and not any(key in template for key in ('harness', 'model', 'pin')),
+          'template route mixes difficulty with an explicit harness')
     new.write_text('status = "paused"\nrrule = "owner schedule"\ntimeout_min = 33\n'); kept = new.read_bytes()
     again = subprocess.run(command, env=environment, capture_output=True, timeout=5)
     check(again.returncode == 0 and new.read_bytes() == kept and all(path.read_bytes() == data for path, data in old.items()),

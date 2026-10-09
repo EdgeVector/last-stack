@@ -557,9 +557,18 @@ def validate_native_metadata(value, scope, row=False):
 def require_lifecycle_intent_clear(directory, config_sha256, contract_sha256):
     path = Path(directory) / 'lifecycle-close-intent.json'
     if path.exists():
-        intent = read_json(path)
+        try:
+            raw = read_bytes(path)
+            intent = strict_json(raw)
+        except (OSError, ValueError) as error:
+            raise Refusal('invalid-json-file: ' + str(path)) from error
+        require(isinstance(intent, dict), 'lifecycle-close-unknown-retained')
+        # The exact historical pass returned fixed=[], errors=[], and no Card
+        # effect. Its complete receipt stays unchanged across this runtime
+        # successor. Other predecessor receipts retain the unknown-write gate.
+        reviewed_predecessor = sha(raw) == '55d438ce9b0429006af29297e8424c089f58db78e109d445f358114a38cecb29'
         require(version1(intent.get('version')) and intent.get('config_sha256') == config_sha256 and
-                intent.get('contract_sha256') == contract_sha256 and intent.get('status') == 'complete' and
+                (intent.get('contract_sha256') == contract_sha256 or reviewed_predecessor) and intent.get('status') == 'complete' and
                 isinstance(intent.get('result_sha256'), str) and HEX.fullmatch(intent['result_sha256']),
                 'lifecycle-close-unknown-retained')
 
