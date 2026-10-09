@@ -14,9 +14,25 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 GUARD="$ROOT/bin/last-stack-lastdb-memory-guard"
 tmp="$(mktemp -d)"
-cleanup() { rm -rf "$tmp"; }
+failed=0
+cleanup() {
+  if [ -f "$tmp/owned-children" ]; then
+    while read -r child; do
+      owner=$(/bin/ps -p "$child" -o ppid= 2>/dev/null | tr -d ' ' || true)
+      if [ "$owner" = "$$" ]; then /bin/kill -KILL "$child" 2>/dev/null || true; fi
+    done <"$tmp/owned-children"
+  fi
+  if [ "$failed" = 0 ]; then rm -rf "$tmp"; fi
+}
 trap cleanup EXIT
-fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
+fail() {
+  failed=1
+  printf 'FAIL: %s\nfixture evidence: %s\n' "$1" "$tmp" >&2
+  for capture in "$tmp/guard.out" "$tmp/guard.err" "${LOG:-}" "$tmp/actions.log" "$tmp/post-shed.samples" "$tmp/clock.log"; do
+    if [ -f "$capture" ]; then printf '%s\n' "--- $capture" >&2; cat "$capture" >&2; fi
+  done
+  exit 1
+}
 
 export PATH="$tmp/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 # The guard pins its own PATH under launchd; point that pin at the shims.
@@ -38,6 +54,11 @@ LOG="$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-memory-guard.log"
 EVENT_LOG="$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-memory-guard-events.jsonl"
 
 FAKE_PID=4242
+# Bash normally resolves kill as a builtin before PATH. Disable it in child
+# shells before a guard can act on any synthetic pid.
+export BASH_ENV="$tmp/private-bash-env.sh"
+printf 'enable -n kill\n' >"$BASH_ENV"
+export FAKE_OWNED_CHILD_FILE="$tmp/owned-child"
 
 # Fake ps covering every form the guard uses. RSS is fed via FAKE_RSS_KB.
 cat >"$tmp/bin/ps" <<'SH'
@@ -129,7 +150,16 @@ if [ -n "${FAKE_FOOTPRINT_SEQUENCE:-}" ]; then
   exit 0
 fi
 if [ -f "${FAKE_SHED_MARKER:-/nonexistent-shed-marker}" ]; then
-  emit "${FAKE_FOOTPRINT_BYTES_AFTER_SHED:-${FAKE_FOOTPRINT_BYTES:-0}}"
+  bytes="${FAKE_FOOTPRINT_BYTES_AFTER_SHED:-${FAKE_FOOTPRINT_BYTES:-0}}"
+  # The second value is intentionally below the limit in the deadline case:
+  # an extra late sample would conceal the required timeout/restart.
+  case "${FAKE_CLOCK_MODE:-}" in
+    after-sleep|recovery)
+      if [ -s "$FAKE_POST_SHED_SAMPLES" ]; then bytes="$((9000 * 1048576))"; fi
+      ;;
+  esac
+  printf 'pid=%s bytes=%s\n' "${2:-}" "$bytes" >>"$FAKE_POST_SHED_SAMPLES"
+  emit "$bytes"
 else
   emit "${FAKE_FOOTPRINT_BYTES:-0}"
 fi
@@ -229,20 +259,54 @@ cat >"$tmp/bin/sysctl" <<'SH'
 printf 'total = 8192.00M  used = %s.00M  free = 100.00M\n' "${FAKE_SWAP_MB:-10}"
 SH
 
-# kill/launchctl record what the guard tried to do instead of doing it.
-# NOTE: this shim is never reached. `kill` is a bash BUILTIN and the builtin
-# wins over PATH, so every `kill` in the guard runs for real — which is why the
-# action log has never once contained a `kill` line. It is kept because the
-# effect it was written for still holds by accident: FAKE_PID does not exist,
-# so the real `kill -0` reports dead and the guard does not sit out its whole
-# SIGTERM window. Tests that need a live pid must supply one (see the SIGTERM
-# window tests, which run a process that ignores TERM).
+# Only a registered direct child of this fixture may receive a real signal.
+# Every other pid is synthetic, regardless of whether that number exists.
 cat >"$tmp/bin/kill" <<'SH'
 #!/usr/bin/env bash
-case "${1:-}" in
-  -0) exit 1 ;;
-esac
-printf 'kill %s\n' "$*" >>"$FAKE_ACTION_LOG"
+if [ "$#" != 2 ]; then exit 2; fi
+case "$1" in -0|-TERM|-KILL|-9) ;; *) exit 2 ;; esac
+owned=""; parent=""
+if [ -f "$FAKE_OWNED_CHILD_FILE" ]; then read -r owned parent <"$FAKE_OWNED_CHILD_FILE"; fi
+if [ -n "$owned" ] && [ "$2" = "$owned" ]; then
+  actual_parent=$(/bin/ps -p "$owned" -o ppid= 2>/dev/null | tr -d ' ' || true)
+  if [ "$actual_parent" = "$parent" ]; then
+    printf 'kill owned-child %s\n' "$*" >>"$FAKE_ACTION_LOG"
+    exec /bin/kill "$@"
+  fi
+fi
+case "$1" in -0) exit 1 ;; esac
+printf 'kill synthetic %s\n' "$*" >>"$FAKE_ACTION_LOG"
+SH
+
+# Only the whole-second clock after the private shed marker is controlled.
+# Every other format retains the actual date implementation.
+cat >"$tmp/bin/date" <<'SH'
+#!/usr/bin/env bash
+if [ "$#" = 1 ] && [ "$1" = +%s ] && [ -n "${FAKE_CLOCK_MODE:-}" ] && [ -f "$FAKE_SHED_MARKER" ]; then
+  n=0
+  if [ -f "$FAKE_CLOCK_COUNTER" ]; then n=$(cat "$FAKE_CLOCK_COUNTER"); fi
+  case "$FAKE_CLOCK_MODE" in
+    boundary|high-size) step=$n ;;
+    recovery) step=$((n / 2)) ;;
+    after-sleep) step=0; if [ -f "$FAKE_SLEEP_MARKER" ]; then step=1; fi ;;
+    *) exit 2 ;;
+  esac
+  printf '%s\n' "$((n + 1))" >"$FAKE_CLOCK_COUNTER"
+  printf 'n=%s value=%s mode=%s\n' "$n" "$((1000 + step))" "$FAKE_CLOCK_MODE" >>"$FAKE_CLOCK_LOG"
+  printf '%s\n' "$((1000 + step))"
+  exit 0
+fi
+exec /bin/date "$@"
+SH
+
+cat >"$tmp/bin/sleep" <<'SH'
+#!/usr/bin/env bash
+if [ "$#" = 1 ] && [ "$1" = 1 ] && [ -n "${FAKE_CLOCK_MODE:-}" ] && [ -f "$FAKE_SHED_MARKER" ]; then
+  : >"$FAKE_SLEEP_MARKER"
+  printf 'sleep %s\n' "$*" >>"$FAKE_CLOCK_LOG"
+  exit 0
+fi
+exec /bin/sleep "$@"
 SH
 
 cat >"$tmp/bin/launchctl" <<'SH'
@@ -326,6 +390,12 @@ chmod +x "$tmp/bin/"*
 export FAKE_PID FAKE_ACTION_LOG="$tmp/actions.log"
 export FAKE_SHED_MARKER="$tmp/shed-posted"
 export FAKE_SEQ_COUNTER="$tmp/footprint-seq.counter"
+export FAKE_POST_SHED_SAMPLES="$tmp/post-shed.samples"
+export FAKE_CLOCK_COUNTER="$tmp/clock.counter" FAKE_CLOCK_LOG="$tmp/clock.log"
+export FAKE_SLEEP_MARKER="$tmp/clock.slept"
+# Refuse before the first guard call if a future fixture change loses isolation.
+[ "$(/bin/bash -c 'type -t kill')" = file ] || fail "signal-isolation: kill must resolve to the private shim"
+[ "$(/bin/bash -c 'command -v kill')" = "$tmp/bin/kill" ] || fail "signal-isolation: kill must use the exact private shim"
 export LASTDBD_GUARD_NOTICE_CMD="$tmp/bin/situations"
 
 # A LaunchAgent directory holding the primary's plist, a decoy for a DIFFERENT
@@ -352,16 +422,129 @@ reset() {
   rm -f "$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-revive.hold"
   rm -f "$EVENT_LOG"
   rm -f "$FAKE_SHED_MARKER"
-  rm -f "$FAKE_SEQ_COUNTER"
+  rm -f "$FAKE_SEQ_COUNTER" "$FAKE_POST_SHED_SAMPLES"
+  rm -f "$FAKE_CLOCK_COUNTER" "$FAKE_CLOCK_LOG" "$FAKE_SLEEP_MARKER" "$FAKE_OWNED_CHILD_FILE"
   write_agents
   printf '{"pid":4242,"start_ts":1234,"last_heartbeat_ts":1234}\n' >"$LASTDBD_PRIMARY_HOME/current-session.json"
   printf '{"pid":4242,"start_ts":1234,"build_version":"0.0.0-test"}\n' >"$LASTDBD_PRIMARY_HOME/sessions.jsonl"
 }
 restarted() { grep -q 'launchctl kickstart' "$FAKE_ACTION_LOG" 2>/dev/null; }
+register_owned_child() {
+  child="$1"
+  owner=$(/bin/ps -p "$child" -o ppid= 2>/dev/null | tr -d ' ' || true)
+  [ "$owner" = "$$" ] || fail "owned-child: pid must be a direct child of this fixture"
+  printf '%s %s\n' "$child" "$$" >"$FAKE_OWNED_CHILD_FILE"
+  printf '%s\n' "$child" >>"$tmp/owned-children"
+}
+
+owned_child_case() {
+  signal_case="${1:-all}"
+  reset
+  /bin/sleep 30 >/dev/null 2>&1 &
+  disposable_pid=$!
+  printf '%s\n' "$disposable_pid" >>"$tmp/owned-children"
+  disown "$disposable_pid" 2>/dev/null || true
+  # An actual fixture child is still synthetic until it is registered. Even
+  # a supplied record with the wrong parent must not authorize /bin/kill.
+  printf '%s %s\n' "$disposable_pid" 1 >"$FAKE_OWNED_CHILD_FILE"
+  "$tmp/bin/kill" -TERM "$disposable_pid"
+  grep -q '^kill synthetic -TERM ' "$FAKE_ACTION_LOG" || fail "owned-child: wrong parent must use the synthetic adapter"
+  /bin/kill -0 "$disposable_pid" 2>/dev/null || fail "owned-child: wrong parent must refuse a real signal"
+  register_owned_child "$disposable_pid"
+  if [ "$signal_case" != extra-argument ]; then
+    set +e
+    "$tmp/bin/kill" -HUP "$disposable_pid"
+    unknown_signal_rc=$?
+    set -e
+    [ "$unknown_signal_rc" = 2 ] || fail "owned-child: unknown signal must refuse before /bin/kill"
+  fi
+  if [ "$signal_case" != unknown-signal ]; then
+    set +e
+    "$tmp/bin/kill" -TERM "$disposable_pid" invalid-extra-argument
+    extra_argument_rc=$?
+    set -e
+    if grep -q '^kill owned-child ' "$FAKE_ACTION_LOG"; then
+      fail "owned-child: extra argument must refuse before /bin/kill"
+    fi
+    [ "$extra_argument_rc" = 2 ] || fail "owned-child: extra argument must refuse before /bin/kill"
+  fi
+  /bin/kill -0 "$disposable_pid" 2>/dev/null || fail "owned-child: malformed signals must leave the child alive"
+  "$tmp/bin/kill" -TERM "$disposable_pid"
+  wait "$disposable_pid" 2>/dev/null || true
+  grep -q '^kill owned-child -TERM ' "$FAKE_ACTION_LOG" || fail "owned-child: registered child must retain real signals"
+  printf 'PASS: owned-child\n'
+}
+
+owned_registration_case() {
+  reset
+  set +e
+  (register_owned_child "$$") >"$tmp/registration.out" 2>"$tmp/registration.err"
+  registration_rc=$?
+  set -e
+  [ "$registration_rc" != 0 ] || fail "owned-registration: a non-child must not receive signal authority"
+  grep -q 'owned-child: pid must be a direct child' "$tmp/registration.err" || fail "owned-registration: refusal must name the owner check"
+  [ ! -f "$FAKE_OWNED_CHILD_FILE" ] || fail "owned-registration: refusal must not store signal authority"
+  printf 'PASS: owned-registration\n'
+}
+
+shed_case() {
+  name="$1"
+  reset
+  recovered="$((9000 * MB))"
+  clock_mode="$name"; shed_wait=1; expected_samples=1
+  case "$name" in
+    high-size|after-sleep) recovered="$((17000 * MB))" ;;
+    recovery) recovered="$((17000 * MB))"; shed_wait=2; expected_samples=2 ;;
+    wait-zero) clock_mode=boundary; shed_wait=0 ;;
+  esac
+  FAKE_RSS_KB=$((1500 * 1024)) FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
+  FAKE_SHED_HTTP=200 FAKE_FOOTPRINT_BYTES_AFTER_SHED="$recovered" \
+  FAKE_CLOCK_MODE="$clock_mode" LASTDBD_GUARD_SHED_WAIT_SEC="$shed_wait" LASTDBD_GUARD_TERM_WAIT_SEC=0 \
+    "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "$name: guard must exit 0"
+  samples=0
+  if [ -f "$FAKE_POST_SHED_SAMPLES" ]; then samples=$(wc -l <"$FAKE_POST_SHED_SAMPLES" | tr -d ' '); fi
+  [ "$samples" = "$expected_samples" ] || fail "$name: exactly $expected_samples post-shed samples required (got $samples)"
+  case "$name" in
+    boundary|recovery|wait-zero)
+      if restarted || grep -q '^kill ' "$FAKE_ACTION_LOG"; then fail "$name: recovered size must prevent all signals and restart"; fi
+      grep -q 'shed_recovered pid=4242 footprint_mb=9000' "$LOG" || fail "$name: recovery must use the post-shed sample"
+      if [ "$name" = recovery ]; then
+        [ "$(grep -c '^sleep 1$' "$FAKE_CLOCK_LOG")" = 1 ] || fail "recovery: one sleep must precede the second sample"
+        [ "$(sed -n '1p' "$FAKE_POST_SHED_SAMPLES")" = 'pid=4242 bytes=17825792000' ] || fail "recovery: first post-shed size must remain high"
+        [ "$(sed -n '2p' "$FAKE_POST_SHED_SAMPLES")" = 'pid=4242 bytes=9437184000' ] || fail "recovery: second post-shed size must recover"
+      else
+        [ ! -f "$FAKE_SLEEP_MARKER" ] || fail "$name: recovery must precede sleep"
+      fi
+      ;;
+    high-size|after-sleep)
+      restarted || fail "$name: high post-shed size must still restart"
+      grep -q 'shed_timeout pid=4242 footprint_mb=17000' "$LOG" || fail "$name: timeout must retain the observed high size"
+      grep -q '^kill synthetic -TERM 4242$' "$FAKE_ACTION_LOG" || fail "$name: restart must use synthetic TERM only"
+      if [ "$name" = high-size ]; then
+        [ ! -f "$FAKE_SLEEP_MARKER" ] || fail "high-size: expired deadline must precede sleep"
+      else
+        [ -f "$FAKE_SLEEP_MARKER" ] || fail "after-sleep: fixture must reach the sleep boundary"
+        [ "$(grep -c '^sleep 1$' "$FAKE_CLOCK_LOG")" = 1 ] || fail "after-sleep: exactly one sleep must reach the deadline"
+      fi
+      ;;
+  esac
+  printf 'PASS: shed-%s\n' "$name"
+}
+
+case "${1:-}" in
+  '') owned_registration_case; owned_child_case; for shed_name in boundary high-size recovery after-sleep wait-zero; do shed_case "$shed_name"; done ;;
+  boundary|high-size|recovery|after-sleep|wait-zero) shed_case "$1"; exit 0 ;;
+  signal-isolation) printf 'PASS: signal-isolation\n'; exit 0 ;;
+  owned-child) owned_child_case; exit 0 ;;
+  owned-unknown-signal) owned_child_case unknown-signal; exit 0 ;;
+  owned-extra-argument) owned_child_case extra-argument; exit 0 ;;
+  owned-registration) owned_registration_case; exit 0 ;;
+  *) fail "unknown memory-guard case: $1" ;;
+esac
 
 # --- 1. invalid metric is rejected loudly rather than defaulting -------------
 reset
-if LASTDBD_GUARD_METRIC=bogus "$GUARD" >/dev/null 2>&1; then
+if LASTDBD_GUARD_METRIC=bogus "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err"; then
   fail "invalid LASTDBD_GUARD_METRIC should exit non-zero"
 fi
 
@@ -371,7 +554,7 @@ FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((9000 * MB)) \
 FAKE_PEAK_BYTES=$((17300 * MB)) \
 FAKE_SWAP_MB=25000 \
-  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 below the default limit"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "guard should exit 0 below the default limit"
 
 restarted && fail "default footprint policy must not restart at steady state"
 grep -q 'metric=footprint' "$LOG" || fail "default metric should be footprint"
@@ -396,7 +579,7 @@ restarted && fail "an over-limit PEAK must not restart — step 2 is observation
 reset
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
-  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after a restart"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "guard should exit 0 after a restart"
 restarted || fail "default footprint policy must restart above 16 GiB"
 grep -Eq '^launchctl kickstart gui/[0-9]+/' "$FAKE_ACTION_LOG" \
   || fail "with no respawn seen the guard should issue a plain kickstart"
@@ -431,7 +614,7 @@ reset
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((8700 * MB)) \
 LASTDBD_RSS_LIMIT_MB=6144 \
-  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after a restart"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "guard should exit 0 after a restart"
 restarted || fail "footprint enforcement must restart when footprint exceeds the limit"
 grep -q 'OVER_LIMIT.*metric=footprint.*enforced_mb=8700' "$LOG" \
   || fail "over-limit line should name the footprint gauge and reading"
@@ -442,7 +625,7 @@ grep -q 'OVER_LIMIT.*metric=footprint.*enforced_mb=8700' "$LOG" \
 reset
 FAKE_FOOTPRINT_FAIL=1 \
 FAKE_RSS_KB=$((1500 * 1024)) \
-  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 when the rusage read fails"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "guard should exit 0 when the rusage read fails"
 restarted && fail "an rss-equivalent footprint below the limit must not restart"
 grep -q 'footprint_source=rss_fallback' "$LOG" || fail "a rusage failure should record the fallback source"
 grep -q 'footprint_mb=1500' "$LOG" || fail "the fallback footprint should equal rss"
@@ -453,7 +636,7 @@ FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((8700 * MB)) \
 LASTDBD_RSS_LIMIT_MB=6144 \
 LASTDBD_GUARD_METRIC=rss \
-  "$GUARD" >/dev/null 2>&1 || fail "rss compatibility mode should exit 0"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "rss compatibility mode should exit 0"
 restarted && fail "rss mode must not restart when only footprint is over"
 grep -q 'WARN blind_spot' "$LOG" || fail "rss blind spot must be logged"
 
@@ -463,7 +646,7 @@ FAKE_RSS_KB=$((7000 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((9000 * MB)) \
 LASTDBD_RSS_LIMIT_MB=6144 \
 LASTDBD_GUARD_METRIC=rss \
-  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after an rss restart"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "guard should exit 0 after an rss restart"
 restarted || fail "rss enforcement must still fire when rss exceeds the limit"
 
 # --- 8. footprint via rusage does not depend on the status socket: a node
@@ -474,7 +657,7 @@ FAKE_RSS_KB=$((7000 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((9000 * MB)) \
 LASTDBD_RSS_LIMIT_MB=6144 \
 LASTDBD_GUARD_METRIC=rss \
-  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 with node unreachable"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "guard should exit 0 with node unreachable"
 restarted || fail "rss enforcement must not depend on the status socket"
 grep -q 'footprint_mb=9000' "$LOG" || fail "rusage footprint must not depend on socket reachability"
 grep -q 'footprint_source=rusage' "$LOG" || fail "footprint source should still be rusage when the socket is down"
@@ -487,7 +670,7 @@ identity="$(FAKE_BOOT_START=5678 FAKE_BOOT_BUILD=0.23.3-test "$GUARD" --identity
   || fail "identity mode returned unexpected evidence: $identity"
 restarted && fail "identity mode must never restart the primary"
 
-if FAKE_NODE_DOWN=1 "$GUARD" --identity >/dev/null 2>&1; then
+if FAKE_NODE_DOWN=1 "$GUARD" --identity >"$tmp/guard.out" 2>"$tmp/guard.err"; then
   fail "a down socket must fail instead of falling back to status or files"
 fi
 
@@ -501,7 +684,7 @@ restarted && fail "404 identity fallback must never restart the primary"
 
 # HTTP 404 with empty status is still a line-stop.
 reset
-if FAKE_BOOT_HTTP=404 FAKE_STATUS_EMPTY=1 "$GUARD" --identity >/dev/null 2>&1; then
+if FAKE_BOOT_HTTP=404 FAKE_STATUS_EMPTY=1 "$GUARD" --identity >"$tmp/guard.out" 2>"$tmp/guard.err"; then
   fail "empty status after a boot-identity 404 must fail"
 fi
 restarted && fail "empty-status identity failure must never restart the primary"
@@ -535,7 +718,7 @@ restarted && fail "denied-ps 404 fallback must never restart the primary"
 
 reset
 if FAKE_PS_DENIED=1 FAKE_BOOT_HTTP=404 FAKE_BUILD=0.23.3-status \
-   FAKE_START_TS=9999 "$GUARD" --identity >/dev/null 2>&1; then
+   FAKE_START_TS=9999 "$GUARD" --identity >"$tmp/guard.out" 2>"$tmp/guard.err"; then
   fail "denied ps with no pid in status must fail rather than emit an empty pid"
 fi
 restarted && fail "pidless denied-ps fallback must never restart the primary"
@@ -543,7 +726,7 @@ restarted && fail "pidless denied-ps fallback must never restart the primary"
 # A denial still cannot invent a node. With ps denied AND the socket down there
 # is no evidence at all, so the read stays a failure.
 reset
-if FAKE_PS_DENIED=1 FAKE_NODE_DOWN=1 "$GUARD" --identity >/dev/null 2>&1; then
+if FAKE_PS_DENIED=1 FAKE_NODE_DOWN=1 "$GUARD" --identity >"$tmp/guard.out" 2>"$tmp/guard.err"; then
   fail "a denied process table and a down socket must still fail"
 fi
 restarted && fail "denied-ps down-socket identity must never restart the primary"
@@ -560,7 +743,7 @@ chmod +x "$tmp/bin/situations-reject"
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
 LASTDBD_GUARD_NOTICE_CMD="$tmp/bin/situations-reject" \
-  "$GUARD" >/dev/null 2>&1 || fail "a rejected notice must not fail the guard"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "a rejected notice must not fail the guard"
 restarted || fail "a rejected notice must not block the restart"
 grep -q 'WARN notice_failed .*reason=.*Invalid slug' "$LOG" \
   || fail "a rejected notice should record the reason the CLI gave"
@@ -576,12 +759,12 @@ revived() { grep -q 'launchctl bootstrap' "$FAKE_ACTION_LOG" 2>/dev/null; }
 
 # --- 11. absent + unloaded revives, but only after the state persists --------
 reset
-FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 "$GUARD" >/dev/null 2>&1 \
+FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" \
   || fail "guard should exit 0 on the first absent cycle"
 revived && fail "a single absent cycle must not revive (that is an upgrade window)"
 grep -q 'absent_cycles=1/2' "$LOG" || fail "the first cycle should record the wait"
 
-FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 "$GUARD" >/dev/null 2>&1 \
+FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" \
   || fail "guard should exit 0 on the revive cycle"
 revived || fail "a persistent absent+unloaded state must revive the agent"
 grep -q 'launchctl enable ' "$FAKE_ACTION_LOG" \
@@ -603,8 +786,8 @@ grep -q 'WARN notice_failed' "$LOG" && fail "the revive notice slug must be acce
 
 # --- 12. a loaded agent is KeepAlive's job — never race it -------------------
 reset
-FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=1 "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
-FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=1 "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=1 "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "exit 0 expected"
+FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=1 "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "exit 0 expected"
 revived && fail "must not bootstrap an agent launchd already owns"
 grep -q 'loaded=yes' "$LOG" || fail "the loaded case should say so"
 
@@ -613,7 +796,7 @@ grep -q 'loaded=yes' "$LOG" || fail "the loaded case should say so"
 # it". Starting a second daemon on the same home would be worse than the outage.
 reset
 FAKE_NO_PRIMARY=1 FAKE_SOCKET_UP=1 FAKE_AGENT_LOADED=0 \
-  LASTDBD_GUARD_REVIVE_MIN_ABSENT_CYCLES=1 "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+  LASTDBD_GUARD_REVIVE_MIN_ABSENT_CYCLES=1 "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "exit 0 expected"
 revived && fail "must not revive while the primary socket still answers"
 grep -q 'answers — not reviving' "$LOG" || fail "the live-socket refusal should be logged"
 
@@ -621,7 +804,7 @@ grep -q 'answers — not reviving' "$LOG" || fail "the live-socket refusal shoul
 reset
 touch "$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-revive.hold"
 FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 LASTDBD_GUARD_REVIVE_MIN_ABSENT_CYCLES=1 \
-  "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "exit 0 expected"
 revived && fail "a hold file must suppress revival"
 grep -q 'revive=held' "$LOG" || fail "the hold should be logged with its path"
 
@@ -631,7 +814,7 @@ mv "$LASTDBD_GUARD_PLIST_DIR/com.example.lastdbd-primary.plist" \
    "$LASTDBD_GUARD_PLIST_DIR/com.example.lastdbd-primary.plist.paused-20260101"
 FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 LASTDBD_GUARD_REVIVE_MIN_ABSENT_CYCLES=1 \
   PRIMARY_AGENT_LABEL= LASTDBD_PRIMARY_AGENT_LABEL=com.example.lastdbd-primary \
-  "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "exit 0 expected"
 revived && fail "a .paused-* marker means parked on purpose"
 grep -q 'parked=yes' "$LOG" || fail "the parked case should be logged"
 
@@ -640,14 +823,14 @@ reset
 printf '<plist><string>%s</string></plist>\n' "$LASTDBD_PRIMARY_HOME" \
   >"$LASTDBD_GUARD_PLIST_DIR/com.example.lastdbd-primary-second.plist"
 FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 LASTDBD_GUARD_REVIVE_MIN_ABSENT_CYCLES=1 \
-  "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "exit 0 expected"
 revived && fail "two candidate plists for one home must refuse, not guess"
 grep -q 'reason=no_unique_primary_plist' "$LOG" || fail "the refusal should say why"
 
 reset
 rm -f "$LASTDBD_GUARD_PLIST_DIR/com.example.lastdbd-primary.plist"
 FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 LASTDBD_GUARD_REVIVE_MIN_ABSENT_CYCLES=1 \
-  "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "exit 0 expected"
 revived && fail "a plist naming a different home must not be started"
 grep -q 'reason=no_unique_primary_plist' "$LOG" \
   || fail "only the decoy remains, so no unique candidate exists"
@@ -655,14 +838,14 @@ grep -q 'reason=no_unique_primary_plist' "$LOG" \
 # --- 17. a blocking Situation stops the revive ------------------------------
 reset
 FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 LASTDBD_GUARD_REVIVE_MIN_ABSENT_CYCLES=1 \
-  FAKE_PREFLIGHT_RC=3 "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+  FAKE_PREFLIGHT_RC=3 "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "exit 0 expected"
 revived && fail "preflight exit 3 requires human clearance"
 grep -q 'revive=blocked' "$LOG" || fail "the block should be logged"
 
 # --- 18. revival can be switched off entirely -------------------------------
 reset
 FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 LASTDBD_GUARD_REVIVE=0 \
-  LASTDBD_GUARD_REVIVE_MIN_ABSENT_CYCLES=1 "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+  LASTDBD_GUARD_REVIVE_MIN_ABSENT_CYCLES=1 "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "exit 0 expected"
 revived && fail "LASTDBD_GUARD_REVIVE=0 must disable revival"
 grep -q 'revive=disabled' "$LOG" || fail "the disabled state should be logged"
 
@@ -670,17 +853,17 @@ grep -q 'revive=disabled' "$LOG" || fail "the disabled state should be logged"
 # Otherwise a flapping primary would accumulate cycles across unrelated outages
 # and revive on its first absent cycle much later.
 reset
-FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "exit 0 expected"
 [ -f "$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-absent.state" ] \
   || fail "an absent cycle should be recorded"
 FAKE_RSS_KB=$((1500 * 1024)) FAKE_FOOTPRINT_BYTES=$((9000 * MB)) \
-  "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "exit 0 expected"
 [ -f "$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-absent.state" ] \
   && fail "a healthy cycle must clear the absent counter"
 
 # --- 20. identity mode stays read-only on the revival path ------------------
 reset
-FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 "$GUARD" --identity >/dev/null 2>&1 \
+FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 "$GUARD" --identity >"$tmp/guard.out" 2>"$tmp/guard.err" \
   && fail "identity should fail when there is no primary"
 revived && fail "identity mode must never bootstrap anything"
 
@@ -690,7 +873,7 @@ FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
 FAKE_SHED_HTTP=200 \
 FAKE_FOOTPRINT_BYTES_AFTER_SHED=$((9000 * MB)) \
-  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 when shed recovers the footprint"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "guard should exit 0 when shed recovers the footprint"
 restarted && fail "a shed that recovers footprint must not kill the primary"
 grep -q 'shed_ok' "$LOG" || fail "a 200 from /api/admin/shed should be logged"
 grep -q 'shed_recovered pid=4242 footprint_mb=9000' "$LOG" \
@@ -701,7 +884,7 @@ reset
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
 FAKE_SHED_HTTP=200 \
-  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after a shed-timeout restart"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "guard should exit 0 after a shed-timeout restart"
 restarted || fail "a shed that does not recover footprint must still restart"
 grep -q 'shed_ok' "$LOG" || fail "the shed attempt should be logged"
 grep -q 'shed_timeout' "$LOG" || fail "a shed that never recovers should log the timeout"
@@ -712,7 +895,7 @@ reset
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
 LASTDBD_GUARD_DRY_RUN=1 \
-  "$GUARD" >/dev/null 2>&1 || fail "dry run should exit 0"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "dry run should exit 0"
 restarted && fail "dry run must never kill or kickstart the primary"
 grep -q 'dry_run skip shed/kill/kickstart' "$LOG" || fail "dry run should log its intent"
 [ -s "$FAKE_ACTION_LOG" ] && fail "dry run must not touch kill/launchctl/situations/vmmap"
@@ -726,7 +909,7 @@ grep -q 'dry_run skip shed/kill/kickstart' "$LOG" || fail "dry run should log it
 reset
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_SEQUENCE="$((17000 * MB)) $((9000 * MB)) $((9200 * MB)) $((8800 * MB)) $((9100 * MB)) $((9000 * MB))" \
-  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after ignoring a transient"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "guard should exit 0 after ignoring a transient"
 restarted && fail "a single-sample spike must NOT restart the primary"
 grep -q 'over_limit_candidate.*enforced_mb=17000' "$LOG" \
   || fail "the spike should still be recorded as a candidate"
@@ -746,7 +929,7 @@ grep -q 'OVER_LIMIT' "$LOG" \
 reset
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_SEQUENCE="$((17000 * MB)) $((17100 * MB)) $((15000 * MB)) $((17200 * MB)) $((14900 * MB)) $((17300 * MB))" \
-  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after a confirmed restart"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "guard should exit 0 after a confirmed restart"
 restarted || fail "a majority of over-limit samples must still restart"
 grep -q 'confirmed_over_limit.*over=3/5' "$LOG" \
   || fail "confirmation should report the majority tally it acted on"
@@ -759,7 +942,7 @@ grep -q 'OVER_LIMIT' "$LOG" || fail "a confirmed breach should log OVER_LIMIT"
 reset
 FAKE_RSS_KB=0 \
 FAKE_FOOTPRINT_SEQUENCE="$((17000 * MB)) 0 0 0 0 0" \
-  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 when the pid goes away"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "guard should exit 0 when the pid goes away"
 restarted && fail "a pid that stopped being over the limit must not be killed"
 grep -q 'transient_ignored.*over=0/5' "$LOG" || fail "the exit should read as unconfirmed"
 
@@ -770,7 +953,7 @@ reset
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_SEQUENCE="$((17000 * MB)) $((9000 * MB)) $((9000 * MB))" \
 LASTDBD_GUARD_CONFIRM_SAMPLES=0 \
-  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 with confirmation disabled"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "guard should exit 0 with confirmation disabled"
 restarted || fail "CONFIRM_SAMPLES=0 must restore the single-sample restart"
 grep -q 'confirm_disabled.*samples=0' "$LOG" \
   || fail "disabled confirmation should be visible in the log"
@@ -778,10 +961,10 @@ grep -q 'transient_ignored' "$LOG" && fail "disabled confirmation cannot ignore 
 
 # --- 29. a non-numeric confirmation setting is rejected, not defaulted ------
 reset
-if LASTDBD_GUARD_CONFIRM_SAMPLES=lots "$GUARD" >/dev/null 2>&1; then
+if LASTDBD_GUARD_CONFIRM_SAMPLES=lots "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err"; then
   fail "invalid LASTDBD_GUARD_CONFIRM_SAMPLES should exit non-zero"
 fi
-if LASTDBD_GUARD_CONFIRM_INTERVAL_SEC=soon "$GUARD" >/dev/null 2>&1; then
+if LASTDBD_GUARD_CONFIRM_INTERVAL_SEC=soon "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err"; then
   fail "invalid LASTDBD_GUARD_CONFIRM_INTERVAL_SEC should exit non-zero"
 fi
 
@@ -793,7 +976,7 @@ fi
 # on it.
 #
 # This needs a pid that is really alive and really survives SIGTERM, because
-# `kill` is a bash builtin and no shim can fake it. A child that ignores TERM
+# The private kill shim allows an exact registered child. A child that ignores TERM
 # holds the window open exactly the way a slow drain does.
 # Started in THIS shell, not in a `$(...)` helper: a command substitution
 # subshell takes its background jobs down with it when it exits, so a helper
@@ -807,14 +990,15 @@ stubborn_pid=$!
 # report "Killed: 9" on a suite that passed.
 disown "$stubborn_pid" 2>/dev/null || true
 reset
+register_owned_child "$stubborn_pid"
 FAKE_PID=$stubborn_pid \
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
 FAKE_UDS_IN_FLIGHT=7 \
 FAKE_SYNC_PENDING=3 \
 LASTDBD_GUARD_TERM_WAIT_SEC=2 \
-  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after a SIGKILL restart"
-kill -9 "$stubborn_pid" 2>/dev/null || true
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "guard should exit 0 after a SIGKILL restart"
+"$tmp/bin/kill" -9 "$stubborn_pid" 2>/dev/null || true
 grep -q "SIGKILL pid=$stubborn_pid" "$LOG" || fail "a pid that never exits should be SIGKILLed"
 grep -q 'SIGTERM_clean' "$LOG" && fail "a pid that ignored TERM did not exit cleanly"
 grep -q 'drain_progress .*polls=[1-9]' "$LOG" \
@@ -837,13 +1021,14 @@ stubborn_pid=$!
 # report "Killed: 9" on a suite that passed.
 disown "$stubborn_pid" 2>/dev/null || true
 reset
+register_owned_child "$stubborn_pid"
 FAKE_PID=$stubborn_pid \
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
 LASTDBD_GUARD_TERM_WAIT_SEC=2 \
 FAKE_NODE_DOWN=1 \
-  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 when the node socket is down"
-kill -9 "$stubborn_pid" 2>/dev/null || true
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "guard should exit 0 when the node socket is down"
+"$tmp/bin/kill" -9 "$stubborn_pid" 2>/dev/null || true
 grep -q 'drain_progress .*last=socket=unanswered' "$LOG" \
   || fail "an unanswered socket during the drain should be recorded as such"
 grep -q 'drain_progress .*answered=0' "$LOG" \
@@ -862,7 +1047,7 @@ FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
 FAKE_RESPAWN_AFTER_VMMAP=1 \
 FAKE_BOOT_PID=4243 \
 LASTDBD_GUARD_RESPAWN_WAIT_SEC=5 \
-  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after observing a respawn"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "guard should exit 0 after observing a respawn"
 grep -q 'respawn_observed old_pid=4242 new_pid=4243' "$LOG" \
   || fail "the guard should record that launchd KeepAlive already restarted the daemon"
 restarted && fail "a daemon launchd already respawned must not be kickstarted again (double kill)"
@@ -886,7 +1071,7 @@ FAKE_PROBE_FOOTPRINT_BYTES=$((17000 * MB)) \
 FAKE_PROBE_RSS_KB=$((9000 * 1024)) \
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((9000 * MB)) \
-  "$GUARD" >/dev/null 2>&1 || fail "probe-over-ceiling cycle should exit 0"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "probe-over-ceiling cycle should exit 0"
 restarted && fail "a probe over the ceiling must not kickstart the primary's label"
 grep -q '^vmmap ' "$FAKE_ACTION_LOG" && fail "a probe over the ceiling must not be signalled either"
 grep -q 'ok pid=4242 .*primary_source=launchd' "$LOG" \
@@ -903,7 +1088,7 @@ FAKE_PROBE_PID=4343 \
 FAKE_PROBE_FOOTPRINT_BYTES=$((17000 * MB)) \
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((9000 * MB)) \
-  "$GUARD" >/dev/null 2>&1 || fail "fallback cycle should exit 0"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "fallback cycle should exit 0"
 restarted && fail "fallback must not restart on the probe's reading"
 grep -q 'ok pid=4242 .*primary_source=fallback' "$LOG" \
   || fail "with launchd silent the env-homed process is the primary and the line must say fallback: $(cat "$LOG")"
@@ -918,7 +1103,7 @@ FAKE_PROBE_HOME="$LASTDBD_PRIMARY_HOME" \
 FAKE_PROBE_FOOTPRINT_BYTES=$((17000 * MB)) \
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
-  "$GUARD" >/dev/null 2>&1 || fail "ambiguous cycle should exit 0"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "ambiguous cycle should exit 0"
 restarted && fail "an ambiguous cycle must not restart anything"
 grep -q 'launchctl bootstrap' "$FAKE_ACTION_LOG" \
   && fail "ambiguous is not absent; it must not revive a second daemon onto this home"
@@ -935,7 +1120,7 @@ reset
 FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=1 \
 FAKE_PROBE_PID=4343 \
 FAKE_PROBE_FOOTPRINT_BYTES=$((17000 * MB)) \
-  "$GUARD" >/dev/null 2>&1 || fail "absent-with-probe cycle should exit 0"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "absent-with-probe cycle should exit 0"
 restarted && fail "a probe must not be restarted in the primary's name"
 grep -q 'pid=4343' "$LOG" && fail "a probe must not be gauged as the primary when launchd says none runs"
 grep -q 'no_primary_lastdbd agent=com.example.lastdbd-primary loaded=yes' "$LOG" \
@@ -949,7 +1134,7 @@ reset
 FAKE_RESOLVE_FLIP_FILE="$tmp/resolve-flip" \
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
-  "$GUARD" >/dev/null 2>&1 || fail "target-mismatch cycle should exit 0"
+  "$GUARD" >"$tmp/guard.out" 2>"$tmp/guard.err" || fail "target-mismatch cycle should exit 0"
 restarted && fail "a restart whose target no longer resolves as the primary must not kickstart"
 grep -q '^vmmap ' "$FAKE_ACTION_LOG" && fail "a mismatched target must not be signalled"
 grep -q 'ABSTAIN restart_target_mismatch requested_pid=4242 resolved_primary=4244' "$LOG" \
