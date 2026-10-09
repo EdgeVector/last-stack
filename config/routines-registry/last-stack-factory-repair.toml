@@ -4,7 +4,6 @@ id = "last-stack-factory-repair"
 status = "paused"
 rrule = "FREQ=MINUTELY;INTERVAL=15"
 timeout_min = 20
-harness = "codex"
 difficulty = "normal"
 effort = "medium"
 cwd = "/Users/REPLACE/code/edgevector"

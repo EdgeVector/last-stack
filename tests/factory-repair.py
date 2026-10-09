@@ -373,6 +373,91 @@ def completed_lifecycle_hold():
     check(result['result'] == 'noop' and effects.calls == before, 'retained lifecycle hold prevented validated quiet completion')
 
 
+
+LIFECYCLE_PREDECESSOR = {
+    'version': 1, 'status': 'complete',
+    'config_sha256': '59ce8588aa428af6271c958d1918e739d8907908815ffebc2ddabd5bfcb287a2',
+    'contract_sha256': '4529be31831b09754b835a251a4e342408c01e4444648ded8ab6d265e8fdae17',
+    'slug': 'papercut-loom-active-summary-counts-terminal-duplicate-memberships-20261008',
+    'record_sha256': '0332e871ac0405a04bede347ac29559f222ec853d31bce90113738ca392b09f2',
+    'result_sha256': 'cc77cc0a425947d60589a57e761585893680c37ff58d17ee01cfd45fdf89f304',
+}
+
+
+def lifecycle_intent_fixture(value):
+    directory = Path(tempfile.mkdtemp(prefix='finite-lifecycle-'))
+    path = directory / 'lifecycle-close-intent.json'
+    f.atomic_json(path, value)
+    return directory, path
+
+
+def lifecycle_current():
+    value = {**LIFECYCLE_PREDECESSOR, 'contract_sha256': '7' * 64}
+    directory, path = lifecycle_intent_fixture(value); before = path.read_bytes()
+    f.require_lifecycle_intent_clear(directory, value['config_sha256'], value['contract_sha256'])
+    check(path.read_bytes() == before, 'current complete lifecycle intent changed')
+
+
+def lifecycle_predecessor():
+    directory, path = lifecycle_intent_fixture(LIFECYCLE_PREDECESSOR); before = path.read_bytes()
+    check(f.sha(before) == '55d438ce9b0429006af29297e8424c089f58db78e109d445f358114a38cecb29',
+          'reviewed predecessor fixture bytes drift')
+    f.require_lifecycle_intent_clear(directory, LIFECYCLE_PREDECESSOR['config_sha256'], '7' * 64)
+    f.require_lifecycle_intent_clear(directory, LIFECYCLE_PREDECESSOR['config_sha256'], '8' * 64)
+    check(path.read_bytes() == before, 'historical complete lifecycle intent changed')
+
+
+def lifecycle_unknown():
+    changes = {
+        'pending': {'status': 'pending'},
+        'failed': {'status': 'failed'},
+        'foreign-config': {'config_sha256': '1' * 64},
+        'unreviewed-runtime': {'contract_sha256': '2' * 64},
+        'wrong-result': {'result_sha256': '3' * 64},
+        'wrong-record': {'record_sha256': '4' * 64},
+        'foreign-slug': {'slug': 'papercut-foreign'},
+        'extra-field': {'foreign': True},
+    }
+    inputs = [(name, {**LIFECYCLE_PREDECESSOR, **delta}) for name, delta in changes.items()]
+    current_changes = {
+        'current-pending': {'status': 'pending'},
+        'current-failed': {'status': 'failed'},
+        'current-foreign-config': {'config_sha256': '1' * 64},
+        'current-malformed-result': {'result_sha256': 'not-hex'},
+        'current-malformed-version': {'version': True},
+    }
+    inputs.extend((name, {**LIFECYCLE_PREDECESSOR, 'contract_sha256': '7' * 64, **delta})
+                  for name, delta in current_changes.items())
+    for name, value in inputs:
+        directory, path = lifecycle_intent_fixture(value); before = path.read_bytes()
+        try:
+            f.require_lifecycle_intent_clear(directory, LIFECYCLE_PREDECESSOR['config_sha256'], '7' * 64)
+        except f.Refusal as error:
+            check(str(error) == 'lifecycle-close-unknown-retained', 'wrong lifecycle refusal: ' + name)
+        else:
+            raise AssertionError('unreviewed lifecycle intent accepted: ' + name)
+        check(path.read_bytes() == before, 'unknown lifecycle intent changed: ' + name)
+
+    directory, path = lifecycle_intent_fixture(LIFECYCLE_PREDECESSOR)
+    path.write_text(json.dumps(LIFECYCLE_PREDECESSOR, indent=2) + '\n'); before = path.read_bytes()
+    try:
+        f.require_lifecycle_intent_clear(directory, LIFECYCLE_PREDECESSOR['config_sha256'], '7' * 64)
+    except f.Refusal as error:
+        check(str(error) == 'lifecycle-close-unknown-retained', 'wrong raw-byte lifecycle refusal')
+    else:
+        raise AssertionError('noncanonical historical lifecycle bytes accepted')
+    check(path.read_bytes() == before, 'noncanonical historical lifecycle bytes changed')
+
+    path.write_text('[]\n'); before = path.read_bytes()
+    try:
+        f.require_lifecycle_intent_clear(directory, LIFECYCLE_PREDECESSOR['config_sha256'], '7' * 64)
+    except f.Refusal as error:
+        check(str(error) == 'lifecycle-close-unknown-retained', 'wrong lifecycle object refusal')
+    else:
+        raise AssertionError('nonobject lifecycle intent accepted')
+    check(path.read_bytes() == before, 'nonobject lifecycle intent changed')
+
+
 def hold():
     controller, effects, root = controller_fixture(); controller.once()
     effects.value['block_status'] = 'needs_human'; effects.value['block_reason'] = 'Tom hold'
@@ -633,6 +718,9 @@ CASES['reviewed_stamp_changed'] = reviewed_stamp_changed
 CASES['execution_receipt_changed'] = execution_receipt_changed
 CASES['execution_original_receipt_changed'] = execution_original_receipt_changed
 CASES['completed_lifecycle_hold'] = completed_lifecycle_hold
+CASES['lifecycle_current'] = lifecycle_current
+CASES['lifecycle_predecessor'] = lifecycle_predecessor
+CASES['lifecycle_unknown'] = lifecycle_unknown
 CASES['loom_view_capability'] = lambda: loom_public_contract('view')
 CASES['loom_cli_source'] = lambda: loom_public_contract('cli')
 CASES['fkanban_contract_version'] = lambda: fkanban_guard_contract('version')
