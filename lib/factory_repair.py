@@ -332,7 +332,9 @@ def validate_admitted_body(body, entry):
 def validate_local(root, raw=None):
     root = Path(root).resolve()
     path = root / 'config/factory-repair-contract.json'
-    raw = read_bytes(path) if raw is None else raw; contract = strict_json(raw)
+    raw = read_bytes(path) if raw is None else raw
+    require(not has_conflict_markers(raw), 'contract-has-merge-conflict-markers')
+    contract = strict_json(raw)
     require(version1(contract.get('version')), 'runtime-contract-version')
     require(contract.get('manifest_path') == 'config/factory-repair-slot.json', 'manifest-path')
     config_path = relative_file(root, contract['manifest_path'])
@@ -359,15 +361,17 @@ def validate_local(root, raw=None):
             'manifest_sha256': contract['manifest_sha256'], 'protected_card_keys': config['protected_card_keys']}
 
 
-def refresh_local(root, add=()):
-    # Re-pin the contract to the bytes in this checkout. Every bin/ or lib/ edit changes a pinned sha256 on the one
-    # contract line, so by hand the edit is easy to forget (red main) and conflicts between concurrent PRs.
-    # The path set is never narrowed. A new bin/ file needs --add. The result must pass validate_local before it is written.
-    root = Path(root).resolve()
-    require((root / '.git').exists(), 'refresh-needs-git-checkout: an install tree is not re-pinned')
-    path = root / 'config/factory-repair-contract.json'
-    raw = read_bytes(path); contract = strict_json(raw)
-    require(version1(contract.get('version')) and contract.get('manifest_path') == 'config/factory-repair-slot.json', 'runtime-contract-shape')
+CONFLICT_MARKER = re.compile(rb'^(?:<<<<<<<|>>>>>>>)(?:[ \t]|\r?$)', re.MULTILINE)
+
+
+def has_conflict_markers(raw):
+    return CONFLICT_MARKER.search(raw) is not None
+
+
+def contract_shape(contract):
+    # The checks that refresh_local needs before it touches a contract. Returns the runtime file entries.
+    require(isinstance(contract, dict) and version1(contract.get('version')) and contract.get('manifest_path') == 'config/factory-repair-slot.json',
+            'runtime-contract-shape')
     files = contract.get('runtime_files')
     require(isinstance(files, list) and 1 <= len(files) <= 512, 'runtime-file-list')
     known = set()
@@ -375,6 +379,75 @@ def refresh_local(root, add=()):
         require(isinstance(entry, dict) and isinstance(entry.get('path'), str), 'runtime-file-entry')
         require(entry['path'] != 'config/factory-repair-contract.json' and entry['path'] not in known, 'runtime-file-duplicate-or-self')
         known.add(entry['path'])
+    return files
+
+
+def contract_conflict_sides(raw):
+    # The contract is one line, so two PRs that pinned different files leave exactly one conflict hunk over the whole file.
+    # Returns (ours, theirs, base) as parsed contracts. base is None unless git wrote a diff3 base section. Anything else is a refusal.
+    sections = {'ours': [], 'base': [], 'theirs': []}; state = 'start'; has_base = False
+    for line in raw.splitlines(keepends=True):
+        bare = line.rstrip(b'\r\n')
+        if state == 'start':
+            require(bare.startswith(b'<<<<<<<'), 'contract-conflict-unreadable: text before the first marker')
+            state = 'ours'
+        elif state == 'end':
+            require(not bare.strip(), 'contract-conflict-unreadable: text after the last marker')
+        elif bare.startswith(b'<<<<<<<') or (state == 'theirs' and (bare.startswith(b'|||||||') or bare.startswith(b'======='))):
+            raise Refusal('contract-conflict-unreadable: more than one conflict hunk, or an extra marker')
+        elif state == 'ours' and bare.startswith(b'|||||||'):
+            state = 'base'; has_base = True
+        elif state in ('ours', 'base') and bare.startswith(b'======='):
+            state = 'theirs'
+        elif state == 'theirs' and bare.startswith(b'>>>>>>>'):
+            state = 'end'
+        else:
+            require(not bare.startswith(b'>>>>>>>') and not (state == 'base' and bare.startswith(b'|||||||')), 'contract-conflict-unreadable: markers out of order')
+            sections[state].append(line)
+    require(state == 'end', 'contract-conflict-unreadable: the conflict has no closing marker')
+    sides = []
+    for label in ('ours', 'theirs') + (('base',) if has_base else ()):
+        try:
+            side = strict_json(b''.join(sections[label])); contract_shape(side)
+        except (ValueError, Refusal) as error:
+            raise Refusal('contract-conflict-unreadable: the ' + label + ' side is not a contract: ' + str(error)) from error
+        sides.append(side)
+    return sides[0], sides[1], (sides[2] if has_base else None)
+
+
+def resolve_conflicted_contract(raw):
+    # Both sides pinned files; refresh_local recomputes every sha256 from the bytes in the tree, so the hashes need no merge.
+    # The path set is the union of the two sides. A diff3 base lets a removal by either side stand. A field that is not a pin
+    # must be equal on both sides, or the conflict is a real edit that this tool does not decide.
+    ours, theirs, base = contract_conflict_sides(raw)
+    for key in sorted((set(ours) | set(theirs)) - {'runtime_files', 'manifest_sha256'}):
+        require(ours.get(key) == theirs.get(key), 'contract-conflict-field: ' + key + ' differs between the two sides')
+    entries = {}
+    for side in (ours, theirs):
+        for entry in side['runtime_files']:
+            entries.setdefault(entry['path'], entry)
+    paths = [{entry['path'] for entry in side['runtime_files']} for side in (ours, theirs)]
+    if base is None:
+        keep = paths[0] | paths[1]
+    else:
+        was = {entry['path'] for entry in base['runtime_files']}
+        keep = (paths[0] & paths[1]) | ((paths[0] | paths[1]) - was)
+    contract = dict(ours); contract['runtime_files'] = [dict(entries[path]) for path in sorted(keep)]
+    return contract
+
+
+def refresh_local(root, add=()):
+    # Re-pin the contract to the bytes in this checkout. Every bin/ or lib/ edit changes a pinned sha256 on the one
+    # contract line, so by hand the edit is easy to forget (red main) and conflicts between concurrent PRs.
+    # The path set is never narrowed. A new bin/ file needs --add. The result must pass validate_local before it is written.
+    # A merge conflict in the contract is resolved here: the pins are rewritten from the bytes anyway (resolve_conflicted_contract).
+    root = Path(root).resolve()
+    require((root / '.git').exists(), 'refresh-needs-git-checkout: an install tree is not re-pinned')
+    path = root / 'config/factory-repair-contract.json'
+    raw = read_bytes(path); conflict = has_conflict_markers(raw)
+    contract = resolve_conflicted_contract(raw) if conflict else strict_json(raw)
+    files = contract_shape(contract)
+    known = {entry['path'] for entry in files}
     added = []
     for relative in add:
         relative_file(root, relative)
@@ -402,7 +475,7 @@ def refresh_local(root, add=()):
         mode = stat.S_IMODE(path.stat().st_mode)
         atomic_json(path, contract); os.chmod(path, mode)
     return {'version': 1, 'result': 'refreshed' if updated != raw else 'current', 'changed': sorted(changed), 'added': added,
-            'contract_sha256': sha(updated)}
+            'resolved_conflict': conflict, 'contract_sha256': sha(updated)}
 
 
 def validate_snapshot(item, slug):
