@@ -36,6 +36,9 @@ Env (defaults):
   LOAD_MON_ALERT_FOOTPRINT_CONSEC 3
   LOAD_MON_ALERT_SYNC_CONSEC   10      passes with sync degraded_reasons set
   LOAD_MON_ALERT_LANES_CONSEC  2       passes with an unhealthy or quarantined persist lane
+  LOAD_MON_ALERT_GOV_CONSEC    3       passes with the memory governor latched purge-failed
+                                       (independent of footprint — fires even when phys_
+                                       footprint stays under the footprint-high gate)
   LOAD_MON_ALERT_SWAP_MB       20480  host swap used (MB)
   LOAD_MON_ALERT_SWAP_CONSEC   3
   LOAD_MON_ALERT_LOAD1         32     host 1-min load average
@@ -149,6 +152,7 @@ FP_MB = envf("LOAD_MON_ALERT_FOOTPRINT_MB", 13107)  # 80% of the 16 GiB guard
 FP_CONSEC = int(envf("LOAD_MON_ALERT_FOOTPRINT_CONSEC", 3))
 SYNC_CONSEC = int(envf("LOAD_MON_ALERT_SYNC_CONSEC", 10))
 LANES_CONSEC = int(envf("LOAD_MON_ALERT_LANES_CONSEC", 2))
+GOV_CONSEC = int(envf("LOAD_MON_ALERT_GOV_CONSEC", 3))
 SWAP_MB = envf("LOAD_MON_ALERT_SWAP_MB", 20480)
 SWAP_CONSEC = int(envf("LOAD_MON_ALERT_SWAP_CONSEC", 3))
 LOAD1 = envf("LOAD_MON_ALERT_LOAD1", 32)
@@ -1097,6 +1101,7 @@ ALERT_SCOPE = {
     "fleet_freeze_watchdog_down":      (("routinesd",), "other",   "warn"),
     "registry_delivery_frozen":        (("host-track",), "other",  "warn"),
     "lastdb_persist_lanes_unhealthy":  (("lastdbd",),   "other",   "warn"),
+    "lastdb_governor_purge_failed":    (("lastdbd",),   "other",   "warn"),
     "node_unresponsive":               (("lastdbd",),   "other",   "warn"),
     "lastdbd_restarted":               (("lastdbd",),   "restart", "info"),
     "lastdb_sync_degraded":            (("lastdbd",),   "other",   "info"),
@@ -1186,6 +1191,14 @@ def evaluate_alerts(rec, now):
     st["sync_bad"] = st.get("sync_bad", 0) + 1 if v.get("sync_why") else 0
     lanes_bad = bool(v.get("pl_unhealthy") or v.get("pl_quarantined"))
     st["lanes_bad"] = st.get("lanes_bad", 0) + 1 if lanes_bad else 0
+    # Gated on the STATE, not a duration field (the collector has none from
+    # vitals) and not a bare bool: governor_state is reassigned every tick from
+    # whether the LATEST purge succeeded, so a one-tick "purge-failed" reading is
+    # ordinary pressure response and clears on the next successful purge. Only a
+    # sustained read (this consecutive-pass counter) is the latch this exists to
+    # catch. A benign state such as "evicting" must never satisfy this — the gate
+    # is an exact match on "purge-failed", the governor's own most severe state.
+    st["gov_bad"] = st.get("gov_bad", 0) + 1 if v.get("gov") == "purge-failed" else 0
     swap = rec["host"].get("swap_used_mb")
     st["swap_hot"] = st.get("swap_hot", 0) + 1 if swap is not None and swap >= SWAP_MB else 0
     load = rec["host"].get("load") or [0]
@@ -1243,6 +1256,11 @@ def evaluate_alerts(rec, now):
          % (load[0], LOAD1, st["load_hot"], hog[0] if hog else "-")),
         ("host_process_hog", st["hog_hot"] >= HOG_CONSEC,
          "%s at >= %d%% CPU for %d passes" % (hog_name, HOG_PCT, st["hog_hot"])),
+        ("lastdb_governor_purge_failed", st["gov_bad"] >= GOV_CONSEC,
+         "LastDB memory governor latched purge-failed for %d passes: the governor "
+         "cannot free memory on repeated purge attempts (independent of footprint; "
+         "this can fire while phys_footprint stays under the %d MB footprint-high gate)"
+         % (st["gov_bad"], FP_MB)),
         ("lastdbd_footprint_high", st["fp_hot"] >= FP_CONSEC,
          "lastdbd footprint %s MB >= %d MB for %d passes (gov=%s)" % (v.get("fp_mb"), FP_MB, st["fp_hot"], v.get("gov"))),
         ("lastdb_persist_lanes_unhealthy", st["lanes_bad"] >= LANES_CONSEC,
