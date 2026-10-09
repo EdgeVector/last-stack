@@ -65,6 +65,12 @@ case "$cmd" in
         ms-other-ns)
           printf '{"slug":"ms-other-ns","state":"active","north_star":"ns-b"}\n'
           ;;
+        ms-blocked)
+          printf '{"slug":"ms-blocked","state":"blocked","north_star":"ns-a"}\n'
+          ;;
+        ms-abandoned)
+          printf '{"slug":"ms-abandoned","state":"abandoned","north_star":"ns-a"}\n'
+          ;;
         *)
           exit 1
           ;;
@@ -346,6 +352,54 @@ conflict_repair_rc=$?
 set -e
 [ "$conflict_repair_rc" -eq 2 ] || fail "repair conflict must still exit 2, got $conflict_repair_rc"
 [ -s "$tmp/add.log" ] && fail "repair conflict wrote add: $(cat "$tmp/add.log")"
+
+# A blocked milestone still refuses --column todo, even for work-class
+# repair: the todo gate is not weakened by this carve-out.
+# papercut-file-pr-refuses-backlog-under-blocked-milestone-20261006
+: >"$tmp/add.log"
+set +e
+"$bin" blocked-todo --board-cli "$fake_kanban" --title "x" --repo EdgeVector/last-stack \
+  --north-star ns-a --milestone ms-blocked --work-class repair --column todo <"$body_ok" >/dev/null 2>&1
+blocked_todo_rc=$?
+set -e
+[ "$blocked_todo_rc" -eq 2 ] || fail "blocked milestone must still refuse --column todo, got $blocked_todo_rc"
+[ -s "$tmp/add.log" ] && fail "blocked todo wrote add: $(cat "$tmp/add.log")"
+
+# A blocked milestone still refuses backlog for work-class feature (the
+# default): only work-class repair is permitted through.
+: >"$tmp/add.log"
+set +e
+"$bin" blocked-feature --board-cli "$fake_kanban" --title "x" --repo EdgeVector/last-stack \
+  --north-star ns-a --milestone ms-blocked --column backlog <"$body_ok" >/dev/null 2>&1
+blocked_feature_rc=$?
+set -e
+[ "$blocked_feature_rc" -eq 2 ] || fail "blocked milestone must still refuse a feature-class backlog card, got $blocked_feature_rc"
+[ -s "$tmp/add.log" ] && fail "blocked feature wrote add: $(cat "$tmp/add.log")"
+
+# A non-blocked non-live state (abandoned) still refuses even for
+# backlog+repair: the carve-out is scoped to state=blocked only, because
+# abandoned/unknown usually means the milestone slug itself is wrong.
+: >"$tmp/add.log"
+set +e
+"$bin" abandoned-repair --board-cli "$fake_kanban" --title "x" --repo EdgeVector/last-stack \
+  --north-star ns-a --milestone ms-abandoned --column backlog --work-class repair <"$body_ok" >/dev/null 2>&1
+abandoned_repair_rc=$?
+set -e
+[ "$abandoned_repair_rc" -eq 2 ] || fail "abandoned milestone must still refuse a backlog repair card, got $abandoned_repair_rc"
+[ -s "$tmp/add.log" ] && fail "abandoned repair wrote add: $(cat "$tmp/add.log")"
+
+# The carve-out itself: backlog + work-class repair + state=blocked files.
+: >"$tmp/add.log"
+: >"$tmp/add.body"
+blocked_repair_out="$("$bin" blocked-repair --board-cli "$fake_kanban" --title "Fix the gate" \
+  --repo EdgeVector/last-stack --north-star ns-a --milestone ms-blocked \
+  --column backlog --work-class repair <"$body_ok" 2>&1)" \
+  || fail "backlog repair card under a blocked milestone should file: $blocked_repair_out"
+grep -q 'blocked-repair' "$tmp/add.log" || fail "blocked-repair card not filed: $(cat "$tmp/add.log")"
+grep -q -- '--milestone ms-blocked' "$tmp/add.log" || fail "blocked-repair add log ms: $(cat "$tmp/add.log")"
+grep -q -- '--column backlog' "$tmp/add.log" || fail "blocked-repair add log column: $(cat "$tmp/add.log")"
+printf '%s\n' "$blocked_repair_out" | grep -q 'milestone ms-blocked is blocked; filing blocked-repair as a backlog repair card anyway' \
+  || fail "blocked-repair stderr must say why: $blocked_repair_out"
 
 # One refusal names every missing section, and says VERIFY is not END STATE.
 # papercut-file-pr-end-state-required-after-verify-only-20260923
