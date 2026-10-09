@@ -181,11 +181,14 @@ hard_delete_bar_eval() {
 # kanban against the probe copy only. FOLDDB_SOCKET_PATH wins over every other
 # socket source in the kanban CLI (src/config.ts resolveSocketPath), the same
 # route op_lat_scan uses. $1 = copy, $2 = copy socket, rest = kanban args.
+# PROBE_CLI_HOME, when set, is the HOME whose kanban config pins the copy's
+# schema hashes (a synthetic seed pins hashes the primary does not).
 hd_kanban_on_copy() {
   local copy="$1" sock="$2" deadline="$HARD_DELETE_KANBAN_DEADLINE_SECS"
   shift 2
   [ "${1:-}" != rm ] || deadline="$HARD_DELETE_RM_DEADLINE_SECS"
-  run_op_with_deadline "$deadline" env FOLDDB_SOCKET_PATH="$sock" LASTDB_HOME="$copy" FOLDDB_HOME="$copy" \
+  run_op_with_deadline "$deadline" env ${PROBE_CLI_HOME:+"HOME=$PROBE_CLI_HOME"} \
+    FOLDDB_SOCKET_PATH="$sock" LASTDB_HOME="$copy" FOLDDB_HOME="$copy" \
     kanban "$@"
 }
 
