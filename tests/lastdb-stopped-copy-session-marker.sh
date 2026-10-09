@@ -24,6 +24,7 @@ start_ts=12345
 mkdir -p "$home/data/data"
 printf 'identity fixture\n' >"$home/identity.key"
 printf '{"paused":true}\n' >"$home/cloud_sync.json.paused"
+: >"$home/.cloud_resume_required"
 printf 'one record\n' >"$home/data/data/record"
 
 write_session() {
@@ -43,16 +44,16 @@ LIVE_SOCKET=0
 lastdb_launchd_job_loaded() { [ "$SUPERVISOR_LOADED" -eq 1 ]; }
 live_unix_socket_has_listener() { [ "$LIVE_SOCKET" -eq 1 ]; }
 
-session_sha="$(verify_stopped_waiver_session "$home" "$pid" "$start_ts" gui/501/test)"
+session_sha="$(verify_stopped_session "$home" "$pid" "$start_ts" gui/501/test)"
 [ -n "$session_sha" ] || { echo 'FAIL: clean stopped session had no hash' >&2; exit 1; }
 
 SUPERVISOR_LOADED=1
-if verify_stopped_waiver_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
+if verify_stopped_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
   echo 'FAIL: loaded supervisor passed stopped session check' >&2; exit 1
 fi
 SUPERVISOR_LOADED=0
 LIVE_SOCKET=1
-if verify_stopped_waiver_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
+if verify_stopped_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
   echo 'FAIL: live socket passed stopped session check' >&2; exit 1
 fi
 LIVE_SOCKET=0
@@ -61,7 +62,7 @@ sleep 30 &
 ACTIVE_PID=$!
 write_session "$ACTIVE_PID" "$start_ts"
 write_ledger "$ACTIVE_PID" "$start_ts" clean
-if verify_stopped_waiver_session "$home" "$ACTIVE_PID" "$start_ts" gui/501/test >/dev/null; then
+if verify_stopped_session "$home" "$ACTIVE_PID" "$start_ts" gui/501/test >/dev/null; then
   echo 'FAIL: live process passed stopped session check' >&2; exit 1
 fi
 kill "$ACTIVE_PID"
@@ -70,56 +71,56 @@ ACTIVE_PID=""
 
 write_session "$((pid + 1))" "$start_ts"
 write_ledger "$pid" "$start_ts" clean
-if verify_stopped_waiver_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
+if verify_stopped_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
   echo 'FAIL: wrong session PID passed' >&2; exit 1
 fi
 write_session "$pid" "$((start_ts + 1))"
-if verify_stopped_waiver_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
+if verify_stopped_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
   echo 'FAIL: wrong session start time passed' >&2; exit 1
 fi
 write_session "$pid" "$start_ts"
 printf '{"pid":%s,"start_ts":%s,"last_heartbeat_ts":%s}\n' \
   "$pid" "$start_ts" "$((start_ts + 2))" >>"$home/current-session.json"
-if verify_stopped_waiver_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
+if verify_stopped_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
   echo 'FAIL: two session documents passed' >&2; exit 1
 fi
 write_session "$pid" "$start_ts"
 
 write_ledger "$pid" "$start_ts" shutdown_started
-if verify_stopped_waiver_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
+if verify_stopped_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
   echo 'FAIL: unclean ledger passed' >&2; exit 1
 fi
 write_ledger "$pid" "$start_ts" clean
 printf '{"pid":%s,"start_ts":%s,"end_ts":%s,"exit":"clean"}\n' \
   "$pid" "$start_ts" "$((start_ts + 4))" >>"$home/sessions.jsonl"
-if verify_stopped_waiver_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
+if verify_stopped_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
   echo 'FAIL: duplicate ledger row passed' >&2; exit 1
 fi
 write_ledger "$pid" "$start_ts" clean
 printf 'null\n' >>"$home/sessions.jsonl"
-if verify_stopped_waiver_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
+if verify_stopped_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
   echo 'FAIL: null ledger row passed' >&2; exit 1
 fi
 write_ledger "$pid" "$start_ts" clean
 printf '{}\n' >>"$home/sessions.jsonl"
-if verify_stopped_waiver_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
+if verify_stopped_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
   echo 'FAIL: empty ledger row passed' >&2; exit 1
 fi
 write_ledger "$pid" "$start_ts" clean
 printf '{bad json\n' >>"$home/sessions.jsonl"
-if verify_stopped_waiver_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null 2>&1; then
+if verify_stopped_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null 2>&1; then
   echo 'FAIL: malformed ledger line passed' >&2; exit 1
 fi
 write_ledger "$pid" "$start_ts" clean
 
 unlink "$home/current-session.json"
 ln -s "$TEST_ROOT/old-session.json" "$home/current-session.json"
-if verify_stopped_waiver_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
+if verify_stopped_session "$home" "$pid" "$start_ts" gui/501/test >/dev/null; then
   echo 'FAIL: symlink session passed' >&2; exit 1
 fi
 unlink "$home/current-session.json"
 write_session "$pid" "$start_ts"
-session_sha="$(verify_stopped_waiver_session "$home" "$pid" "$start_ts" gui/501/test)"
+session_sha="$(verify_stopped_session "$home" "$pid" "$start_ts" gui/501/test)"
 
 decision=decision-2026-10-06-cloud-sync-rescue-risk-acceptance
 python3 "$ROOT/skills/lastdb-safe-upgrade/scripts/claim-stopped-copy-waiver.py" \
@@ -165,11 +166,33 @@ cmp -s "$home/current-session.json" "$TEST_ROOT/old-session.json" \
 
 printf '{"version":1,"pid":%s,"start_ts":%s,"flush_ok":true}\n' \
   "$pid" "$start_ts" >"$home/.shutdown_flush_ready"
-if copy_stopped_home "$home" "$TEST_ROOT/receipt-copy" "$timeout_bin" \
-  "$before_free" receipt >"$TEST_ROOT/receipt.out" 2>&1; then
-  echo 'FAIL: receipt mode accepted a retained session marker' >&2; exit 1
-fi
+receipt_sha="$(verify_stopped_receipt_session "$home" "$pid" "$start_ts" gui/501/test)"
+[ "$receipt_sha" = "$session_sha" ] \
+  || { echo 'FAIL: receipt mode did not bind the stopped session' >&2; exit 1; }
+copy_stopped_home "$home" "$TEST_ROOT/receipt-copy" "$timeout_bin" \
+  "$before_free" receipt "$receipt_sha"
+validate_shutdown_receipt "$TEST_ROOT/receipt-copy" "$pid" "$start_ts"
+[ ! -e "$TEST_ROOT/receipt-copy/current-session.json" ] \
+  || { echo 'FAIL: receipt copy retained the stale session marker' >&2; exit 1; }
 cmp -s "$home/current-session.json" "$TEST_ROOT/old-session.json" \
-  || { echo 'FAIL: receipt rejection changed the primary session bytes' >&2; exit 1; }
+  || { echo 'FAIL: receipt copy changed the primary session bytes' >&2; exit 1; }
 
-printf 'PASS: stopped waiver checks old session and removes only staged marker\n'
+printf '{"version":1,"pid":%s,"start_ts":%s,"flush_ok":true}\n' \
+  "$((pid + 1))" "$start_ts" >"$home/.shutdown_flush_ready"
+if verify_stopped_receipt_session "$home" "$pid" "$start_ts" gui/501/test \
+  >"$TEST_ROOT/receipt-wrong-pid.out" 2>&1; then
+  echo 'FAIL: receipt for another PID passed' >&2; exit 1
+fi
+unlink "$home/.shutdown_flush_ready"
+if verify_stopped_receipt_session "$home" "$pid" "$start_ts" gui/501/test \
+  >"$TEST_ROOT/receipt-absent.out" 2>&1; then
+  echo 'FAIL: absent receipt passed' >&2; exit 1
+fi
+printf '{"version":1,"pid":%s,"start_ts":%s,"flush_ok":true}\n' \
+  "$pid" "$start_ts" >"$home/.shutdown_flush_ready"
+unlink "$home/current-session.json"
+no_session_sha="$(verify_stopped_receipt_session "$home" "$pid" "$start_ts" gui/501/test)"
+[ -z "$no_session_sha" ] \
+  || { echo 'FAIL: an absent session marker returned a hash' >&2; exit 1; }
+
+printf 'PASS: stopped session gates accept a receipt and remove only the copied marker\n'

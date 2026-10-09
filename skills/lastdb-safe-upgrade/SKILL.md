@@ -97,6 +97,9 @@ The script stops the candidate, verifies its flush receipt, makes one APFS
 copy, and restarts the same candidate. It writes `.cloud_backup_source_copy`
 to the final copy after restart checks pass. The marker binds the copy to the
 stopped PID and session start time. The copy has no cloud backup request.
+If `current-session.json` remains, the script checks it against the clean
+session ledger and exact flush receipt. It removes that file from the copy
+only. A missing or mismatched receipt stops the copy.
 After the script reports `STOPPED_COPY=green`, run the candidate `lastdb`
 one-shot `cloud backup-while-off` command on that copy. Keep the copy until
 the cloud backup and a fresh restore both pass. The live home remains Off.
