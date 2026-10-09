@@ -4,6 +4,7 @@
 #
 # Usage (from a portal, or with --portal):
 #   last-stack-portal-wt start <branch-or-slug>   # fetch venue tip + worktree
+#                                                 # (a branch origin already has starts from its origin tip)
 #   last-stack-portal-wt list
 #   last-stack-portal-wt path
 #   last-stack-portal-wt rm <branch-or-slug-or-dir>  # same ids as start
@@ -287,6 +288,97 @@ start_base_ref() {
   fi
 }
 
+# The remote to ask about a single branch: `origin` as ensure_cache does, or the
+# portal remote for a mirror provisioned without an `origin`.
+lookup_remote() {
+  if $GIT -C "$CACHE" remote get-url origin >/dev/null 2>&1; then
+    printf 'origin\n'
+  else
+    printf '%s\n' "$REMOTE"
+  fi
+}
+
+# Print the oid of refs/heads/<branch> on <remote>. Return 0 when the remote has
+# it, 1 when the remote answered and has no such branch, 2 when the lookup itself
+# failed (network, credentials). A caller may cut a fresh branch off main only on
+# 1: a failed lookup is not an absent branch.
+remote_branch_oid() {
+  local remote="$1" branch="$2" out rc=0
+  out="$($GIT -C "$CACHE" ls-remote --exit-code --heads "$remote" "refs/heads/$branch" 2>/dev/null)" || rc=$?
+  case "$rc" in
+    0) ;;
+    2) return 1 ;;
+    *) return 2 ;;
+  esac
+  awk -v ref="refs/heads/$branch" '$2 == ref { print $1; found = 1 } END { exit !found }' <<<"$out" \
+    || return 1
+}
+
+# Decide what `wt start <branch>` checks out. ensure_cache fetches only <main>, so
+# a branch that exists only on origin (an open PR head) is unknown to the mirror.
+# Cutting a fresh branch off main for it hid the PR's commits, and the next push
+# would have replaced them
+# (papercut-portal-wt-start-existing-branch-discards-commits-20260928).
+# Sets START_REF to the ref to cut the branch from, or "" when the mirror's own
+# refs/heads/<branch> is to be checked out as it is.
+START_REF=""
+resolve_start_branch() {
+  local branch="$1" remote lookup=0 remote_oid="" local_oid="" remote_tip="" counts
+  START_REF=""
+  remote="$(lookup_remote)"
+  remote_oid="$(remote_branch_oid "$remote" "$branch")" || lookup=$?
+  local_oid="$($GIT -C "$CACHE" rev-parse -q --verify "refs/heads/$branch" 2>/dev/null || true)"
+
+  case "$lookup" in
+    1)
+      # Origin answered: it has no such branch.
+      if [ -z "$local_oid" ]; then
+        printf 'portal-wt: new branch %s off %s (origin has no such branch)\n' "$branch" "$MAIN_REF" >&2
+        START_REF="$(start_base_ref)"
+      fi
+      return 0
+      ;;
+    2)
+      if [ -n "$local_oid" ]; then
+        printf 'portal-wt: WARNING could not ask origin about %s; reusing the mirror branch unchecked (%s)\n' \
+          "$branch" "${local_oid:0:9}" >&2
+        return 0
+      fi
+      die "could not ask origin whether branch $branch exists; refusing to start a fresh branch off $MAIN_REF (retry; check network and credentials)"
+      ;;
+  esac
+
+  # Origin has the branch: bring its tip into the mirror before anything else.
+  $GIT -C "$CACHE" fetch --quiet "$remote" \
+    "+refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null \
+    || die "origin has branch $branch but fetching it failed; refusing to start it from $MAIN_REF"
+  remote_tip="$($GIT -C "$CACHE" rev-parse -q --verify "refs/remotes/origin/$branch" 2>/dev/null || true)"
+  [ -n "$remote_tip" ] || die "origin has branch $branch but the fetch left no refs/remotes/origin/$branch"
+
+  if [ -z "$local_oid" ]; then
+    printf 'portal-wt: starting %s from origin/%s (%s)\n' "$branch" "$branch" "${remote_tip:0:9}" >&2
+    START_REF="refs/remotes/origin/$branch"
+    return 0
+  fi
+  [ "$local_oid" != "$remote_tip" ] || return 0
+  if $GIT -C "$CACHE" merge-base --is-ancestor "$local_oid" "$remote_tip" 2>/dev/null; then
+    # The mirror's branch is only behind origin: moving it loses nothing.
+    if $GIT -C "$CACHE" branch -f "$branch" "$remote_tip" >/dev/null 2>&1; then
+      printf 'portal-wt: fast-forwarded mirror branch %s %s -> %s (origin is ahead)\n' \
+        "$branch" "${local_oid:0:9}" "${remote_tip:0:9}" >&2
+    else
+      printf 'portal-wt: WARNING mirror branch %s (%s) is behind origin (%s) and could not be fast-forwarded\n' \
+        "$branch" "${local_oid:0:9}" "${remote_tip:0:9}" >&2
+    fi
+  elif $GIT -C "$CACHE" merge-base --is-ancestor "$remote_tip" "$local_oid" 2>/dev/null; then
+    printf 'portal-wt: mirror branch %s is ahead of origin (%s vs %s); keeping the local commits\n' \
+      "$branch" "${local_oid:0:9}" "${remote_tip:0:9}" >&2
+  else
+    printf 'portal-wt: WARNING mirror branch %s and origin/%s diverged (local %s, origin %s); keeping the local commits, a push would be rejected\n' \
+      "$branch" "$branch" "${local_oid:0:9}" "${remote_tip:0:9}" >&2
+  fi
+}
+
 cmd_fetch() {
   read_portal
   ensure_cache
@@ -534,11 +626,14 @@ cmd_start() {
   fi
   prune_missing_registrations
 
-  if $GIT -C "$CACHE" show-ref --verify --quiet "refs/heads/$branch"; then
+  resolve_start_branch "$branch"
+  if [ -z "$START_REF" ]; then
     $GIT -C "$CACHE" worktree add --quiet "$path" "$branch"
   else
-    $GIT -C "$CACHE" worktree add --quiet -b "$branch" "$path" "$(start_base_ref)"
+    $GIT -C "$CACHE" worktree add --quiet -b "$branch" "$path" "$START_REF"
   fi
+  printf 'portal-wt: %s checked out at %s\n' "$branch" \
+    "$($GIT -C "$path" rev-parse --short HEAD 2>/dev/null || echo unknown)" >&2
 
   # Drop a small marker so agents know this is the work surface.
   # Never write absolute local paths (home dirs leak host usernames into git if
