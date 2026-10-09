@@ -192,6 +192,9 @@ def stub_github_only(cmd, timeout=0):
 resolved = fh.resolve_ships(None, True, now=now, runner=stub_github_only)
 check("resolve uses github when dashboard is absent", resolved.source, "github")
 check("resolve github last_h", resolved.last_h, 2.0)
+# Every repo, EdgeVector/lastgit included, is on GitHub (2026-10-08): the direct
+# read makes no Forgejo call at all, so a stopped Forgejo costs nothing.
+check("only gh is called (no Forgejo read)", all(c[0] == "gh" for c in gh_calls), True)
 gh_cmd = next(c for c in gh_calls if c[0] == "gh")
 check("gh search prs is the reader", gh_cmd[1:3], ["search", "prs"])
 check("gh search is merged-only", "--merged" in gh_cmd, True)
@@ -308,13 +311,13 @@ def stub_forge_only(cmd, timeout=0):
     return 1, "", "unexpected " + path
 
 
+# 2026-10-08: Forgejo is not a ship source any more (lastgit moved to GitHub).
+# With gh failing, the partial dashboard is kept as the unavailable read and the
+# stub Forgejo is never asked.
 fell = fh.resolve_ships(dash_partial, True, now=fg_now, runner=stub_forge_only)
-check("unavailable dashboard falls back to forgejo", fell.source, "forgejo")
-check("forgejo fallback counts completed hour", fell.last_h, 1.0)
-check("forgejo fallback h24", fell.h24, 2.0)
-check("idle repo pulls are not read", any("repos/EdgeVector/idle/" in c for c in fg_calls), False)
-check("mirror repo pulls are not read", any("old-mirror" in c for c in fg_calls), False)
-check("pull pages are small", any("limit=20&page=1" in c for c in fg_calls), True)
+check("gh down + partial dashboard keeps the dashboard read", fell.source, "dashboard")
+check("gh down + partial dashboard: h24 stays None", fell.h24, None)
+check("no Forgejo call is made", any(c.startswith(("orgs/", "repos/")) for c in fg_calls), False)
 
 
 def stub_all_fail(cmd, timeout=0):
@@ -338,7 +341,8 @@ unk = fh.ships_from_dashboard(dash_unknown, True)
 check("unknown > count is not a measurement", unk.available if unk else None, False)
 check("unknown > count h24 is None", unk.h24 if unk else "no-read", None)
 fell_unk = fh.resolve_ships(dash_unknown, True, now=fg_now, runner=stub_forge_only)
-check("unknown-heavy dashboard falls back to forgejo", fell_unk.source, "forgejo")
+check("unknown-heavy dashboard with gh down keeps the dashboard read", fell_unk.source, "dashboard")
+check("unknown-heavy dashboard with gh down: h24 stays None", fell_unk.h24, None)
 dash_few_unknown = json.loads(json.dumps(dash_unknown))
 dash_few_unknown["velocity"]["ships"]["h24"].update({"count": 40, "unknown": 3})
 few = fh.ships_from_dashboard(dash_few_unknown, True)

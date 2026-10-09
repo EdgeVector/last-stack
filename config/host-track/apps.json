@@ -18,8 +18,10 @@
       "install_mode": "checkout",
       "kind": "checkout-shim",
       "command": "lastgit",
-      "gate": "forgejo",
-      "gate_main": "http://localhost:3300/EdgeVector/lastgit.git#main",
+      "gate": "github",
+      "gate_main": "https://github.com/EdgeVector/lastgit.git#main",
+      "gate_remote": "https://github.com/EdgeVector/lastgit.git",
+      "gate_ref": "refs/heads/main",
       "host_track": "$HOME/.lastgit/host-checkout/lastgit",
       "refresh": "$HOME/.lastgit/host-checkout/lastgit/.lastgit/refresh-host.sh",
       "artifact_app": "lastgit",
@@ -41,7 +43,7 @@
         "owner": "platform",
         "rationale": "LastGit remains checkout-backed so LastGit fixes can still be built when the artifact/CR substrate itself is unhealthy."
       },
-      "notes": "LastGit is the bootstrap forge and stays checkout-backed until its artifact producer is independent of LastGit itself.",
+      "notes": "LastGit is the bootstrap forge and stays checkout-backed until its artifact producer is independent of LastGit itself. The gate of record is GitHub EdgeVector/lastgit since 2026-10-08 (the local Forgejo is retired, EdgeVector/lastgit#5); the host checkout at host_track must have its origin repointed to the GitHub URL.",
       "requires": [
         "lastdbd"
       ]

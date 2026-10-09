@@ -433,9 +433,10 @@ def github_merged_times(
 ) -> Optional[list[float]]:
     """Merged GitHub PR timestamps across one org, or None when `gh` failed.
 
-    Every EdgeVector repo except `lastgit` is on GitHub (decision-2026-09-29-
-    retire-lastgit-all-repos-to-github). One search call reads the fleet; the
-    closedAt of a merged PR is its merge time.
+    Every EdgeVector repo is on GitHub (decision-2026-09-29-
+    retire-lastgit-all-repos-to-github; `lastgit`, the last one, moved on
+    2026-10-08). One search call reads the fleet; the closedAt of a merged PR is
+    its merge time.
     """
     runner = runner or run
     now = time.time() if now is None else now
@@ -475,6 +476,8 @@ def github_merged_times(
     return times
 
 
+# Kept for a later cleanup. Nothing calls forgejo_merged_times() any more: every
+# EdgeVector repo is on GitHub, so the ship meter has no Forgejo source.
 FORGEJO_PAGE_LIMIT = 20
 FORGEJO_MAX_PAGES = 5
 
@@ -578,7 +581,7 @@ def resolve_ships(
     now: Optional[float] = None,
     runner=None,
 ) -> ShipRead:
-    """Dashboard merge-derived first, then GitHub (plus Forgejo for the lastgit repo). Never board cards."""
+    """Dashboard merge-derived first, then GitHub (every repo). Never board cards."""
     dash = ships_from_dashboard(factory, use_completed_hour)
     if dash is not None and dash.available:
         return dash
@@ -593,21 +596,17 @@ def _resolve_ships_direct(
     now: Optional[float] = None,
     runner=None,
 ) -> ShipRead:
-    """GitHub, plus Forgejo (the `lastgit` repo only). Used when the dashboard is absent or unavailable."""
+    """GitHub only: every EdgeVector repo is on GitHub (`lastgit` was the last, 2026-10-08).
+
+    Used when the dashboard is absent or unavailable. This used to add a Forgejo
+    read for the `lastgit` repo; with no repo on Forgejo that read only cost a
+    call that fails once Forgejo stops, so a failed `gh` read is `unavailable`.
+    """
     gh = github_merged_times(since_h=26.0, runner=runner, now=now)
-    fg = forgejo_merged_times(since_h=26.0, runner=runner, now=now)
-    if gh is None and fg is None:
-        return ShipRead.missing("unavailable")
     if gh is None:
-        # GitHub is where nearly every merge lands; Forgejo alone is a
-        # partial read, so it is only a fallback when it saw a merge.
-        if not fg:
-            return ShipRead.missing("unavailable")
-        return ships_from_merge_times(
-            fg, now=now, use_completed_hour=use_completed_hour, source="forgejo"
-        )
+        return ShipRead.missing("unavailable")
     return ships_from_merge_times(
-        gh + (fg or []), now=now, use_completed_hour=use_completed_hour, source="github"
+        gh, now=now, use_completed_hour=use_completed_hour, source="github"
     )
 
 

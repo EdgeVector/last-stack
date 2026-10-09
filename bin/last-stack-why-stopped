@@ -248,9 +248,18 @@ fi
 
 # --- Class C: forge runners ---
 # Only the merge-gate runner is checked: the repo-scoped host runner served fold,
-# which is on GitHub since 2026-09-29. Only the lastgit repo still gates on Forgejo.
+# which is on GitHub since 2026-09-29. The merge-gate runner gated the lastgit repo,
+# the last Forgejo repo, which moved to GitHub on 2026-10-08: the lane policy
+# (config/forge-runner-lanes.json merge_gate.retired) then says no runner is needed,
+# and a stopped Forgejo must not read as a frozen factory (Class C).
 fold_ci_down=0
-for agent in com.edgevector.forgejo-runner; do
+forge_lanes_cfg="${LASTSTACK_WHY_STOPPED_FORGE_LANES_CONFIG:-${LAST_STACK_FORGE_LANES_CONFIG:-$ROOT/config/forge-runner-lanes.json}}"
+forge_agents=(com.edgevector.forgejo-runner)
+if command -v jq >/dev/null 2>&1 && [ -f "$forge_lanes_cfg" ] \
+   && jq -e '.merge_gate.retired == true' "$forge_lanes_cfg" >/dev/null 2>&1; then
+  forge_agents=()
+fi
+for agent in ${forge_agents[@]+"${forge_agents[@]}"}; do
   if ! launchctl print "gui/$(id -u)/$agent" >/dev/null 2>&1; then
     fold_ci_down=1
     detail+=("launchd missing $agent")

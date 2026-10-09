@@ -1,5 +1,5 @@
-# Default Forgejo repos for merge-class demand (merge-babysit inventory).
-# Only EdgeVector/lastgit stays on Forgejo (Tom, 2026-09-29). Every other repo is on GitHub: see
-# merge-demand-github-repos. LastGit and the gaming PC are retired.
+# Forgejo repos for merge-class demand (merge-babysit inventory).
+# EMPTY on purpose (Tom, 2026-10-08): every EdgeVector repo is on GitHub, including
+# EdgeVector/lastgit (its migration PR is EdgeVector/lastgit#5). Forgejo is being
+# retired. Read every repo from config/merge-demand-github-repos.
 # One owner/name per line. LAST_STACK_MERGE_DEMAND_FORGE_REPOS overrides.
-EdgeVector/lastgit
