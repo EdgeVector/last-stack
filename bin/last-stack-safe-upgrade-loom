@@ -295,6 +295,29 @@ if [ -n "${LOOM_EXEC_ID:-}" ]; then
   unset LOOM_EXEC_ID
 fi
 
+# Reserve the candidate pair against the hourly worktree reclaim. PROBE and
+# CUTOVER run up to an hour apart, and nothing executes from the pair between
+# them, so the reclaim's live-process check cannot see it. Under disk pressure
+# it stripped a cloud-sync candidate's target/ in that gap on 2026-10-08 and the
+# CUTOVER died with "No such file or directory". The reservation expires on its
+# own; a failed run keeps it so `--retry` still finds the same bytes.
+RESERVE_DIR="${LAST_STACK_RECLAIM_RESERVE_DIR:-$HOME/.local/state/last-stack/lastdb-safe-upgrade/candidate-reservations}"
+RESERVE_FILE="$RESERVE_DIR/$KEY.reserve"
+RESERVE_HOURS="${LAST_STACK_SAFE_UPGRADE_RESERVE_HOURS:-8}"
+case "$RESERVE_HOURS" in ''|*[!0-9]*) RESERVE_HOURS=8 ;; esac
+if mkdir -p "$RESERVE_DIR" 2>/dev/null; then
+  reserve_expiry=$(( $(date -u +%s) + RESERVE_HOURS * 3600 ))
+  if printf '%s\t%s\n%s\t%s\n' "$reserve_expiry" "$CAND" "$reserve_expiry" "$CAND_CLI" >"$RESERVE_FILE.tmp.$$" 2>/dev/null \
+    && mv "$RESERVE_FILE.tmp.$$" "$RESERVE_FILE" 2>/dev/null; then
+    printf 'last-stack-safe-upgrade-loom: reserved candidate pair until epoch %s: %s\n' "$reserve_expiry" "$RESERVE_FILE" >&2
+  else
+    rm -f "$RESERVE_FILE.tmp.$$" 2>/dev/null || true
+    printf 'last-stack-safe-upgrade-loom: WARN: could not write the candidate reservation; disk reclaim may remove the pair\n' >&2
+  fi
+else
+  printf 'last-stack-safe-upgrade-loom: WARN: could not create %s; disk reclaim may remove the pair\n' "$RESERVE_DIR" >&2
+fi
+
 # The local run drives the graph to its end in this process. It does not read
 # LastDB, so the CUTOVER restart cannot make the execution unreadable, and no
 # `loom show` readback is needed (`loom show` reads LastDB, not the journal).
@@ -311,6 +334,12 @@ state="$(printf '%s\n' "$view" | awk -F': ' '/^state:/{print $2; exit}')"
 
 outcome="error"
 [ "$loom_rc" -eq 0 ] && [ "$status" = "succeeded" ] && outcome="ok"
+
+# Release the reservation only when the upgrade is done. A failed run may be
+# retried with the same bytes, so its reservation stays until it expires.
+if [ "$outcome" = "ok" ]; then
+  rm -f "$RESERVE_FILE" 2>/dev/null || true
+fi
 
 # Project the journal into LastDB so Loom readers see the run. This is a
 # report, not a gate: a slow or down node leaves the receipt pending in the
