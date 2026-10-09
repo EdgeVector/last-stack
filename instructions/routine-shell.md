@@ -25,6 +25,8 @@ fix, and the command does not run.
 | zsh-mapfile (Claude) | zsh has no `mapfile` | `while IFS= read -r x; do ...; done < "$file"` |
 | zsh-word-split (Claude) | `for x in $VAR` does not split; one pass over the whole string | `FILES=(a b c)` and `for x in "${FILES[@]}"`, in a bash script file |
 | zsh-cond-flag-expansion (Claude) | `${v:+--flag "$x"}` unquoted stays ONE word in zsh (bash splits it); a CLI sees one bad argument, not two | `args=(); [ -n "$x" ] && args+=(--flag "$x"); cmd "${args[@]}"` |
+| zsh-nomatch-query (Claude) | an unquoted `?name=` word such as `gh api repos/o/r/commits/abc?per_page=1`: zsh reads `?` as a glob, aborts BEFORE the command runs, and a pipeline still exits 0 with an empty capture | quote the URL: `gh api 'repos/o/r/commits/abc?per_page=1'` |
+| zsh-modifier-expansion (Claude) | `"$REF:tests/x"`: zsh applies the `:t` modifier to `$REF` (also `:a :A :c :e :h :l :P :q :Q :r :s :u`), so git gets a wrong revision | `"${REF}:tests/x"` |
 | home-root-scan | a scanner walks `$HOME`/`~` itself, or reads Desktop/Documents/Downloads/Pictures/Movies/Music — macOS BLOCKS on a privacy prompt attributed to `routines` | `find "$HOME/code" -maxdepth 4 ...`; escape with `# shell-lint-ok: <reason>` or `# home-scan-ok: <reason>` |
 
 The guard reads code, not prose. The interior of a quoted `--body`,

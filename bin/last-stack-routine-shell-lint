@@ -55,6 +55,18 @@
 #                     unknown option (measured 2026-10-08: brain papercut
 #                     close --fixed-by silently no-opped on 14 rows, with the
 #                     wrapper's own rc/echo still reporting success).
+#   zsh-nomatch-query  (--shell zsh only) an UNQUOTED word with ?name= in it,
+#                     typically gh api repos/o/r/commits/abc?per_page=1. zsh
+#                     reads ? as a glob character; with no matching file it
+#                     aborts the command before it runs ("no matches found").
+#                     The pipeline still exits 0 with an EMPTY capture, so a
+#                     later grep -c answers 0 -- the same answer as "my change
+#                     is not in the merge". bash passes the word through.
+#   zsh-modifier-expansion  (--shell zsh only) an unbraced $NAME followed by
+#                     :a :A :c :e :h :l :P :q :Q :r :s :t or :u, as in
+#                     git show "$REF:tests/x". zsh applies the modifier to the
+#                     value (:t keeps the tail, :l lowercases), so git gets a
+#                     wrong revision. "${REF}:tests/x" is correct in both shells.
 #   home-root-scan    a scanner walks $HOME itself, or reads a macOS
 #                     TCC-protected folder (Desktop/Documents/Downloads/
 #                     Pictures/Movies/Music); the walk BLOCKS on a privacy
@@ -131,7 +143,8 @@ while [ "$#" -gt 0 ]; do
     --list-rules)
       printf '%s\n' spin-wait heredoc-backticks dquote-backticks jq-optional-call jq-escaped-quote \
         awk-match-array sed-inplace date-nanos stat-local-zulu printf-dash bin-path mktemp-suffix zsh-status zsh-mapfile \
-        zsh-word-split zsh-cond-flag-expansion home-root-scan piped-count-false-zero grep-binary-false-zero
+        zsh-word-split zsh-cond-flag-expansion zsh-nomatch-query zsh-modifier-expansion home-root-scan \
+        piped-count-false-zero grep-binary-false-zero
       exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 64 ;;
@@ -176,6 +189,7 @@ rule_slug() {
     zsh-status|zsh-mapfile) echo papercut-routine-shell-word-splitting ;;
     zsh-word-split) echo papercut-claude-zsh-for-loop-over-an-unquoted-scalar-does-not-word-split-20260926 ;;
     zsh-cond-flag-expansion) echo papercut-zsh-conditional-flag-expansion-silently-mangles-brain-close-fixedby-20261008 ;;
+    zsh-nomatch-query|zsh-modifier-expansion) echo papercut-zsh-nomatch-aborts-an-unquoted-gh-api-path-with-a-query-string-20261001 ;;
     home-root-scan) echo papercut-codex-routines-lack-home-root-scan-guard-20260927 ;;
     piped-count-false-zero) echo papercut-piped-count-from-a-home-path-producer-answers-zero-when-the-path-is-absent-20261003 ;;
     grep-binary-false-zero) echo papercut-grep-c-symbol-on-bun-binary-answers-zero-false-negative-20261008 ;;
@@ -237,6 +251,12 @@ rule_fix() {
       "zsh has no SH_WORD_SPLIT: \${var:+--flag \"\$val\"} keeps the flag and the quoted value as ONE word, so a CLI sees a single argument '--flag value' and reports an unknown option. bash would split this into two words; zsh never does, with no error." \
       "Pass the flag and its value as two separate literal arguments, built with an array: args=(); [ -n \"\$val\" ] && args+=(--flag \"\$val\"); cmd \"\${args[@]}\"" \
       "Then NEVER trust a wrapper's rc/echo after a brain/kanban mutation -- point-read the record back before reporting success." ;;
+    zsh-nomatch-query) printf '%s\n' \
+      "zsh reads an unquoted ? as a glob character. When no file matches, zsh aborts the command BEFORE it runs ('no matches found'). A pipeline still exits 0 with an EMPTY capture, and a later grep -c answers 0, which reads as 'the change is not there'." \
+      "Quote the word: gh api 'repos/o/r/commits/abc?per_page=1'   (the same applies to curl and any URL with a query string)" ;;
+    zsh-modifier-expansion) printf '%s\n' \
+      "In zsh, \$NAME:t, \$NAME:l, \$NAME:s ... are modifiers applied to the value: \"\$REF:tests/x\" is the TAIL of \$REF followed by 'ests/x', so git receives a wrong revision. Every path that starts with a, A, c, e, h, l, P, q, Q, r, s, t or u is affected. bash keeps the text." \
+      "Brace the name: git show \"\${REF}:tests/x\"   (correct in both shells)" ;;
     home-root-scan) printf '%s\n' \
       "macOS treats \$HOME/Desktop, \$HOME/Documents, \$HOME/Downloads and the Photos library as protected. A routine agent runs under routinesd, so the walk raises a privacy prompt attributed to \`routines\` and BLOCKS until a human clicks it." \
       "Name the root you actually need: find \"\$HOME/code\" -maxdepth 4 -name '<what>'   or   find \"\$HOME/.routines\" \"\$HOME/.last-stack\" \"\$HOME/.fkanban\" -maxdepth 4 -name '<what>'" \
@@ -326,6 +346,17 @@ re_zsh_word_split='(^|[^[:alnum:]_])for[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:spac
 # what scopes the match to the composed-flag shape.
 # Brain: papercut-zsh-conditional-flag-expansion-silently-mangles-brain-close-fixedby-20261008
 re_zsh_cond_flag_expansion='\$\{[A-Za-z_][A-Za-z0-9_]*:[+-][[:space:]]*--?[A-Za-z][A-Za-z0-9_-]*[[:space:]]+"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?[^}]*"'
+# zsh-nomatch-query: a word that does not start with a quote and holds
+# <word char>?<name>=. The class before the ? excludes quotes, whitespace and =,
+# so a quoted word ("..." or '...'), a NAME=value assignment (not filename
+# expanded) and a ${x:?msg} check never match. A quoted string with a space
+# before the ? can still match; # shell-lint-ok: covers it.
+# Brain: papercut-zsh-nomatch-aborts-an-unquoted-gh-api-path-with-a-query-string-20261001
+re_zsh_nomatch_query='(^|[[:space:]])[^"'"'"'[:space:]=]*[A-Za-z0-9_/.-]\?[A-Za-z_][A-Za-z0-9_]*='
+# zsh-modifier-expansion: the modifier letters zsh really applies to a scalar
+# (measured on zsh 5.9: a A c e h l P q Q r s t u). p, d, b, m, n and the rest
+# leave the text alone, so "$host:port" is not refused.
+re_zsh_modifier_expansion='\$[A-Za-z_][A-Za-z0-9_]*:[aAcehlPqQrstu]'
 
 # home-root-scan: normalize $HOME / ${HOME} / ~ to the real home path (as
 # text, not by expanding anything) so a scanner pointed at any written form
@@ -609,6 +640,12 @@ check_command_line() {
     fi
     if [[ $bline =~ $re_zsh_cond_flag_expansion ]]; then
       reject zsh-cond-flag-expansion "$line"
+    fi
+    if [[ $bline =~ $re_zsh_nomatch_query ]]; then
+      reject zsh-nomatch-query "$line"
+    fi
+    if [[ $bline =~ $re_zsh_modifier_expansion ]]; then
+      reject zsh-modifier-expansion "$line"
     fi
   fi
   if [ -n "$home" ]; then
