@@ -36,6 +36,13 @@ gate_oid="$(git -C "$seed" rev-parse HEAD)"
 git -C "$seed" push -q origin main
 git clone -q --bare "$remote" "$cache"
 
+# A deployment_repo_cache that was never fetched past the installed oid:
+# it has the host's commit but not the gate's, so `git rev-list host..gate`
+# fails with "unknown revision" rather than returning a real count.
+stale_cache="$tmp/stale-cache.git"
+git init -q --bare "$stale_cache"
+git -C "$seed" push -q "$stale_cache" "$installed_oid:refs/heads/main"
+
 write_binary() {
   local path="$1" oid="$2" name="$3"
   printf '#!/usr/bin/env bash\nprintf "%%s 0.23.3-test-g%%s\\n" %s %s\n' \
@@ -68,6 +75,24 @@ cat > "$registry" <<EOF
         "owner": "platform",
         "rationale": "safe upgrade only"
       }
+    },
+    {
+      "app": "lastdbd-stale-mirror",
+      "install_mode": "checkout",
+      "kind": "safe-upgrade-managed binary",
+      "command": "lastdbd",
+      "gate": "forgejo",
+      "gate_remote": "$remote",
+      "gate_ref": "refs/heads/main",
+      "deployment_binary": "$current/lastdbd",
+      "deployment_peer_binary": "$current/lastdb",
+      "deployment_repo_cache": "$stale_cache",
+      "refresh": "$tmp/forbidden-refresh",
+      "artifact_exemption": {
+        "kind": "deployment-only",
+        "owner": "platform",
+        "rationale": "safe upgrade only"
+      }
     }
   ]
 }
@@ -88,6 +113,23 @@ printf '%s\n' "$stale_status" | jq -e \
     and .freshness == "soft_stale"
   ' >/dev/null || fail "deployment-only lag was not measured: $stale_status"
 
+stale_mirror_status="$("$ROOT/bin/host-track" status --json lastdbd-stale-mirror)"
+printf '%s\n' "$stale_mirror_status" | jq -e \
+  --arg installed "$installed_oid" --arg gate "$gate_oid" '
+    .host_head == $installed
+    and .gate_head == $gate
+    and .behind_by == null
+    and .behind_by_unknown_reason == "stale-mirror"
+    and .binary_pair_match == true
+    and .deployment_problem == null
+    and .stale == true
+    and .freshness == "soft_stale"
+  ' >/dev/null \
+  || fail "a stale deployment_repo_cache did not report behind_by as unknown: $stale_mirror_status"
+stale_mirror_plain="$("$ROOT/bin/host-track" status lastdbd-stale-mirror)"
+printf '%s\n' "$stale_mirror_plain" | grep -q 'behind_by=unknown(stale-mirror)' \
+  || fail "plain-text status rendered a stale mirror the same as no lag: $stale_mirror_plain"
+
 check_out="$("$ROOT/bin/host-track" check lastdbd)" \
   || fail "check failed a healthy deployment-only app that merely trails gate"
 printf '%s\n' "$check_out" | grep -q 'stale informational' \
@@ -95,7 +137,7 @@ printf '%s\n' "$check_out" | grep -q 'stale informational' \
 
 stale_list="$("$ROOT/bin/host-track" status --stale --json)"
 printf '%s\n' "$stale_list" | jq -e \
-  'length == 1 and .[0].app == "lastdbd"' >/dev/null \
+  '(map(select(.app == "lastdbd")) | length) == 1' >/dev/null \
   || fail "status --stale did not list the lagging primary: $stale_list"
 
 set +e
@@ -135,7 +177,8 @@ printf '%s\n' "$fresh_status" | jq -e \
     and .freshness == "fresh"
   ' >/dev/null || fail "safe-upgrade cutover did not report fresh: $fresh_status"
 fresh_list="$("$ROOT/bin/host-track" status --stale --json)"
-printf '%s\n' "$fresh_list" | jq -e 'length == 0' >/dev/null \
+printf '%s\n' "$fresh_list" | jq -e \
+  '(map(select(.app == "lastdbd")) | length) == 0' >/dev/null \
   || fail "status --stale retained a current deployment: $fresh_list"
 
 printf 'PASS host-track deployment-only freshness\n'
