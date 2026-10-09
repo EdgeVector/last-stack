@@ -648,6 +648,43 @@ def assemble(
 
 
 
+
+def factory_reviewed_assemble(title, body, kind, column, args):
+    # This finite mode carries reviewed authority; it does not sample search.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
+    from factory_repair import (DECISION_POLICY_PATH, DECISION_POLICY_SHA, Refusal,
+                                require, read_bytes, strict_json, sha, bounded_call)
+    installed = str(Path.home() / '.local/bin/brain')
+    require(args.fixture_dir is None and 'LAST_STACK_DECISION_FIXTURE' not in os.environ,
+            'factory-decision-fixture-refused')
+    require(args.brain is None and 'LAST_STACK_BRAIN_CONFIG' not in os.environ and
+            ('BRAIN_BIN' not in os.environ or os.environ['BRAIN_BIN'] == installed),
+            'factory-decision-brain-override-refused')
+    require(title == 'Count canonical active Loom executions once' and kind == 'pr' and column == 'backlog',
+            'factory-decision-scope')
+    raw = read_bytes(DECISION_POLICY_PATH, 65536)
+    require(sha(raw) == DECISION_POLICY_SHA, 'factory-decision-policy-sha')
+    policy = strict_json(raw); decision = policy['decision']; slug = decision['slug']
+    when = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    stamp = stamp_block('honor', [slug], when, reads=['brain get ' + slug], store='brain')
+    require('## DECISION-CHECK' not in body, 'factory-decision-existing-stamp')
+    injected = inject_stamp(body, stamp)
+    prefix = injected.split('\n## DECISION-CHECK\n', 1)[0]
+    require(sha(prefix.encode()) == policy['brief_sha256'], 'factory-decision-exact-brief')
+    rc, out, err = bounded_call([installed, 'get', slug, '--type', 'decision', '--json'], 20, cap=65536)
+    require(rc == 0, 'factory-decision-typed-read-failed')
+    value = strict_json(out)
+    require(isinstance(value, dict) and value.get('type') == 'decision' and
+            {key: value.get(key) for key in ('slug', 'title', 'status', 'body')} == decision,
+            'factory-decision-record-drift')
+    conflicts = apply_invariants({slug}, kind, column, body)
+    verdict = 'conflict' if conflicts else 'honor'
+    return {'ok': not conflicts, 'verdict': verdict, 'slugs': [slug], 'conflicts': conflicts,
+            'records': [{'slug': slug, 'got': True, 'type': 'decision'}], 'query': '', 'error': '',
+            'stamp': stamp if not conflicts else stamp_block(verdict, [slug], when, reads=['brain get ' + slug], store='brain'),
+            'search_is_membership': False, 'point_gets': [slug], 'degraded_types': [], 'search_failures': {}}
+
+
 STDIN_FIRST_BYTE_TIMEOUT_S = float(
     os.environ.get("LAST_STACK_DECISION_CHECK_STDIN_TIMEOUT", "20")
 )
@@ -687,13 +724,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--column", default="todo")
     ap.add_argument("--inject", action="store_true", help="Print body + stamp")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--factory-reviewed-decision", action="store_true", help="Exact reviewed Count decision; no search or caller authority")
     ap.add_argument(
         "--fixture-dir",
         help="Offline brain: get/<slug>.txt and search.json (no live node)",
     )
     ap.add_argument(
         "--brain",
-        default=default_brain_bin(),
+        default=None,
         help=(
             "brain CLI (ignored when --fixture-dir is set). Defaults to $BRAIN_BIN, "
             "else `.primary` from ~/.claude/brain-config.json, else `brain`."
@@ -724,9 +762,15 @@ def main(argv: list[str] | None = None) -> int:
         env_fix = os.environ.get("LAST_STACK_DECISION_FIXTURE", "")
         if env_fix:
             fixture = Path(env_fix)
-    brain = Brain(args.brain, fixture)
+    brain = Brain(str(Path.home() / ".local/bin/brain") if args.factory_reviewed_decision else (args.brain if args.brain is not None else default_brain_bin()), fixture)
     try:
-        pack = assemble(args.title, body, args.kind, args.column, brain)
+        if args.factory_reviewed_decision:
+            try:
+                pack = factory_reviewed_assemble(args.title, body, args.kind, args.column, args)
+            except (OSError, ValueError, RuntimeError) as exc:
+                raise BrainUnavailable(str(exc)) from exc
+        else:
+            pack = assemble(args.title, body, args.kind, args.column, brain)
     except BrainUnavailable as exc:
         pack = {
             "ok": False,

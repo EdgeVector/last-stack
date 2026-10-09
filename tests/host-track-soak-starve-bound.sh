@@ -76,6 +76,14 @@ atomic_symlink() {
 }
 die() { printf 'die: %s\n' "$*" >&2; exit 1; }
 STUB
+  # Keep the real exact-request helper and its ordinary-mode globals. The
+  # stamp writer calls it for every app; this fixture must not stub that call.
+  awk '/^EXACT_INSTALL_[A-Z_]*=/ {print}' "$ROOT/bin/host-track"
+  awk '
+    /^exact_install_request_json\(\)/ {keep=1}
+    /^exact_install_manifest_matches\(\)/ {keep=0}
+    keep {print}
+  ' "$ROOT/bin/host-track"
   # soak_stamp_path … park_canary (stops before soak_red_repo)
   awk '
     /^soak_stamp_path\(\)/ {keep=1}

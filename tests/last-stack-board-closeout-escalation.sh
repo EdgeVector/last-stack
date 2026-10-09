@@ -7,7 +7,7 @@
 # anywhere a human looks. Brain:
 # papercut-deploy-pipeline-gate-has-no-producer-for-non-lastgit-repos
 #
-# Asserts, on both engines (node + python3 fallback):
+# Asserts, on both engines (node + python3):
 #   1. below the threshold  → close-failed only, no escalation, no board stamp
 #   2. at the threshold     → close-failed-escalated + ONE CLOSE-FAILED-REPEATED
 #                             stamp carrying the real failure text
@@ -18,7 +18,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 sweep="$ROOT/bin/last-stack-board-closeout-sweep"
-chmod +x "$sweep"
+source "$ROOT/tests/fixtures/factory-closeout-dependencies.sh"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -58,6 +58,7 @@ exit 1
 EOF
   fi
   chmod +x "$dir/bin/last-stack-card-closeout"
+  fixture_closeout_native_dependencies "$dir"
 }
 
 mkboard() {
@@ -66,6 +67,9 @@ mkboard() {
 #!/usr/bin/env bash
 set -euo pipefail
 case "\${1:-}" in
+  guarded-snapshot)
+    exec "\${FACTORY_CLOSEOUT_FIXTURE_NATIVE:?}" --cards-file "\$0.cards.json" "\$@"
+    ;;
   list)
     cat <<'JSON'
 [
@@ -111,6 +115,7 @@ JSON
 esac
 EOF
   chmod +x "$path"
+  fixture_closeout_prepare_native_cards "$path"
 }
 
 # `stuck-card` carries a MERGED GitHub PR, so the sweep tries to close it every pass.
@@ -126,23 +131,15 @@ exit 1
 EOF
 chmod +x "$binwrap/gh"
 
-node_free_path="$(dirname "$(command -v python3)"):/usr/bin:/bin:/usr/sbin:/sbin"
 
 for engine in node python3; do
-  if [ "$engine" = python3 ]; then
-    if ! env PATH="$node_free_path" sh -c 'command -v python3 >/dev/null'; then
-      echo "skip: no python3 on the node-free PATH" >&2
-      continue
-    fi
-    if env PATH="$node_free_path" sh -c 'command -v node >/dev/null'; then
-      echo "skip: could not build a node-free PATH for the fallback engine" >&2
-      continue
-    fi
-    engine_path="$binwrap:$node_free_path"
-  else
+  if [ "$engine" = node ]; then
     command -v node >/dev/null || { echo "skip: no node" >&2; continue; }
-    engine_path="$binwrap:$PATH"
+  else
+    command -v python3 >/dev/null || { echo "skip: no python3" >&2; continue; }
   fi
+  engine_path="$binwrap:$PATH"
+  export BOARD_CLOSEOUT_ENGINE="$engine"
 
   stack="$tmp/stack.$engine"
   mkstack "$stack" hard

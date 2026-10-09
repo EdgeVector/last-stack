@@ -286,7 +286,7 @@ class ReconcileRuntime:
                 '--milestone', 'ms-factory-heal-via-state-machine', '--column', 'backlog', '--kind', 'pr', '--work-class', 'repair',
                 '--difficulty', 'hard', '--priority', 'P1', '--tags', 'papercut,factory-repair',
                 '--surfaces', ','.join(self.config['admitted'][0]['surfaces']), '--no-derive-surfaces', '--board-cli', str(self.kanban),
-                '--create-only', '--json']
+                '--create-only', '--json', '--factory-reviewed-decision']
         # The finite LastDB-only path must not inherit a retired backend from
         # the caller or a stale decision-check config.
         rc, out, err = bounded_call(argv, 120, env={**os.environ, 'BRAIN_BIN': self.brain}, stdin=brief)

@@ -18,7 +18,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 sweep="$ROOT/bin/last-stack-board-closeout-sweep"
-chmod +x "$sweep"
+source "$ROOT/tests/fixtures/factory-closeout-dependencies.sh"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -55,6 +55,9 @@ cat >"$board" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 case "\${1:-}" in
+  guarded-snapshot)
+    exec "\${FACTORY_CLOSEOUT_FIXTURE_NATIVE:?}" --cards-file "\$0.cards.json" "\$@"
+    ;;
   list)
     cat <<JSON
 [
@@ -194,6 +197,9 @@ exit 0
 EOF
 chmod +x "$fake_stack/bin/last-stack-forge-api"
 
+fixture_closeout_native_dependencies "$fake_stack" "$board"
+fixture_closeout_prepare_native_cards "$board"
+export BOARD_CLOSEOUT_STATE_DIR="$tmp/closeout-state"
 export PATH="$binwrap:$PATH"
 
 run_engine() {

@@ -642,7 +642,7 @@ class CanonicalReuseTests(Base):
         rc,res,err=self.pull("--channel","candidate")
         self.assertEqual((rc,res.get("status"),res.get("manifest_digest")),(0,"promoted",first["manifest_digest"]),"complete checked promoted receipt: "+err)
         self.assertEqual((res["tree_oid"],res["platform"],res["run_id"],res["artifact_id"]),(self.tree,"darwin-arm64",77,5))
-        self.assertIn("/zip",open(self.log).read())
+        self.assertIn("/zip",Path(self.log).read_text())
 
     def test_same_head_failed_ci_has_zero_effects(self):
         self.seed(); before=self.snapshot()

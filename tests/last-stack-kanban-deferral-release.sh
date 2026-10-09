@@ -51,73 +51,69 @@ card bad-token backlog deferred pr '[]' \
 card done-card done none pr '[]' '' "$brief"
 card free-card backlog none pr '[]' '' "$brief"
 
-cat >"$tmp/bin/kanban" <<SH
-#!/usr/bin/env bash
-set -euo pipefail
-cards="$tmp/cards"
-log="$tmp/board.log"
-calls="$tmp/calls.log"
-printf '%s\\n' "\$*" >>"\$calls"
-case "\$1" in
-  list)
-    col="\$3"
-    printf '{"cards":['
-    sep=""
-    for f in "\$cards"/*.json; do
-      if jq -e --arg c "\$col" '.column == \$c' "\$f" >/dev/null; then
-        printf '%s' "\$sep"; jq -c '.body = ""' "\$f"; sep=","
-      fi
-    done
-    if [ "\$col" = "backlog" ]; then
-      printf '%s{"slug":"gone-held","column":"backlog","block_status":"deferred","kind":"pr","tags":[],"block_reason":"awaiting papercut-fixed-one","body":""}' "\$sep"
-    fi
-    printf '],"truncated":false}\n'
-    ;;
-  show)
-    slugs=""
-    pos=""
-    shift
-    while [ "\$#" -gt 0 ]; do
-      case "\$1" in
-        --json) shift ;;
-        --slugs) slugs="\$2"; shift 2 ;;
-        --slugs=*) slugs="\${1#--slugs=}"; shift ;;
-        --help|-h) echo "Options: --json --slugs"; exit 0 ;;
-        *) pos="\$1"; shift ;;
-      esac
-    done
-    if [ -n "\$slugs" ]; then
-      printf '['
-      sep=""
-      old_ifs="\$IFS"
-      IFS=','
-      set -f
-      # shellcheck disable=SC2086
-      set -- \$slugs
-      set +f
-      IFS="\$old_ifs"
-      for s in "\$@"; do
-        [ -n "\$s" ] || continue
-        [ -f "\$cards/\$s.json" ] || continue
-        printf '%s' "\$sep"
-        cat "\$cards/\$s.json"
-        sep=","
-      done
-      printf ']\\n'
-      exit 0
-    fi
-    [ -f "\$cards/\$pos.json" ] || { echo "no card \$pos" >&2; exit 1; }
-    cat "\$cards/\$pos.json"
-    ;;
-  pickup)
-    printf '{"slug":"%s","ready":true,"write_guard":{"ok":true}}\n' "\$3"
-    ;;
-  set|mark|move|add|tag|rm)
-    printf '%s\n' "\$*" >>"\$log"
-    ;;
-  *) echo "unexpected kanban \$*" >&2; exit 2 ;;
-esac
-SH
+cat >"$tmp/bin/kanban" <<'PY'
+#!/usr/bin/env python3
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+root = Path(__file__).resolve().parents[1]
+cards = root / 'cards'
+args = sys.argv[1:]
+with (root / 'calls.log').open('a') as stream:
+    stream.write(' '.join(args) + '\n')
+verb = args[0]
+if verb == 'list':
+    column = args[args.index('--column') + 1]
+    records = []
+    for path in sorted(cards.glob('*.json')):
+        card = json.loads(path.read_text())
+        if card['column'] == column:
+            records.append({**card, 'body': ''})
+    if column == 'backlog' and (root / 'inject-missing-preview').exists():
+        records.append({'slug': 'gone-held', 'column': 'backlog', 'block_status': 'deferred',
+                        'kind': 'pr', 'tags': [], 'block_reason': 'awaiting papercut-fixed-one', 'body': ''})
+    print(json.dumps({'cards': records, 'truncated': False}))
+elif verb == 'guarded-snapshot':
+    assert len(args) == 4 and args[1] == '--slugs-file' and args[3] == '--json', args
+    keys = json.loads(Path(args[2]).read_text())
+    assert isinstance(keys, list) and len(keys) == len(set(keys))
+    schema = 'a' * 64
+    scalars = ('slug', 'title', 'body', 'board', 'column', 'position', 'assignee',
+               'created_at', 'created_by', 'updated_at', 'db', 'repo', 'base', 'kind',
+               'block_status', 'block_reason', 'north_star', 'milestone', 'pr_url', 'branch')
+    items = []
+    for key in keys:
+        path = cards / (key + '.json')
+        if not path.exists():
+            items.append({'slug': key, 'missing': True})
+            continue
+        stored = json.loads(path.read_text())
+        fields = {name: stored.get(name, '') for name in scalars}
+        fields.update({name: stored.get(name, []) for name in ('tags', 'deps', 'surfaces')})
+        fields['position'] = stored.get('position', '0')
+        snapshot = json.dumps({'version': 1, 'schema_hash': schema, 'fields': fields},
+                              sort_keys=True, separators=(',', ':'), ensure_ascii=False) + '\n'
+        items.append({'slug': key, 'snapshot_json': snapshot,
+                      'snapshot_sha256': hashlib.sha256(snapshot.encode()).hexdigest()})
+    print(json.dumps({'version': 1, 'schema_hash': schema, 'items': items}))
+elif verb == 'show':
+    assert len(args) == 3 and args[2] == '--json' and not args[1].startswith('--'), args
+    path = cards / (args[1] + '.json')
+    if not path.exists():
+        print('no card ' + args[1], file=sys.stderr)
+        sys.exit(1)
+    print(path.read_text(), end='')
+elif verb == 'pickup':
+    print(json.dumps({'slug': args[2], 'ready': True, 'write_guard': {'ok': True}}))
+elif verb in ('set', 'mark', 'move', 'add', 'tag', 'rm'):
+    with (root / 'board.log').open('a') as stream:
+        stream.write(' '.join(args) + '\n')
+else:
+    print('unexpected kanban ' + ' '.join(args), file=sys.stderr)
+    sys.exit(2)
+PY
 
 cat >"$tmp/bin/brain" <<'SH'
 #!/usr/bin/env bash
@@ -164,9 +160,10 @@ slugs() { jq -r --arg k "$1" '[.[$k][].slug] | sort | join(",")' "$tmp/dry.json"
 [ "$(slugs held)" = "held-none" ] || fail "held=$(slugs held)"
 [ "$(slugs deploy_owned)" = "deploy-park" ] || fail "deploy_owned=$(slugs deploy_owned)"
 [ "$(slugs malformed)" = "bad-token" ] || fail "malformed=$(slugs malformed)"
-[ "$(slugs errors)" = "gone-held" ] || fail "errors=$(slugs errors)"
-batch_n="$(grep -c '^show --slugs ' "$tmp/calls.log" || true)"
-[ "$batch_n" = 1 ] || fail "want 1 show --slugs, got $batch_n: $(cat "$tmp/calls.log")"
+[ "$(slugs errors)" = "" ] || fail "errors=$(slugs errors)"
+batch_n="$(grep -c '^guarded-snapshot --slugs-file ' "$tmp/calls.log" || true)"
+[ "$batch_n" = 1 ] || fail "want 1 public guarded-snapshot batch, got $batch_n: $(cat "$tmp/calls.log")"
+if grep -q '^show --slugs ' "$tmp/calls.log"; then fail "used the retired batch contract"; fi
 # Held candidates must not be point-read. card:done-card* shows are RELEASE-WHEN checks.
 for s in bad-token blocked-on gh-merged held-none incidental keep-two pr-open rel-papercut uncond gone-held body-mixed deploy-park; do
   if grep -E "^show $s( |$)" "$tmp/calls.log" >/dev/null; then
@@ -179,7 +176,26 @@ jq -e '.kept[] | select(.slug=="keep-two") | .open | join(" ") | test("papercut-
 jq -e '.kept[] | select(.slug=="keep-two") | .met | join(" ") | test("papercut-fixed-one")' "$tmp/dry.json" >/dev/null \
   || fail "keep-two does not name its met papercut"
 
-# ── apply: release only the two, move the backlog Kind:pr card to todo ────
+# ── explicit canonical miss: no partial authority and no writes ──────────
+# The public flat reader refuses the whole batch when one exact key is missing.
+# Keep this negative separate from the complete classification/apply fixtures.
+: >"$tmp/inject-missing-preview"
+set +e
+"${tool[@]}" --apply --json >"$tmp/missing.json" 2>"$tmp/missing.err"
+missing_rc=$?
+set -e
+[ ! -f "$tmp/board.log" ] || fail "missing canonical batch wrote to the board"
+[ "$missing_rc" = 1 ] || fail "missing canonical must make the batch unavailable: rc=$missing_rc"
+jq -e '.released == [] and .kept == [] and (.errors | length) == 11 and
+       ([.errors[].slug] | index("gone-held")) != null and
+       ([.errors[].reason] | unique) == ["show-failed"]' "$tmp/missing.json" >/dev/null \
+  || fail "missing canonical must leave all 11 selected Cards unavailable"
+grep -q 'mode=apply.*released=0 kept=0' "$tmp/missing.err" \
+  || fail "missing canonical summary must report no releases"
+rm -f "$tmp/inject-missing-preview"
+: >"$tmp/calls.log"
+
+# ── apply: release only the four accepted Cards ──────────────────────────
 "${tool[@]}" --apply >"$tmp/apply.out" 2>"$tmp/apply.err"
 grep -q 'released=4 kept=2 unconditioned=2' "$tmp/apply.out" || fail "apply summary: $(cat "$tmp/apply.out")"
 grep -qx 'set rel-papercut --block-status none' "$tmp/board.log" || fail "rel-papercut not cleared"

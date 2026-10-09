@@ -212,16 +212,6 @@ _on_signal() {
 }
 trap _on_signal INT TERM HUP
 
-# The installed reviewed manifest protects the finite factory Cards even when
-# STATE is absent. No missing or malformed authority becomes an empty list.
-contract_bin="$last_stack/bin/last-stack-factory-repair-contract"
-if [ ! -x "$contract_bin" ] || ! factory_contract_json="$("$contract_bin" --local --json 2>"$_engine_err")"; then
-  printf '%s\n' factory-contract-refused >"$_engine_stop"
-  _emit_closeout_result
-  exit 0
-fi
-export BOARD_CLOSEOUT_FACTORY_CONTRACT_JSON="$factory_contract_json"
-
 # BOARD_CLOSEOUT_ENGINE pins one engine so a test can prove both behave the
 # same. Unset/auto keeps the historical preference (node, then python3).
 _engine_pref="${BOARD_CLOSEOUT_ENGINE:-auto}"
@@ -236,6 +226,16 @@ if [ "$_engine_pref" = "node" ] && ! command -v node >/dev/null 2>&1; then
   echo "board-closeout: BOARD_CLOSEOUT_ENGINE=node but node is not on PATH" >&2
   exit 2
 fi
+
+# The installed reviewed manifest protects the finite factory Cards even when
+# STATE is absent. No missing or malformed authority becomes an empty list.
+contract_bin="$last_stack/bin/last-stack-factory-repair-contract"
+if [ ! -x "$contract_bin" ] || ! factory_contract_json="$("$contract_bin" --local --json 2>"$_engine_err")"; then
+  printf '%s\n' factory-contract-refused >"$_engine_stop"
+  _emit_closeout_result
+  exit 0
+fi
+export BOARD_CLOSEOUT_FACTORY_CONTRACT_JSON="$factory_contract_json"
 
 if [ "$_engine_pref" != "python3" ] && [ "$_engine_pref" != "python" ] && command -v node >/dev/null 2>&1; then
   node - "$last_stack" >"$_engine_out" 2>"$_engine_err" <<'NODE' &

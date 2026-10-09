@@ -9,7 +9,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 sweep="$ROOT/bin/last-stack-board-closeout-sweep"
-chmod +x "$sweep"
+source "$ROOT/tests/fixtures/factory-closeout-dependencies.sh"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -26,6 +26,9 @@ cat >"$board" <<BOARD
 #!/usr/bin/env bash
 set -euo pipefail
 case "\${1:-}" in
+  guarded-snapshot)
+    exec "\${FACTORY_CLOSEOUT_FIXTURE_NATIVE:?}" --cards-file "\$0.cards.json" "\$@"
+    ;;
   list)
     printf '[%s,%s,%s,%s]\n' \
       '$(card_json walk-live 'Repo: EdgeVector/fold\nKind: pr\nPROGRESS: loom land-card exec=lx-live-1 claimed')' \
@@ -64,6 +67,11 @@ esac
 LOOM
 chmod +x "$loom"
 export BOARD_CLOSEOUT_LOOM_BIN="$loom"
+stack="$tmp/stack"
+mkdir -p "$stack/bin"
+cp "$sweep" "$stack/bin/last-stack-board-closeout-sweep"
+fixture_closeout_native_dependencies "$stack" "$board"
+fixture_closeout_prepare_native_cards "$board"
 
 for engine in node python3; do
   if [ "$engine" = node ] && ! command -v node >/dev/null 2>&1; then continue; fi
@@ -72,7 +80,7 @@ for engine in node python3; do
   : >"$moves"
   : >"$reaps"
   export BOARD_MOVES="$moves" LOOM_REAPS="$reaps" BOARD_CLOSEOUT_ENGINE="$engine" BOARD_CLOSEOUT_STATE_DIR="$tmp/state.$engine"
-  out="$("$sweep" --board-cli "$board" --grace-min 1 --max-actions 20 2>&1 || true)"
+  out="$("$stack/bin/last-stack-board-closeout-sweep" --board-cli "$board" --grace-min 1 --max-actions 20 2>&1 || true)"
   fail() { echo "FAIL[$engine]: $*" >&2; echo "$out" >&2; cat "$reaps" >&2; exit 1; }
   [ -s "$moves" ] && fail "moved a loom-protected card"
   grep -q '^lx-park-1 ' "$reaps" && fail "reaped a parked walk"

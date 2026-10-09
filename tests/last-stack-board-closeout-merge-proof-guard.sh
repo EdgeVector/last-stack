@@ -14,7 +14,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 sweep="$ROOT/bin/last-stack-board-closeout-sweep"
-chmod +x "$sweep"
+source "$ROOT/tests/fixtures/factory-closeout-dependencies.sh"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -55,6 +55,9 @@ cat >"$board" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-}" in
+  guarded-snapshot)
+    exec "${FACTORY_CLOSEOUT_FIXTURE_NATIVE:?}" --cards-file "$0.cards.json" "$@"
+    ;;
   list)
     cat <<JSON
 [
@@ -145,6 +148,9 @@ exit 0
 EOF
 chmod +x "$fake_stack/bin/last-stack-card-closeout"
 
+fixture_closeout_native_dependencies "$fake_stack" "$board"
+fixture_closeout_prepare_native_cards "$board"
+export BOARD_CLOSEOUT_STATE_DIR="$tmp/closeout-state"
 export PATH="$binwrap:$PATH"
 
 run_engine() {
@@ -229,6 +235,22 @@ echo "$dry" | grep -q 'closed_slugs=merged-card' || {
 if env HOME="$tmp/home" BOARD_CLOSEOUT_ENGINE=bogus \
   "$fake_stack/bin/last-stack-board-closeout-sweep" --board-cli "$board" >/dev/null 2>&1; then
   echo "FAIL: BOARD_CLOSEOUT_ENGINE=bogus was accepted" >&2
+  fail=1
+fi
+
+# A usage error must precede the independent factory contract preflight.
+# A valid contract above alone cannot expose this order regression.
+mv "$fake_stack/bin/last-stack-factory-repair-contract" "$fake_stack/bin/factory-contract-held"
+if env HOME="$tmp/home" BOARD_CLOSEOUT_ENGINE=bogus \
+  "$fake_stack/bin/last-stack-board-closeout-sweep" --board-cli "$board" \
+  >"$tmp/bogus-no-contract.out" 2>"$tmp/bogus-no-contract.err"; then
+  bogus_rc=0
+else
+  bogus_rc=$?
+fi
+if [ "$bogus_rc" != 2 ] || ! grep -q 'BOARD_CLOSEOUT_ENGINE must be node|python3|auto' "$tmp/bogus-no-contract.err"; then
+  echo "FAIL: invalid engine with absent factory contract must exit 2" >&2
+  cat "$tmp/bogus-no-contract.out" "$tmp/bogus-no-contract.err" >&2
   fail=1
 fi
 

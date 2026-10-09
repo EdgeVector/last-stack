@@ -51,9 +51,17 @@ SRC
 chmod +x "$guard"
 src_before="$(cat "$src")"
 
+# Sibling CI fixtures can mutate their own source targets. Observe only this
+# private tracked product; the real helper still audits its Git worktree.
+git -C "$scratch/work" init -q
+git -C "$scratch/work" config user.email fixture@example.invalid
+git -C "$scratch/work" config user.name fixture
+git -C "$scratch/work" add product.sh guard.sh
+git -C "$scratch/work" commit -qm fixture
+
 run_probe() {
   probe_rc=0
-  probe_out="$("$helper" "$@" 2>"$scratch/err")" || probe_rc=$?
+  probe_out="$(cd "$scratch/work" && "$helper" "$@" 2>"$scratch/err")" || probe_rc=$?
   probe_err="$(cat "$scratch/err")"
 }
 

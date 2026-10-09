@@ -2,6 +2,14 @@
 # Probe-before-cutover: a RED candidate must not flip current/PATH.
 set -euo pipefail
 
+latency_case="${1:-all}"
+case "$latency_case" in
+  all|stall|slow) ;;
+  *) printf 'usage: %s [all|stall|slow]\n' "$0" >&2; exit 2 ;;
+esac
+fixture_python="$(command -v python3)"
+export HOST_TRACK_FIXTURE_PYTHON="$fixture_python"
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 tmp="$(mktemp -d)"
 cleanup() { rm -rf "$tmp"; }
@@ -19,6 +27,32 @@ export HOST_TRACK_SOAK_FILE_CARD=0
 export HOST_TRACK_PROBE_RETRY_DELAY_S=0
 export PATH="$HOME/.local/bin:$tmp/bin:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 mkdir -p "$HOME/.local/bin" "$tmp/bin" "$tmp/cas"
+
+# Replace only now_ms's exact timestamp invocation. All other Python calls
+# still run the real interpreter, including the production timeout/probe path.
+{
+  printf '#!%s\n' "$fixture_python"
+  cat <<'PY'
+import os
+import sys
+from pathlib import Path
+
+clock = os.environ.get('HOST_TRACK_FIXTURE_CLOCK_FILE')
+timestamp_argv = ['-c', 'import time; print(int(time.time()*1000))']
+if clock and sys.argv[1:] == timestamp_argv:
+    path = Path(clock)
+    ticks = path.read_text().splitlines()
+    if not ticks:
+        raise SystemExit('fixture clock exhausted')
+    tick = ticks.pop(0)
+    path.write_text(''.join(value + '\n' for value in ticks))
+    print(tick)
+else:
+    real = os.environ['HOST_TRACK_FIXTURE_PYTHON']
+    os.execv(real, [real, *sys.argv[1:]])
+PY
+} > "$tmp/bin/python3"
+chmod +x "$tmp/bin/python3"
 
 cat > "$HOME/post-install" <<'SH'
 #!/usr/bin/env bash
@@ -159,26 +193,27 @@ grep -q 'soak probe inconclusive; current and soak state unchanged' "$tmp/inconc
   || fail "inconclusive probe changed current"
 rm -f "$HOME/shared-probe-down"
 
-# Latency bar. The shared-control case above left a parked canary; drop that
-# soak state so these refreshes take the direct activate path and the
-# latency verdict alone decides the outcome. One probe call costs ~0.7s of
-# harness overhead in this fixture, so the stall sleeps well past 3x that.
-# Under CI load the baseline itself reached 1.2s (run 575, 2026-09-25) and
-# 2.17s (run for cr-mulgwr3y-7f70, 2026-09-28) — a 5s stall only clears 3x a
-# baseline up to ~1.67s, and both incidents landed above that
-# (papercut-host-track-safe-upgrade-probe-stall-resample-flakes-under-load-20260923).
-# 12s clears 3x a baseline up to 4s, more than double the worst baseline
-# measured so far, on both the recoverable stall below and the persistently
-# slow candidate further down (same fixed-sleep-vs-inflated-baseline shape).
+# Latency uses fixed timestamps through the real production timer call.
+# Wall-clock sleeps cannot distinguish a fixture stall from host scheduling.
+# Remedy: papercut-host-track-safe-upgrade-probe-stall-resample-flakes-under-load-20260923.
+# The preceding shared-control case left a parked canary. Remove only that
+# private soak state so the latency verdict decides the direct activation.
 rm -f "$HOST_TRACK_STAMP_DIR/demo.soak.json" "$HOME/apps/demo/canary"
 
-# One-shot stall: the candidate's second call (its first latency sample;
-# call 1 is the correctness probe) sleeps, so pair one is far over the
-# ratio. Pair two is even. Expect a re-sample, no RED, and activation.
-publish_fixture "$digest_stall" "$oid_stall" $'#!/usr/bin/env bash\nmarker="$HOME/stall-probe-count"\ncount="$(cat "$marker" 2>/dev/null || printf 0)"\ncount=$((count + 1))\nprintf "%s\\n" "$count" >"$marker"\nif [ "$count" -eq 2 ]; then sleep 12; fi\necho ok-v4'
+# One-shot stall: pair one is 12000/100ms; pair two is 200/100ms.
+# Correctness probes and cutover still run through the public production path.
+if [ "$latency_case" != slow ]; then
+publish_fixture "$digest_stall" "$oid_stall" $'#!/usr/bin/env bash\necho ok-v4'
+printf '%s\n' 1000 13000 15000 15100 17000 17100 19000 19200 > "$tmp/stall-clock"
+HOST_TRACK_FIXTURE_CLOCK_FILE="$tmp/stall-clock" \
 HOST_TRACK_ACTIVATE=1 HOST_TRACK_PROBE_LAT_FLOOR_MS=100 "$ROOT/bin/host-track" refresh demo \
   >/dev/null 2>"$tmp/stall.err" \
   || fail "a one-shot latency stall should recover on re-sample: $(cat "$tmp/stall.err")"
+grep -Fq 'latency candidate=12000ms baseline=100ms ratio=3 floor=100ms' "$tmp/stall.err" \
+  || fail "stall first-pair fixed timestamps differ: $(cat "$tmp/stall.err")"
+grep -Fq 'latency re-sample candidate=200ms baseline=100ms (pair 2, incumbent first)' "$tmp/stall.err" \
+  || fail "stall second-pair fixed timestamps differ: $(cat "$tmp/stall.err")"
+[ ! -s "$tmp/stall-clock" ] || fail "stall fixed timestamps were not all consumed"
 grep -q 'latency re-sample candidate=' "$tmp/stall.err" \
   || fail "stall did not trigger a latency re-sample: $(cat "$tmp/stall.err")"
 grep -q 'latency recovered on re-sample; first pair' "$tmp/stall.err" \
@@ -188,21 +223,42 @@ grep -q 'latency recovered on re-sample; first pair' "$tmp/stall.err" \
 [ "$(demo)" = ok-v4 ] || fail "stall-recovered candidate did not activate: $(demo)"
 [ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_stall" ] \
   || fail "stall-recovered candidate current pointer wrong"
+fi
 
-# Persistently slow candidate: every call sleeps, so both pairs are over the
-# ratio. Expect RED on the second pair and no flip.
-publish_fixture "$digest_slow" "$oid_slow" $'#!/usr/bin/env bash\nsleep 12\necho ok-v5'
-if HOST_TRACK_ACTIVATE=1 HOST_TRACK_PROBE_LAT_FLOOR_MS=100 "$ROOT/bin/host-track" refresh demo \
+# Persistently slow candidate: both pairs are 12000/100ms. No cutover occurs.
+if [ "$latency_case" != stall ]; then
+if [ "$latency_case" = slow ]; then
+  latency_expected_output=ok-v2
+  latency_expected_digest="$digest_transient"
+else
+  latency_expected_output=ok-v4
+  latency_expected_digest="$digest_stall"
+fi
+publish_fixture "$digest_slow" "$oid_slow" $'#!/usr/bin/env bash\necho ok-v5'
+printf '%s\n' 1000 13000 15000 15100 17000 17100 19000 31000 > "$tmp/slow-clock"
+if HOST_TRACK_FIXTURE_CLOCK_FILE="$tmp/slow-clock" \
+  HOST_TRACK_ACTIVATE=1 HOST_TRACK_PROBE_LAT_FLOOR_MS=100 "$ROOT/bin/host-track" refresh demo \
   >/dev/null 2>"$tmp/slow.err"; then
   fail "a persistently slow candidate should fail closed: $(cat "$tmp/slow.err")"
 fi
+grep -Fq 'latency candidate=12000ms baseline=100ms ratio=3 floor=100ms' "$tmp/slow.err" \
+  || fail "slow first-pair fixed timestamps differ: $(cat "$tmp/slow.err")"
+grep -Fq 'latency re-sample candidate=12000ms baseline=100ms (pair 2, incumbent first)' "$tmp/slow.err" \
+  || fail "slow second-pair fixed timestamps differ: $(cat "$tmp/slow.err")"
+[ ! -s "$tmp/slow-clock" ] || fail "slow fixed timestamps were not all consumed"
 grep -q 'latency re-sample candidate=' "$tmp/slow.err" \
   || fail "slow candidate was not re-sampled before RED: $(cat "$tmp/slow.err")"
 grep -q 'latency RED candidate=.*(both pairs; first pair' "$tmp/slow.err" \
   || fail "slow candidate did not RED on both pairs: $(cat "$tmp/slow.err")"
-[ "$(demo)" = ok-v4 ] || fail "latency RED changed the live command: $(demo)"
-[ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_stall" ] \
+[ "$(demo)" = "$latency_expected_output" ] || fail "latency RED changed the live command: $(demo)"
+[ "$(readlink "$HOME/apps/demo/current")" = "versions/$latency_expected_digest" ] \
   || fail "latency RED flipped current"
+fi
+
+if [ "$latency_case" != all ]; then
+  printf 'ok: host-track probe-before-cutover latency case %s\n' "$latency_case"
+  exit 0
+fi
 
 publish_fixture "$digest_bad" "$oid_bad" $'#!/usr/bin/env bash\necho broken\nexit 1'
 if "$ROOT/bin/host-track" refresh demo >/dev/null 2>"$tmp/red.err"; then
