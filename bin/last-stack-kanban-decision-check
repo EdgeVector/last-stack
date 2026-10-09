@@ -146,27 +146,19 @@ def run_brain(argv: list[str]) -> subprocess.CompletedProcess | None:
     return None
 
 
-# ── gbrain backend ──────────────────────────────────────────────────────────
-# gbrain has been the primary knowledge store since 2026-09-06. The LastDB
-# `brain` this check reads by default kept only what was written to it after
-# that cutover: censused 2026-09-22 with `brain reindex --list-index --dry-run`,
-# it holds design=1, decision=3, preference=2, sop=2 against gbrain's ~12,910
-# pages. So the gate was honouring a corpus of six records and reporting
-# `verdict: honor` on everything else, until an unrelated index-marker error
-# made it fail loudly and exposed the gap.
+# ── gbrain backend (RETIRED 2026-09-25) ─────────────────────────────────────
+# gbrain was the primary knowledge store from 2026-09-06 to 2026-09-25, and
+# this check once needed its own addressing (`<dir>/<slug>`, `wiki/concepts`
+# for concepts) and search shape (`--types a,b`, not repeated `--type`) to
+# read the corpus that actually held the settled records.
 #
-# The two CLIs differ in exactly two ways that matter here:
-#
-#   * addressing — gbrain pages are `<dir>/<slug>`, where the directory is the
-#     type for most types but `wiki/concepts` for concepts. A bare
-#     `design-foo` slug therefore needs a prefix, and a prefix guess can be
-#     wrong, so a miss falls back to one exact-slug search rather than
-#     reporting the record absent. Absent and unaddressable must not look the
-#     same to a gate that fails closed.
-#   * search flags — `--types a,b` (one comma list), not repeated `--type`.
-#
-# Everything else — the invariants, the honor/conflict verdict, the stamp — is
-# backend-independent and untouched.
+# The cutover reverted (won't-undo, Tom, 2026-09-25: "the brain is LastDB
+# only ... Re-enabling gbrain needs Tom"), so none of that can be reached
+# today: `main()` refuses any `--brain`/`$BRAIN_BIN`/`.primary` value naming
+# a `gbrain*` binary before this module runs a single subprocess or fixture
+# read. The addressing/search-shape code below is kept only because the
+# `Brain` class is still exercised by its unit tests; it is not reachable
+# from the CLI entrypoint.
 BRAIN_CONFIG_PATH = Path(
     os.environ.get("LAST_STACK_BRAIN_CONFIG", str(Path.home() / ".claude" / "brain-config.json"))
 )
@@ -178,9 +170,10 @@ def default_brain_bin() -> str:
 
     Follows `~/.claude/brain-config.json` `.primary`, the switch the rest of
     the workspace already uses to say which brain is primary (it also drives
-    the recall hook). Deliberately NOT a hard-coded "gbrain": that key is how
-    the cutover is reverted, and a gate that ignores it would keep reading
-    gbrain after the corpus moved back — the same failure as today, mirrored.
+    the recall hook). Returns the raw config value rather than hard-coding
+    "brain" so a caller/test can see exactly what a stale config says — but
+    see `main()`: a `gbrain*` result is refused there before it can run
+    anything, since gbrain is retired and re-enabling it needs Tom.
 
     Order: explicit `--brain` (argparse default below) > `$BRAIN_BIN` >
     `.primary` > `brain`. An unreadable or unrecognised config falls back to
@@ -707,6 +700,23 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = ap.parse_args(argv)
+
+    # gbrain is retired (won't-undo, Tom 2026-09-25: "the brain is LastDB
+    # only ... Re-enabling gbrain needs Tom"). Refuse here, before any brain
+    # subprocess runs and before any fixture addressing happens, so an
+    # inherited $BRAIN_BIN, a stale `.primary: gbrain` in
+    # ~/.claude/brain-config.json, or an explicit `--brain .../gbrain` can
+    # never select it (papercut-last-stack-decision-check-old-config-
+    # selects-retired-brain-20261009).
+    if Path(args.brain).name.startswith("gbrain"):
+        print(
+            "last-stack-kanban-decision-check: refusing --brain "
+            f"{args.brain!r} -- gbrain is retired "
+            "(decision-2026-09-25-revert-primary-brain-to-lastdb); "
+            "re-enabling it needs Tom.",
+            file=sys.stderr,
+        )
+        return 1
 
     body = read_body_or_fail()
     fixture = Path(args.fixture_dir) if args.fixture_dir else None

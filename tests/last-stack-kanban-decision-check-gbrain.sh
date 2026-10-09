@@ -1,15 +1,10 @@
 #!/usr/bin/env bash
-# The decision gate must read the store that actually holds the corpus.
-#
-# gbrain has been the primary knowledge store since 2026-09-06. Censused on
-# 2026-09-22 with `brain reindex --list-index --dry-run`, the LastDB brain this
-# check defaults to holds design=1, decision=3, preference=2, sop=2 — against
-# gbrain's ~12,910 pages. The gate was honouring a corpus of six records and
-# returning `verdict: honor` on everything else. It only surfaced because an
-# unrelated index-marker error made it fail loudly.
-#
-# Driven against a STUB gbrain, so this asserts the calling convention and the
-# normalisation without a live node.
+# gbrain is retired (won't-undo, Tom 2026-09-25: "the brain is LastDB only
+# ... Re-enabling gbrain needs Tom"). This check must refuse every path that
+# could select it -- explicit --brain, inherited $BRAIN_BIN, and a stale
+# `.primary: gbrain` in ~/.claude/brain-config.json -- before it runs a
+# single gbrain subprocess or reads a single fixture file
+# (papercut-last-stack-decision-check-old-config-selects-retired-brain-20261009).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -25,39 +20,13 @@ mkdir -p "$tmp/bin"
 calls="$tmp/calls.txt"
 : >"$calls"
 
-# Stub gbrain. Addresses pages as <dir>/<slug>; `wiki/concepts` for concepts,
-# matching the live store. `search` speaks gbrain's shape: one row per CHUNK,
-# addressed slug, `chunk_text` rather than `snippet`, and `--types a,b`.
+# A gbrain stub that records whether it was ever invoked. If any refusal
+# path below is broken, this stub runs and the "never called" assertion
+# catches it -- the whole point is that it must stay silent.
 cat >"$tmp/bin/gbrain" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$FIXTURE_CALLS"
-verb="$1"; shift
-case "$verb" in
-  get)
-    case "$1" in
-      design/design-flaky-gate-policy)
-        printf 'type: design\ntitle: flaky gate policy\n---\nA required gate must be reliable.\n' ;;
-      wiki/concepts/concepts-gate-reliability)
-        printf 'type: concept\ntitle: gate reliability\n---\nGate reliability is measured on main.\n' ;;
-      preference/preference-deflake-assert-cause)
-        printf 'type: preference\ntitle: assert the cause\n---\nA repetition run proves nothing.\n' ;;
-      *) exit 1 ;;
-    esac
-    ;;
-  search)
-    # Two chunks of ONE page, plus two other pages. The bare-slug dedup must
-    # collapse the duplicate; an addressed-slug dedup would not.
-    cat <<'JSON'
-[
- {"slug":"design/design-flaky-gate-policy","type":"design","title":"flaky gate policy","chunk_text":"chunk one","score":0.9},
- {"slug":"design/design-flaky-gate-policy","type":"design","title":"flaky gate policy","chunk_text":"chunk two","score":0.8},
- {"slug":"wiki/concepts/concepts-gate-reliability","type":"design","title":"gate reliability","chunk_text":"c","score":0.7},
- {"slug":"preference/preference-deflake-assert-cause","type":"preference","title":"assert the cause","chunk_text":"p","score":0.6}
-]
-JSON
-    ;;
-  *) exit 2 ;;
-esac
+exit 1
 STUB
 chmod +x "$tmp/bin/gbrain"
 
@@ -76,60 +45,64 @@ De-flake the required gate.
 The gate is reliable.
 BODY
 
-out="$tmp/out.json"
-FIXTURE_CALLS="$calls" python3 "$BIN" \
-  --brain "$tmp/bin/gbrain" \
+assert_refused() { # <label> <env-assignment...> -- <extra argv...>
+  label="$1"; shift
+  : >"$calls"
+  env_args=()
+  while [ "$1" != "--" ]; do env_args+=("$1"); shift; done
+  shift
+  out="$tmp/out-$label.json"
+  err="$tmp/err-$label.txt"
+  rc=0
+  env "${env_args[@]}" FIXTURE_CALLS="$calls" python3 "$BIN" \
+    --title "De-flake the required gate" --kind pr --column todo \
+    "$@" <"$body" >"$out" 2>"$err" || rc=$?
+  [ "$rc" -eq 1 ] || fail "$label: expected exit 1, got $rc (stderr: $(cat "$err"))"
+  grep -Fq "gbrain is retired" "$err" \
+    || fail "$label: refusal message did not name gbrain retirement: $(cat "$err")"
+  [ ! -s "$calls" ] || fail "$label: gbrain stub was invoked -- refusal did not block it: $(cat "$calls")"
+  [ ! -s "$out" ] || fail "$label: wrote output despite refusing: $(cat "$out")"
+}
+
+# 1. Explicit --brain naming a gbrain binary, absolute path.
+assert_refused explicit-brain -- --brain "$tmp/bin/gbrain"
+
+# 2. Inherited $BRAIN_BIN naming a gbrain binary, no --brain flag -- the
+#    exact shape the papercut measured ("A stale caller or config can select
+#    the retired backend").
+assert_refused env-brain-bin "BRAIN_BIN=$tmp/bin/gbrain" --
+
+# 3. A bare `gbrain` name (not a path) must refuse too -- the check is on
+#    the basename, not on being handed a real stub path.
+assert_refused bare-name "BRAIN_BIN=gbrain" --
+
+# 4. A stale `.primary: "gbrain"` in the config, no $BRAIN_BIN override and
+#    no explicit --brain -- the config-driven path the papercut named.
+cfg="$tmp/brain-config.json"
+printf '%s' '{"primary":"gbrain"}' >"$cfg"
+assert_refused config-primary "LAST_STACK_BRAIN_CONFIG=$cfg" "BRAIN_BIN=" --
+
+echo "ok last-stack-kanban-decision-check-gbrain refusal (explicit --brain, \$BRAIN_BIN, bare name, config .primary)"
+
+# 5. The legitimate `brain` path is untouched -- it must not trip the same
+#    guard just because it shares a prefix check with gbrain.
+mkdir -p "$tmp/clear"
+printf '%s\n' '[]' >"$tmp/clear/search.json"
+out="$tmp/out-brain-ok.json"
+rc=0
+LAST_STACK_BRAIN_CONFIG="$tmp/missing-config.json" BRAIN_BIN= python3 "$BIN" \
+  --brain brain --fixture-dir "$tmp/clear" \
   --title "De-flake the required gate" --kind pr --column todo --json \
-  <"$body" >"$out" 2>"$tmp/err" || fail "gbrain-backed check exited non-zero: $(cat "$tmp/err")"
+  <"$body" >"$out" 2>"$tmp/err-brain-ok.txt" || rc=$?
+[ "$rc" -eq 0 ] || fail "plain 'brain' was refused: $(cat "$tmp/err-brain-ok.txt")"
+jq -e '.verdict == "clear"' "$out" >/dev/null \
+  || fail "plain 'brain' path did not reach a verdict: $(cat "$out")"
 
-# 1. The gate ran and reached a verdict.
-jq -e '.verdict == "honor"' "$out" >/dev/null || fail "expected verdict=honor, got $(jq -r .verdict "$out")"
+echo "ok last-stack-kanban-decision-check-gbrain plain brain unaffected"
 
-# 2. Slugs are presented BARE. Invariants and the printed stamp are written in
-#    bare-slug vocabulary; an addressed slug would silently match nothing.
-jq -e '.slugs | index("design-flaky-gate-policy")' "$out" >/dev/null \
-  || fail "search slug was not normalised to its bare form: $(jq -c .slugs "$out")"
-jq -e '[.slugs[] | select(test("/"))] | length == 0' "$out" >/dev/null \
-  || fail "an addressed slug leaked into the result: $(jq -c .slugs "$out")"
-
-# 3. Two chunks of one page collapse to one candidate.
-jq -e '[.slugs[] | select(. == "design-flaky-gate-policy")] | length == 1' "$out" >/dev/null \
-  || fail "duplicate chunks of one page were not deduped"
-
-# 4. Every candidate was actually point-got THROUGH gbrain addressing. This is
-#    the assertion that fails if the prefix map is wrong: a record that cannot
-#    be addressed reads as absent, and the invariants only fire on GOT slugs.
-jq -e '.records | length >= 3 and all(.[]; .got == true)' "$out" >/dev/null \
-  || fail "not every candidate resolved: $(jq -c '[.records[]|{slug,got}]' "$out")"
-
-# 5. Concepts live at wiki/concepts, not concept/. A single flat <type>/<slug>
-#    map would miss them.
-grep -Fq 'get wiki/concepts/concepts-gate-reliability' "$calls" \
-  || fail "concept was not addressed under wiki/concepts: $(cat "$calls")"
-
-# 5b. The stamp tells the reader how to read each slug back from the SAME
-#     store. A bare slug sent readers to `brain get` (LastDB), which does not
-#     hold these records (papercut-kanban-decision-check-missing-brain-slugs-20260921).
-jq -e '.stamp | contains("store: gbrain")' "$out" >/dev/null \
-  || fail "stamp does not name the store: $(jq -r .stamp "$out")"
-jq -e '.stamp | contains("read: gbrain get design/design-flaky-gate-policy")' "$out" >/dev/null \
-  || fail "stamp lacks the gbrain read command: $(jq -r .stamp "$out")"
-jq -e '.stamp | contains("read: gbrain get preference/preference-deflake-assert-cause")' "$out" >/dev/null \
-  || fail "stamp lacks the preference read command: $(jq -r .stamp "$out")"
-jq -e '.stamp | test("(?m)^slugs: [a-z0-9-]+(, [a-z0-9-]+)*$")' "$out" >/dev/null \
-  || fail "the slugs: line must stay one bare comma list: $(jq -r .stamp "$out")"
-
-# 6. gbrain takes ONE comma-separated --types, not repeated --type. Passing the
-#    brain shape exits non-zero with `unknown flag --type`, which the gate
-#    would report as a brain failure and fail closed on.
-grep -Eq 'search .* --types [a-z,]+ ' "$calls" \
-  || fail "search did not use gbrain's --types shape: $(cat "$calls")"
-grep -Eq 'search .* --type ' "$calls" \
-  && fail "search used the brain --type shape against gbrain: $(cat "$calls")"
-
-# 7. The brain path is untouched: a non-gbrain bin name must not take the
-#    gbrain branch. Fixture mode short-circuits the CLI, so assert the flavour
-#    directly.
+# 6. Unit-level: Brain's flavour detection and gbrain addressing still work
+#    as plain code (kept only for its own unit tests per the module
+#    comment); this is not a claim that the CLI can reach them.
 python3 - "$BIN" <<'PY' || fail "flavour detection regressed"
 import importlib.machinery, importlib.util, sys
 spec = importlib.util.spec_from_loader(
@@ -145,39 +118,4 @@ assert m.gbrain_candidate_paths("concepts-foo") == ["wiki/concepts/concepts-foo"
 assert m.gbrain_candidate_paths("already/addressed") == ["already/addressed"]
 PY
 
-echo "ok last-stack-kanban-decision-check-gbrain"
-
-# 8. The default follows ~/.claude/brain-config.json `.primary` — the switch
-#    the workspace already uses — rather than hard-coding gbrain. A hard-coded
-#    default would keep reading gbrain after the cutover is reverted, which is
-#    today's bug mirrored.
-cfg="$tmp/brain-config.json"
-check_default() { # <config-json-or-empty> <expected>
-  if [ -n "$1" ]; then printf '%s' "$1" >"$cfg"; else rm -f "$cfg"; fi
-  got="$(LAST_STACK_BRAIN_CONFIG="$cfg" BRAIN_BIN= python3 - "$BIN" <<'PY'
-import importlib.machinery, importlib.util, os, sys
-os.environ.pop("BRAIN_BIN", None)
-spec = importlib.util.spec_from_loader("dc2", importlib.machinery.SourceFileLoader("dc2", sys.argv[1]))
-m = importlib.util.module_from_spec(spec); sys.modules["dc2"] = m; spec.loader.exec_module(m)
-print(m.default_brain_bin())
-PY
-)"
-  [ "$got" = "$2" ] || fail "default_brain_bin: config=${1:-<absent>} expected $2, got $got"
-}
-check_default '{"primary":"gbrain"}' gbrain
-check_default '{"primary":"brain"}' brain
-check_default '{"primary":"something-else"}' brain
-check_default '{ not json' brain
-check_default '' brain
-
-# $BRAIN_BIN still wins over the config.
-got="$(LAST_STACK_BRAIN_CONFIG="$cfg" BRAIN_BIN=my-brain python3 - "$BIN" <<'PY'
-import importlib.machinery, importlib.util, sys
-spec = importlib.util.spec_from_loader("dc3", importlib.machinery.SourceFileLoader("dc3", sys.argv[1]))
-m = importlib.util.module_from_spec(spec); sys.modules["dc3"] = m; spec.loader.exec_module(m)
-print(m.default_brain_bin())
-PY
-)"
-[ "$got" = "my-brain" ] || fail "\$BRAIN_BIN did not win over the config: got $got"
-
-echo "ok last-stack-kanban-decision-check-gbrain default resolution"
+echo "ok last-stack-kanban-decision-check-gbrain unit (flavour detection, addressing)"
