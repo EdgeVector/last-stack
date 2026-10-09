@@ -40,6 +40,11 @@ publish` + `lastgit artifact promote` did after a green LastGit gate:
 Nothing is written to the real CAS before every check has passed. The tool never
 touches an install root; activation stays host-track's soak-gated flow.
 
+Every `gh api` call is bounded: 120 s for a JSON read, 600 s for the zip, three
+attempts each, retried only after a timeout or an HTTP 5xx (see class Gh). A
+stalled download ends in a Fail that says "timed out"; it no longer holds the
+caller's install lock without output.
+
 Exit: 0 promoted or text status current, 3 hold, 1 failure. JSON same-head pulls
 repeat all gates and return complete provenance. The ordinary text current
 result is only a cheap status fact and supplies no exact install authority.
@@ -50,12 +55,14 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import zipfile
 
 EXIT_OK, EXIT_FAIL, EXIT_HOLD = 0, 1, 3
@@ -96,24 +103,71 @@ def safe_rel(rel):
     return rel
 
 
+GH_ATTEMPTS = 3
+HTTP_5XX = re.compile(r"\bHTTP 5\d\d\b")
+
+
+def env_secs(name, default):
+    """Seconds from the environment (the fixtures shorten the bounds); bad input keeps the default."""
+    try:
+        value = float(os.environ.get(name, ""))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
 class Gh:
+    """Read-only `gh api` GETs, each BOUNDED in time and retried on a timeout or an HTTP 5xx.
+
+    Without a bound a stalled GitHub connection printed nothing and held the
+    caller (host-track, under its install lock) indefinitely: two agents hung ~5
+    minutes during GitHub 502s on 2026-09-30, and a 108 MB artifact ran past 5
+    minutes on 2026-10-09. JSON calls get 120 s, the zip download 600 s, three
+    attempts each (LAST_STACK_GH_API_TIMEOUT, LAST_STACK_GH_ZIP_TIMEOUT and
+    LAST_STACK_GH_RETRY_SLEEP shorten them for the fixtures). Only a timeout or
+    an HTTP 5xx is retried; a 404 or any other answer is final. Every call here
+    is a GET that writes nothing, so a retry cannot touch the CAS or a channel.
+    Brain: papercut-github-artifact-pull-zip-download-hangs-without-timeout-20260930
+    """
+
     def __init__(self, exe):
         self.exe = exe
+        self.json_timeout = env_secs("LAST_STACK_GH_API_TIMEOUT", 120)
+        self.zip_timeout = env_secs("LAST_STACK_GH_ZIP_TIMEOUT", 600)
+        self.retry_sleep = env_secs("LAST_STACK_GH_RETRY_SLEEP", 2)
+
+    def get(self, path, timeout, text):
+        what = path.split("?")[0]
+        last = ""
+        for attempt in range(1, GH_ATTEMPTS + 1):
+            try:
+                r = subprocess.run([self.exe, "api", path], capture_output=True, text=text, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                last = "timed out after %gs" % timeout
+            else:
+                if r.returncode == 0:
+                    return r.stdout
+                err = r.stderr if text else r.stderr.decode("utf8", "replace")
+                if text:
+                    err = err or r.stdout
+                err = err.strip()[:300]
+                if not HTTP_5XX.search(err):
+                    raise Fail("gh api %s failed: %s" % (what, err))
+                last = err
+            if attempt < GH_ATTEMPTS:
+                log("gh api %s: %s (attempt %d of %d); retrying" % (what, last, attempt, GH_ATTEMPTS))
+                time.sleep(self.retry_sleep * attempt)
+        raise Fail("gh api %s failed after %d attempts: %s" % (what, GH_ATTEMPTS, last))
 
     def api_json(self, path):
-        r = subprocess.run([self.exe, "api", path], capture_output=True, text=True)
-        if r.returncode != 0:
-            raise Fail("gh api %s failed: %s" % (path.split("?")[0], (r.stderr or r.stdout).strip()[:300]))
+        out = self.get(path, self.json_timeout, True)
         try:
-            return json.loads(r.stdout)
+            return json.loads(out)
         except ValueError:
             raise Fail("gh api %s returned non-JSON" % path.split("?")[0])
 
     def api_bytes(self, path):
-        r = subprocess.run([self.exe, "api", path], capture_output=True)
-        if r.returncode != 0:
-            raise Fail("gh api %s failed: %s" % (path.split("?")[0], r.stderr.decode("utf8", "replace").strip()[:300]))
-        return r.stdout
+        return self.get(path, self.zip_timeout, False)
 
 
 def situations_preflight(repo):
@@ -506,6 +560,7 @@ def pull(args):
             or (run.get("head_repository") or {}).get("full_name", "").lower() != repo.lower()):
         raise Fail("workflow run %s is not a successful push run of %s@%s on %s" % (run.get("id"), repo, oid[:12], args.branch))
 
+    log("downloading artifact %s (%s bytes)" % (art["id"], art.get("size_in_bytes", "unknown")))
     zip_bytes = gh.api_bytes("repos/%s/actions/artifacts/%s/zip" % (repo, art["id"]))
     digest = (art.get("digest") or "")
     if digest.startswith("sha256:"):
