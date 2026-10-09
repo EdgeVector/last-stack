@@ -6,7 +6,7 @@ import shutil
 import uuid
 from pathlib import Path
 from factory_repair import (Refusal, require, version1, HEX, OID, sha, value_sha, read_json, read_bytes,
-    file_sha, atomic_json, validate_snapshot, public_card_batch, verify_fk, verify_loom, json_call, bounded_call, strict_json, validate_claim_stage_one)
+    file_sha, atomic_json, validate_snapshot, public_card_batch, verify_fk, verify_loom, json_call, bounded_call, strict_json, validate_claim_stage_one, validate_claim_success)
 
 BOOTSTRAP_KEYS = {'factory-scoped-dispatch-20261008', 'factory-guarded-closeout-20261008'}
 RECOVERY_POLICY = {
@@ -33,6 +33,18 @@ RECOVERY_POLICY = {
         'src/mcp/server.ts': 'df3c724ae7602e3506f0c6dd14a6e3344c2fb316ac2901dafd2c77e44e82b583',
     },
 }
+# Original failed writer. This is historical evidence, never the active writer.
+RECOVERY_WRITER_AUTHORITY = {
+    "app": "fkanban",
+    "contract_sha256": "bea8a495839390153b78d4827b1f9e996dff037841df85783f49adbdd8241128",
+    "current": "~/.host-track/apps/fkanban/current",
+    "manifest_file_sha256": "3af23df80f7020c793710f2cad950d72b28457e405c03a866d0b238114b4aeb6",
+    "manifest_path": "~/.lastgit/artifacts/manifests/899e5b985574b606ee18af294530006e212001fc770482887fc70e3a157e4cc2.json",
+    "manifest_sha256": "899e5b985574b606ee18af294530006e212001fc770482887fc70e3a157e4cc2",
+    "root": "~/.host-track/apps/fkanban/versions/899e5b985574b606ee18af294530006e212001fc770482887fc70e3a157e4cc2",
+    "source_oid": "e807698578e0d05ac09ede32941c52beb1537a1d"
+}
+
 RECOVERY_STDERR = ('kanban: Surfaces must be bounded explicit repo-relative file paths or path globs '
                    'without traversal or bare directory patterns.\n')
 
@@ -87,18 +99,19 @@ def recovery_original(config, prior_text):
             'bootstrap-recovery-original-intent')
     entry = next(e for e in config['entries'] if e['card'] == RECOVERY_POLICY['card'])
     old_config = copy.deepcopy(config); del old_config['refusal_recovery']
+    old_config['fkanban_authority'] = copy.deepcopy(RECOVERY_WRITER_AUTHORITY)
     old_entry = next(e for e in old_config['entries'] if e['card'] == RECOVERY_POLICY['card']); old_entry['target_surfaces'] = []
     require(value_sha(old_config) == RECOVERY_POLICY['from_config_sha256'] and prior.get('entry') == old_entry and
             prior.get('owner') == entry['owner'], 'bootstrap-recovery-config-transition')
-    require(config['fkanban_authority']['contract_sha256'] == RECOVERY_POLICY['writer_contract_sha256'] and
-            config['fkanban_authority']['source_oid'] == RECOVERY_POLICY['writer_source_oid'], 'bootstrap-recovery-writer-authority')
+    require(RECOVERY_WRITER_AUTHORITY['contract_sha256'] == RECOVERY_POLICY['writer_contract_sha256'] and
+            RECOVERY_WRITER_AUTHORITY['source_oid'] == RECOVERY_POLICY['writer_source_oid'], 'bootstrap-recovery-writer-authority')
     fields = validate_snapshot(prior['witness'], entry['card'])['fields']
     require(prior['witness']['snapshot_sha256'] == entry['original_snapshot_sha256'] == RECOVERY_POLICY['witness_sha256'] and
             sha(fields['body'].encode()) == entry['original_body_sha256'] and fields['surfaces'] == entry['target_surfaces'] and
             fields['assignee'] == entry['initial_owner'] == '' and fields['column'] == entry['initial_column'] == 'backlog' and
             fields['repo'] == entry['repo'] == 'EdgeVector/fkanban' and fields['base'] == 'main' and
             fields['block_status'] in ('', 'none') and fields['block_reason'] == '', 'bootstrap-recovery-original-witness')
-    validate_retained_chain(prior, old_entry, config['fkanban_authority']['contract_sha256'])
+    validate_retained_chain(prior, old_entry, RECOVERY_WRITER_AUTHORITY['contract_sha256'])
     return prior, entry
 
 def validate_recovery_history(state, config, contract_sha256):
@@ -137,6 +150,11 @@ def validate_retained_chain(state, entry, writer_contract):
     for receipt in receipts:
         require(isinstance(receipt, dict), 'bootstrap-receipt-chain-shape')
         accepted = receipt.get('accepted_held') if receipt.get('code') == 'claim_recovery_pending' else None
+        if receipt.get('result') == 'claimed' or 'claim_chain' in receipt:
+            require(item is not None, 'bootstrap-claim-chain-previous-snapshot')
+            item = validate_claim_success(item, receipt, entry['owner'], writer_contract)
+            previous_sha = item['snapshot_sha256']
+            continue
         metadata = accepted if accepted else receipt
         require(isinstance(metadata, dict) and metadata.get('durability') == 'durable' and metadata.get('contract_sha256') == writer_contract and
                 metadata.get('guard_snapshot_sha256') == previous_sha, 'bootstrap-receipt-chain-authority')
@@ -247,10 +265,13 @@ class BootstrapController:
             validate_claim_stage_one(state['witness'], item, state['owner'])
             state.update(witness=item, accepted_held=accepted, phase='claim-recovery-pending'); state['write_receipts'].append(receipt)
             del state['write_intent']; atomic_json(self.path, state); return
-        require(receipt.get('durability') == 'durable' and receipt.get('contract_sha256') == self.config['fkanban_authority']['contract_sha256'] and
-                receipt.get('guard_snapshot_sha256') == state['witness']['snapshot_sha256'], 'bootstrap-write-not-durable')
-        item = {'slug': self.entry['card'], 'snapshot_json': receipt.get('next_snapshot_json'), 'snapshot_sha256': receipt.get('next_snapshot_sha256')}
-        validate_snapshot(item, self.entry['card'])
+        if operation in ('claim', 'resume-claim'):
+            item = validate_claim_success(state['witness'], receipt, state['owner'], self.config['fkanban_authority']['contract_sha256'])
+        else:
+            require(receipt.get('durability') == 'durable' and receipt.get('contract_sha256') == self.config['fkanban_authority']['contract_sha256'] and
+                    receipt.get('guard_snapshot_sha256') == state['witness']['snapshot_sha256'], 'bootstrap-write-not-durable')
+            item = {'slug': self.entry['card'], 'snapshot_json': receipt.get('next_snapshot_json'), 'snapshot_sha256': receipt.get('next_snapshot_sha256')}
+            validate_snapshot(item, self.entry['card'])
         state['witness'] = item; state['write_receipts'].append(receipt); del state['write_intent']; state['phase'] = next_phase
         atomic_json(self.path, state)
 
@@ -328,7 +349,7 @@ def verify_component(entry):
         file_sha(Path(proof['producer_path']).expanduser()) == proof['producer_sha256'], 'bootstrap-component-bytes-changed')
     value = read_json(Path(proof['path']).expanduser())
     if proof['kind'] == 'fkanban-installed-public-v1':
-        authority = entry['artifact_authority']; binary = verify_fk(authority); artifact = read_json(binary.parent / 'guarded-contract.json')
+        authority = entry['artifact_authority']; binary = verify_fk(authority, current=False); artifact = read_json(binary.parent / 'guarded-contract.json')
         require(version1(value.get('version')) and value.get('result') == 'passed' and value.get('source_unchanged') is True and
                 value.get('program_sha256') == proof['producer_sha256'] and value.get('artifact') == artifact and
                 value.get('build') == proof['build'], 'bootstrap-fkanban-component-result')
@@ -352,9 +373,9 @@ def verify_component(entry):
 class BootstrapRuntime:
     def __init__(self, root, config, directory):
         self.root = Path(root); self.config = config; self.directory = Path(directory)
-        self.binary = verify_fk(config['fkanban_authority'])
+        self.binary = verify_fk(config['fkanban_authority'], require_claim_chain=True)
     def check_authority(self, entry):
-        self.binary = verify_fk(self.config['fkanban_authority']); verify_component(entry)
+        self.binary = verify_fk(self.config['fkanban_authority'], require_claim_chain=True); verify_component(entry)
         gh = shutil.which('gh'); require(gh is not None, 'bootstrap-github-cli-unavailable')
         pr = json_call([gh, 'pr', 'view', entry['pr_url'], '-R', entry['repo'], '--json', 'url,state,mergedAt,baseRefName,headRefName,mergeCommit'], 30)
         require(pr.get('url') == entry['pr_url'] and pr.get('state') == 'MERGED' and pr.get('mergedAt') and
@@ -366,7 +387,7 @@ class BootstrapRuntime:
                 comparison.get('merge_base_commit', {}).get('sha') == original, 'bootstrap-installed-source-not-descendant')
     def check_refusal_source(self, policy):
         require(policy == RECOVERY_POLICY and value_sha(policy) == value_sha(RECOVERY_POLICY), 'bootstrap-recovery-source-policy')
-        binary = verify_fk(self.config['fkanban_authority']); artifact = read_json(binary.parent / 'guarded-contract.json')
+        binary = verify_fk(RECOVERY_WRITER_AUTHORITY, current=False); artifact = read_json(binary.parent / 'guarded-contract.json')
         require(artifact.get('source_commit') == policy['writer_source_oid'] and artifact.get('contract_sha256') == policy['writer_contract_sha256'] and
                 artifact.get('source_manifest_sha256') == policy['source_manifest_sha256'], 'bootstrap-recovery-source-authority')
         sources = artifact.get('source_manifest')

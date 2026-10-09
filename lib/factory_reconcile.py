@@ -67,6 +67,21 @@ def classify(keys, known, bucket):
     return result
 
 
+KNOWN_PROGRESS_SHA = '0d42b3ab999d1adcd9945464b66ce6f151a8e5ab94c7925432cbfc85368dfb2e'
+KNOWN_PROGRESS_TARGET_CONFIG_SHA = '0b2bd4cda81c8c14471e3248a7f5c42ff79742b890282cec9d547338533d1f9b'
+
+def lifecycle_progress_cursor(raw, config_sha, reviewed_count):
+    """Keep the exact no-effect cursor across this one writer config change."""
+    progress = strict_json(raw)
+    known_no_effect = (sha(raw) == KNOWN_PROGRESS_SHA and
+                       config_sha == KNOWN_PROGRESS_TARGET_CONFIG_SHA)
+    require(isinstance(progress, dict) and version1(progress.get('version')) and
+            (progress.get('config_sha256') == config_sha or known_no_effect) and
+            type(progress.get('cursor')) is int and 0 <= progress['cursor'] < reviewed_count,
+            'reviewed-lifecycle-progress-drift')
+    return progress['cursor']
+
+
 class Reconciler:
     def __init__(self, root, config, directory, effects, contract_sha256):
         self.root = Path(root); self.config = validate_manifest(config); self.directory = Path(directory)
@@ -184,10 +199,7 @@ class Reconciler:
             return self.effects.finish(receipt, buckets, str(error))
         progress_path = self.directory / 'lifecycle-progress.json'; config_sha = value_sha(self.config); cursor = 0
         if progress_path.exists():
-            progress = read_json(progress_path)
-            require(version1(progress.get('version')) and progress.get('config_sha256') == config_sha and
-                    type(progress.get('cursor')) is int and 0 <= progress['cursor'] < len(reviewed), 'reviewed-lifecycle-progress-drift')
-            cursor = progress['cursor']
+            cursor = lifecycle_progress_cursor(read_bytes(progress_path), config_sha, len(reviewed))
         selected = next(reviewed[(cursor + i) % len(reviewed)] for i in range(len(reviewed)) if reviewed[(cursor + i) % len(reviewed)] in wanted)
         by_key = {r['slug']: r for r in records}
         for record in records:
@@ -227,7 +239,7 @@ class ReconcileRuntime:
         self.root = Path(root); self.config = config; self.directory = Path(directory); self.capture = Path(capture)
         self.capture.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.brain = str(Path.home() / '.local/bin/brain')
-        self.kanban = verify_fk(config['fkanban_authority'])
+        self.kanban = verify_fk(config['fkanban_authority'], require_claim_chain=True)
 
     def snapshot(self):
         path = self.capture / 'queue.json'
