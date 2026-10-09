@@ -92,6 +92,9 @@
 #                     and not refused.
 #
 # Text inside a heredoc body is data, so only heredoc-backticks looks there.
+# So is the interior of a quoted data argument (--body, --evidence,
+# --verified-by ..., git commit -m): a single-quoted one always, a double-quoted
+# one unless it holds $( , a backtick or ${ (those RUN). See blank_data_args.
 # Escape hatch: put "shell-lint-ok: <reason>" anywhere in the command.
 # home-root-scan also honors the older "home-scan-ok: <reason>" phrase, so a
 # command already annotated for the standalone Claude Code hook still passes.
@@ -423,64 +426,194 @@ re_grep_count_binary="(^|[^[:alnum:]_-])grep[[:space:]]+(-[[:alnum:]]*[cq][[:aln
 # worth re-deriving which specific grep invocation it was attached to.
 re_grep_binary_safe='(^|[^[:alnum:]_-])grep[[:space:]]+-[[:alnum:]]*a[[:alnum:]]*([[:space:]]|$)|--text([[:space:]]|$)|--binary-files[=[:space:]]+text'
 
+# Data arguments. Every code rule below matches the line TEXT, so prose inside a
+# quoted --body / --evidence / --verified-by read as code and was refused: an
+# agent that files or closes a papercut quotes the very pattern it reports
+# (measured 2026-10-08, stat-local-zulu refused a --verified-by sentence).
+# blank_data_args prints the command with the interior of each such argument
+# replaced by spaces (newlines kept, so line N is still line N). The code rules
+# then read that text. dquote-backticks and heredoc-backticks read the ORIGINAL.
+# Brain: papercut-shell-lint-stat-local-zulu-matches-whole-line-prose-not-shell-code-20261008
+#
+# What counts as data, and what does not:
+#   * Only a quoted string that DIRECTLY follows a data flag (--body --evidence
+#     --symptom --title --summary --verified-by --fixed-by --reason --message
+#     --note --description, after a space or =) or `git commit -m`. A bare -m
+#     is not a data flag: `du -m "$HOME"` is a megabyte scan, not a message.
+#   * A single-quoted string is pure data. A double-quoted string is data only
+#     when its interior holds no $( , no backtick and no ${ : those three RUN
+#     inside double quotes, so such a string stays visible to every rule.
+#   * The lexer follows quotes, $( ), ${ }, backticks, comments, \ escapes, $'..'
+#     and heredoc bodies, so an apostrophe in a comment or a heredoc cannot open
+#     a string that swallows later code. Any construct it cannot close (an
+#     unterminated string or heredoc) cancels ALL blanking: the text is then
+#     scanned whole, as before. awk failing does the same (see below).
+# POSIX ERE and awk only: macOS ships bash 3.2 and BSD awk 20200816.
+blank_data_args() {
+  awk '
+  function push(kind, cl) { sp++; sk[sp] = kind; sc[sp] = cl; sd[sp] = 0 }
+  function isdata(at,    from, pre) {
+    from = at - 240; if (from < 1) from = 1
+    pre = substr(s, from, at - from)
+    return match(pre, DATA_RE) || match(pre, GIT_RE)
+  }
+  function rec(a, b, dq,    t) {
+    if (b < a) return
+    t = substr(s, a, b - a + 1)
+    if (dq && (index(t, "$(") || index(t, BT) || index(t, "${"))) return
+    nr++; ra[nr] = a; rb[nr] = b
+  }
+  BEGIN {
+    SQ = "\047"; DQ = "\042"; BT = "\140"; NL = "\n"
+    DATA_RE = "(^|[ \t\n;&|(])--(body|evidence|symptom|title|summary|verified-by|fixed-by|reason|message|note|description)(=|[ \t]+)$"
+    GIT_RE = "(^|[ \t\n;&|(])git[ \t]+([^;&|\n]*[ \t])?commit[ \t]+([^;&|\n]*[ \t])?-[A-Za-z]*m[ \t]+$"
+    while ((getline ln) > 0) s = s ln NL
+    n = length(s); ok = 1; i = 1; sp = 0; push("C", "")
+    while (ok && i <= n) {
+      c = substr(s, i, 1); d = substr(s, i + 1, 1)
+      if (sk[sp] == "D") {
+        if (c == "\\") i += 2
+        else if (c == DQ) { if (sd[sp] > 0) rec(sd[sp] + 1, i - 1, 1); sp--; i++ }
+        else if (c == "$" && d == "(") { push("C", ")"); i += 2 }
+        else if (c == "$" && d == "{") { push("C", "}"); i += 2 }
+        else if (c == BT) { push("C", BT); i++ }
+        else i++
+        continue
+      }
+      if (c == "\\") { i += 2; continue }
+      if (c == SQ) {
+        j = index(substr(s, i + 1), SQ)
+        if (j == 0) { ok = 0; break }
+        if (isdata(i)) rec(i + 1, i + j - 1, 0)
+        i += j + 1; continue
+      }
+      if (c == DQ) { push("D", ""); if (isdata(i)) sd[sp] = i; i++; continue }
+      if (c == "$") {
+        if (d == "(") { push("C", ")"); i += 2; continue }
+        if (d == "{") { push("C", "}"); i += 2; continue }
+        if (d == SQ) {
+          j = i + 2
+          while (j <= n && substr(s, j, 1) != SQ) { if (substr(s, j, 1) == "\\") j++; j++ }
+          if (j > n) { ok = 0; break }
+          i = j + 1; continue
+        }
+        i++; continue
+      }
+      if (c == BT) { if (sc[sp] == BT) sp--; else push("C", BT); i++; continue }
+      if (c == "(") { push("C", ")"); i++; continue }
+      if (c == ")") { if (sc[sp] == ")") sp--; i++; continue }
+      if (c == "}") { if (sc[sp] == "}") sp--; i++; continue }
+      if (c == "#" && sc[sp] != "}") {
+        p = (i == 1) ? NL : substr(s, i - 1, 1)
+        if (p == " " || p == "\t" || p == NL || p == ";" || p == "&" || p == "|" || p == "(") {
+          j = index(substr(s, i), NL)
+          if (j == 0) i = n + 1; else i += j - 1
+          continue
+        }
+      }
+      if (c == "<" && d == "<") {
+        if (substr(s, i + 2, 1) == "<") { i += 3; continue }
+        j = i + 2; strip = 0
+        if (substr(s, j, 1) == "-") { strip = 1; j++ }
+        while (substr(s, j, 1) == " " || substr(s, j, 1) == "\t") j++
+        q = substr(s, j, 1)
+        if (q == DQ || q == SQ || q == "\\") j++
+        if (match(substr(s, j, 256), "^[A-Za-z_][A-Za-z0-9_.-]*")) {
+          npend++; pd[npend] = substr(s, j, RLENGTH); ps[npend] = strip
+          i = j + RLENGTH
+          if ((q == DQ || q == SQ) && substr(s, i, 1) == q) i++
+          continue
+        }
+        i += 2; continue
+      }
+      if (c == NL) {
+        i++
+        for (h = 1; h <= npend && ok; h++) {
+          found = 0
+          while (i <= n) {
+            j = index(substr(s, i), NL)
+            if (j == 0) { hl = substr(s, i); i = n + 1 } else { hl = substr(s, i, j - 1); i += j }
+            if (ps[h]) sub(/^\t+/, "", hl)
+            if (hl == pd[h]) { found = 1; break }
+          }
+          if (!found) ok = 0
+        }
+        npend = 0
+        continue
+      }
+      i++
+    }
+    if (!ok || sp != 1) nr = 0
+    out = ""; pos = 1
+    for (r = 1; r <= nr; r++) {
+      seg = substr(s, ra[r], rb[r] - ra[r] + 1); gsub(/[^\n]/, " ", seg)
+      out = out substr(s, pos, ra[r] - pos) seg
+      pos = rb[r] + 1
+    }
+    printf "%s", out substr(s, pos)
+  }'
+}
+
+# check_command_line <line> <blanked line>: the code rules read the blanked
+# text, dquote-backticks the original; a rejection prints the original.
 check_command_line() {
-  local line="$1"
-  if [[ $line =~ $re_spin ]] || [[ $line =~ $re_spin_b ]]; then
+  local line="$1" bline="$2"
+  if [[ $bline =~ $re_spin ]] || [[ $bline =~ $re_spin_b ]]; then
     reject spin-wait "$line"
   fi
   if [[ $line =~ $re_dquote_backticks ]]; then
     reject dquote-backticks "$line"
   fi
-  if [[ $line =~ $re_jq_word ]]; then
-    if [[ $line =~ $re_jq_optional_call ]]; then
+  if [[ $bline =~ $re_jq_word ]]; then
+    if [[ $bline =~ $re_jq_optional_call ]]; then
       reject jq-optional-call "$line"
     fi
-    if [[ $line =~ $re_jq_escaped_quote ]]; then
+    if [[ $bline =~ $re_jq_escaped_quote ]]; then
       reject jq-escaped-quote "$line"
     fi
   fi
-  if [[ $line =~ $re_awk_word ]] && [[ $line =~ $re_awk_match ]]; then
+  if [[ $bline =~ $re_awk_word ]] && [[ $bline =~ $re_awk_match ]]; then
     reject awk-match-array "$line"
   fi
-  if [[ $line =~ $re_sed_inplace ]]; then
+  if [[ $bline =~ $re_sed_inplace ]]; then
     reject sed-inplace "$line"
   fi
-  if [[ $line =~ $re_date_nanos ]]; then
+  if [[ $bline =~ $re_date_nanos ]]; then
     reject date-nanos "$line"
   fi
-  if [[ $line =~ $re_stat_word ]] && [[ $line =~ $re_stat_zulu_fmt ]] \
-     && ! [[ $line =~ $re_tz_utc ]]; then
+  if [[ $bline =~ $re_stat_word ]] && [[ $bline =~ $re_stat_zulu_fmt ]] \
+     && ! [[ $bline =~ $re_tz_utc ]]; then
     reject stat-local-zulu "$line"
   fi
-  if [[ $line =~ $re_printf_dash ]]; then
+  if [[ $bline =~ $re_printf_dash ]]; then
     reject printf-dash "$line"
   fi
-  if [[ $line =~ $re_bin_path ]]; then
+  if [[ $bline =~ $re_bin_path ]]; then
     reject bin-path "$line"
   fi
-  if [[ $line =~ $re_mktemp_suffix ]]; then
+  if [[ $bline =~ $re_mktemp_suffix ]]; then
     reject mktemp-suffix "$line"
   fi
-  if [[ $line =~ $re_grep_count_binary ]] && ! [[ $line =~ $re_grep_binary_safe ]]; then
+  if [[ $bline =~ $re_grep_count_binary ]] && ! [[ $bline =~ $re_grep_binary_safe ]]; then
     reject grep-binary-false-zero "$line"
   fi
   if [ "$shell_kind" = zsh ]; then
-    if [[ $line =~ $re_zsh_status ]]; then
+    if [[ $bline =~ $re_zsh_status ]]; then
       reject zsh-status "$line"
     fi
-    if [[ $line =~ $re_zsh_mapfile ]]; then
+    if [[ $bline =~ $re_zsh_mapfile ]]; then
       reject zsh-mapfile "$line"
     fi
-    if [[ $line =~ $re_zsh_word_split ]]; then
+    if [[ $bline =~ $re_zsh_word_split ]]; then
       reject zsh-word-split "$line"
     fi
-    if [[ $line =~ $re_zsh_cond_flag_expansion ]]; then
+    if [[ $bline =~ $re_zsh_cond_flag_expansion ]]; then
       reject zsh-cond-flag-expansion "$line"
     fi
   fi
   if [ -n "$home" ]; then
     local hline
-    hline="$(normalize_home_line "$line")"
+    hline="$(normalize_home_line "$bline")"
     # home-root-scan honors its own older escape phrase; piped-count-false-zero
     # does NOT -- it is a different defect, so it takes only the generic
     # "shell-lint-ok:" hatch that `reject` already enforces for every rule.
@@ -527,7 +660,19 @@ open_next_body() {
   in_body=1
 }
 
+# Blank the data arguments once, then walk the original and the blanked text in
+# step (same line count). A missing blanked line, or awk failing, falls back to
+# the original text: the lint then reads the whole command, as it always did.
+blanked_text="$(printf '%s\n' "$command_text" | blank_data_args)" || blanked_text="$command_text"
+blank_lines=()
+while IFS= read -r bl || [ -n "$bl" ]; do
+  blank_lines+=("$bl")
+done <<< "$blanked_text"
+lineno=0
+
 while IFS= read -r line || [ -n "$line" ]; do
+  bline="${blank_lines[$lineno]-$line}"
+  lineno=$((lineno + 1))
   if [ "$in_body" -eq 1 ]; then
     probe="$line"
     if [ "$body_strip" = 1 ]; then
@@ -547,8 +692,8 @@ while IFS= read -r line || [ -n "$line" ]; do
     fi
     continue
   fi
-  check_command_line "$line"
-  queue_heredocs "$line"
+  check_command_line "$line" "$bline"
+  queue_heredocs "$bline"
   if [ "${#pending[@]}" -gt 0 ]; then
     body_start_line="$line"
     open_next_body

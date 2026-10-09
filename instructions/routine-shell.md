@@ -27,6 +27,13 @@ fix, and the command does not run.
 | zsh-cond-flag-expansion (Claude) | `${v:+--flag "$x"}` unquoted stays ONE word in zsh (bash splits it); a CLI sees one bad argument, not two | `args=(); [ -n "$x" ] && args+=(--flag "$x"); cmd "${args[@]}"` |
 | home-root-scan | a scanner walks `$HOME`/`~` itself, or reads Desktop/Documents/Downloads/Pictures/Movies/Music — macOS BLOCKS on a privacy prompt attributed to `routines` | `find "$HOME/code" -maxdepth 4 ...`; escape with `# shell-lint-ok: <reason>` or `# home-scan-ok: <reason>` |
 
+The guard reads code, not prose. The interior of a quoted `--body`,
+`--evidence`, `--verified-by`, `--title`, `--summary`, `--symptom`,
+`--fixed-by`, `--reason`, `--message`, `--note` or `--description` argument (and
+of `git commit -m`) is not scanned, so a papercut text may quote `sed -i` or
+`stat -t`. A single-quoted argument is always data. A double-quoted one is
+scanned whole when it holds `$(`, a backtick or `${`, because those run.
+
 Hazards that no guard can see:
 
 - The Codex routine shell is already bash. Do not wrap a command in
