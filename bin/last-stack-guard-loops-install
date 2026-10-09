@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
-# Install / status the two guard LaunchAgents that had no installer:
+# Install / status the guard LaunchAgent that had no installer:
 #   com.edgevector.lastdb-memory-guard   (acts on the primary lastdbd)
-#   com.edgevector.forge-runner-watchdog (revives forge runner lanes)
 # The gui-app, testbin, and sentinel agents stay with
 # last-stack-host-memory-guards-install.
 #
-# All five run as KeepAlive loops (bin/last-stack-launchd-loop) since
+# com.edgevector.forge-runner-watchdog (revives Forgejo runner lanes) was a
+# second label here until 2026-10-08. It is NOT installed or revived any more:
+# no repo is gated on Forgejo (EdgeVector/lastgit moved to GitHub), and the
+# watchdog would page about a Forgejo that is being shut down. Its plist stays in
+# launchd/ for a later cleanup; an agent already loaded on a host is left alone
+# (this installer boots nothing out) and is retired by hand.
+#
+# The loops run as KeepAlive loops (bin/last-stack-launchd-loop) since
 # 2026-09-23. `status` prints the heartbeat age of every loop.
 #
-# This installer reloads ONLY the two guard labels above. It never boots out,
+# This installer reloads ONLY the guard label above. It never boots out,
 # kickstarts, or signals lastdbd itself.
 #
 # Usage:
@@ -32,12 +38,12 @@ plist_dir="${GUARD_LOOPS_PLIST_DIR:-$HOME/Library/LaunchAgents}"
 hb_dir="${LAUNCHD_LOOP_HEARTBEAT_DIR:-$HOME/.lastdb/monitoring/launchd-loop}"
 
 labels() {
-  printf '%s\n' com.edgevector.lastdb-memory-guard com.edgevector.forge-runner-watchdog
+  printf '%s\n' com.edgevector.lastdb-memory-guard
 }
 
 assert_guard_label() {
   case "$1" in
-    com.edgevector.lastdb-memory-guard|com.edgevector.forge-runner-watchdog) ;;
+    com.edgevector.lastdb-memory-guard) ;;
     *) echo "refusing to touch label: $1" >&2; exit 1 ;;
   esac
 }

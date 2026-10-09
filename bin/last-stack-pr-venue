@@ -8,9 +8,10 @@ Usage: last-stack-pr-venue [--json|--compare-ref] <owner/repo> [repo-root]
 Print the PR/CR venue for a repo: github, forgejo, or lastgit.
 With --compare-ref, print the canonical ref for local-ahead checks.
 
-Default (2026-09-30, decision-2026-09-29-retire-lastgit-all-repos-to-github):
-every EdgeVector repo is on GitHub, including an unknown one. The only exception
-is EdgeVector/lastgit, which stays on Forgejo. LastGit is retired.
+Default (2026-10-08, decision-2026-09-29-retire-lastgit-all-repos-to-github):
+every EdgeVector repo is on GitHub, including an unknown one and EdgeVector/lastgit
+(the last repo on the local Forgejo, moved with EdgeVector/lastgit#5). LastGit is
+retired. `forgejo` is an explicit, per-repo opt-in only (the doors below).
 
 An explicit answer for one repo comes from, in this order:
   git config laststack.pr-venue <venue>
@@ -236,7 +237,7 @@ fi
 # A `lastgit` answer is never actionable: LastGit is retired
 # (decision-2026-09-29-retire-lastgit-all-repos-to-github) and no repo on this
 # fleet has that venue -- EdgeVector/lastgit is the repo LastGit hosted, and it
-# lives on Forgejo. The ambient env door to the retired venue was closed in
+# lives on GitHub since 2026-10-08. The ambient env door to the retired venue was closed in
 # last-stack PR 138 by requiring an explicit opt-in; this is the same gate on
 # the remaining door, an explicit marker or git config.
 #
@@ -282,16 +283,13 @@ fi
 
 if [ -z "$venue" ]; then
   case "$repo" in
-    # The one repo that stays on the local Forgejo forge (Tom, 2026-09-29):
-    # LastGit hosts itself there. Every other repo is on GitHub.
-    EdgeVector/lastgit)
-      venue="forgejo"
-      reason="default:forgejo-lastgit-repo"
-      ;;
-    # Everything else, moved or unknown, is a GitHub repo. History: all repos
-    # moved to Forgejo on 2026-09-06 and to LastGit era 3 on 2026-09-26; both
-    # were retired by decision-2026-09-29-retire-lastgit-all-repos-to-github.
-    # The last repo (last-stack) moved on 2026-09-30.
+    # Every repo, moved or unknown, is a GitHub repo. History: all repos moved to
+    # Forgejo on 2026-09-06 and to LastGit era 3 on 2026-09-26; both were retired
+    # by decision-2026-09-29-retire-lastgit-all-repos-to-github. last-stack moved
+    # on 2026-09-30. EdgeVector/lastgit, the last repo on the local Forgejo,
+    # moved on 2026-10-08 (EdgeVector/lastgit#5): it used to be the one
+    # `default:forgejo-lastgit-repo` case here, which sent every caller of this
+    # resolver to a Forgejo that is being shut down.
     *)
       venue="github"
       reason="default:github"

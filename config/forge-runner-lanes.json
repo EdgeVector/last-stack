@@ -1,8 +1,9 @@
 {
-  "version": 4,
-  "description": "Forgejo Actions runner lane policy for the EdgeVector local forge. Since 2026-09-30 only the `lastgit` repo stays on Forgejo; every other EdgeVector repo is on GitHub. Only the merge-gate lane is live. The heavy lane is retired: its repo-scoped runners served fold and exemem-infra, both on GitHub now. The gaming PC runners (pc-forge-runner, pc-heavy-runner) were retired on 2026-09-29. Merge-blocking ci-required runs on the macos-arm64 host lane.",
+  "version": 5,
+  "description": "Forgejo Actions runner lane policy for the EdgeVector local forge. Since 2026-10-08 no repo is gated on Forgejo: `lastgit`, the last one, moved to GitHub (EdgeVector/lastgit#5). Both lanes are retired. The heavy lane is retired (its repo-scoped runners served fold and exemem-infra, both on GitHub). The merge-gate lane is retired (it gated lastgit only). The gaming PC runners (pc-forge-runner, pc-heavy-runner) were retired on 2026-09-29. A retired lane needs no runner: last-stack-fold-ci-health and last-stack-why-stopped Class C report ok for it and last-stack-forge-runner-lanes --check --live does not demand mac-forge-runner. Setting merge_gate.retired to false puts the Forgejo runner checks back.",
   "merge_gate": {
-    "purpose": "Pre-merge ci-required only, for the lastgit repo (the one repo left on Forgejo).",
+    "purpose": "Pre-merge ci-required only. It gated the lastgit repo, the last repo on Forgejo; that repo moved to GitHub on 2026-10-08, so this lane is retired.",
+    "retired": true,
     "labels": [
       "macos-arm64"
     ],
@@ -15,7 +16,7 @@
     "expected_global_runners": [
       "mac-forge-runner"
     ],
-    "notes": "Mac merge runner is host-only macos-arm64 (docker label dropped 2026-07-13). No docker lane exists: the PC pc-forge-runner that served docker/* was retired 2026-09-29. Do not attach long release/deploy workflows to these labels."
+    "notes": "RETIRED 2026-10-08 (lastgit moved to GitHub). Mac merge runner is host-only macos-arm64 (docker label dropped 2026-07-13). No docker lane exists: the PC pc-forge-runner that served docker/* was retired 2026-09-29. Do not attach long release/deploy workflows to these labels. The labels and homes stay listed so the separation check and a future re-activation keep working."
   },
   "heavy": {
     "purpose": "RETIRED 2026-09-30. Long-running non-gating work on Mac host runners for fold tags and exemem-infra deploys. Both repos are on GitHub now (GitHub Actions), so no Forgejo heavy runner is expected. Re-adding a heavy lane is a deliberate decision. Never a required pre-merge status.",
@@ -44,6 +45,6 @@
   "proof": {
     "command": "bin/last-stack-forge-runner-lanes --check",
     "live_command": "bin/last-stack-forge-runner-lanes --check --live",
-    "expected": "Local discovery only. The heavy lane is retired (heavy.retired), so heavy_ok is true without a heavy runner; the check fails only when a merge-gate home advertises the heavy label or a merge-gate runner is offline."
+    "expected": "Local discovery only. The heavy lane is retired (heavy.retired), so heavy_ok is true without a heavy runner. The merge-gate lane is retired (merge_gate.retired), so no merge-gate runner is demanded; the check fails only when a merge-gate home advertises the heavy label."
   }
 }

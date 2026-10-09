@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Zero-LLM demand gate for merge-class routines.
 #
-# Skip when the open-PR pass (every EdgeVector repo on GitHub, plus the lastgit
-# repo on Forgejo) is quiet and deploy is not blocked. Aged open PRs and
-# blocked deploys proceed.
+# Skip when the open-PR pass (every EdgeVector repo, all on GitHub since the
+# lastgit repo moved on 2026-10-08) is quiet and deploy is not blocked. Aged
+# open PRs and blocked deploys proceed.
 #
 # LastGit is retired (2026-09-30): there is no `lastgit stuck` read any more,
 # and LAST_STACK_LASTGIT_NATIVE_REPOS / LAST_STACK_PIPELINE_GATE_LASTGIT_BIN
@@ -32,13 +32,14 @@ last-stack-merge-demand-gate
 
 Zero-LLM gate for merge class. Exit 0 = skip; 10 = proceed.
 
-Default Forge list is config/merge-demand-forge-repos (only lastgit stays on
-Forgejo). Every other EdgeVector repo is canonical on GitHub since 2026-09-30 and
-is read from config/merge-demand-github-repos (through gh, `ci-required` era).
-Aged open PRs and blocked deploys proceed.
+Every EdgeVector repo is canonical on GitHub (lastgit was the last, 2026-10-08)
+and is read from config/merge-demand-github-repos (through gh, `ci-required` era).
+The default Forge list, config/merge-demand-forge-repos, is empty: a quiet gate
+makes no Forgejo call. Aged open PRs and blocked deploys proceed.
 
 Environment:
-  LAST_STACK_MERGE_DEMAND_FORGE_REPOS     comma list (overrides file)
+  LAST_STACK_MERGE_DEMAND_FORGE_REPOS     comma list of repos read from Forgejo
+                                          (overrides file; default: none)
   LAST_STACK_PIPELINE_GATE_FORGE_REPOS    alias used by pipeline-health-gate
   LAST_STACK_MERGE_DEMAND_GITHUB_REPOS    comma list of repos read from GitHub
                                           (default config/merge-demand-github-repos:
@@ -66,8 +67,11 @@ positive_int() {
   esac
 }
 
+# No repo is read from Forgejo by default: every EdgeVector repo is on GitHub.
+# This used to answer EdgeVector/lastgit, which made the gate fail open
+# (`forge-read-rc-*`, PROCEED on every tick) as soon as Forgejo stopped.
 default_repos() {
-  printf '%s' "EdgeVector/lastgit"
+  printf '%s' ""
 }
 
 load_forge_repos() {
@@ -134,8 +138,7 @@ positive_int "$deploy_tail_bytes" || { echo "invalid deploy tail bytes: $deploy_
 
 forge_repos="$(load_forge_repos)"
 IFS=',' read -r -a forge_repo_list <<<"$forge_repos"
-[ "${#forge_repo_list[@]}" -gt 0 ] || { echo "forge repo list is empty" >&2; exit 2; }
-for repo in "${forge_repo_list[@]}"; do
+for repo in ${forge_repo_list[@]+"${forge_repo_list[@]}"}; do
   case "$repo" in
     */*) ;;
     *) echo "invalid Forgejo repo: $repo" >&2; exit 2 ;;
@@ -161,12 +164,14 @@ is_github_repo() {
 
 # One read list: every Forge repo not on the GitHub list, then every GitHub repo.
 read_repo_list=()
-for repo in "${forge_repo_list[@]}"; do
+for repo in ${forge_repo_list[@]+"${forge_repo_list[@]}"}; do
   is_github_repo "$repo" || read_repo_list+=("$repo")
 done
 for repo in ${github_repo_list[@]+"${github_repo_list[@]}"}; do
   read_repo_list+=("$repo")
 done
+# Both lists empty is a broken inventory, not a quiet one: exit 2, never skip.
+[ "${#read_repo_list[@]}" -gt 0 ] || { echo "no repos to read: the Forge list and the GitHub list are both empty" >&2; exit 2; }
 
 now_epoch="${LAST_STACK_PIPELINE_GATE_NOW_EPOCH:-$(date -u +%s)}"
 positive_int "$now_epoch" || { echo "invalid current epoch: $now_epoch" >&2; exit 2; }
@@ -201,7 +206,14 @@ deploy_scan="${LAST_STACK_PIPELINE_GATE_DEPLOY_SCAN_BIN:-${last_stack}/bin/last-
 gh_bin="${LAST_STACK_PIPELINE_GATE_GH_BIN:-$(command -v gh 2>/dev/null || true)}"
 jq_bin="${LAST_STACK_PIPELINE_GATE_JQ_BIN:-$(command -v jq 2>/dev/null || true)}"
 
-[ -x "$forge_api" ] || proceed "forge-api-missing"
+# The Forge API is needed only when a repo is actually read from Forgejo.
+forge_read=0
+for repo in ${read_repo_list[@]+"${read_repo_list[@]}"}; do
+  is_github_repo "$repo" || forge_read=1
+done
+if [ "$forge_read" -eq 1 ]; then
+  [ -x "$forge_api" ] || proceed "forge-api-missing"
+fi
 if [ "${#github_repo_list[@]}" -gt 0 ]; then
   [ -n "$gh_bin" ] && [ -x "$gh_bin" ] || proceed "gh-missing"
 fi

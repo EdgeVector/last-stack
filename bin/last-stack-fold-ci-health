@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # last-stack-fold-ci-health — zero-LLM Forge CI capacity check (Class C).
 #
-# The name is historical. Fold and every other repo except `lastgit` moved to
-# GitHub (2026-09-30), so only the local Forgejo merge-gate runner is checked: it
-# gates the lastgit repo. The repo-scoped host runners (fold, exemem-infra) and
-# the gaming PC runner are retired and not checked.
+# The name is historical. Fold and every other repo moved to GitHub, `lastgit`
+# last (2026-10-08). The local Forgejo merge-gate runner is checked only while
+# the lane policy still needs it: config/forge-runner-lanes.json
+# merge_gate.retired=true means no repo is gated on Forgejo, so there is no runner
+# to check and the answer is `ok` (detail=forge-retired). Before that flag the
+# check reported level=down and hinted "reload the launchd agent" as soon as the
+# runner was stopped. The repo-scoped host runners (fold, exemem-infra) and the
+# gaming PC runner are retired and not checked.
 #
 # Usage:
 #   last-stack-fold-ci-health [--json] [--page]
@@ -24,16 +28,34 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+# Resolve the symlink chain first: a PATH link points into the install tree.
+_self_src="$0"
+while [ -L "$_self_src" ]; do
+  _self_link="$(readlink "$_self_src")"
+  case "$_self_link" in /*) _self_src="$_self_link" ;; *) _self_src="$(dirname "$_self_src")/$_self_link" ;; esac
+done
+ROOT="$(CDPATH='' cd -- "$(dirname -- "$_self_src")/.." && pwd -P)"
+lanes_cfg="${LAST_STACK_FORGE_LANES_CONFIG:-$ROOT/config/forge-runner-lanes.json}"
+
+forge_gate_retired() {
+  command -v jq >/dev/null 2>&1 && [ -f "$lanes_cfg" ] \
+    && jq -e '.merge_gate.retired == true' "$lanes_cfg" >/dev/null 2>&1
+}
+
 uid="$(id -u)"
 agents=(
   com.edgevector.forgejo-runner
 )
+# No Forgejo repo, no runner to watch.
+if forge_gate_retired; then
+  agents=()
+fi
 
 ok=0
 bad=0
 rows=()
 
-for agent in "${agents[@]}"; do
+for agent in ${agents[@]+"${agents[@]}"}; do
   if launchctl print "gui/$uid/$agent" >/dev/null 2>&1; then
     state="$(launchctl print "gui/$uid/$agent" 2>/dev/null | sed -n 's/^[[:space:]]*state = //p' | head -1)"
     state="${state:-unknown}"
@@ -53,19 +75,25 @@ done
 # the merge-gate runner is the only lane checked
 level="ok"
 merge_state="missing"
-for r in "${rows[@]}"; do
+for r in ${rows[@]+"${rows[@]}"}; do
   case "$r" in
     com.edgevector.forgejo-runner=running) merge_state="running" ;;
     com.edgevector.forgejo-runner=*) merge_state="${r#com.edgevector.forgejo-runner=}" ;;
   esac
 done
-if [ "$merge_state" != "running" ]; then
+if forge_gate_retired; then
+  :  # the lane policy retired the merge gate: nothing to be down
+elif [ "$merge_state" != "running" ]; then
   level="down"
 elif [ "$bad" -gt 0 ]; then
   level="degraded"
 fi
 
-detail="$(IFS=,; echo "${rows[*]}")"
+if forge_gate_retired; then
+  detail="forge-retired"
+else
+  detail="$(IFS=,; echo "${rows[*]}")"
+fi
 
 if [ "$JSON" -eq 1 ]; then
   printf '{"level":"%s","ok":%s,"bad":%s,"detail":"%s"}\n' "$level" "$ok" "$bad" "$detail"

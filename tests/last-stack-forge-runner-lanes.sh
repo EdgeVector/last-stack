@@ -64,10 +64,11 @@ SHIPPED_CFG="$ROOT/config/forge-runner-lanes.json"
 [ -f "$SHIPPED_CFG" ] || { echo "missing $SHIPPED_CFG" >&2; exit 1; }
 
 # The shipped policy retires the heavy lane (2026-09-30: fold and exemem-infra are
-# on GitHub). The heavy-lane assertions below run on the same policy with the
-# lane switched back on; the retired policy has its own assertions at the end.
+# on GitHub) and the merge-gate lane (2026-10-08: lastgit, the last Forgejo repo,
+# is on GitHub). The lane assertions below run on the same policy with both lanes
+# switched back on; the retired policy has its own assertions at the end.
 CFG="$tmp/policy-heavy.json"
-jq '.heavy.retired = false' "$SHIPPED_CFG" >"$CFG"
+jq '.heavy.retired = false | .merge_gate.retired = false' "$SHIPPED_CFG" >"$CFG"
 
 # Healthy pair
 out="$("$BIN" --json --check --config "$CFG" --homes "$tmp/merge:$tmp/heavy")"
@@ -188,5 +189,23 @@ if "$BIN" --check --config "$SHIPPED_CFG" --homes "$tmp/mixed" >/dev/null 2>&1; 
   echo "retired heavy lane must still reject a mixed merge-gate home" >&2; exit 1
 fi
 echo "retired heavy lane ok"
+
+# --- retired merge-gate lane (the shipped policy, 2026-10-08) ---
+# No repo is gated on Forgejo, so --live must not demand mac-forge-runner. The
+# mock below reports it offline; with merge_gate.retired=false that is a failed
+# check (above), with the shipped policy it is not.
+jq -e '.merge_gate.retired == true' "$SHIPPED_CFG" >/dev/null \
+  || { echo "shipped policy must retire the merge-gate lane" >&2; exit 1; }
+echo gate-down >"$tmp/scenario"
+"${live_env[@]}" "$BIN" --json --check --live --repos EdgeVector/fold --config "$SHIPPED_CFG" --homes "$tmp/merge" >"$tmp/live-retired.json" \
+  || { echo "retired merge-gate lane: an offline mac-forge-runner must not fail --check" >&2; cat "$tmp/live-retired.json" >&2; exit 1; }
+jq -e '.merge_gate_retired == true and .live.merge_gate_expected_offline == [] and .check_ok == true' "$tmp/live-retired.json" >/dev/null \
+  || { echo "retired merge-gate lane report is wrong" >&2; cat "$tmp/live-retired.json" >&2; exit 1; }
+# The same policy with the lane switched back on is rejected (the flag is the only difference).
+jq '.merge_gate.retired = false' "$SHIPPED_CFG" >"$tmp/policy-gate-on.json"
+if "${live_env[@]}" "$BIN" --json --check --live --repos EdgeVector/fold --config "$tmp/policy-gate-on.json" --homes "$tmp/merge" >/dev/null 2>&1; then
+  echo "merge_gate.retired=false must still reject an offline mac-forge-runner" >&2; exit 1
+fi
+echo "retired merge-gate lane ok"
 
 echo "ok last-stack-forge-runner-lanes"

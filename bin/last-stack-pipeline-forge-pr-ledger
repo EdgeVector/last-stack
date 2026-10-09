@@ -62,16 +62,17 @@ This helper replaces both:
          `situations-unreadable` (policy unreadable, so it fails closed), exit 3
          for both, with the blocking slug rendered in JSON and text.
 
-GitHub venue (2026-09-30): every EdgeVector repo except lastgit is canonical on
-GitHub (decision-2026-09-29-retire-lastgit-all-repos-to-github), so its Forgejo
-copy is archived and shows no PRs. Only EdgeVector/lastgit stays on Forgejo. Repos listed in config/merge-demand-github-repos
+GitHub venue (2026-10-08): every EdgeVector repo, EdgeVector/lastgit last, is
+canonical on GitHub (decision-2026-09-29-retire-lastgit-all-repos-to-github), so
+its Forgejo copy is archived and shows no PRs. Repos listed in config/merge-demand-github-repos
 (or $LAST_STACK_MERGE_DEMAND_GITHUB_REPOS) are read through `gh api` and
 normalized to the Forgejo shapes this file already understands: open PRs from
 `pulls`, mergeability and the auto-merge arm from `pulls/<n>`, required
 contexts from branch protection (default `ci-required`), and check runs as the
 per-context statuses. A cancelled check run is reported with the description
-"Has been cancelled" so CANCELLED still applies. Any repo that is not
-EdgeVector/lastgit is a GitHub repo, listed or not.
+"Has been cancelled" so CANCELLED still applies. Every repo is a GitHub repo,
+listed or not; only an explicit, exact $LAST_STACK_MERGE_DEMAND_GITHUB_REPOS list
+(fixtures) puts a repo back on the Forgejo path.
 `merge-green --apply` on a GitHub PR runs `gh pr merge <n> -R <repo> --auto
 --squash` for an unarmed green PR (with --arm), and merges an armed green PR
 that sat idle past --grace-sec with `gh api -X PUT repos/<repo>/pulls/<n>/merge
@@ -101,9 +102,11 @@ from typing import Any
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_REPOS_FILE = HERE.parent / "config" / "merge-demand-forge-repos"
-FALLBACK_REPOS = [
-    "EdgeVector/lastgit",
-]
+# No repo is on Forgejo by default (EdgeVector/lastgit moved to GitHub on
+# 2026-10-08), so an empty or unreadable Forge list scans nothing from Forgejo.
+# This used to name EdgeVector/lastgit, which made every scan raise ForgeError
+# the moment Forgejo stopped.
+FALLBACK_REPOS: list[str] = []
 DEFAULT_REQUIRED = ["Forge CI / ci-required"]
 RED = {"failure", "error"}
 EVENT_SUFFIX = re.compile(r"\s+\((pull_request|push|pull_request_target)\)$")
@@ -302,11 +305,11 @@ def github_repos() -> set[str]:
     return found or set(GITHUB_FALLBACK_REPOS)
 
 
-# Only EdgeVector/lastgit stays on Forgejo. Every other repo, including one
-# created after this file was written, is a GitHub repo. An explicit
-# LAST_STACK_MERGE_DEMAND_GITHUB_REPOS (even empty) is an exact list, which is
-# how fixtures pin a repo to the Forgejo path.
-FORGEJO_ONLY_REPOS = {"EdgeVector/lastgit"}
+# No repo is Forgejo-only any more (EdgeVector/lastgit moved to GitHub on
+# 2026-10-08). Every repo, including one created after this file was written, is
+# a GitHub repo. An explicit LAST_STACK_MERGE_DEMAND_GITHUB_REPOS (even empty) is
+# an exact list, which is how fixtures pin a repo to the Forgejo path.
+FORGEJO_ONLY_REPOS: set[str] = set()
 
 
 def is_github_repo(repo: str) -> bool:
@@ -1279,8 +1282,9 @@ def reap_plan(args: argparse.Namespace) -> dict[str, Any]:
             skipped_on_budget.append(f"{pr['repo']}#{pr['number']}")
             continue
         name = pr["repo"].rsplit("/", 1)[-1]
-        # A GitHub PR (every repo but lastgit) is judged through gh; only the
-        # lastgit repo's PRs are read from Forgejo.
+        # A GitHub PR (every repo) is judged through gh; the forgejo venue is
+        # reachable only when an exact LAST_STACK_MERGE_DEMAND_GITHUB_REPOS list
+        # leaves the repo out (fixtures).
         guard_venue = "github" if is_github_repo(pr["repo"]) else "forgejo"
         proc = run([guard_bin(), "--venue", guard_venue, "--repo", name, "--pr", str(pr["number"]), "--json"], timeout=120)
         try:
