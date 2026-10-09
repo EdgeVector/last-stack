@@ -40,7 +40,7 @@ COUNT_PAPERCUT = 'papercut-loom-active-summary-counts-terminal-duplicate-members
 AUTHORITY = 'decision-2026-10-08-factory-repair-slot-and-bounded-proof'
 DECISION_POLICY_PATH = Path(__file__).resolve().parents[1] / 'config/factory-reviewed-decision.json'
 DECISION_POLICY_SHA = 'a06114ee93dda0abe23bf1703938ee529db0a6d47623e2376df8bc415ecb0a94'
-CREATE_POLICY_SHA = '34881ecda9239902a6bab8671e93da0627e3381c235f87d66739236dc7f1c6ae'
+CREATE_POLICY_SHA = 'bc8da6322450572647c2f396a2c52fa981dc5a78ca12945ea84683117848a517'
 ARRAYS = ('tags', 'deps', 'surfaces')
 SCALARS = ('slug', 'title', 'body', 'board', 'column', 'position', 'assignee',
            'created_at', 'created_by', 'updated_at', 'db', 'repo', 'base', 'kind',
@@ -59,6 +59,125 @@ FEATURES = {'exact_card_selector': '--only-card', 'canonical_resume_fence': True
                 'native_route': 'owner-uid-mode0600-uds-hash-range-keys', 'no_card_write': True,
                 'claim_authority': 'supplied-raw23-snapshot-sha-before-decision-read',
                 'policy_file': 'release/factory-reviewed-decision.json'}}
+COUNT_PREDECESSOR_SOURCE = '9ef47d6a7d98a7edf1c9cac78ed25b8429528143'
+COUNT_PREDECESSOR_CONTRACT_SHA = 'dd36d5771909bc89a3a19a2296f5310877965f59e13591955e679a8bc4ca3500'
+COUNT_DISPATCH_CONTRACT_SHA = 'e9e1eacecd19d0ba4481ad7369947bd08d55621c0242dd9b584fdaed23061c80'
+# Tom's accepted test deletion is a Count source predecessor, not a dispatch upgrade.
+COUNT_PREDECESSOR_CONTRACT_JSON = '''{
+  "budget_recovery_source_sha256": "0f1840ca33218a0f50974c568464ea11c99a4727fa09d103b2ddda7bbf99126f",
+  "cli_source_sha256": "e59d186806bed160f7ff47d84a4f6ad44e0b8a3622f252b0ea18d122951268f4",
+  "contract": 1,
+  "definition_version": "5",
+  "features": {
+    "canonical_resume_fence": true,
+    "definition_policy": "compiled-reviewed-version-without-latest-fallback",
+    "exact_card_selector": "--only-card",
+    "execution_view_json": "show ID --json",
+    "factory_proof_handoff": "execution-receipt-no-card-write",
+    "immutable_execution_input": true,
+    "park_policy": "defer-without-card-write",
+    "reviewed_named_decision_receipt": {
+      "claim_authority": "supplied-raw23-snapshot-sha-before-decision-read",
+      "file_flag": "--reviewed-decision-receipt",
+      "input_field": "factory_decision_receipt",
+      "max_bytes": 65536,
+      "max_snapshot_bytes": 65536,
+      "native_route": "owner-uid-mode0600-uds-hash-range-keys",
+      "no_card_write": true,
+      "policy_file": "release/factory-reviewed-decision.json",
+      "record_encoding": "utf8-sorted-compact-json-no-newline",
+      "sha_encoding": "utf8-exact-bytes",
+      "sha_flag": "--reviewed-decision-sha256",
+      "version": 1
+    },
+    "worktree_policy": "portal-dev-original-factory-branch"
+  },
+  "files": {
+    "definitions/land-card.json": "800726e0da4aca6b33b5d3110b66b3a89a13790f12c00bae83fcd89b4bd272b5",
+    "release/factory-reviewed-decision.json": "a06114ee93dda0abe23bf1703938ee529db0a6d47623e2376df8bc415ecb0a94",
+    "scripts/build-artifact.sh": "c953204b5eddbc619d4af22a572ae7df8bb9849492aff31b722f6535d0a56d32",
+    "scripts/lastdb-candidate-freshness.py": "6bbaac7b36a0657815ddf849988d60e5b96ca409df49b3e7888d5319596fe18e",
+    "scripts/loom-agent-lib.sh": "e1e8b4b187a5c38cf566c36c2d830dfcd133ed8f19ce2222f28ddc0715612fb8",
+    "scripts/loom-canary-check-cutover.sh": "235cca484101917e938ff7e27c9361085b46206e2f5d4dc3e196ca1d99e0dd54",
+    "scripts/loom-canary-check-fix.sh": "7becebec0988f6ae000cf380446c5192f99474a56aadbc1ed105e0aa89d3300e",
+    "scripts/loom-canary-check-retry.sh": "686df27dae4965235e6db0611d16e80e851fd65835e15db6f86c8206a8f3bf2e",
+    "scripts/loom-canary-collect.sh": "7eb1bd286e96011a8dbdf3fd59d13de54485b9d0c0aa6ea1b082c3c5703cee9d",
+    "scripts/loom-canary-heal.sh": "86447f0699c7d093f99fb44b61a8d6d5bddb6d6fba2718048a66a52c30c55e83",
+    "scripts/loom-canary-report.sh": "26979031bc3da373a1c8d10fa7a4cbc4c2277eb9e21d204c7a6a6adf761b348d",
+    "scripts/loom-canary-retry-upgrade.sh": "1193feafc7877b9e2cf18bbea9fcb43375fb13a5349f3e589f9d94f0d65d3b32",
+    "scripts/loom-canary-step.sh": "6082ea969314e11164c7ec113b57001e79bd647c3c8c33165f4bf7c2a5f4f93f",
+    "scripts/loom-card-brief.sh": "1736a913b84b519bd2bdae3cea4c465f872e894a70d3ab9810517ade664a66cf",
+    "scripts/loom-card-check-push.sh": "f831b857e3b2b533e576b697ea75f380602998b877de55c1f1139b39a423bc56",
+    "scripts/loom-card-claim.sh": "f47f724737bfaa4f83b440ae6f884e7937659930e4e7733b382ae914667e9d8c",
+    "scripts/loom-card-close.sh": "449e16005a0f82dabc2292f026b9173fdb54210d1dfe31d4b98ee13a2f7865c7",
+    "scripts/loom-card-park.sh": "9471d700f85bf29c4087ba31d0912d9d688ddf79f99cf514b32b87885313b886",
+    "scripts/loom-card-resume.sh": "d8eeb5822e8cb82099f893fa1fd687dd0f293f9a7e25a19f9cb4c087956a8161",
+    "scripts/loom-card-review-lib.sh": "190cb91ca6c96e909aea2863f9116067fc710b2eab37e8164414c8bcc3267e3f",
+    "scripts/loom-card-review.sh": "09e606fb4ff23f98dcd16350f441e2f5479e887f7cec3578cac2c3251344fd68",
+    "scripts/loom-card-revise.sh": "16b1349557eb825fa8b7236869ec692b4066dc7edc5ab9b561c72462b3095ee7",
+    "scripts/loom-card-wait-ci.sh": "679ca9521f6aeffaabd76b10be77a3356eff6f1aa053ceb8843eaec0e78ca504",
+    "scripts/loom-check-merged.sh": "760649b1128c6a193202963ebcc7af9c1bcf310239505b736a48c65de51cecbb",
+    "scripts/loom-check-pr.sh": "0d0b8745f713b73076d3d0266a851d148e70f9b334905bdf85eded2d47f7e779",
+    "scripts/loom-close-out.sh": "4da2ec03247f9ce5a2d10a1161a919536511e7f448d977168e7c13ca02c42fe6",
+    "scripts/loom-codex-session.py": "e7aaa376bf91919875893637ac108002c115000003616e6cc26afe41ca79e30d",
+    "scripts/loom-dashboard.sh": "0086f9016525adc2eed07cffd2dff0d814b1fd484025fdc3e39398ce191dac1a",
+    "scripts/loom-decompose.sh": "8fea383bf8dbd8cf0c77da2a5caeab24861a47b150ccd1befb32cd7749a77e47",
+    "scripts/loom-deploy.sh": "d078922f3dd7e2eee662ee9419da52c188eabb36fc805c8dd2177dd9d5998c18",
+    "scripts/loom-design-soak-ask.sh": "8db0a28e298c88068b36a3e9ddb8f1ed6f65c79c0a941e8dfae6428a25df5e1a",
+    "scripts/loom-design-soak-draft.sh": "fe07d124b8f6313104259c9369861c1ff28feb76411aad1f4de54d85450d4330",
+    "scripts/loom-design.sh": "03d46f03c183f62b3bd04cafce10368a2cd675623c291b932e7b5232f0881147",
+    "scripts/loom-drive-north-star-portfolio.sh": "e05800238bd47997446cd37199d854af6149ecd3e346ec4cc2a31f83aee4a28f",
+    "scripts/loom-execution-dashboard.sh": "9bd44edd4415f3b161c44c648b1080c373b77b9c0b55d9658f2c087405fe667e",
+    "scripts/loom-factory-contract.py": "ef112ec59357f828ea8aff9fb8766437349d39b0a74b9f672df25fc3d60de755",
+    "scripts/loom-factory-kickoff.sh": "c2ac251466affb5b28743979f4f598646b17b6ecfc9eed65d362847583475c80",
+    "scripts/loom-factory-lib.sh": "a60dfdac7354c0a96c3419a8933820723b0a2c19bcb31ecc58eea6969d3716ac",
+    "scripts/loom-gate-open.sh": "0698929bcc3c7c0b2f642d6ac2cfeb11813720025f98a20f4fbd1600955d7484",
+    "scripts/loom-implement.sh": "65cbc1fdfe41f09958d6f6d2de5440304eeaff9483907446a7806c54b4b342f6",
+    "scripts/loom-land-card-kickoff.sh": "50cdcd47f86a8aab49f1e573074fde81f8df96f09dce38ec7e8596a0e3d5708b",
+    "scripts/loom-land-cr-normalize.sh": "a3f70a0fcb07abe5c3f8106ca682c98b57fd53a5d1184aafdda9e19cb890d928",
+    "scripts/loom-live-release-receipt-step.sh": "9fd02e579ebfb38e5148c81b28d990fbbcfb7983888412dc9da69118cac6a106",
+    "scripts/loom-merge.sh": "df1246b44e823314ddb2e56c3968280f208aa89a9fd469ac2fe02fe2f50a3f0e",
+    "scripts/loom-mutation-dogfood.sh": "b79ce807b844d0fdd42bb5b2b0eb9657acf996548eb67ea869efdeb4333b9343",
+    "scripts/loom-mutation-window.sh": "c90a11ce121c286d42b7c509dbdcb7fc8e0af2c723b8a75b93a6b37c7b775ac5",
+    "scripts/loom-north-star-after-close.sh": "9b55ab0d0d7c155be18e2eadf79dcbaebd9b668b36ee68498fc929a01c482add",
+    "scripts/loom-north-star-close-out.sh": "6a8beecc7b5dde43f583caa4fd878b68c5ca413e59fd800eb39326d0a7785d22",
+    "scripts/loom-north-star-gate-open.sh": "464a742ffe3d841b6745882fb4e15f70bc0d6c9c5ec050eee80faa1b9d29b2d6",
+    "scripts/loom-north-star-intake.sh": "502ff46e55cdf1122254909043ff64930abf08404cb64ccdc04266ebde23a2eb",
+    "scripts/loom-north-star-plan.sh": "880604b5700524562a2f43a71658f36bba0ecbe88eb7ef803f944664c5c97d79",
+    "scripts/loom-north-star-proof.sh": "e5c9e93a811a736d013aa3da70fdd50f08566b3815b5e74150a907bfe3429ed2",
+    "scripts/loom-north-star-review.sh": "c0c6d7e94df6a035dadfe35981356a25a76f81a1b98aaf532edc69a4fde37aa4",
+    "scripts/loom-north-star-select.sh": "873fbca14eaf04ee55ba875735c7408960b493d310dd2a92789d9998c8332a03",
+    "scripts/loom-north-star-wait.sh": "b7105ec8f9581f8285c246457e0e867421941eb6f52764c53270e40eb4e95ef3",
+    "scripts/loom-north-star-work-claim.sh": "90abde4b69d7d85852959b26e795e4a01433dccc701408f2a150fcee0ad0e69c",
+    "scripts/loom-north-star-work-close.sh": "58c9733c38981d12e97dad325255fa29d703ff6f58bf0646a5f76540f60143e2",
+    "scripts/loom-north-star-work-normalize.sh": "3448d8affde222607e5cdf080c881903ee50a732808889311dcbd0a34dc898f8",
+    "scripts/loom-plan.sh": "f50edf9c1d14155e8fea491835436ea8072b27084dafe419f4613a8562e35c15",
+    "scripts/loom-pr-lib.sh": "7239e0870a18a7bb9f23a972b4d7486c046ea3275c882c07f491cea375e35a3b",
+    "scripts/loom-proof.sh": "9dbecea8cb4effb799bb3b9d803ff7949fa483b41e19c38c2587e792168b1aed",
+    "scripts/loom-review.sh": "dac1d3cb17ff1d2a3649459ed46bdad0469a2c03ff876742a6c69973bccc59b3",
+    "scripts/loom-reviewed-decision.py": "159c35cb1c687346e67936e7092fbd958a191bef955b97199c2fc0c221feb2d4",
+    "scripts/loom-safe-upgrade-step.sh": "e0a4bce94a89d0d387ecc11bda9a02b64fa5c4203979551a6870b98f9161c8d5",
+    "scripts/loom-ship-north-star-live-proof.sh": "8cc994b6edc7efbc8552322006ef102781ac80293e51d73cb687d579cabc59f7",
+    "scripts/loom-ship-review.sh": "1de45b477795331984debc3c38a9a8a73d1ba033491e5e7d1abe205e7145cf2c",
+    "scripts/loom-ship-soak-enabler.sh": "eb62680309e6358d8341b140c5b7c94d1e1b71f0e0405527f43f8df245538571",
+    "scripts/loom-ship-soak-heal.sh": "03e458a27e5f10795282099dd83d9e3b76f71f1a2392a23ab0a64097ff03da1d",
+    "scripts/loom-ship-soak-proof.sh": "0ace7dcab0538ef2e9695c7cbf8b934cc2469302624fc0be1e3615df21518364",
+    "scripts/loom-ship-soak-report.sh": "bcdd3749cdff34209eb0e344f3baf06f56f953163feff2415b9301bbd2304415",
+    "scripts/loom-ship-soak-start.sh": "7cb9dac52de5a0caa62a2663a4ab18dce1d3b6fd3b308f331fedfc4646940063",
+    "scripts/loom-ship-soak-verify.sh": "7c66a71269072132be2e1d1a693b678fde5c8f5117f5d245946a2a7f73f9d411",
+    "scripts/loom-wait-ci.sh": "c315e545528025ec1872a1210c45273e70277543f5a684f2d3ee0c380bb74e89",
+    "scripts/loom-whats-wrong-closeout.sh": "7076041ad2e3175707d413b7e10280477be37e26f46f0aad501cdc819f62b292",
+    "scripts/loom-whats-wrong-heal.sh": "66569537813867d7bcc4d3b97521c871f47f69ca3691deba1986d723f18e1c35",
+    "scripts/loom-whats-wrong-list.sh": "40645f0a04d8693f6c91312609099ccae5e679dcc27c0eb68ddee5d7786c6158",
+    "scripts/loom-why-classify.sh": "136705c8284172d57c8c78c582d45d5f4297050ad389e514f598fc26d2865d96",
+    "scripts/loom-why-heal.sh": "d7b8b8104d4bb4ce795950ce58857d65d43a15cc65a6d49e4a50832da5467488",
+    "scripts/loom-why-probe.sh": "19be2032ef35b75754d6f24b6cfc896579c9c39d0f669cd5939306f460e14805",
+    "scripts/loom-why-report.sh": "ce1c49d4a81dc561153c24a38fdd3fa1d94d690db0da08e550147230f266b470"
+  },
+  "runner_source_sha256": "c403d5e354266d76649052d6dba747cfa1c04a487c23750f2a5b987d807de382",
+  "supervisor_source_sha256": "059b57d33027b1abfbdeb1c91a9a4a6e1ccc5fce6a6fb7050213143cea04b1e8"
+}
+'''
 RUNTIME_REQUIRED = {
     'lib/forge-token.sh',
     'lib/factory_repair.py', 'lib/factory_bootstrap.py', 'lib/closeout_evidence.py', 'lib/sanitize_structured_fields.py',
@@ -723,6 +842,29 @@ def canonical_execution_batch(config, keys):
     return [row for part in rows for row in part]
 
 
+def validate_count_candidate_contract(source_raw, dispatch_raw, predecessor_source, predecessor_raw,
+                                      merge_source, source_oid, tree_oid):
+    """One fixed source predecessor; the actual dispatch receipt stays separate."""
+    require(all(isinstance(raw, str) and len(raw.encode()) <= MAX_BYTES for raw in
+                (source_raw, dispatch_raw, predecessor_raw)), 'candidate-contract-input')
+    require(sha(dispatch_raw.encode()) == COUNT_DISPATCH_CONTRACT_SHA, 'candidate-dispatch-contract-bytes')
+    require(predecessor_source == COUNT_PREDECESSOR_SOURCE, 'candidate-predecessor-source')
+    require(sha(predecessor_raw.encode()) == COUNT_PREDECESSOR_CONTRACT_SHA, 'candidate-predecessor-contract-bytes')
+    predecessor = strict_json(predecessor_raw); reviewed = strict_json(source_raw)
+    require(isinstance(reviewed, dict) and version1(reviewed.get('contract')) and
+            isinstance(reviewed.get('runner_source_sha256'), str) and HEX.fullmatch(reviewed['runner_source_sha256']) and
+            reviewed['runner_source_sha256'] != predecessor['runner_source_sha256'], 'candidate-count-runner-delta')
+    require(encoded(reviewed) == encoded({**predecessor, 'runner_source_sha256': reviewed['runner_source_sha256']}),
+            'candidate-count-contract-delta')
+    require(isinstance(merge_source, dict) and merge_source.get('sha') == source_oid and
+            isinstance(merge_source.get('tree'), dict) and merge_source['tree'].get('sha') == tree_oid,
+            'candidate-merge-source-tree')
+    parents = merge_source.get('parents')
+    require(isinstance(parents, list) and len(parents) == 1 and isinstance(parents[0], dict) and
+            parents[0].get('sha') == COUNT_PREDECESSOR_SOURCE, 'candidate-merge-predecessor')
+    return reviewed
+
+
 class Controller:
     """One durable phase per wake; error leaves the retained phase and slot."""
     def __init__(self, config, state_dir, effects, contract_sha256):
@@ -844,11 +986,10 @@ class Controller:
         require(all(isinstance(text, str) and len(text.encode()) <= MAX_BYTES for text in (raw, baseline_raw, manifest_raw)) and
                 sha(raw.encode()) == candidate['contract_sha256'] and
                 sha(baseline_raw.encode()) == state['dispatch_authority']['contract_sha256'], 'candidate-retained-contract-bytes')
-        reviewed = strict_json(raw); baseline = strict_json(baseline_raw); manifest = strict_json(manifest_raw)
-        require(isinstance(reviewed, dict) and isinstance(baseline, dict) and version1(reviewed.get('contract')) and
-                HEX.fullmatch(reviewed.get('runner_source_sha256', '')) and
-                reviewed['runner_source_sha256'] != baseline.get('runner_source_sha256') and
-                reviewed == {**baseline, 'runner_source_sha256': reviewed['runner_source_sha256']}, 'candidate-retained-dispatch-contract')
+        reviewed = validate_count_candidate_contract(raw, baseline_raw, candidate.get('count_predecessor_source_oid'),
+            candidate.get('count_predecessor_contract_json'), candidate.get('merge_source_receipt'),
+            candidate['source_oid'], candidate['tree_oid'])
+        manifest = strict_json(manifest_raw)
         require(isinstance(manifest, dict) and manifest.get('source_oid') == candidate['source_oid'] and
                 manifest.get('app') == 'loom' and manifest.get('manifest_digest') == candidate['manifest_sha256'], 'candidate-manifest-source-binding')
         files = manifest.get('files'); require(isinstance(files, list) and 1 <= len(files) <= 1024, 'candidate-manifest-files')
@@ -1109,15 +1250,16 @@ class Runtime:
         content = json_call([gh, 'api', 'repos/' + state['repo'] + '/contents/release/factory-dispatch-contract.json?ref=' + oid], 30)
         import base64
         raw = base64.b64decode(content.get('content', ''), validate=False); reviewed = strict_json(raw)
-        baseline = read_json(self.loom / 'release/factory-dispatch-contract.json')
-        require(reviewed.get('features') == FEATURES and reviewed.get('definition_version') == '5' and
-                reviewed.get('files') == baseline['files'] and reviewed.get('supervisor_source_sha256') == baseline['supervisor_source_sha256'] and
-                reviewed.get('budget_recovery_source_sha256') == baseline['budget_recovery_source_sha256'], 'candidate-retained-dispatch-authority')
-        require(reviewed.get('runner_source_sha256') != baseline['runner_source_sha256'], 'candidate-count-runner-unchanged')
+        baseline_raw = read_bytes(self.loom / 'release/factory-dispatch-contract.json').decode()
+        merge_source = json_call([gh, 'api', 'repos/' + state['repo'] + '/git/commits/' + oid], 30)
+        tree_oid = merge_source.get('tree', {}).get('sha', '') if isinstance(merge_source, dict) and isinstance(merge_source.get('tree'), dict) else ''
+        require(isinstance(tree_oid, str) and OID.fullmatch(tree_oid), 'candidate-merge-tree-oid')
+        reviewed = validate_count_candidate_contract(raw.decode(), baseline_raw, COUNT_PREDECESSOR_SOURCE,
+            COUNT_PREDECESSOR_CONTRACT_JSON, merge_source, oid, tree_oid)
         pull = json_call([str(self.root / 'bin/last-stack-github-artifact-pull'), '--app', 'loom', '--repo', state['repo'],
                           '--branch', state['base'], '--oid', oid, '--channel', 'candidate', '--json'], 180)
         require(pull.get('status') in ('promoted', 'verified') and pull.get('oid') == oid and
-                OID.fullmatch(pull.get('tree_oid', '')) and type(pull.get('artifact_id')) is int and pull['artifact_id'] > 0 and type(pull.get('run_id')) is int and pull['run_id'] > 0, 'candidate-official-publish-receipt')
+                pull.get('tree_oid') == tree_oid and type(pull.get('artifact_id')) is int and pull['artifact_id'] > 0 and type(pull.get('run_id')) is int and pull['run_id'] > 0, 'candidate-official-publish-receipt')
         digest = pull.get('manifest_digest', ''); require(HEX.fullmatch(digest), 'candidate-manifest-digest')
         manifest_path = Path.home() / '.lastgit/artifacts/manifests' / (digest + '.json'); manifest = read_json(manifest_path)
         require(manifest.get('source_oid') == oid and manifest.get('manifest_digest') == digest and manifest.get('app') == 'loom', 'candidate-manifest-source')
@@ -1131,7 +1273,9 @@ class Runtime:
                      'current': str(Path.home() / '.host-track/apps/loom/current')}
         return {'source_oid': oid, 'tree_oid': pull['tree_oid'], 'manifest_sha256': digest, 'contract_sha256': sha(raw),
                 'manifest_json': read_bytes(manifest_path).decode(), 'source_contract_json': raw.decode(),
-                'baseline_contract_json': read_bytes(self.loom / 'release/factory-dispatch-contract.json').decode(), 'merge_receipt': pr,
+                'baseline_contract_json': baseline_raw, 'merge_receipt': pr, 'merge_source_receipt': merge_source,
+                'count_predecessor_source_oid': COUNT_PREDECESSOR_SOURCE,
+                'count_predecessor_contract_json': COUNT_PREDECESSOR_CONTRACT_JSON,
                 'official': pull, 'authority': authority, 'dispatch_authority_sha256': value_sha(state['dispatch_authority']),
                 'completed_execution_sha256': state['completed_execution_sha256'], 'intent_sha256': state['intent_sha256'], 'pr_url': state['handoff']['pr_url']}
 
