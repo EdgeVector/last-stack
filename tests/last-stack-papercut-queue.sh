@@ -95,7 +95,6 @@ $ROOT/bin/last-stack-papercut-queue snapshot --brain-bin "$tmp/stateful-brain" -
 # writer half of the compound path; a legacy reference put can never appear in
 # the typed open partition the snapshot proves above.
 for producer in \
-  routines/papercut-reconciler.md \
   routines/pipeline-health.md \
   routines/dogfood-rotate.md \
   routines/self-improvement-loop.md \
@@ -132,8 +131,8 @@ $ROOT/bin/last-stack-papercut-queue verify --snapshot "$mixed" \
   | jq -e '.ok and .conserved and .discovered == 2' >/dev/null
 
 # An unreadable queue is rc=3 (dependency degraded), NOT rc=1 (queue invalid).
-# The reconciler reports rc=3 as noop, so conflating the two makes a degraded
-# brain index look like a routine defect
+# The generic queue helper distinguishes dependency refusal from invalid
+# membership. The finite reconciler owns the pass outcome separately.
 # (routine-error-last-stack-papercut-reconciler-20260829).
 cat >"$tmp/brain-index-incomplete" <<'SH'
 #!/usr/bin/env bash
@@ -189,9 +188,9 @@ set -e
 [ "$rc" -eq 1 ] || { echo "expected rc=1 for an invalid queue, got $rc" >&2; exit 1; }
 grep -q 'papercut queue invalid' "$tmp/bad.err"
 
-# The routine prompt must actually carry the rc=3 -> noop rule.
-grep -q 'snapshot_rc' "$ROOT/routines/papercut-reconciler.md"
-grep -q 'queue_snapshot_unavailable' "$ROOT/routines/papercut-reconciler.md"
+# The finite routine delegates to one reviewed command. Its dispatch is
+# covered by last-stack-papercut-reconciler-contract.sh; routine-finite.py and
+# reconcile-finite.py cover reports and failed or incomplete queue behavior.
 
 printf 'ok last-stack-papercut-queue\n'
 

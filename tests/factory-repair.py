@@ -116,7 +116,7 @@ def scope():
              'base': 'main', 'execution_id': 'lx-fixture', 'key': 'card-fixture', 'original_input': original,
              'intent': {'factory_decision_receipt': original['factory_decision_receipt']}}
     view = {'id': 'lx-fixture', 'idempotency_key': 'card-fixture', 'original_input': original,
-            'context': dict(original), 'definition_name': 'land-card', 'definition_version': '5',
+            'context': dict(original), 'definition_name': 'land-card', 'definition_version': '0000000005',
             'status': 'succeeded', 'state': 'DONE', 'corrected_reads': 0,
             'nodes': [{'node_id': 'CLOSE_CARD', 'attempt': 1, 'status': 'succeeded',
                        'pending_effect': None, 'result': {'column': 'factory-proof-handoff', 'handoff': {
@@ -125,6 +125,20 @@ def scope():
                            'idempotency_key': 'card-fixture', 'pr_url': 'https://github.com/EdgeVector/loom/pull/1',
                            'card_column': 'doing', 'no_card_write': True}}}]}
     return state, view
+
+
+def execution_padded_version():
+    # runner::kickoff stores pad_version(&def.version); public Show preserves it.
+    state, view = scope()
+    check(view['definition_version'] == '0000000005' and f.validate_execution(view, state) is view,
+          'public exact padded v5 execution refused')
+
+def execution_version_refused(value):
+    # Every other immutable identity and context field is valid. The version
+    # alone is wrong, so the exact stored-version guard must refuse it.
+    state, view = scope(); view['definition_version'] = value
+    refused(lambda: f.validate_execution(view, state),
+            'noncanonical execution definition version accepted: ' + repr(value))
 
 
 def immutable_input():
@@ -166,6 +180,31 @@ def local_contract():
         except f.Refusal:
             return
         raise AssertionError('changed runtime file accepted')
+
+
+def local_contract_forge_dependency():
+    # Keep the literal independently of RUNTIME_REQUIRED during a guard probe.
+    dependency = 'lib/forge-token.sh'
+    with tempfile.TemporaryDirectory(prefix='factory-forge-dependency-') as name:
+        root = Path(name); (root / 'config').mkdir(); (root / 'bin').mkdir()
+        paths = f.RUNTIME_REQUIRED | {dependency, 'bin/tool'}
+        for relative in paths:
+            path = root / relative; path.parent.mkdir(parents=True, exist_ok=True); path.write_text('reviewed source\n')
+        config = {'version': 1, 'protected_card_keys': sorted(f.REQUIRED_KEYS), 'admitted': []}
+        (root / 'config/factory-repair-slot.json').write_text(json.dumps(config))
+        meta = {'version': 1, 'manifest_path': 'config/factory-repair-slot.json',
+                'manifest_sha256': f.file_sha(root / 'config/factory-repair-slot.json'),
+                'runtime_files': [{'path': p, 'sha256': f.file_sha(root / p)} for p in sorted(paths)]}
+        contract = root / 'config/factory-repair-contract.json'; contract.write_text(json.dumps(meta))
+        check(f.validate_local(root)['result'] == 'ok', 'full executed-module contract refused')
+        meta['runtime_files'] = [entry for entry in meta['runtime_files'] if entry['path'] != dependency]
+        contract.write_text(json.dumps(meta))
+        try:
+            f.validate_local(root)
+        except f.Refusal as error:
+            check(str(error) == 'runtime-dependencies-incomplete', 'wrong omitted-module refusal: ' + str(error))
+            return
+        raise AssertionError('omitted executed lib/forge-token.sh accepted')
 
 
 def exclusion_required():
@@ -517,6 +556,14 @@ TEST_NAMES=('raw23','missing_field','wrong_sha','reply_keys','missing_item','cou
     'dispatch_grammar','native_ids','native_foreign','native_missing','strict_snapshot_version','strict_batch_version',
     'strict_manifest_version','wrong_signal','candidate_drift','completion_drift','accepted_recovery','real_parser_e2e','slot_busy','strict_summary_count','bootstrap_required')
 CASES={name:globals()[name] for name in TEST_NAMES}
+CASES['local_contract_forge_dependency'] = local_contract_forge_dependency
+CASES['execution_padded_version'] = execution_padded_version
+CASES['execution_bare_version'] = lambda: execution_version_refused('5')
+CASES['execution_wrong_padded_version'] = lambda: execution_version_refused('0000000006')
+CASES['execution_integer_version'] = lambda: execution_version_refused(5)
+CASES['execution_boolean_version'] = lambda: execution_version_refused(True)
+CASES['execution_float_version'] = lambda: execution_version_refused(5.0)
+CASES['execution_null_version'] = lambda: execution_version_refused(None)
 CASES['accepted_body_changed'] = lambda: accepted_recovery('body')
 CASES['accepted_reason_changed'] = lambda: accepted_recovery('block_reason')
 CASES['reviewed_encoding'] = reviewed_encoding

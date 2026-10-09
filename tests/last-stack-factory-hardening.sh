@@ -106,8 +106,7 @@ grep -q 'deep-pulse-due' "$ROOT/bin/last-stack-merge-demand-gate" \
 if grep -q '/tmp/milestone-gap-report.json' "$ROOT/routines/milestone-driver.md"; then
   fail "milestone-driver still uses the shared gap-report path"
 fi
-grep -q 'Papercut lifecycle' "$ROOT/routines/papercut-reconciler.md" \
-  || fail "papercut-reconciler missing lifecycle section"
+# The finite reconciler dispatch is tested in last-stack-papercut-reconciler-contract.sh.
 grep -q 'class-a-heal-timeout' "$ROOT/routines/kanban-pickup.md" \
   || fail "kanban-pickup missing timeout polish"
 [ -f "$ROOT/routines/why-stopped.md" ] || fail "why-stopped prompt missing"

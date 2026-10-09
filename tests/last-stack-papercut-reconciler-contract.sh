@@ -7,38 +7,41 @@ tmp="$(mktemp -d)"
 cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT
 
-grep -q 'papercut-prevention-registry' "$prompt"
-grep -q 'last-stack-papercut-lifecycle-close --limit 200' "$prompt"
-grep -q 'brain papercut close --status fixed' "$prompt"
-grep -q 'Prevention: MISSING|COVERED|NOT_APPLICABLE' "$prompt"
-grep -q 'compound regression test' "$prompt"
-grep -q 'COMPOUND PREVENTION' "$prompt"
-grep -q 'red-before/green-after proof' "$prompt"
-grep -q 'Documentation alone is never prevention coverage' "$prompt"
-grep -q 'last-stack-papercut-lifecycle-close' "$prompt"
-grep -q 'lifecycle_helper_missing' "$prompt"
-grep -q 'command -v "$lifecycle_helper"' "$prompt"
-grep -q 'last-stack-papercut-queue snapshot' "$prompt"
-grep -q 'last-stack-papercut-queue verify' "$prompt"
-grep -q 'brain papercut file' "$prompt"
-grep -q 'brain get <slug> --type papercut' "$prompt"
-grep -q 'forbidden for discovery' "$prompt"
-grep -q 'conserved=true' "$prompt"
-grep -q 'Do not change the typed papercut repair status merely because it was carded' "$prompt"
-grep -q 'kanban milestone gap-report --json' "$prompt"
-grep -q 'situations preflight --action claim-card --repo <Repo>' "$prompt"
-grep -q 'budget_hold=released' "$prompt"
-# Condition 1 (in_flight) must carry its own claimability clause, not just
-# condition 2 (idle_promoteable) — papercut-reconciler-budget-hold-counts-unclaimable-frontier-20260926
-grep -q 'counts.in_flight > 0` AND at least one in-flight child' "$prompt" \
-  || { echo "FAIL: condition 1 claimability clause missing" >&2; exit 1; }
-grep -q 'kanban list --column todo --json' "$prompt" \
-  || { echo "FAIL: condition 1 in-flight repo enumeration (todo) missing" >&2; exit 1; }
-grep -q 'kanban list --column doing --json' "$prompt" \
-  || { echo "FAIL: condition 1 in-flight repo enumeration (doing) missing" >&2; exit 1; }
-claimability_clauses="$(grep -c 'passes `situations preflight --action claim-card --repo <Repo>` (exit 0)' "$prompt")"
-[ "$claimability_clauses" = "2" ] \
-  || { echo "FAIL: expected 2 claim-card preflight clauses (one per condition), found $claimability_clauses" >&2; exit 1; }
+mode="${1:-all}"
+case "$mode" in
+  all|prompt) ;;
+  *) echo "usage: $0 [all|prompt]" >&2; exit 2 ;;
+esac
+
+# The finite behavior tests cover batching, holds, admission, reports, and
+# pause preservation. This fixture binds the installed prompt to that one
+# reviewed entrypoint instead of retaining the retired AI prompt's prose.
+assert_finite_dispatch() {
+  local candidate="$1" dispatch
+  dispatch="$(awk '
+    /^```bash$/ { in_block = 1; next }
+    /^```$/ { in_block = 0; next }
+    in_block { print }
+  ' "$candidate")"
+  [ "$dispatch" = '"${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-papercut-reconcile-finite" --once --routine-result' ] \
+    || { echo "FAIL: finite installed dispatch command differs" >&2; return 1; }
+}
+
+assert_finite_dispatch "$prompt"
+retired_prompt="$tmp/retired-prompt.md"
+sed 's/last-stack-papercut-reconcile-finite" --once --routine-result/last-stack-papercut-lifecycle-close" --limit 200/' \
+  "$prompt" >"$retired_prompt"
+cmp -s "$prompt" "$retired_prompt" \
+  && { echo "FAIL: retired dispatch fixture changed no byte" >&2; exit 1; }
+if assert_finite_dispatch "$retired_prompt" >"$tmp/retired.out" 2>"$tmp/retired.err"; then
+  echo "FAIL: finite prompt accepts retired lifecycle dispatch" >&2
+  exit 1
+fi
+grep -q '^FAIL: finite installed dispatch command differs$' "$tmp/retired.err"
+if [ "$mode" = prompt ]; then
+  printf 'ok finite papercut prompt dispatch contract\n'
+  exit 0
+fi
 
 queue_helper="$ROOT/bin/last-stack-papercut-queue"
 [ -x "$queue_helper" ] || { echo "missing executable queue helper" >&2; exit 1; }
@@ -111,8 +114,8 @@ SH
 cat >"$fake_bin/gh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "$*" = "pr view 501 -R EdgeVector/last-stack --json state,mergedAt" ] || { echo "unexpected gh args: $*" >&2; exit 2; }
-printf '{"state":"MERGED","mergedAt":"2026-09-30T00:00:00Z"}\n'
+[ "$*" = "pr view 501 -R EdgeVector/last-stack --json state,mergedAt,body,url" ] || { echo "unexpected gh args: $*" >&2; exit 2; }
+printf '{"state":"MERGED","mergedAt":"2026-09-30T00:00:00Z","body":"Papercut: papercut-demo-helper-drift","url":"https://github.com/EdgeVector/last-stack/pull/501"}\n'
 SH
 chmod +x "$fake_bin/brain" "$fake_bin/kanban" "$fake_bin/gh"
 

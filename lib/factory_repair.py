@@ -58,6 +58,7 @@ FEATURES = {'exact_card_selector': '--only-card', 'canonical_resume_fence': True
                 'claim_authority': 'supplied-raw23-snapshot-sha-before-decision-read',
                 'policy_file': 'release/factory-reviewed-decision.json'}}
 RUNTIME_REQUIRED = {
+    'lib/forge-token.sh',
     'lib/factory_repair.py', 'lib/factory_bootstrap.py', 'lib/closeout_evidence.py', 'lib/sanitize_structured_fields.py',
     'bin/host-track', 'bin/last-stack-factory-repair-contract', 'bin/last-stack-factory-repair-controller',
     'bin/last-stack-factory-repair-kanban-adapter', 'bin/last-stack-factory-repair-proof',
@@ -438,7 +439,7 @@ def validate_created_receipt(receipt, config):
 
 def validate_execution(view, state):
     require(isinstance(view, dict) and view.get('id') == state['execution_id'] and view.get('idempotency_key') == state['key'], 'execution-identity')
-    require(view.get('definition_name') == 'land-card' and view.get('definition_version') == '5' and
+    require(view.get('definition_name') == 'land-card' and view.get('definition_version') == '0000000005' and
             view.get('original_input') == state['original_input'], 'execution-original-input')
     original = state['original_input']; context = view.get('context')
     require(isinstance(context, dict) and original.get('factory_repair') is True, 'immutable-factory-mode')

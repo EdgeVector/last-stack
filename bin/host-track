@@ -1180,7 +1180,7 @@ artifact_pull_from_github() {
   set +e
   if [ -n "$expected_oid" ]; then
     out="$("$puller" --app "$artifact_app" --repo "$slug" --branch "$ref" --channel "$channel" \
-      --root "$artifact_root" --platform "$(artifact_platform_name)" --oid "$expected_oid")"
+      --root "$artifact_root" --platform "$(artifact_platform_name)" --oid "$expected_oid" --json)"
     rc=$?
   else
     "$puller" --app "$artifact_app" --repo "$slug" --branch "$ref" --channel "$channel" \

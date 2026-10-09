@@ -10,6 +10,8 @@ import hashlib
 import io
 import json
 import os
+from pathlib import Path
+import stat
 import subprocess
 import sys
 import tarfile
@@ -225,11 +227,12 @@ class PullTests(Base):
         self.assertTrue(os.path.exists(os.path.join(self.cas, "builds", "remote", self.oid, "darwin-arm64.json")))
         blob = [f for f in chan["files"] if f["path"] == "bin/ra"][0]
         self.assertEqual(blob["mode"], 0o755)
-        # Second run: channel already at the tip, no artifact download.
+        # Same-head pulls still verify the real artifact and emit full provenance.
         open(self.log, "w").close()
         rc, res, _ = self.pull()
-        self.assertEqual((rc, res["status"]), (0, "current"))
-        self.assertNotIn("/zip", open(self.log).read())
+        self.assertEqual((rc, res["status"]), (0, "promoted"))
+        self.assertEqual((res["run_id"], res["artifact_id"]), (77, 5))
+        self.assertIn("/zip", open(self.log).read())
 
     def test_dry_run_writes_nothing(self):
         rc, res, err = self.pull("--dry-run")
@@ -408,8 +411,8 @@ class SignTests(Base):
         self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
         open(self.log, "w").close()
         rc, res, err = self.sign_pull()
-        self.assertEqual((rc, res.get("status")), (0, "current"), err)
-        self.assertNotIn("/zip", open(self.log).read())
+        self.assertEqual((rc, res.get("status")), (0, "promoted"), err)
+        self.assertIn("/zip", open(self.log).read())
 
     def test_current_but_unsigned_no_identity_fails_closed(self):
         old = self.unsigned_promote()
@@ -427,7 +430,7 @@ class SignTests(Base):
     def test_unsigned_app_without_sign_spec_stays_current(self):
         self.unsigned_promote()
         rc, res, _ = self.pull()
-        self.assertEqual((rc, res["status"]), (0, "current"))
+        self.assertEqual((rc, res["status"]), (0, "promoted"))
 
     def test_routines_default_sign_table(self):
         sys.path.insert(0, os.path.join(ROOT, "bin"))
@@ -580,6 +583,336 @@ class ChannelOrderRecordTests(Base):
         self.assertEqual((rc, res.get("status")), (0, "dry-run-verified"), err)
         self.assertEqual(res["promote_order"], "backward")
         self.assertEqual(self.head_now(), self.NEWER)
+
+
+class CanonicalReuseTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.artifact_log = os.path.join(self.d, "artifact.log")
+        for key, value in {"FAKE_ARTIFACT_LOG": self.artifact_log,
+                           "FAKE_ARTIFACT_CREATED_AT": "2026-10-09T00:00:00.000Z"}.items():
+            previous = os.environ.get(key)
+            os.environ[key] = value
+            self.addCleanup(lambda k=key, v=previous: os.environ.pop(k, None) if v is None else os.environ.__setitem__(k,v))
+
+    def snapshot(self):
+        result = {}
+        for d, _dirs, files in os.walk(self.cas):  # walk-ok: private fixture CAS
+            for name in files:
+                path = Path(d) / name
+                info = path.lstat()
+                result[os.path.relpath(path,self.cas)] = (info.st_mode,
+                    path.read_bytes() if stat.S_ISREG(info.st_mode) else os.readlink(path) if path.is_symlink() else None)
+        return result
+
+    def events(self):
+        return [json.loads(line) for line in Path(self.artifact_log).read_text().splitlines()]
+
+    def canonical(self):
+        return os.path.join(self.cas,"builds","remote",self.oid,"darwin-arm64.json")
+
+    def seed(self):
+        rc,res,err=self.pull("--channel","candidate")
+        self.assertEqual((rc,res.get("status")),(0,"promoted"),err)
+        return res
+
+    def rewrite(self, mutate):
+        with open(self.canonical()) as fh: man=json.load(fh)
+        mutate(man)
+        body={k:v for k,v in man.items() if k!="manifest_digest"}
+        body["files"]=sorted(body["files"],key=lambda f:f["path"])
+        man["manifest_digest"]=hashlib.sha256(json.dumps(body,sort_keys=True).encode()).hexdigest()
+        encoded=json.dumps(man).encode()
+        for path in [self.canonical(),os.path.join(self.cas,"manifests",man["manifest_digest"]+".json")]:
+            with open(path,"wb") as fh: fh.write(encoded)
+        return man
+
+    def test_distinct_clock_cross_channel_reuses_canonical(self):
+        first=self.seed()
+        canonical=Path(self.canonical()).read_bytes()
+        os.environ["FAKE_ARTIFACT_CREATED_AT"]="2026-10-09T01:00:00.000Z"
+        rc,res,err=self.pull()
+        self.assertEqual(Path(self.canonical()).read_bytes(),canonical,"canonical build bytes remain immutable")
+        self.assertEqual(len([e for e in self.events() if e["verb"]=="publish"]),1,"one publish for identical payload")
+        self.assertEqual((rc,res.get("status"),res.get("manifest_digest")),(0,"promoted",first["manifest_digest"]),err)
+        self.assertEqual((res["tree_oid"],res["run_id"],res["artifact_id"]),(self.tree,77,5))
+
+    def test_same_head_returns_complete_checked_provenance(self):
+        first=self.seed()
+        rc,res,err=self.pull("--channel","candidate")
+        self.assertEqual((rc,res.get("status"),res.get("manifest_digest")),(0,"promoted",first["manifest_digest"]),"complete checked promoted receipt: "+err)
+        self.assertEqual((res["tree_oid"],res["platform"],res["run_id"],res["artifact_id"]),(self.tree,"darwin-arm64",77,5))
+        self.assertIn("/zip",open(self.log).read())
+
+    def test_same_head_failed_ci_has_zero_effects(self):
+        self.seed(); before=self.snapshot()
+        self.set_routes(check=[{"name":"ci-required","status":"completed","conclusion":"failure"}])
+        rc,res,err=self.pull("--channel","candidate")
+        self.assertEqual(self.snapshot(),before,"same-head failed CI has zero publication")
+        self.assertNotEqual(rc,0,"same-head failed CI refuses")
+        self.assertIn("not green",res.get("reason",""))
+
+    def assert_bad_canonical(self, field, value):
+        self.seed()
+        self.rewrite(lambda man:man.__setitem__(field,value))
+        before=self.snapshot()
+        rc,res,err=self.pull()
+        self.assertEqual(self.snapshot(),before,"wrong canonical "+field+" has zero publication")
+        self.assertNotEqual(rc,0,"wrong canonical "+field+" refuses")
+        self.assertIn("canonical",res.get("reason",""))
+
+    def test_wrong_canonical_app(self): self.assert_bad_canonical("app","other")
+    def test_wrong_canonical_repo(self): self.assert_bad_canonical("repo","other")
+    def test_wrong_canonical_source(self): self.assert_bad_canonical("source_oid","e"*40)
+    def test_wrong_canonical_platform(self): self.assert_bad_canonical("platform","other-arm64")
+
+    def assert_bad_tuple(self, field, value):
+        self.seed()
+        self.rewrite(lambda man:man["files"][0].__setitem__(field,value))
+        before=self.snapshot()
+        rc,res,err=self.pull()
+        self.assertEqual(self.snapshot(),before,"wrong canonical tuple "+field+" has zero publication")
+        self.assertNotEqual(rc,0,"wrong canonical tuple "+field+" refuses")
+        self.assertIn("canonical",res.get("reason",""))
+
+    def test_wrong_canonical_path(self): self.assert_bad_tuple("path","other-file")
+    def test_wrong_canonical_size(self): self.assert_bad_tuple("size",123456)
+    def test_wrong_canonical_mode(self): self.assert_bad_tuple("mode",0o600)
+
+    def test_wrong_canonical_sha(self):
+        self.seed()
+        data=b"different but valid canonical blob"
+        digest=hashlib.sha256(data).hexdigest()
+        path=os.path.join(self.cas,"blobs","sha256",digest[:2],digest)
+        os.makedirs(os.path.dirname(path),exist_ok=True)
+        with open(path,"wb") as fh:fh.write(data)
+        self.rewrite(lambda man:man["files"][0].update(sha256=digest,size=len(data)))
+        before=self.snapshot();rc,res,err=self.pull()
+        self.assertEqual(self.snapshot(),before,"wrong canonical sha has zero publication")
+        self.assertNotEqual(rc,0,"wrong canonical sha refuses")
+
+    def test_canonical_verify_failure_has_zero_effects(self):
+        first=self.seed()
+        man=json.loads(Path(self.canonical()).read_text())
+        path=os.path.join(self.cas,"blobs","sha256",man["files"][0]["sha256"][:2],man["files"][0]["sha256"])
+        with open(path,"wb") as fh:fh.write(b"corrupt canonical blob")
+        before=self.snapshot();rc,res,err=self.pull()
+        self.assertEqual(self.snapshot(),before,"failed public canonical verify has zero publication")
+        self.assertNotEqual(rc,0,"failed public canonical verify refuses")
+        self.assertIn("verify",res.get("reason",""))
+
+
+    def test_wrong_canonical_schema(self): self.assert_bad_canonical("schema_version",2)
+    def test_wrong_canonical_schema_type(self): self.assert_bad_canonical("schema_version",True)
+    def test_wrong_canonical_digest(self):
+        self.seed();path=Path(self.canonical());man=json.loads(path.read_text())
+        man["manifest_digest"]="z"*64;path.write_text(json.dumps(man))
+        before=self.snapshot();rc,res,err=self.pull()
+        self.assertEqual(self.snapshot(),before,"wrong canonical digest has zero publication")
+        self.assertNotEqual(rc,0,"wrong canonical digest refuses")
+        self.assertIn("digest is malformed",res.get("reason",""))
+    def test_malformed_canonical_files(self): self.assert_bad_canonical("files",{})
+
+    def assert_malformed(self, mutate, reason):
+        self.seed();self.rewrite(mutate);before=self.snapshot()
+        rc,res,err=self.pull()
+        self.assertEqual(self.snapshot(),before,"malformed canonical "+reason+" has zero publication")
+        self.assertNotEqual(rc,0,"malformed canonical "+reason+" refuses")
+
+    def test_missing_canonical_tuple_field(self):
+        self.assert_malformed(lambda man:man["files"][0].pop("mode"),"tuple-field")
+    def test_malformed_canonical_tuple_size_type(self):
+        self.assert_malformed(lambda man:man["files"][0].__setitem__("size",True),"size-type")
+    def test_malformed_canonical_tuple_mode_type(self):
+        self.assert_malformed(lambda man:man["files"][0].__setitem__("mode",True),"mode-type")
+    def test_malformed_canonical_tuple_digest(self):
+        self.assert_malformed(lambda man:man["files"][0].__setitem__("sha256","z"*64),"digest-format")
+    def test_duplicate_canonical_path(self):
+        self.assert_malformed(lambda man:man["files"].append(dict(man["files"][0])),"duplicate-path")
+    def test_unsafe_canonical_path(self):
+        self.assert_malformed(lambda man:man["files"][0].__setitem__("path","../escape"),"unsafe-path")
+
+    def test_canonical_build_manifest_disagree(self):
+        self.seed()
+        path=Path(self.canonical());man=json.loads(path.read_text())
+        man["created_at"]="2026-10-09T02:00:00Z";path.write_text(json.dumps(man))
+        before=self.snapshot();rc,res,err=self.pull()
+        self.assertEqual(self.snapshot(),before,"canonical build disagreement has zero publication")
+        self.assertNotEqual(rc,0,"canonical build disagreement refuses")
+        self.assertIn("disagree",res.get("reason",""))
+
+    def test_duplicate_canonical_json_key(self):
+        self.seed();path=Path(self.canonical())
+        body=path.read_text();path.write_text(body.replace('"app": "remote"','"app": "other", "app": "remote"',1))
+        before=self.snapshot();rc,res,err=self.pull()
+        self.assertEqual(self.snapshot(),before,"duplicate canonical JSON key has zero publication")
+        self.assertNotEqual(rc,0,"duplicate canonical JSON key refuses")
+
+    def test_symlink_canonical_build(self):
+        self.seed();path=Path(self.canonical());saved=Path(self.d)/"saved-build.json"
+        path.rename(saved);path.symlink_to(saved)
+        before=self.snapshot();rc,res,err=self.pull()
+        self.assertEqual(self.snapshot(),before,"canonical symlink has zero publication")
+        self.assertNotEqual(rc,0,"canonical symlink refuses")
+
+    def test_fifo_canonical_build_refuses_promptly(self):
+        self.seed();path=Path(self.canonical());path.unlink();os.mkfifo(path)
+        before=self.snapshot()
+        env=dict(os.environ);env.update({"LAST_STACK_GH":os.path.join(FIX,"fake-gh"),"LAST_STACK_LASTGIT":os.path.join(FIX,"fake-lastgit"),"FAKE_GH_ROUTES":self.routes_path,"FAKE_GH_LOG":self.log,"LAST_STACK_SITUATIONS_BIN":"/usr/bin/true"})
+        try:
+            result=subprocess.run([sys.executable,PULL,"--app","remote","--repo",REPO,"--root",self.cas,"--json"],env=env,capture_output=True,text=True,timeout=3)
+        except subprocess.TimeoutExpired:
+            self.fail("canonical FIFO refuses promptly without a writer")
+        self.assertEqual(self.snapshot(),before,"canonical FIFO has zero publication")
+        self.assertNotEqual(result.returncode,0,"canonical FIFO refuses")
+
+    def test_oversize_canonical_build(self):
+        self.seed();self.rewrite(lambda man:man.__setitem__("padding","x"*(8*1024*1024)))
+        before=self.snapshot();rc,res,err=self.pull()
+        self.assertEqual(self.snapshot(),before,"canonical byte cap has zero publication")
+        self.assertNotEqual(rc,0,"canonical byte cap refuses")
+
+    def test_missing_canonical_manifest(self):
+        first=self.seed();Path(self.cas,"manifests",first["manifest_digest"]+".json").unlink()
+        before=self.snapshot();rc,res,err=self.pull()
+        self.assertEqual(self.snapshot(),before,"missing canonical manifest has zero publication")
+        self.assertNotEqual(rc,0,"missing canonical manifest refuses")
+
+    def test_same_head_run_provenance_has_zero_effects(self):
+        self.seed();before=self.snapshot();self.set_routes(run_over={"event":"pull_request"})
+        rc,res,err=self.pull("--channel","candidate")
+        self.assertEqual(self.snapshot(),before,"same-head wrong run has zero publication")
+        self.assertNotEqual(rc,0,"same-head wrong run refuses")
+        self.assertIn("push run",res.get("reason",""))
+
+    def test_signed_derivative_mismatch_still_publishes(self):
+        first=self.seed();rc,res,err=self.sign_pull()
+        self.assertEqual((rc,res.get("status")),(0,"promoted"),err)
+        self.assertNotEqual(res["manifest_digest"],first["manifest_digest"])
+        self.assertEqual(len([e for e in self.events() if e["verb"]=="publish"]),2)
+
+
+    def text_pull(self, *extra):
+        env=dict(os.environ);env.update({"LAST_STACK_GH":os.path.join(FIX,"fake-gh"),"LAST_STACK_LASTGIT":os.path.join(FIX,"fake-lastgit"),"FAKE_GH_ROUTES":self.routes_path,"FAKE_GH_LOG":self.log,"LAST_STACK_SITUATIONS_BIN":"/usr/bin/true"})
+        return subprocess.run([sys.executable,PULL,"--app","remote","--repo",REPO,"--root",self.cas,"--channel","candidate",*extra],env=env,capture_output=True,text=True,timeout=15)
+
+    def test_text_same_head_keeps_fast_no_zip_status(self):
+        self.seed();before=self.snapshot();Path(self.log).write_text("")
+        r=self.text_pull()
+        self.assertNotIn("/zip",Path(self.log).read_text(),"ordinary text same-head performs zero ZIP downloads")
+        self.assertNotIn("check-runs",Path(self.log).read_text(),"ordinary text status does not claim new CI authority")
+        self.assertEqual(self.snapshot(),before,"ordinary text same-head performs zero publication")
+        self.assertEqual(r.returncode,0,r.stderr)
+        self.assertTrue(r.stdout.startswith("current app=remote repo="),"ordinary text current stays status only")
+        self.assertNotIn("manifest_digest",r.stdout)
+
+    def test_text_same_head_signed_keeps_signature_check(self):
+        flags=["--sign","bin/ra=com.test.ra","--codesign",os.path.join(FIX,"fake-codesign"),"--security",os.path.join(FIX,"fake-security")]
+        rc,res,err=self.sign_pull("--channel","candidate")
+        self.assertEqual((rc,res.get("status")),(0,"promoted"),err)
+        Path(self.log).write_text("");before=self.snapshot();r=self.text_pull(*flags)
+        self.assertNotIn("/zip",Path(self.log).read_text(),"signed ordinary text same-head performs zero ZIP downloads")
+        self.assertEqual(self.snapshot(),before,"signed ordinary text has zero publication")
+        self.assertEqual(r.returncode,0,r.stderr)
+        self.assertTrue(r.stdout.startswith("current app=remote repo="))
+
+    def test_text_same_head_unsigned_repeats_sign_gates(self):
+        self.seed();Path(self.log).write_text("")
+        r=self.text_pull("--sign","bin/ra=com.test.ra","--codesign",os.path.join(FIX,"fake-codesign"),"--security",os.path.join(FIX,"fake-security"))
+        self.assertIn("/zip",Path(self.log).read_text(),"unsigned ordinary text repeats signing gates")
+        self.assertEqual(r.returncode,0,r.stderr)
+        self.assertTrue(r.stdout.startswith("promoted app=remote repo="))
+
+    def test_public_puller_text_default(self):
+        env=dict(os.environ);env.update({"LAST_STACK_GH":os.path.join(FIX,"fake-gh"),"LAST_STACK_LASTGIT":os.path.join(FIX,"fake-lastgit"),"FAKE_GH_ROUTES":self.routes_path,"FAKE_GH_LOG":self.log,"LAST_STACK_SITUATIONS_BIN":"/usr/bin/true"})
+        r=subprocess.run([sys.executable,PULL,"--app","remote","--repo",REPO,"--root",self.cas],env=env,capture_output=True,text=True,timeout=15)
+        self.assertEqual(r.returncode,0,r.stderr)
+        self.assertTrue(r.stdout.startswith("promoted app=remote repo="),"public text default stays text")
+        with self.assertRaises(json.JSONDecodeError):json.loads(r.stdout)
+
+
+    def pull_module(self):
+        import importlib.machinery, importlib.util
+        loader=importlib.machinery.SourceFileLoader("canonical_pull_fixture",PULL)
+        spec=importlib.util.spec_from_loader(loader.name,loader)
+        module=importlib.util.module_from_spec(spec);loader.exec_module(module)
+        return module
+
+    def direct_tuple_refusal(self, mutate, label):
+        module=self.pull_module()
+        man={"files":[{"path":"file","sha256":"a"*64,"size":1,"mode":493}]}
+        mutate(man)
+        caught=False
+        try:module.canonical_file_tuples(man)
+        except (module.Hold,module.Fail):caught=True
+        except Exception as error:self.fail(label+" typed refusal: "+str(error))
+        self.assertTrue(caught,label+" typed refusal")
+
+    def test_tuple_guard_list(self):self.direct_tuple_refusal(lambda m:m.__setitem__("files",{}),"tuple-list")
+    def test_tuple_guard_item(self):self.direct_tuple_refusal(lambda m:m["files"].__setitem__(0,"WRONG"),"tuple-item")
+    def test_tuple_guard_field_set(self):self.direct_tuple_refusal(lambda m:m["files"][0].pop("mode"),"tuple-fields")
+    def test_tuple_guard_path_type(self):self.direct_tuple_refusal(lambda m:m["files"][0].__setitem__("path",123),"tuple-path-type")
+    def test_tuple_guard_digest_type(self):self.direct_tuple_refusal(lambda m:m["files"][0].__setitem__("sha256",123),"tuple-digest-type")
+    def test_tuple_guard_digest_format(self):self.direct_tuple_refusal(lambda m:m["files"][0].__setitem__("sha256","z"*64),"tuple-digest-format")
+    def test_tuple_guard_size_type(self):self.direct_tuple_refusal(lambda m:m["files"][0].__setitem__("size",True),"tuple-size-type")
+    def test_tuple_guard_size_range(self):self.direct_tuple_refusal(lambda m:m["files"][0].__setitem__("size",-1),"tuple-size-range")
+    def test_tuple_guard_mode_type(self):self.direct_tuple_refusal(lambda m:m["files"][0].__setitem__("mode",493.0),"tuple-mode-type")
+    def test_tuple_guard_mode_range(self):self.direct_tuple_refusal(lambda m:m["files"][0].__setitem__("mode",0o1000),"tuple-mode-range")
+    def test_tuple_guard_duplicate(self):self.direct_tuple_refusal(lambda m:m["files"].append(dict(m["files"][0])),"tuple-duplicate")
+    def test_tuple_guard_safe_path(self):self.direct_tuple_refusal(lambda m:m["files"][0].__setitem__("path","../escape"),"tuple-safe-path")
+
+    def test_direct_canonical_digest_guard(self):
+        from unittest.mock import patch
+        module=self.pull_module()
+        man={"schema_version":1,"app":"remote","repo":"remote","source_oid":self.oid,"platform":"darwin-arm64","manifest_digest":"z"*64,"files":[{"path":"file","sha256":"a"*64,"size":1,"mode":493}]}
+        with patch.object(module,"canonical_json_file",return_value=man),patch.object(module,"lastgit",return_value=""):
+            with self.assertRaises(module.Hold,msg="canonical digest format refuses before a verified receipt"):
+                module.reuse_canonical_manifest(self.cas,"remote","remote",self.oid,"darwin-arm64",man["files"],False,"unused")
+
+    def test_direct_nonregular_stat_guard(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        module=self.pull_module();path=Path(self.d)/"stat-shape.json";path.write_text('{"x":1}')
+        with patch.object(module.os,"fstat",return_value=SimpleNamespace(st_mode=stat.S_IFIFO|0o600,st_size=7)):
+            with self.assertRaises(module.Hold,msg="nonregular stat refuses before JSON acceptance"):
+                module.canonical_json_file(path)
+
+    def test_direct_read_byte_cap_guard(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        module=self.pull_module();path=Path(self.d)/"grow-shape.json"
+        # The JSON prefix stays valid if the read cap clips trailing spaces.
+        # A stale stat models a regular file that grows after fstat.
+        path.write_bytes(b'{"x":1}'+b' '*(module.CANONICAL_MANIFEST_MAX_BYTES+1))
+        with patch.object(module.os,"fstat",return_value=SimpleNamespace(st_mode=stat.S_IFREG|0o600,st_size=7)):
+            with self.assertRaises(module.Hold,msg="grown canonical file refuses at the read byte cap"):
+                module.canonical_json_file(path)
+
+    def test_public_hosttrack_passes_real_json_argv(self):
+        first=self.seed()
+        bindir=os.path.join(self.d,"runtime-bin");os.makedirs(bindir)
+        wrapper=os.path.join(bindir,"lastgit")
+        with open(wrapper,"w") as fh:
+            fh.write("#!/usr/bin/env python3\nimport json,os,subprocess,sys\na=sys.argv[1:]\n")
+            fh.write("if a[:2]==['artifact','resolve']:\n print(open(os.path.join(%r,'channels',a[a.index('--app')+1],a[a.index('--channel')+1]+'.json')).read());sys.exit(0)\n"%self.cas)
+            fh.write("sys.exit(subprocess.run([%r]+a).returncode)\n"%os.path.join(FIX,"fake-lastgit"))
+        os.chmod(wrapper,0o755)
+        lastdb=os.path.join(bindir,"lastdb")
+        with open(lastdb,"w") as fh:
+            fh.write("#!/usr/bin/env python3\nimport json,sys\nif '--help' in sys.argv:print('usage');sys.exit(0)\nprint(json.dumps({'sha':%r,'proved_at':'2026-10-09T00:00:00Z','proof_run':'fixture'}))\n"%self.oid)
+        os.chmod(lastdb,0o755)
+        registry=os.path.join(self.d,"registry.json")
+        with open(registry,"w") as fh:
+            json.dump({"defaults":{"artifact_channel":"stable"},"apps":[{"app":"remote","command":"ra","kind":"artifact-bundle","install_mode":"artifact","gate_main":"https://github.com/EdgeVector/remote.git#main","artifact_root":self.cas,"install_root":os.path.join(self.d,"installed"),"registry_channel":"next","registry_index":os.path.join(self.d,"index.json"),"links":[],"safe_upgrade":{"soak_hours":0,"probes":[{"argv":["bin/ra"],"output_matches":"ra"}]}}]},fh)
+        env=dict(os.environ)
+        env.update({"PATH":bindir+os.pathsep+env["PATH"],"HOST_TRACK_REGISTRY":registry,"HOST_TRACK_STAMP_DIR":os.path.join(self.d,"stamps"),"HOST_TRACK_LOCK_DIR":os.path.join(self.d,"locks"),"HOST_TRACK_FRONTIER_DIR":os.path.join(self.d,"frontier"),"HOST_TRACK_GITHUB_PULL":PULL,"HOST_TRACK_ARTIFACT_ROOT":self.cas,"HOST_TRACK_ROOT":ROOT,"LAST_STACK_GH":os.path.join(FIX,"fake-gh"),"LAST_STACK_LASTGIT":os.path.join(FIX,"fake-lastgit"),"FAKE_GH_ROUTES":self.routes_path,"FAKE_GH_LOG":self.log,"LAST_STACK_SITUATIONS_BIN":"/usr/bin/true","HOST_TRACK_SOAK_FILE_CARD":"0","HOST_TRACK_SOAK_HEAL":"0","HOST_TRACK_SHIP_SOAK_RESUME":"0","HOST_TRACK_REOPEN_DEFERRED":"0"})
+        for key in ["HOST_TRACK_ACTIVATE","HOST_TRACK_PROBE_SKIP","HOST_TRACK_REEXECED","HOST_TRACK_REGISTRY_INDEX"]:env.pop(key,None)
+        args=[os.path.join(ROOT,"bin","host-track"),"install","--channel","candidate","--expected-oid",self.oid,"--expected-manifest",first["manifest_digest"],"--json","remote"]
+        r=subprocess.run(args,env=env,capture_output=True,text=True,timeout=45)
+        result=json.loads(r.stdout)
+        self.assertTrue(result.get("exact_match"),"actual public JSON argv produces exact receipt: "+r.stderr)
+        self.assertEqual((r.returncode,result.get("result"),result["official"]["run_id"],result["official"]["artifact_id"]),(0,"installed",77,5))
+
 
 
 if __name__ == "__main__":
