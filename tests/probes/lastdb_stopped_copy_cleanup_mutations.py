@@ -6,6 +6,10 @@ import sys
 
 
 MUTATIONS = {
+    "current_pointer": (
+        '    pointer = read_json(copy / ".rescue_s0_committed_v1.json")',
+        '    pointer = read_json(copy / ".rescue_s0_complete")',
+    ),
     "check_only": (
         "        if args.execute:\n",
         "        if True:\n",
@@ -16,7 +20,43 @@ MUTATIONS = {
     ),
     "restore_receipt": (
         '    target = read_json(restored / ".rescue_s0_restore_ready")',
-        '    target = {**read_json(copy / ".rescue_s0_complete"), "ok": True, "restore_mode": "s0_only"}',
+        '    target = read_json(report_path)',
+    ),
+    "pointer_identity": (
+        '    require_identity(pointer, db_hash, sha, store_uuid, counter)',
+        '    pass',
+    ),
+    "pointer_scope": (
+        '    if pointer.get("source_scope") != "primary_only":',
+        '    if False:',
+    ),
+    "pointer_version": (
+        '    if type(pointer.get("version")) is not int or pointer["version"] != 1:',
+        '    if False:',
+    ),
+    "pointer_epoch": (
+        '    if type(epoch) is not int or not 0 <= epoch <= MAX_U64:',
+        '    if False:',
+    ),
+    "pointer_counter": (
+        '    if type(counter) is not int or not 0 < counter <= MAX_U64:',
+        '    if False:',
+    ),
+    "descriptor_hash": (
+        '    if not isinstance(descriptor_sha, str) or not SHA.fullmatch(descriptor_sha):',
+        '    if False:',
+    ),
+    "descriptor_name": (
+        '    if pointer.get("descriptor_name") != expected_name:',
+        '    if False:',
+    ),
+    "report_latest": (
+        '    if report.get("latest_key") != f"rescue/s0/{sha}.json":',
+        '    if False:',
+    ),
+    "report_epoch": (
+        '    if type(report.get("restored_epoch")) is not int or report["restored_epoch"] != expected_restored_epoch:',
+        '    if False:',
     ),
     "flush_session": (
         '        refuse("stopped copy session does not match the flush")',

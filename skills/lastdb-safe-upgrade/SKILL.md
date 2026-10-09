@@ -140,8 +140,13 @@ source-free restore proves the rescue.
 After the fresh source-free restore passes, check the exact stopped copy with
 `cleanup-stopped-copy.py`. Use the captured restore JSON report. The report
 must name the same database hash and manifest SHA-256 as the source and the
-restored home. The source must have `.rescue_s0_complete`. The restored home
-must have `.rescue_s0_restore_ready`. The helper also requires Cloud Sync Off.
+restored home. The source must have `.rescue_s0_committed_v1.json`, which holds
+the exact primary-only S0 cloud pointer. The restored home must have
+`.rescue_s0_restore_ready`. The helper checks the pointer's counter, epoch,
+descriptor name, and descriptor hash against the source and the restore report.
+The report must name `rescue/s0/<manifest_sha256>.json` and show the restored
+epoch. The helper also requires Cloud Sync Off on both homes. The old
+`.rescue_s0_complete` file is not a cleanup receipt.
 It refuses a socket path, an open file, or a process that names either home.
 It checks only by default:
 

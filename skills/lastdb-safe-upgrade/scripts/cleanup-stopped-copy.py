@@ -17,6 +17,7 @@ TEMP_ROOT = Path("/private/tmp")
 SHA = re.compile(r"[0-9a-f]{64}\Z")
 COPY_NAME = re.compile(r"lastdb-stopped-backup-[A-Za-z0-9_-]{8,}\Z")
 MAX_JSON_BYTES = 262_144
+MAX_U64 = (1 << 64) - 1
 
 
 def refuse(message: str) -> None:
@@ -196,25 +197,43 @@ def verify(args: argparse.Namespace) -> Path:
     db_hash = database_hash(store_uuid)
     if target_high.get("store_uuid") != store_uuid or db_hash != args.expect_db_hash:
         refuse("restored database hash differs from the stopped copy")
-    complete = read_json(copy / ".rescue_s0_complete")
+    pointer = read_json(copy / ".rescue_s0_committed_v1.json")
     target = read_json(restored / ".rescue_s0_restore_ready")
     report = read_json(report_path)
     sha = args.expect_manifest_sha256
-    counter = complete.get("counter")
-    if type(counter) is not int or counter <= 0:
+    counter = pointer.get("counter")
+    if type(counter) is not int or not 0 < counter <= MAX_U64:
         refuse("rescue counter is invalid")
-    for value in (complete, target, report):
+    epoch = pointer.get("epoch")
+    if type(epoch) is not int or not 0 <= epoch <= MAX_U64:
+        refuse("rescue epoch is invalid")
+    require_identity(pointer, db_hash, sha, store_uuid, counter)
+    if type(pointer.get("version")) is not int or pointer["version"] != 1:
+        refuse("rescue pointer version is invalid")
+    if pointer.get("source_scope") != "primary_only":
+        refuse("rescue pointer is not primary-only")
+    descriptor_sha = pointer.get("descriptor_sha256")
+    if not isinstance(descriptor_sha, str) or not SHA.fullmatch(descriptor_sha):
+        refuse("rescue descriptor hash is invalid")
+    expected_name = f"lastdb-recovery-v1-{db_hash}-{sha}-{descriptor_sha}.enc"
+    if pointer.get("descriptor_name") != expected_name:
+        refuse("rescue descriptor name does not bind the pointer")
+    for value in (target, report):
         require_identity(value, db_hash, sha, store_uuid, counter)
-        if value.get("version") != 1 or value.get("cloud_sync_off") is not True:
+        if (type(value.get("version")) is not int or value["version"] != 1
+            or value.get("cloud_sync_off") is not True):
             refuse("rescue proof does not keep cloud sync off")
-    if complete.get("rescue_key") != f"rescue/s0/{sha}.json":
-        refuse("rescue pointer key does not match the manifest")
     if target.get("ok") is not True or report.get("ok") is not True:
         refuse("source-free restore did not complete")
     if target.get("restore_mode") != "s0_only" or report.get("restore_mode") != "s0_only":
         refuse("restore mode is not S0-only")
     if report.get("source_scope_verified") is not True or report.get("remote_read_only") is not True:
         refuse("restore report lacks source scope proof")
+    if report.get("latest_key") != f"rescue/s0/{sha}.json":
+        refuse("restore report does not name the exact S0 rescue pointer")
+    expected_restored_epoch = min(epoch + 1, MAX_U64)
+    if type(report.get("restored_epoch")) is not int or report["restored_epoch"] != expected_restored_epoch:
+        refuse("restore report epoch does not match the rescue pointer")
     require_no_home_process(copy, restored)
     require_no_open_files(copy)
     require_no_open_files(restored)
