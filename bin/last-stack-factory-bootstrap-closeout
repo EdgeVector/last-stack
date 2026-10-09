@@ -11,11 +11,13 @@ from factory_bootstrap import BootstrapController, BootstrapRuntime, BOOTSTRAP_K
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--card', required=True, choices=sorted(BOOTSTRAP_KEYS)); parser.add_argument('--once', action='store_true', required=True)
+    parser.add_argument('--recover-prewrite-refusal', action='store_true', help='Recover only the pinned known prewrite refusal; no Card write.')
     parser.add_argument('--json', action='store_true', required=True); args = parser.parse_args(); set_deadline(180)
     try:
         local = validate_local(ROOT); config = read_json(ROOT / 'config/factory-bootstrap-closeout.json')
         directory = Path.home() / '.local/state/last-stack/factory-repair-slot'
-        result = BootstrapController(config, directory, BootstrapRuntime(ROOT, config, directory), local['contract_sha256'], args.card).once()
+        controller = BootstrapController(config, directory, BootstrapRuntime(ROOT, config, directory), local['contract_sha256'], args.card)
+        result = controller.recover_prewrite_refusal() if args.recover_prewrite_refusal else controller.once()
     except (Refusal, OSError, ValueError, KeyError, TypeError) as error:
         result = {'version': 1, 'result': 'error', 'reason': str(error), 'intent': 'retained'}
     print(json.dumps(result, sort_keys=True)); return 1 if result['result'] == 'error' else 0
