@@ -431,17 +431,79 @@ def dispatch_grammar():
     check(result['key']==key and result['execution_id']==ident,'actual uppercase kickoff key or fractional ID refused')
     check(not f.kickoff_key('../'+key,state['card']) and not f.EXEC_ID.fullmatch('lx-../../escape'),'identity accepted a path escape')
 
-def native_ids():
-    root=Path(tempfile.mkdtemp(prefix='native-ids-'));schema={'LoomExecution':'a'*64,'LoomExecutionByStatus':'b'*64}
+def native_membership_row(created='2026-10-08T19:19:27.569Z'):
+    ident = 'lx-20261008T191927.569-36821-1'
+    sort = 'land-card#' + created + '#' + ident
+    return {'key': {'hash': 'running', 'range': sort},
+            'fields': {'id': ident, 'definition_name': 'land-card', 'by_status_sort': sort}}
+
+
+def native_membership_fixture(row=None, all_statuses=False):
+    root=Path(tempfile.mkdtemp(prefix='native-ids-')); schema={'LoomExecution':'a'*64,'LoomExecutionByStatus':'b'*64}
     f.atomic_json(root/'hashes.json',schema); config={'schema_map':str(root/'hashes.json'),'loom_schemas':schema,'owner_socket':'PRIVATE'}
+    row = copy.deepcopy(native_membership_row() if row is None else row)
     called=[]; saved=f.owner_query_page
     def reply(sock,hash_value,flt,fields,limit,offset=0):
-        status=flt['HashKey']; called.append(status)
-        return {'has_more':False,'results':[{'key':{'hash':status,'range':'lx-20261008T191927.569-36821-1'},'fields':{'id':'lx-20261008T191927.569-36821-1'}}]}
+        status=flt['HashKey']; called.append((status, list(fields), limit, offset))
+        current = copy.deepcopy(row)
+        if all_statuses: current['key']['hash'] = status
+        return {'has_more':False,'results':[current] if all_statuses or status == 'running' else []}
     f.owner_query_page=reply
-    try:keys=f.active_candidate_keys(config)
-    finally:f.owner_query_page=saved
-    check(keys==['lx-20261008T191927.569-36821-1'] and set(called)==f.ACTIVE,'native actual ID mix was refused')
+    try: return f.active_candidate_keys(config), called
+    finally: f.owner_query_page=saved
+
+
+def native_ids():
+    try: keys, called = native_membership_fixture(all_statuses=True)
+    except f.Refusal as error:
+        raise AssertionError('real composite status range was refused: ' + str(error)) from error
+    check(keys==['lx-20261008T191927.569-36821-1'] and {v[0] for v in called}==f.ACTIVE and len(called)==3,
+          'native actual ID mix was refused')
+    check(all(v[1:] == (['id','definition_name','by_status_sort'],1000,0) for v in called),
+          'native membership did not request the supported identity fields')
+
+
+def native_ids_offset():
+    keys, _ = native_membership_fixture(native_membership_row('2026-10-08T19:19:27+00:00'))
+    check(keys == ['lx-20261008T191927.569-36821-1'], 'valid RFC3339 composite range was refused')
+
+
+def native_offset_minutes():
+    for minute in ('60', '99'):
+        row = native_membership_row('2026-10-08T19:19:27+00:' + minute)
+        try: native_membership_fixture(row)
+        except f.Refusal: continue
+        raise AssertionError('native invalid UTC offset minute ' + minute + ' membership was accepted')
+
+
+def native_membership_bad(name):
+    row = native_membership_row(); fields = row['fields']; key = row['key']
+    if name == 'plain_range': key['range'] = fields['by_status_sort'] = fields['id']
+    elif name == 'foreign_hash': key['hash'] = 'foreign'
+    elif name == 'sort_mismatch': fields['by_status_sort'] = key['range'].replace('27.569Z', '28.569Z')
+    elif name == 'definition_mismatch': fields['definition_name'] = 'another-definition'
+    elif name == 'id_suffix_mismatch': fields['id'] = 'lx-other'
+    elif name == 'missing_definition': del fields['definition_name']
+    elif name == 'missing_sort': del fields['by_status_sort']
+    elif name == 'empty_definition':
+        fields['definition_name'] = ''
+        key['range'] = fields['by_status_sort'] = key['range'].removeprefix('land-card')
+    elif name == 'timestamp_format':
+        key['range'] = fields['by_status_sort'] = 'land-card#not-a-time#' + fields['id']
+    elif name == 'timestamp_calendar':
+        key['range'] = fields['by_status_sort'] = 'land-card#2026-02-31T19:19:27.569Z#' + fields['id']
+    elif name == 'id_token':
+        fields['id'] = 'lx-../../escape'
+        key['range'] = fields['by_status_sort'] = 'land-card#2026-10-08T19:19:27.569Z#' + fields['id']
+    elif name == 'sort_type': fields['by_status_sort'] = 7
+    elif name == 'incomplete': row['unresolved'] = True
+    else: raise AssertionError('unknown membership fixture')
+    try: native_membership_fixture(row)
+    except f.Refusal: return
+    except Exception as error:
+        raise AssertionError('native ' + name + ' lacked structured refusal: ' + type(error).__name__) from error
+    raise AssertionError('native ' + name + ' membership was accepted')
+
 
 def native_foreign():
     row={'key':{'hash':'foreign','range':None},'fields':{'id':'foreign','status':'running','state':'IMPLEMENT','updated_at':'r','definition_name':'land-card'}}
@@ -575,6 +637,12 @@ CASES['loom_view_capability'] = lambda: loom_public_contract('view')
 CASES['loom_cli_source'] = lambda: loom_public_contract('cli')
 CASES['fkanban_contract_version'] = lambda: fkanban_guard_contract('version')
 CASES['fkanban_batch_shape'] = lambda: fkanban_guard_contract('snapshot_batch_shape')
+CASES['native_ids_offset'] = native_ids_offset
+CASES['native_offset_minutes'] = native_offset_minutes
+for _name in ('plain_range','foreign_hash','sort_mismatch','definition_mismatch','id_suffix_mismatch',
+              'missing_definition','missing_sort','empty_definition','timestamp_format','timestamp_calendar',
+              'id_token','sort_type','incomplete'):
+    CASES['native_' + _name] = lambda name=_name: native_membership_bad(name)
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('case',nargs='?',choices=CASES);args=parser.parse_args()
     for name in ([args.case] if args.case else CASES):

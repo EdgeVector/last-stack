@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 MAX_BYTES = 16 * 1024 * 1024
@@ -29,6 +30,7 @@ SLUG = re.compile(r'[a-z0-9][a-z0-9_-]{0,255}\Z')
 HEX = re.compile(r'[0-9a-f]{64}\Z')
 OID = re.compile(r'[0-9a-f]{40}\Z')
 EXEC_ID = re.compile(r'lx-[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}\Z')
+RFC3339 = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])\Z')
 REQUIRED_KEYS = {
     'factory-scoped-dispatch-20261008', 'factory-guarded-closeout-20261008',
     'factory-canonical-active-counts-20261008', 'factory-repair-controller-20261009',
@@ -585,6 +587,29 @@ def native_execution_rows(reply, keys):
     return records
 
 
+def status_membership_id(row, status_name):
+    require(isinstance(row, dict) and isinstance(row.get('key'), dict) and
+            row['key'].get('hash') == status_name and isinstance(row.get('fields'), dict),
+            'native-membership-row-shape-or-hash')
+    validate_native_metadata(row, 'native-membership', row=True)
+    fields = row['fields']; ident = fields.get('id'); definition = fields.get('definition_name')
+    sort = fields.get('by_status_sort')
+    require(isinstance(ident, str) and EXEC_ID.fullmatch(ident), 'native-membership-id')
+    require(isinstance(definition, str) and definition and isinstance(sort, str) and
+            row['key'].get('range') == sort, 'native-membership-key')
+    # Loom encodes created_at only in this range, not as a status-schema field.
+    parts = sort.rsplit('#', 2)
+    require(len(parts) == 3 and parts[0] == definition and parts[2] == ident,
+            'native-membership-composite-key')
+    created = parts[1]
+    require(RFC3339.fullmatch(created), 'native-membership-created-at-format')
+    try:
+        datetime.fromisoformat(created.replace('Z', '+00:00'))
+    except ValueError as error:
+        raise Refusal('native-membership-created-at-value') from error
+    return ident
+
+
 def active_candidate_keys(config):
     hashes = read_json(Path(config['schema_map']).expanduser())
     require(hashes.get('LoomExecution') == config['loom_schemas']['LoomExecution'] and
@@ -592,16 +617,11 @@ def active_candidate_keys(config):
     def one(status_name):
         out = []; offset = 0
         for page in range(16):
-            reply = owner_query_page(config['owner_socket'], hashes['LoomExecutionByStatus'], {'HashKey': status_name}, ['id'], 1000, offset)
+            reply = owner_query_page(config['owner_socket'], hashes['LoomExecutionByStatus'], {'HashKey': status_name}, ['id', 'definition_name', 'by_status_sort'], 1000, offset)
             rows = reply['results']
             require(len(rows) <= 1000 and (rows or not reply['has_more']), 'native-membership-page')
             for row in rows:
-                require(isinstance(row, dict), 'native-membership-row-shape')
-                validate_native_metadata(row, 'native-membership', row=True)
-                require(isinstance(row, dict) and isinstance(row.get('key'), dict) and row['key'].get('hash') == status_name and
-                        isinstance(row.get('fields'), dict) and EXEC_ID.fullmatch(row['fields'].get('id', '')) and
-                        row['key'].get('range') == row['fields']['id'], 'native-membership-key')
-                out.append(row['fields']['id'])
+                out.append(status_membership_id(row, status_name))
             if not reply['has_more']:
                 return out
             offset += len(rows)
