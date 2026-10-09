@@ -76,7 +76,7 @@ for name in ("host_swap_high", "host_load_high", "host_process_hog"):
 assert lc.alert_scope("lastdbd_restarted")[1] == "restart"
 
 # 6. Refusing work / unreportable is warn; a threshold crossing is info.
-for name in ("lastdb_persist_lanes_unhealthy", "node_unresponsive"):
+for name in ("lastdb_persist_lanes_unhealthy", "node_unresponsive", "lastdb_governor_purge_failed"):
     assert lc.alert_scope(name)[2] == "warn", name
 for name in ("host_swap_high", "lastdbd_cpu_high", "lastdbd_footprint_high",
              "lastdb_cold_group_near_cap", "lastdb_sync_degraded"):
