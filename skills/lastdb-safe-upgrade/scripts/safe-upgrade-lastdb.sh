@@ -346,7 +346,22 @@ retain_rollback_point() {
     printf 'ttl_hours=%s\n' "$ROLLBACK_TTL_HOURS"
     printf 'cleanup_owner=next-lastdb-safe-upgrade-run\n'
   } >"$BACKUP/.safe-upgrade/retention"
+  retain_status_evidence
   warn "rollback: RED retained at $BACKUP ttl_hours=$ROLLBACK_TTL_HOURS cleanup_owner=next-lastdb-safe-upgrade-run"
+}
+
+# The last pre-live and soak status samples are the only record of the frontier
+# and sync.last_error a RED run saw; $WORK is deleted at exit. Best effort: this
+# runs from the EXIT trap and must never stop the rest of the cleanup.
+retain_status_evidence() {
+  local f dest="$BACKUP/.safe-upgrade/evidence"
+  [ -n "${WORK:-}" ] && [ -d "$WORK" ] || return 0
+  for f in pre-live-status.json post-cutover-soak-status.json; do
+    [ -s "$WORK/$f" ] || continue
+    { mkdir -p "$dest" && cp -p "$WORK/$f" "$dest/$f"; } 2>/dev/null \
+      || warn "rollback: could not keep $f under $dest"
+  done
+  return 0
 }
 
 OWNER_LOCK_DIR="${LASTDB_SAFE_UPGRADE_OWNER_LOCK_DIR:-/tmp/lastdb-safe-upgrade-owner-${UID:-$(id -u)}.lock.d}"
@@ -361,21 +376,23 @@ CUTOVER_RECOVERY_STATE_TMP=""
 
 cleanup_work() {
   local rc=$?
+  # GREEN / probe-only / operator abort call release_rollback_point first
+  # (ROLLBACK_READY=0). Any other end — including a loom drive deadline that
+  # reparents this script and then SIGTERM/SIGHUP with a false-zero EXIT —
+  # keeps the newest rollback point so a later attempt can reuse it. This runs
+  # BEFORE $WORK is deleted: retention copies the last status samples out of it.
+  # A failed retention must not skip the lock and work-dir cleanup below.
+  if [ "${ROLLBACK_READY:-0}" -eq 1 ]; then
+    retain_rollback_point || warn "rollback: retention failed for ${BACKUP:-none}"
+    if [ "${DRIVER_ENDED_STEP:-0}" -eq 1 ]; then
+      warn "rollback: driver ended the step; kept newest point ${BACKUP:-none}"
+    fi
+  fi
   [ -n "${WORK:-}" ] && [ -d "$WORK" ] && rm -rf "$WORK"
   [ -n "${CUTOVER_LOCK:-}" ] && rm -f "$CUTOVER_LOCK"
   [ -n "${CUTOVER_RECOVERY_STATE_TMP:-}" ] && rm -f "$CUTOVER_RECOVERY_STATE_TMP"
   if type cleanup_upgrade_restart_intent >/dev/null 2>&1; then
     cleanup_upgrade_restart_intent
-  fi
-  # GREEN / probe-only / operator abort call release_rollback_point first
-  # (ROLLBACK_READY=0). Any other end — including a loom drive deadline that
-  # reparents this script and then SIGTERM/SIGHUP with a false-zero EXIT —
-  # keeps the newest rollback point so a later attempt can reuse it.
-  if [ "${ROLLBACK_READY:-0}" -eq 1 ]; then
-    retain_rollback_point
-    if [ "${DRIVER_ENDED_STEP:-0}" -eq 1 ]; then
-      warn "rollback: driver ended the step; kept newest point ${BACKUP:-none}"
-    fi
   fi
   if type safe_upgrade_owner_lock_release >/dev/null 2>&1; then
     safe_upgrade_owner_lock_release "$OWNER_LOCK_DIR" "$OWNER_LOCK_TOKEN" "$OWNER_LOCK_HELD" \
@@ -3119,7 +3136,7 @@ while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
   sleep 15
 done
 post_cutover_soak_green_in_bounds "$SOAK_ELAPSED" "$SOAK_MIN_SECS" "$SOAK_MAX_SECS" "$SOAK_CONFIRMED" \
-  || die "post-cutover soak did not confirm fresh cloud progress within ${SOAK_MAX_SECS}s; rollback point retained"
+  || die "post-cutover soak did not confirm fresh cloud progress within ${SOAK_MAX_SECS}s ($(post_cutover_soak_evidence "$SOAK_STATUS" "${SOAK_OUT:-unavailable}")); status samples kept under $BACKUP/.safe-upgrade/evidence; rollback point retained"
 
 # After this point the driver proved the live primary healthy and supervised.
 # A later wrapper timeout must not restart that already-green primary.

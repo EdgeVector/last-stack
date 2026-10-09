@@ -65,6 +65,16 @@ post_cutover_status_retryable() {
   esac
 }
 
+post_cutover_soak_evidence() {
+  # Args: status.json last_verdict. One phrase for the soak RED message: the last
+  # verdict and the cloud fields the soak waited on. Never fails, never prints a
+  # whole error text (the file itself is kept as evidence).
+  local file="$1" verdict="${2:-unavailable}" sync
+  sync="$(jq -c '.status.sync | {mutation_log_frontier_f, mutation_log_last_durable_frontier, sync_degraded, last_error: (.last_error | if type == "string" then .[0:200] else . end)}' "$file" 2>/dev/null || true)"
+  [ -n "$sync" ] || sync=unavailable
+  printf 'last verdict %s; last cloud status %s' "$verdict" "$sync"
+}
+
 post_cutover_soak_green_in_bounds() {
   # A status request can finish after the loop's top-of-pass deadline check.
   local elapsed="$1" minimum="$2" maximum="$3" confirmed="$4"
