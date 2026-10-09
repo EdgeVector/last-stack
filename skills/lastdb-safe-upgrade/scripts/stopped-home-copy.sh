@@ -454,7 +454,7 @@ main() {
   SOURCE_START_TS="$start_ts"
   STOP_STARTED=1
   stop_out="$(lastdb_launchd_graceful_prestop "$LAUNCHCTL_BIN" "$service" \
-    "$SIDEBIN_DIR/lastdbd" 150 150 1)" \
+    "$SIDEBIN_DIR/lastdbd" 300 150 1)" \
     || { fail strict-stop-failed; return 1; }
   case "$stop_out" in *'LASTDB_LAUNCHD_PRESTOP=ok '*'forced_kill=0'*) ;; *) fail strict-stop-unproved; return 1 ;; esac
   ! kill -0 "$OLD_PID" 2>/dev/null && ! lastdb_launchd_job_loaded "$LAUNCHCTL_BIN" "$service" \
