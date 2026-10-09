@@ -108,11 +108,18 @@ board_read_ok=0
 # the Forgejo open-PR lists (the `lastgit` repo); lines are `<repo>\t<branch>`. When the index cannot
 # be read, the fast finished-work path is DISABLED (fail closed) and only the
 # conservative --max-age-hours gate applies, the same shape as board_unavailable.
+# Only the GitHub half decides that for every repo. Forgejo is retired and
+# hosts the `lastgit` repo alone, so an unreadable Forgejo half (forge_index_ok=0)
+# disables the fast path for the `lastgit` worktrees only: it used to mark the
+# whole index unreadable, and 7 of the 9 disk-reclaim heartbeats of 2026-10-06..09
+# reclaimed nothing for that reason
+# (papercut-worktree-reclaim-open-pr-index-unreadable-20261006).
 # LAST_STACK_RECLAIM_OPEN_HEADS_FILE injects a prebuilt index (tests, offline);
 # LAST_STACK_RECLAIM_SKIP_OPEN_PR=1 skips the check entirely (never in the
 # scheduled sweep).
 open_index=""
 open_index_ok=0
+forge_index_ok=1
 open_pr_check=1
 [ "${LAST_STACK_RECLAIM_SKIP_OPEN_PR:-0}" = "1" ] && open_pr_check=0
 open_heads_file="${LAST_STACK_RECLAIM_OPEN_HEADS_FILE:-}"
@@ -633,11 +640,14 @@ worktree_branch() {
 }
 
 # Build the open-head index once per sweep. Sets open_index_ok=1 only when
-# BOTH sources answered (or were injected); a partial read protects nothing it
-# did not see, so it counts as unreadable.
+# every GitHub read answered (or the index was injected); a partial read
+# protects nothing it did not see, so it counts as unreadable. The Forgejo half
+# has its own verdict, forge_index_ok: it covers the `lastgit` repo alone, so a
+# failed read there must not blind the sweep for every other repo.
 build_open_head_index() {
-  local out="$1" ok=1 forge_api tout repos r
+  local out="$1" ok=1 forge_ok=1 forge_api tout repos r
   : >"$out"
+  forge_index_ok=1
   if [ -n "$open_heads_file" ]; then
     [ -f "$open_heads_file" ] || { open_index_ok=0; return 0; }
     cat "$open_heads_file" >>"$out"
@@ -666,27 +676,29 @@ build_open_head_index() {
     log "open-pr index: gh not found (GitHub venue unreadable)"
     ok=0
   fi
-  # Forgejo: every repo with an open PR, then that repo's open PR heads.
+  # Forgejo: every repo with an open PR, then that repo's open PR heads. It is
+  # retired, so a failure here is expected and is recorded in forge_ok, never ok.
   forge_api="${LAST_STACK_FORGE_API:-$HOME/.last-stack/bin/last-stack-forge-api}"
   if [ -x "$forge_api" ]; then
     repos="$(${tout:+"$tout" 15s} "$forge_api" GET '/repos/issues/search?type=pulls&state=open&owner=EdgeVector&limit=50' 2>/dev/null \
       | jq -r '.[]? | .repository.name // empty' 2>/dev/null | sort -u || true)"
     if [ -z "$repos" ] && ! ${tout:+"$tout" 15s} "$forge_api" GET '/repos/issues/search?type=pulls&state=open&owner=EdgeVector&limit=1' >/dev/null 2>&1; then
-      log "open-pr index: forgejo issues/search failed"
-      ok=0
+      log "open-pr index: forgejo venue unreachable (retired); skipped"
+      forge_ok=0
     fi
     for r in $repos; do
       if ! ${tout:+"$tout" 15s} "$forge_api" GET "/repos/EdgeVector/$r/pulls?state=open&limit=50" 2>/dev/null \
         | jq -r --arg r "$r" '.[]? | [$r, (.head.ref // "")] | select(.[1] != "") | @tsv' >>"$out" 2>/dev/null; then
         log "open-pr index: forgejo pulls read failed for $r"
-        ok=0
+        forge_ok=0
       fi
     done
   else
-    log "open-pr index: forge helper not executable at $forge_api (Forgejo venue skipped)"
-    ok=0
+    log "open-pr index: forgejo venue unreachable (retired); skipped (forge helper not executable at $forge_api)"
+    forge_ok=0
   fi
   open_index_ok="$ok"
+  forge_index_ok="$forge_ok"
 }
 
 # branch_has_open_pr <repo-slug> <branch>: exact match on the index.
@@ -891,7 +903,7 @@ if [ "$sweep_stale" -eq 1 ]; then
     open_index="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
     build_open_head_index "$open_index" || true
     if [ "$open_index_ok" -eq 1 ]; then
-      log "open-pr index ready heads=$(wc -l <"$open_index" | tr -d ' ')"
+      log "open-pr index ready heads=$(wc -l <"$open_index" | tr -d ' ') forge_index_ok=${forge_index_ok}"
     else
       log "open-pr index UNREADABLE — finished-work reclaim disabled this run (age gate only)"
     fi
@@ -1038,6 +1050,12 @@ if [ "$sweep_stale" -eq 1 ]; then
             kept_open_pr=$((kept_open_pr + 1))
             continue
           fi
+          # `lastgit` lives on Forgejo alone. While that half of the index is
+          # unreadable its open PRs are unknown: fail closed for it, and only it.
+          if [ "$forge_index_ok" -eq 0 ] && [ "$wt_repo" = "lastgit" ]; then
+            log "keep-unknown open-pr ${name} repo=lastgit (forgejo index unreadable; age gate only)"
+            open_pr_unknown=1
+          fi
         else
           open_pr_unknown=1
         fi
@@ -1072,7 +1090,7 @@ if [ "$sweep_stale" -eq 1 ]; then
   live_index=""
 fi
 
-log "done reclaimed=$reclaimed kept_open_pr=$kept_open_pr open_pr_index_ok=$open_index_ok stripped_paths=$stripped_only strip_skipped_live=$strip_skipped_live strip_skipped_pressure=$strip_skipped_pressure liveness_unavailable=$liveness_unavailable liveness_soft=$liveness_soft board_read_ok=$board_read_ok free_floor_gib=$free_floor_gib min_age_min=$min_age_minutes dry_run=$dry_run"
+log "done reclaimed=$reclaimed kept_open_pr=$kept_open_pr open_pr_index_ok=$open_index_ok forge_index_ok=$forge_index_ok stripped_paths=$stripped_only strip_skipped_live=$strip_skipped_live strip_skipped_pressure=$strip_skipped_pressure liveness_unavailable=$liveness_unavailable liveness_soft=$liveness_soft board_read_ok=$board_read_ok free_floor_gib=$free_floor_gib min_age_min=$min_age_minutes dry_run=$dry_run"
 
 # Hard stop only when process inspection failed AND we lack a real board protect
 # set. Soft-degrade (board_read_ok) already reclaimed finished non-doing trees

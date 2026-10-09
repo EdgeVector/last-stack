@@ -3,11 +3,12 @@
 set -euo pipefail
 
 mode="apply"
+global_scrub=0
 
 usage() {
   cat <<'EOF'
 Usage:
-  last-stack-scrub-github-token-remotes [--check|--dry-run] [<workspace-or-repo>...]
+  last-stack-scrub-github-token-remotes [--check|--dry-run] [--global] [<workspace-or-repo>...]
 
 Scans Git checkouts for remotes like:
   https://x-access-token:<token>@github.com/<owner>/<repo>.git
@@ -18,6 +19,28 @@ When applying, the command rewrites them to:
 It never prints the original URL or token. Repos that are changed get a local
 credential helper for github.com:
   !gh auth git-credential
+
+--global also scrubs the user's global git config (GIT_CONFIG_GLOBAL, else
+~/.gitconfig). A section like
+  [url "https://<token>@github.com/"] insteadOf = https://github.com/
+expands the token into every github.com URL git prints. The section name holds
+the token, so --global removes the whole section, reports only a count, and
+never prints a key or a value. It refuses (exit 1) to remove a rewrite when the
+global config has no `gh auth git-credential` helper, because the rewrite could
+then be the only authentication. Run --check --global first.
+
+--global never prints ok unless git read every config source and found no token
+rewrite. Each of these exits 1:
+  unreadable-global   git could not read its config (for example a bad line).
+  found-unremovable   git still expands a rewrite from a place the tool does not
+                      edit: the XDG file while ~/.gitconfig exists, an included
+                      file, the system file, or GIT_CONFIG_COUNT. The line gives
+                      a count. Each unremovable line names the scope and the file.
+                      Edit that file by hand.
+  refused-global      the rewrite may be the only authentication (see above).
+A note-global line with includeif_unchecked=N is not a failure. git reads an
+[includeIf] file only inside the repos its condition matches, so the tool cannot
+read it from here. Run --check --global from inside such a repo.
 EOF
 }
 
@@ -39,6 +62,137 @@ sanitize_github_url() {
       ;;
   esac
   return 1
+}
+
+# Global config. The key of a token rewrite is `url.https://<userinfo>@github.com/.insteadof`
+# (or .pushinsteadof): the token is in the key, so nothing derived from a key or a
+# value may reach stdout or stderr. git's own error text echoes the key as well,
+# so every git call below drops stderr.
+# papercut-fold-git-remote-url-embeds-credential-20261001
+global_token_key_re='^url\.https://[^/@]+@github\.com/\.(insteadof|pushinsteadof)$'
+scrubbed_global=0
+global_refused=0
+global_unremovable=0
+
+# Read the token rewrites that git would expand. Sets scan_out to one line per
+# distinct "<scope><TAB><origin><TAB><section>". The output holds the secret:
+# capture it, never print it. Returns 1 when git could not read its config.
+#   global: what `git config --global` reads and the tool can edit (no includes).
+#   all:    every source git reads outside a repo: system, global, XDG, included
+#           files and GIT_CONFIG_COUNT. A repo's own config is not read here.
+# git exits 1 for "no match" and 128 for an error. An error is not an empty result.
+global_scan() {
+  local kind="$1" raw rc=0
+  scan_out=""
+  case "$kind" in
+    global)
+      raw="$(git config --global --no-includes --show-scope --show-origin --name-only \
+        --get-regexp "$global_token_key_re" 2>/dev/null)" || rc=$?
+      ;;
+    *)
+      raw="$(git config --includes --show-scope --show-origin --name-only \
+        --get-regexp "$global_token_key_re" 2>/dev/null)" || rc=$?
+      ;;
+  esac
+  case "$rc" in
+    0) ;;
+    1) return 0 ;;
+    *) return 1 ;;
+  esac
+  scan_out="$(printf '%s\n' "$raw" | awk -F'\t' '$1 != "local" && $1 != "worktree"' \
+    | sed -E 's/\.(insteadof|pushinsteadof)$//' | LC_ALL=C sort -u)"
+}
+
+emit_lines() { [ -z "$1" ] || printf '%s\n' "$1"; }
+count_lines() { [ -z "$1" ] && printf '0' || printf '%s\n' "$1" | wc -l | tr -d ' '; }
+
+global_has_gh_helper() {
+  local helpers
+  helpers="$(git config --global --get-all credential.https://github.com.helper 2>/dev/null || true
+    git config --global --get-all credential.helper 2>/dev/null || true)"
+  case "$helpers" in
+    *'gh auth git-credential'*) return 0 ;;
+  esac
+  return 1
+}
+
+# Count-only report of the rewrites the tool cannot remove. $1 = scan_out lines.
+report_unremovable() {
+  local lines="$1" scope origin
+  global_unremovable="$(count_lines "$lines")"
+  printf 'found-unremovable\tmatches=%s\n' "$global_unremovable"
+  while IFS=$'\t' read -r scope origin _; do
+    printf 'unremovable\tscope=%s\torigin=%s\n' "$(quote_field "$scope")" "$(quote_field "$origin")"
+  done < <(printf '%s\n' "$lines" | awk -F'\t' '{ print $1 "\t" $2 }' | LC_ALL=C sort | uniq)
+}
+
+# An [includeIf] file is read only inside the repos its condition matches.
+note_includeif() {
+  local entries
+  entries="$(git config --global --no-includes --name-only --get-regexp '^includeif\.' 2>/dev/null \
+    | LC_ALL=C sort -u || true)"
+  [ -z "$entries" ] \
+    || printf 'note-global\tincludeif_unchecked=%s\n' "$(count_lines "$entries")"
+}
+
+scrub_global_config() {
+  local removable all_lines unremovable section count=0 helper=present
+
+  # A caller running `bash -x` would trace the section name (the token) into
+  # stderr. Everything below handles it, so stop tracing here.
+  set +x
+  if ! global_scan global; then
+    printf 'unreadable-global\treason=git-config-read-failed\n'
+    global_refused=1
+    return 0
+  fi
+  removable="$scan_out"
+  if ! global_scan all; then
+    printf 'unreadable-global\treason=git-config-read-failed\n'
+    global_refused=1
+    return 0
+  fi
+  all_lines="$scan_out"
+  note_includeif
+  unremovable="$(LC_ALL=C comm -23 <(emit_lines "$all_lines") <(emit_lines "$removable"))"
+
+  count="$(count_lines "$removable")"
+  if [ "$count" -gt 0 ]; then
+    global_has_gh_helper || helper=missing
+  fi
+
+  if [ "$mode" = "check" ]; then
+    if [ "$count" -gt 0 ]; then
+      printf 'would-scrub-global\tsections=%s\tgh_credential_helper=%s\n' "$count" "$helper"
+      scrubbed_global="$count"
+    fi
+    [ -z "$unremovable" ] || report_unremovable "$unremovable"
+    return 0
+  fi
+
+  if [ "$count" -gt 0 ] && [ "$helper" = missing ]; then
+    printf 'refused-global\tsections=%s\treason=no-gh-credential-helper\n' "$count"
+    global_refused=1
+  elif [ "$count" -gt 0 ]; then
+    while IFS= read -r section; do
+      [ -n "$section" ] || continue
+      if git config --global --remove-section "$section" 2>/dev/null; then
+        scrubbed_global=$((scrubbed_global + 1))
+      else
+        printf 'failed-global\treason=remove-section\n'
+        global_refused=1
+      fi
+    done < <(printf '%s\n' "$removable" | awk -F'\t' '{ print $3 }' | LC_ALL=C sort -u)
+    printf 'scrubbed-global\tsections=%s\n' "$scrubbed_global"
+    # What is still expanded after the removal is what the tool could not remove.
+    if ! global_scan all; then
+      printf 'unreadable-global\treason=git-config-read-failed\n'
+      global_refused=1
+      return 0
+    fi
+    unremovable="$scan_out"
+  fi
+  [ -z "$unremovable" ] || report_unremovable "$unremovable"
 }
 
 repo_targets() {
@@ -103,6 +257,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --check) mode="check"; shift ;;
     --dry-run) mode="check"; shift ;;
+    --global) global_scrub=1; shift ;;
     -h|--help) usage; exit 0 ;;
     --) shift; break ;;
     -*) usage >&2; exit 2 ;;
@@ -146,9 +301,25 @@ while IFS= read -r repo; do
   fi
 done < <(repo_targets "$@")
 
-if [ "$mode" = "check" ] && [ "$scrubbed" -gt 0 ]; then
-  printf 'embedded-token-remotes-found\tchecked=%s\turls=%s\n' "$checked" "$scrubbed"
+if [ "$global_scrub" -eq 1 ]; then
+  scrub_global_config
+fi
+
+if [ "$mode" = "check" ] && { [ "$scrubbed" -gt 0 ] || [ "$scrubbed_global" -gt 0 ]; }; then
+  [ "$scrubbed" -eq 0 ] \
+    || printf 'embedded-token-remotes-found\tchecked=%s\turls=%s\n' "$checked" "$scrubbed"
+  [ "$scrubbed_global" -eq 0 ] \
+    || printf 'embedded-token-global-found\tsections=%s\n' "$scrubbed_global"
   exit 1
 fi
 
-printf 'ok\tchecked=%s\tscrubbed=%s\n' "$checked" "$scrubbed"
+# A refusal is not an ok: the token rewrite is still in the global config, or
+# git could not read it, or git still expands it from a file the tool does not edit.
+[ "$global_refused" -eq 0 ] || exit 1
+[ "$global_unremovable" -eq 0 ] || exit 1
+
+if [ "$global_scrub" -eq 1 ]; then
+  printf 'ok\tchecked=%s\tscrubbed=%s\tscrubbed_global=%s\n' "$checked" "$scrubbed" "$scrubbed_global"
+else
+  printf 'ok\tchecked=%s\tscrubbed=%s\n' "$checked" "$scrubbed"
+fi
