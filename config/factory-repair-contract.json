@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "manifest_path": "config/factory-repair-slot.json",
+  "manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "runtime_files": [{"path": "lib/factory_repair.py", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"}]
+}

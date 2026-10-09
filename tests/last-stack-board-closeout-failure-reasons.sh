@@ -99,6 +99,8 @@ case "$path" in
 esac
 EOF
 chmod +x "$fake_stack/bin/last-stack-forge-api"
+source "$ROOT/tests/fixtures/factory-closeout-dependencies.sh"
+fixture_closeout_dependencies "$fake_stack" "$board"
 
 mkdir -p "$tmp/home"
 fail=0

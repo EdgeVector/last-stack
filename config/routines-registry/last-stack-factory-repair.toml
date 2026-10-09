@@ -1,0 +1,12 @@
+# PAUSED-REASON: finite installed contracts and E2E proof require review.
+# PAUSED-UNTIL: root confirms the installed E2E proof.
+id = "last-stack-factory-repair"
+status = "paused"
+rrule = "FREQ=MINUTELY;INTERVAL=15"
+timeout_min = 20
+harness = "codex"
+difficulty = "normal"
+effort = "medium"
+cwd = "/Users/REPLACE/code/edgevector"
+prompt_path = "/Users/REPLACE/.last-stack/routines/factory-repair.md"
+gate_command = "/Users/REPLACE/.last-stack/bin/last-stack-factory-repair-controller --once --routine-result"

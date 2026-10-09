@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "creation_authority": {
+    "configured": false,
+    "contract_sha256": "ff26564dda75754a21edf68a05dd876e6915b3acc2fd69b1dd7417893bb296c9",
+    "card_guarded_contract_sha256": "bea8a495839390153b78d4827b1f9e996dff037841df85783f49adbdd8241128"
+  },
+  "authority_slug": "decision-2026-10-08-factory-repair-slot-and-bounded-proof",
+  "protected_card_keys": [
+    "factory-scoped-dispatch-20261008",
+    "factory-guarded-closeout-20261008",
+    "factory-canonical-active-counts-20261008",
+    "factory-repair-controller-20261009"
+  ],
+  "admitted": [{
+    "card": "factory-canonical-active-counts-20261008",
+    "papercut": "papercut-loom-active-summary-counts-terminal-duplicate-memberships-20261008",
+    "repo": "EdgeVector/loom",
+    "base": "main",
+    "surfaces": ["src/runner.rs", "src/storage.rs", "release/factory-dispatch-contract.json"],
+    "proof_action": "canonical-active-counts-v1",
+    "brief_path": "config/factory-canonical-active-counts.md",
+    "brief_sha256": "a0bb3af8e773325e9a2e0e08e926a48efc1d89c73fa1e584396091242978d8bb",
+    "keep_open": ["papercut-loom-execution-status-backlog-sweep-pending-20260928"]
+  }],
+  "brain_papercut_schema_hash": "5ffb961d35de8ab78bcfadf1b44eac5ae02c2d23954140c3e5801763211db45c",
+  "lifecycle_reviewed_keys": [
+    "papercut-loom-active-summary-counts-terminal-duplicate-memberships-20261008",
+    "papercut-loom-brief-old-config-reenables-retired-brain-20261008",
+    "papercut-loom-ci-pre-pr-check-test-calls-real-gh-20261002",
+    "papercut-loom-budget-recovery-version-check-refuses-v4-20261008",
+    "papercut-loom-missing-timeout-fixture-reaches-linux-timeout-20261008",
+    "papercut-exact-card-mcp-fixture-assumes-clock-progress-20261008",
+    "papercut-kanban-exact-claim-column-guard-can-overwrite-human-edit-20261008",
+    "papercut-fkanban-guard-snapshot-fifo-can-block-before-file-check-20261008",
+    "papercut-public-claim-hold-race-fixture-writes-the-existing-value-20261009",
+    "papercut-fkanban-public-proof-empty-stack-drops-error-message-20261008",
+    "papercut-fkanban-help-fixture-truncates-hyphenated-commands-20261008",
+    "papercut-fkanban-exact-cli-fixture-ignores-native-known-keys-20261008",
+    "papercut-fkanban-guarded-source-missing-force-audit-registration-20261008",
+    "papercut-fkanban-public-proof-home-override-bypasses-race-proxy-20261008",
+    "papercut-fkanban-ack-probe-readback-conflict-masks-missing-ack-guard-20261008",
+    "papercut-fkanban-native-response-cap-runs-after-body-drain-20261008"
+  ],
+  "dispatch_authority": {
+    "app": "loom",
+    "root": "~/.host-track/apps/loom/versions/247d1bde22995bdfddf14eaa21f12be0bf39363af45ce002b7f33a37c42e236a",
+    "current": "~/.host-track/apps/loom/current",
+    "source_oid": "757f5be5b5b531cb3aa5672a7b5fbb834a7fb2ba",
+    "manifest_sha256": "247d1bde22995bdfddf14eaa21f12be0bf39363af45ce002b7f33a37c42e236a",
+    "manifest_file_sha256": "5dc9abcd85f0181ee29f5764d2c6aebda6d656570afc4adea4f8ae59be1cea92",
+    "manifest_path": "~/.lastgit/artifacts/manifests/247d1bde22995bdfddf14eaa21f12be0bf39363af45ce002b7f33a37c42e236a.json",
+    "contract_sha256": "2f01ab1945672bc005a7881b6405b444ead1701c0a1aef4ddff85ccdc09c7c25"
+  },
+  "fkanban_authority": {
+    "app": "fkanban",
+    "root": "~/.host-track/apps/fkanban/versions/979764668e59d901811779a43ac6db1c2d47b453b04bcb7e4b37e7a62e6816dc",
+    "current": "~/.host-track/apps/fkanban/current",
+    "source_oid": "3a899aedeb8ff5a6a97dd4ce970ef81fa75134d2",
+    "manifest_sha256": "979764668e59d901811779a43ac6db1c2d47b453b04bcb7e4b37e7a62e6816dc",
+    "manifest_file_sha256": "ba6a30bec3aa2d6821ccaaccaa69aa94ed3874fdb1642f0f6af682110d6a6a2b",
+    "manifest_path": "~/.lastgit/artifacts/manifests/979764668e59d901811779a43ac6db1c2d47b453b04bcb7e4b37e7a62e6816dc.json",
+    "contract_sha256": "05bae84d19a99c23199cedb2e739ab7ca82443e033b6e8d92be086057f5130be"
+  },
+  "owner_socket": "~/.lastdb/data/folddb.sock",
+  "schema_map": "~/.loom/schema-hashes.json",
+  "loom_schemas": {
+    "LoomExecution": "8a2a013d09241c6dd63a8bd4b5d746c63cba216bebb0f00679a1d3aa7b7d6953",
+    "LoomExecutionByStatus": "d3639d27e18667c34745edcf65dff8f01cb68a06e3fcb8eee95793604557437b"
+  }
+}

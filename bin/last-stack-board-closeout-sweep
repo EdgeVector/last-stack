@@ -212,6 +212,16 @@ _on_signal() {
 }
 trap _on_signal INT TERM HUP
 
+# The installed reviewed manifest protects the finite factory Cards even when
+# STATE is absent. No missing or malformed authority becomes an empty list.
+contract_bin="$last_stack/bin/last-stack-factory-repair-contract"
+if [ ! -x "$contract_bin" ] || ! factory_contract_json="$("$contract_bin" --local --json 2>"$_engine_err")"; then
+  printf '%s\n' factory-contract-refused >"$_engine_stop"
+  _emit_closeout_result
+  exit 0
+fi
+export BOARD_CLOSEOUT_FACTORY_CONTRACT_JSON="$factory_contract_json"
+
 # BOARD_CLOSEOUT_ENGINE pins one engine so a test can prove both behave the
 # same. Unset/auto keeps the historical preference (node, then python3).
 _engine_pref="${BOARD_CLOSEOUT_ENGINE:-auto}"
@@ -264,6 +274,21 @@ const res = {
   // told an operator nothing (papercut-merge-babysit-board-closeout-*).
   close_failed: [],
 };
+
+let factoryProtected;
+try {
+  const authority = JSON.parse(process.env.BOARD_CLOSEOUT_FACTORY_CONTRACT_JSON || "");
+  const keys = authority.protected_card_keys;
+  if (authority.version !== 1 || authority.result !== "ok" || !/^[0-9a-f]{64}$/.test(authority.contract_sha256 || "") ||
+      typeof authority.contract_sha256 !== "string" || authority.contract_sha256.length !== 64 ||
+      !Array.isArray(keys) || keys.length === 0 || keys.length > 256 || new Set(keys).size !== keys.length ||
+      keys.some(k => typeof k !== "string" || k.trim() !== k || !/^[a-z0-9][a-z0-9_-]*$/.test(k))) throw Error("invalid finite authority");
+  factoryProtected = new Set(keys);
+} catch (error) {
+  fs.writeSync(1, JSON.stringify({kind:"board-closeout",status:"error",iso,closed:0,rolled_back:0,demoted:0,skipped:0,flagged:["factory-contract-refused"]}) + "\n");
+  fs.writeSync(1, `board-closeout ${iso} error closed=0 rolled_back=0 demoted=0 skipped=0 flagged=factory-contract-refused\n`);
+  process.exit(0);
+}
 
 // Squash a closeout failure line into one flag-safe token.
 function reasonToken(text) {
@@ -326,7 +351,7 @@ function noteCloseoutDeferred(slug, out) {
   // file it as a p0 (papercut-board-closeout-legacy-tip-reaper-failure).
   // It is live work: also keep it out of park expiry and demote, or a pass
   // rolls an actively worked card back to todo.
-  if (isReopenedSameSignal(detail)) {
+  if (/FAILED (?:reopened-same-signal|proof-negative|proof-pending|proof-error|done-when-pending|end-state-unverified)\b/.test(detail)) {
     closeoutDeferred.add(slug);
     res.skipped.push(`${slug}:reopened-awaiting-proof`);
     clearCloseFailure(slug);
@@ -678,21 +703,6 @@ function hydrateDoingCards(cards) {
       const data = parseJsonLoose(out.stdout);
       if (Array.isArray(data)) rows = data;
       else if (data && Array.isArray(data.cards)) rows = data.cards;
-    }
-  } else {
-    rows = [];
-    for (const slug of slugs) {
-      const out = run(boardCli, ["show", slug, "--json"], { timeout: 45000 });
-      if (!out.ok) continue;
-      const data = parseJsonLoose(out.stdout);
-      if (!data || typeof data !== "object") continue;
-      const card = Object.assign(
-        {},
-        data.card && typeof data.card === "object" ? data.card : data
-      );
-      // Serial show is keyed by the requested slug. Fixtures often omit it.
-      if (!String(card.slug || "").trim()) card.slug = slug;
-      rows.push(card);
     }
   }
   if (!Array.isArray(rows)) return;
@@ -1111,25 +1121,27 @@ function clearPrUrl(slug) {
   run(boardCli, ["add", slug, "--pr-url", ""], { timeout: 30000 });
 }
 
+function closeoutAvailable(slug) {
+  try {
+    if (fs.statSync(closeoutBin).isFile()) {
+      fs.accessSync(closeoutBin, fs.constants.X_OK);
+      return true;
+    }
+  } catch (_) {}
+  closeoutDeferred.add(slug);
+  clearCloseFailure(slug);
+  res.flagged.push(`closeout-helper-missing:${slug}`);
+  res.skipped.push(`${slug}:closeout-helper-missing`);
+  res.status = "error";
+  return false;
+}
+
 function closeCard(slug, prUrl, branch) {
   if (dryRun) {
     res.closed.push(slug);
     return true;
   }
-  if (!fs.existsSync(closeoutBin)) {
-    // Fallback: direct move
-    const args = ["move", slug, "done", "--force"];
-    const out = run(boardCli, args, { timeout: 60000 });
-    if (!out.ok) {
-      if (noteCloseoutDeferred(slug, out)) return false;
-      flagCloseFailed(slug, out);
-      noteCloseFailure(slug, out);
-      return false;
-    }
-    res.closed.push(slug);
-    clearCloseFailure(slug);
-    return true;
-  }
+  if (!closeoutAvailable(slug)) return false;
   const args = [slug, "--board-cli", boardCli];
   if (prUrl) args.push("--pr-url", prUrl);
   if (branch) args.push("--branch", branch);
@@ -1259,6 +1271,11 @@ for (const card of cards) {
     continue;
   }
   if (truth && truth.card) Object.assign(card, truth.card);
+  if (factoryProtected.has(slug)) {
+    res.flagged.push(`factory-finite-excluded:${slug}`);
+    res.skipped.push(`${slug}:factory-finite-excluded`);
+    continue;
+  }
   const fieldPr = String(card.pr_url || card.prUrl || card.pr || "").trim();
   const url = prUrlOf(card);
   const branch =
@@ -1275,6 +1292,7 @@ for (const card of cards) {
     const pr = classifyPr(url);
     const m = isMerged(pr);
     if (m.merged) {
+      if (!closeoutAvailable(slug)) continue;
       if (fieldPr !== url) {
         healPrUrl(slug, url);
         res.flagged.push(`pr-url-healed:${slug}`);
@@ -1292,7 +1310,7 @@ for (const card of cards) {
           }
         }
         res.skipped.push(`${slug}:close-failed`);
-        if (parkedClose) {
+        if (parkedClose && !closeoutDeferred.has(slug)) {
           ensureAwaitingDeployTag(slug, card);
           res.flagged.push(`deploy-parked:${slug}`);
         }
@@ -1311,6 +1329,7 @@ for (const card of cards) {
       // re-manufacturing it as ready work on the next fire.
       const proof = branchMergedIntoBase(card, wt);
       if (proof === true) {
+        if (!closeoutAvailable(slug)) continue;
         res.flagged.push(`merge-proof-close:${slug}`);
         // Keep the structured pr_url empty: the stored CR record is corrupt,
         // so restamping it would re-arm this same loop.
@@ -1321,6 +1340,7 @@ for (const card of cards) {
       }
       const newer = newerHandoffReview(card, url);
       if (newer && newer.m.merged) {
+        if (!closeoutAvailable(slug)) continue;
         res.flagged.push(`open-handoff-preserved:${slug}`);
         restoreStructured(slug, newer.url, newer.branch || branch);
         if (closeCard(slug, newer.url, newer.branch || branch)) actions++;
@@ -1524,6 +1544,21 @@ forge_api = last_stack / "bin" / "last-stack-forge-api"
 closeout_bin = last_stack / "bin" / "last-stack-card-closeout"
 
 res = {"status": "ok", "closed": [], "rolled_back": [], "demoted": [], "skipped": [], "flagged": [], "close_failed": []}
+try:
+    authority = json.loads(os.environ.get("BOARD_CLOSEOUT_FACTORY_CONTRACT_JSON", ""))
+    keys = authority["protected_card_keys"]
+    if (type(authority.get("version")) is not int or authority["version"] != 1 or authority.get("result") != "ok"
+            or not isinstance(authority.get("contract_sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", authority["contract_sha256"])
+            or not isinstance(keys, list) or not 1 <= len(keys) <= 256
+            or any(not isinstance(k, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", k) for k in keys)
+            or len(set(keys)) != len(keys)):
+        raise ValueError("invalid finite authority")
+    factory_protected = set(keys)
+except (ValueError, TypeError, KeyError):
+    print(json.dumps({"kind":"board-closeout","status":"error","iso":iso,"closed":0,"rolled_back":0,"demoted":0,"skipped":0,"flagged":["factory-contract-refused"]}), flush=True)
+    print(f"board-closeout {iso} error closed=0 rolled_back=0 demoted=0 skipped=0 flagged=factory-contract-refused", flush=True)
+    sys.exit(0)
+
 # Final Forge PR facts keyed by the URL is_merged() read (see the node engine).
 forge_final = {}
 
@@ -1559,7 +1594,7 @@ closeout_deferred = set()
 def note_closeout_deferred(slug, out, err):
     # A reopened card refused on the same close signal is the gate working,
     # not a failed close, and it is live work (see the node engine).
-    if "FAILED reopened-same-signal" in f"{out or ''} {err or ''}":
+    if re.search(r"FAILED (?:reopened-same-signal|proof-negative|proof-pending|proof-error|done-when-pending|end-state-unverified)\b", f"{out or ''} {err or ''}"):
         closeout_deferred.add(slug)
         res["skipped"].append(f"{slug}:reopened-awaiting-proof")
         clear_close_failure(slug)
@@ -1689,24 +1724,6 @@ def hydrate_doing_cards(cards):
                 rows = data
             elif isinstance(data, dict) and isinstance(data.get("cards"), list):
                 rows = data["cards"]
-    else:
-        rows = []
-        for slug in slugs:
-            ok, out, _ = run([board_cli, "show", slug, "--json"], timeout=45)
-            if not ok:
-                continue
-            try:
-                data = json.loads(strip(out))
-            except Exception:
-                continue
-            if isinstance(data, dict):
-                card = data.get("card") if isinstance(data.get("card"), dict) else data
-                if isinstance(card, dict):
-                    card = dict(card)
-                    # Serial show is keyed by the requested slug. Fixtures often omit it.
-                    if not str(card.get("slug") or "").strip():
-                        card["slug"] = slug
-                    rows.append(card)
     if not isinstance(rows, list):
         return
     for row in rows:
@@ -2319,31 +2336,29 @@ def clear_pr_url(slug):
         return
     run([board_cli, "add", slug, "--pr-url", ""], timeout=30)
 
+def closeout_available(slug):
+    if closeout_bin.is_file() and os.access(closeout_bin, os.X_OK):
+        return True
+    closeout_deferred.add(slug)
+    clear_close_failure(slug)
+    res["flagged"].append(f"closeout-helper-missing:{slug}")
+    res["skipped"].append(f"{slug}:closeout-helper-missing")
+    res["status"] = "error"
+    return False
+
 def close_card(slug, url, branch):
     if dry_run:
         res["closed"].append(slug)
         return True
+    if not closeout_available(slug):
+        return False
     reclaim_bin = last_stack / "bin" / "last-stack-worktree-reclaim"
-    if closeout_bin.exists():
-        args = [str(closeout_bin), slug, "--board-cli", board_cli]
-        if url:
-            args += ["--pr-url", url]
-        if branch:
-            args += ["--branch", branch]
-        ok, out, err = run(args, timeout=90)
-        if not ok:
-            if note_closeout_deferred(slug, out, err):
-                return False
-            flag_close_failed(slug, out, err)
-            note_close_failure(slug, out, err)
-            return False
-        res["closed"].append(slug)
-        clear_close_failure(slug)
-        # Idempotent: reclaim again if closeout is an older binary without it
-        if reclaim_bin.exists():
-            run([str(reclaim_bin), "--slug", slug], timeout=120)
-        return True
-    ok, out, err = run([board_cli, "move", slug, "done", "--force"], timeout=60)
+    args = [str(closeout_bin), slug, "--board-cli", board_cli]
+    if url:
+        args += ["--pr-url", url]
+    if branch:
+        args += ["--branch", branch]
+    ok, out, err = run(args, timeout=90)
     if not ok:
         if note_closeout_deferred(slug, out, err):
             return False
@@ -2352,6 +2367,7 @@ def close_card(slug, url, branch):
         return False
     res["closed"].append(slug)
     clear_close_failure(slug)
+    # Idempotent: reclaim again if closeout is an older binary without it.
     if reclaim_bin.exists():
         run([str(reclaim_bin), "--slug", slug], timeout=120)
     return True
@@ -2448,6 +2464,10 @@ for card in cards:
         hydrated = dict(card)
         hydrated.update(truth["card"])
         card = hydrated
+    if slug in factory_protected:
+        res["flagged"].append(f"factory-finite-excluded:{slug}")
+        res["skipped"].append(f"{slug}:factory-finite-excluded")
+        continue
     field_pr = (card.get("pr_url") or card.get("prUrl") or card.get("pr") or "").strip()
     url = pr_url(card)
     branch = str(card.get("branch") or "").strip() or parse_body_header(body_of(card), "Branch")
@@ -2460,6 +2480,8 @@ for card in cards:
     if url:
         merged, closed, detail = is_merged(url)
         if merged:
+            if not closeout_available(slug):
+                continue
             if field_pr != url:
                 heal_pr_url(slug, url)
                 res["flagged"].append(f"pr-url-healed:{slug}")
@@ -2474,7 +2496,7 @@ for card in cards:
                         actions += 1
                         continue
                 res["skipped"].append(f"{slug}:close-failed")
-                if parked_close:
+                if parked_close and slug not in closeout_deferred:
                     ensure_awaiting_deploy_tag(slug, card)
                     res["flagged"].append(f"deploy-parked:{slug}")
                 if (
@@ -2493,6 +2515,8 @@ for card in cards:
             # from re-manufacturing it as ready work on the next fire.
             proof = branch_merged_into_base(card, wt)
             if proof is True:
+                if not closeout_available(slug):
+                    continue
                 res["flagged"].append(f"merge-proof-close:{slug}")
                 # Keep the structured pr_url empty: the stored CR record is
                 # corrupt, so restamping it would re-arm this same loop.
@@ -2504,6 +2528,8 @@ for card in cards:
                 continue
             newer = newer_handoff_review(card, url)
             if newer and newer["merged"]:
+                if not closeout_available(slug):
+                    continue
                 res["flagged"].append(f"open-handoff-preserved:{slug}")
                 restore_structured(slug, newer["url"], newer["branch"] or branch)
                 if close_card(slug, newer["url"], newer["branch"] or branch):

@@ -12,12 +12,6 @@ bash -n "$install"
 "$bin" --help >/dev/null
 "$install" --help >/dev/null 2>&1 || true
 
-# usage / dry-run should not crash when board is unavailable in CI
-if command -v kanban >/dev/null 2>&1; then
-  # dry-run is safe; may noop or list — exit 0 either way
-  "$bin" --dry-run --max-actions 1 >/dev/null || true
-fi
-
 # A chained caller must survive this helper (no exec node/python3).
 if grep -nE '^[[:space:]]*exec[[:space:]]+(node|python3)' "$bin"; then
   echo "FAIL: last-stack-board-closeout-sweep must not exec the engine" >&2
@@ -58,6 +52,11 @@ silent_stack="$tmp/silent-stack"
 mkdir -p "$silent_stack/bin" "$tmp/silent-path"
 cp "$bin" "$silent_stack/bin/last-stack-board-closeout-sweep"
 chmod +x "$silent_stack/bin/last-stack-board-closeout-sweep"
+cat >"$silent_stack/bin/last-stack-factory-repair-contract" <<'EOF'
+#!/bin/sh
+printf '%s\n' '{"version":1,"result":"ok","contract_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","protected_card_keys":["factory-scoped-dispatch-20261008","factory-guarded-closeout-20261008","factory-canonical-active-counts-20261008","factory-repair-controller-20261009"]}'
+EOF
+chmod +x "$silent_stack/bin/last-stack-factory-repair-contract"
 printf '#!/bin/sh\ncat >/dev/null\nexit 0\n' >"$tmp/silent-path/node"
 chmod +x "$tmp/silent-path/node"
 silent_out="$(

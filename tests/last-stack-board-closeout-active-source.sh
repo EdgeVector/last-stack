@@ -47,6 +47,8 @@ for command in ps gh brain kanban fkanban; do
   printf '#!/usr/bin/env bash\nexit 1\n' > "$tmp/stack/bin/$command"
 done
 chmod +x "$tmp/board" "$tmp/stack/bin/"*
+source "$ROOT/tests/fixtures/factory-closeout-dependencies.sh"
+fixture_closeout_dependencies "$tmp/stack" "$tmp/board"
 for engine in node python3; do
   : > "$BOARD_MOVES"
   BOARD_CLOSEOUT_ENGINE="$engine" "$tmp/stack/bin/last-stack-board-closeout-sweep" \

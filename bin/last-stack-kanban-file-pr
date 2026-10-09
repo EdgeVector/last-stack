@@ -56,6 +56,9 @@
 #   --work-class CLASS      feature (default, gated) | closeout | proof |
 #                           repair | incident (not gated by admission)
 #   --admission-fixture DIR offline brain for last-stack-feature-portfolio-admission
+#   --create-only           forward public atomic absence creation; requires
+#                           backlog, the decision gate, and an existing milestone
+#   --json                  return only the public Card CLI JSON result
 #   --dry-run
 #
 # Body (stdin), checked FIRST, before admission and decision-check:
@@ -140,6 +143,8 @@ decision_fixture=""
 skip_decision_check=0
 work_class=""
 admission_fixture=""
+create_only=0
+json_output=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -164,6 +169,8 @@ while [ "$#" -gt 0 ]; do
     --skip-decision-check) skip_decision_check=1; shift ;;
     --work-class) work_class="${2:-}"; shift 2 ;;
     --admission-fixture) admission_fixture="${2:-}"; shift 2 ;;
+    --create-only) create_only=1; shift ;;
+    --json) json_output=1; shift ;;
     --dry-run) dry=1; shift ;;
     -h|--help) help_text; exit 0 ;;
     *)
@@ -213,6 +220,13 @@ case "$work_class" in
   feature|closeout|proof|repair|incident) ;;
   *) die "work-class must be feature, closeout, proof, repair, or incident (got $work_class)" ;;
 esac
+
+if [ "$create_only" -eq 1 ]; then
+  [ "$column" = "backlog" ] || die "--create-only requires --column backlog"
+  [ "$skip_decision_check" -eq 0 ] || die "--create-only requires the decision gate"
+  [ "$ensure_ms" -eq 0 ] || die "--create-only requires an existing milestone"
+fi
+[ "$json_output" -eq 0 ] || [ "$dry" -eq 0 ] || die "--json cannot use --dry-run"
 
 if [ -z "$board_cli" ]; then
   if command -v kanban >/dev/null 2>&1; then
@@ -505,6 +519,8 @@ add_args=(
 [ -n "$tags" ] && add_args+=(--tags "$tags")
 [ -n "$deps" ] && add_args+=(--deps "$deps")
 [ -n "$surfaces" ] && add_args+=(--surfaces "$surfaces")
+[ "$create_only" -eq 1 ] && add_args+=(--create-only)
+[ "$json_output" -eq 1 ] && add_args+=(--json)
 
 if [ "$dry" -eq 1 ]; then
   printf 'DRY %s' "$board_cli"
@@ -518,6 +534,8 @@ if ! printf '%s' "$body" | "$board_cli" "${add_args[@]}"; then
   exit 1
 fi
 
-printf 'filed %s column=%s north_star=%s milestone=%s\n' \
-  "$slug" "$column" "$north_star" "$milestone"
+if [ "$json_output" -eq 0 ]; then
+  printf 'filed %s column=%s north_star=%s milestone=%s\n' \
+    "$slug" "$column" "$north_star" "$milestone"
+fi
 exit 0
