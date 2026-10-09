@@ -7,3 +7,10 @@ through the generic closeout helper.
 
 The controller must finish its closeout report before ROUTINE_RESULT.
 A complete retained receipt produces a quiet NOOP.
+
+The historical bootstrap preserves the original Card surfaces.
+An unknown write retains its intent. Do not edit that intent in STATE.
+The explicit --recover-prewrite-refusal option accepts only the reviewed prewrite refusal.
+It preserves the complete prior state and the exact command capture.
+It checks the unchanged Card before one local recovery phase.
+It sends no Card write. A changed witness or an ambiguous result refuses recovery.
