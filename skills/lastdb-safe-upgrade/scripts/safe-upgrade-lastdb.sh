@@ -2741,13 +2741,25 @@ jq -e '.status.sync.enabled | type == "boolean"' "$PRELIVE_STATUS" >/dev/null \
 SOAK_REQUIRE_CLOUD="$(jq -r 'if .status.sync.enabled == true then 1 else 0 end' "$PRELIVE_STATUS")"
 log "pre-live status bar $PRELIVE_STATUS_OUT (meter plane below 1.5 GiB)"
 # The soak below needs the cloud frontier to pass the first post-cutover write
-# within SOAK_MAX_SECS. A frontier already hours behind (2026-10-05: cut over,
-# one hour live, rolled back with no proof) cannot, so refuse before any change.
-PRELIVE_CLOUD_LAG_S="${LASTDB_SAFE_UPGRADE_PRELIVE_CLOUD_LAG_S:-900}"
+# within SOAK_MAX_SECS. An uploader that has a backlog and a frontier hours
+# behind (2026-10-05: cut over, one hour live, rolled back with no proof) cannot,
+# so refuse before any change. The bar gates on the BACKLOG: an idle node that is
+# caught up (mutation_log_lag == 0) has an old frontier and passes at any age.
+#
+# The soak window is set here, not at the soak, because the default bound derives
+# from it. A real-data rollback needed about 43 minutes to republish its cloud
+# frontier, so the soak keeps its rollback point and health checks for an hour.
+SOAK_MAX_SECS=3600
+# Default bound: half of the soak window (1800 s). The two healthy-primary
+# samples recorded in fold (recoverability.rs, 2026-09-06) were 837 s and
+# 1490 s behind, both above the 900 s the papercut suggested. The bound is
+# derived from the soak budget, NOT measured on this node. Widen it with
+# LASTDB_SAFE_UPGRADE_PRELIVE_CLOUD_LAG_S if a healthy node is refused.
+PRELIVE_CLOUD_LAG_S="${LASTDB_SAFE_UPGRADE_PRELIVE_CLOUD_LAG_S:-$((SOAK_MAX_SECS / 2))}"
 if [ "$SOAK_REQUIRE_CLOUD" = 1 ]; then
   PRELIVE_CLOUD_OUT="$(prelive_cloud_status_check "$PRELIVE_STATUS" "$(date +%s)" "$PRELIVE_CLOUD_LAG_S")" \
-    || die "pre-live cloud bar failed: $PRELIVE_CLOUD_OUT (bound ${PRELIVE_CLOUD_LAG_S}s); the cloud backlog would keep the post-cutover soak from passing; primary was not changed"
-  log "pre-live cloud bar $PRELIVE_CLOUD_OUT (frontier within ${PRELIVE_CLOUD_LAG_S}s)"
+    || die "pre-live cloud bar failed: $PRELIVE_CLOUD_OUT (bound ${PRELIVE_CLOUD_LAG_S}s on a nonzero backlog); the cloud backlog would keep the post-cutover soak from passing, or the status is unreadable; wait for the uploader to publish and run again; primary was not changed"
+  log "pre-live cloud bar $PRELIVE_CLOUD_OUT (bound ${PRELIVE_CLOUD_LAG_S}s applies only while mutation_log_lag is not 0)"
 fi
 
 detect_live_venue
@@ -3100,9 +3112,8 @@ case "${LASTDB_SAFE_UPGRADE_ZERO_LIVE_SOAK:-0}" in
     ;;
   *) die "LASTDB_SAFE_UPGRADE_ZERO_LIVE_SOAK must be 0 or 1" ;;
 esac
-# A real-data rollback needed about 43 minutes to republish its cloud frontier.
-# Keep the rollback point and health checks active until that startup work ends.
-SOAK_MAX_SECS=3600
+# SOAK_MAX_SECS (one hour) is set in the pre-live cloud bar above. Keep the
+# rollback point and health checks active until that startup work ends.
 SOAK_START="$(date +%s)"
 SOAK_STATUS="$WORK/post-cutover-soak-status.json"
 SOAK_CONFIRMED=0
