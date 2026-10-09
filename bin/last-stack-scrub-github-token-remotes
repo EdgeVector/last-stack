@@ -3,11 +3,12 @@
 set -euo pipefail
 
 mode="apply"
+global_scrub=0
 
 usage() {
   cat <<'EOF'
 Usage:
-  last-stack-scrub-github-token-remotes [--check|--dry-run] [<workspace-or-repo>...]
+  last-stack-scrub-github-token-remotes [--check|--dry-run] [--global] [<workspace-or-repo>...]
 
 Scans Git checkouts for remotes like:
   https://x-access-token:<token>@github.com/<owner>/<repo>.git
@@ -18,6 +19,15 @@ When applying, the command rewrites them to:
 It never prints the original URL or token. Repos that are changed get a local
 credential helper for github.com:
   !gh auth git-credential
+
+--global also scrubs the user's global git config (GIT_CONFIG_GLOBAL, else
+~/.gitconfig). A section like
+  [url "https://<token>@github.com/"] insteadOf = https://github.com/
+expands the token into every github.com URL git prints. The section name holds
+the token, so --global removes the whole section, reports only a count, and
+never prints a key or a value. It refuses (exit 1) to remove a rewrite when the
+global config has no `gh auth git-credential` helper, because the rewrite could
+then be the only authentication. Run --check --global first.
 EOF
 }
 
@@ -39,6 +49,66 @@ sanitize_github_url() {
       ;;
   esac
   return 1
+}
+
+# Global config. The key of a token rewrite is `url.https://<userinfo>@github.com/.insteadof`
+# (or .pushinsteadof): the token is in the key, so nothing derived from a key or a
+# value may reach stdout or stderr. git's own error text echoes the key as well,
+# so every git call below drops stderr.
+# papercut-fold-git-remote-url-embeds-credential-20261001
+global_token_key_re='^url\.https://[^/@]+@github\.com/\.(insteadof|pushinsteadof)$'
+scrubbed_global=0
+global_refused=0
+
+# One section name per line. The output holds the secret: capture it, never print it.
+global_token_sections() {
+  git config --global --name-only --get-regexp "$global_token_key_re" 2>/dev/null \
+    | sed -E 's/\.(insteadof|pushinsteadof)$//' | sort -u || true
+}
+
+global_has_gh_helper() {
+  local helpers
+  helpers="$(git config --global --get-all credential.https://github.com.helper 2>/dev/null || true
+    git config --global --get-all credential.helper 2>/dev/null || true)"
+  case "$helpers" in
+    *'gh auth git-credential'*) return 0 ;;
+  esac
+  return 1
+}
+
+scrub_global_config() {
+  local sections section count=0 helper=present
+
+  # A caller running `bash -x` would trace the section name (the token) into
+  # stderr. Everything below handles it, so stop tracing here.
+  set +x
+  sections="$(global_token_sections)"
+  [ -n "$sections" ] || return 0
+  while IFS= read -r section; do
+    [ -n "$section" ] && count=$((count + 1))
+  done <<<"$sections"
+  global_has_gh_helper || helper=missing
+
+  if [ "$mode" = "check" ]; then
+    printf 'would-scrub-global\tsections=%s\tgh_credential_helper=%s\n' "$count" "$helper"
+    scrubbed_global="$count"
+    return 0
+  fi
+  if [ "$helper" = missing ]; then
+    printf 'refused-global\tsections=%s\treason=no-gh-credential-helper\n' "$count"
+    global_refused=1
+    return 0
+  fi
+  while IFS= read -r section; do
+    [ -n "$section" ] || continue
+    if git config --global --remove-section "$section" 2>/dev/null; then
+      scrubbed_global=$((scrubbed_global + 1))
+    else
+      printf 'failed-global\treason=remove-section\n'
+      global_refused=1
+    fi
+  done <<<"$sections"
+  printf 'scrubbed-global\tsections=%s\n' "$scrubbed_global"
 }
 
 repo_targets() {
@@ -103,6 +173,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --check) mode="check"; shift ;;
     --dry-run) mode="check"; shift ;;
+    --global) global_scrub=1; shift ;;
     -h|--help) usage; exit 0 ;;
     --) shift; break ;;
     -*) usage >&2; exit 2 ;;
@@ -146,9 +217,23 @@ while IFS= read -r repo; do
   fi
 done < <(repo_targets "$@")
 
-if [ "$mode" = "check" ] && [ "$scrubbed" -gt 0 ]; then
-  printf 'embedded-token-remotes-found\tchecked=%s\turls=%s\n' "$checked" "$scrubbed"
+if [ "$global_scrub" -eq 1 ]; then
+  scrub_global_config
+fi
+
+if [ "$mode" = "check" ] && { [ "$scrubbed" -gt 0 ] || [ "$scrubbed_global" -gt 0 ]; }; then
+  [ "$scrubbed" -eq 0 ] \
+    || printf 'embedded-token-remotes-found\tchecked=%s\turls=%s\n' "$checked" "$scrubbed"
+  [ "$scrubbed_global" -eq 0 ] \
+    || printf 'embedded-token-global-found\tsections=%s\n' "$scrubbed_global"
   exit 1
 fi
 
-printf 'ok\tchecked=%s\tscrubbed=%s\n' "$checked" "$scrubbed"
+# A refusal is not an ok: the token rewrite is still in the global config.
+[ "$global_refused" -eq 0 ] || exit 1
+
+if [ "$global_scrub" -eq 1 ]; then
+  printf 'ok\tchecked=%s\tscrubbed=%s\tscrubbed_global=%s\n' "$checked" "$scrubbed" "$scrubbed_global"
+else
+  printf 'ok\tchecked=%s\tscrubbed=%s\n' "$checked" "$scrubbed"
+fi
