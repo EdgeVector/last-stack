@@ -42,6 +42,14 @@
 #   --no-derive-surfaces    keep an empty surface list (reserve the repo)
 #   --board BOARD           default: default
 #   --ensure-milestone      create the milestone if it is missing
+#                           A blocked milestone still refuses --column todo.
+#                           A substantive --column backlog --work-class
+#                           repair card is permitted under a blocked
+#                           milestone (the decision check and the todo gate
+#                           still apply): a repair fix has no live milestone
+#                           to file under until it ships, so the gate that
+#                           protects todo must not also starve the fix.
+#                           papercut-file-pr-refuses-backlog-under-blocked-milestone-20261006
 #   --board-cli PATH        kanban/fkanban binary (tests)
 #   --decision-fixture DIR  offline brain for last-stack-kanban-decision-check
 #   --skip-decision-check   tests/operator only — generators must not pass this
@@ -370,6 +378,16 @@ elif ! is_live_ms_state "$ms_state"; then
       die "failed to reopen milestone $milestone (state=complete)"
     fi
     ms_state=active
+  elif [ "$column" = "backlog" ] && [ "$work_class" = "repair" ] && [ "$ms_state" = "blocked" ]; then
+    # A substantive repair card for a blocked milestone has no live
+    # milestone to file under until it ships — die here would starve the
+    # fix. Scoped narrowly: backlog only (the todo gate is untouched),
+    # work-class repair only (feature/proof/closeout/incident still
+    # refuse), and state=blocked only (abandoned/unknown still refuse —
+    # those usually mean the milestone slug itself is wrong).
+    # papercut-file-pr-refuses-backlog-under-blocked-milestone-20261006
+    printf 'last-stack-kanban-file-pr: milestone %s is blocked; filing %s as a backlog repair card anyway\n' \
+      "$milestone" "$slug" >&2
   else
     die "milestone '$milestone' is not live (state=${ms_state:-empty}) — pick an active/planned/proving outcome"
   fi
