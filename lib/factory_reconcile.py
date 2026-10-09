@@ -227,7 +227,7 @@ class ReconcileRuntime:
         self.root = Path(root); self.config = config; self.directory = Path(directory); self.capture = Path(capture)
         self.capture.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.brain = str(Path.home() / '.local/bin/brain')
-        self.kanban = verify_fk(config['fkanban_authority'])
+        self.kanban = verify_fk(config['fkanban_authority'], require_claim_chain=True)
 
     def snapshot(self):
         path = self.capture / 'queue.json'

@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'lib'))
 from factory_repair import (Refusal, require, read_json, validate_local, validate_snapshot,
     verify_fk, public_card_batch, bounded_call, atomic_json, value_sha, file_sha, strict_json, version1, set_deadline,
-    read_bytes, sha, validate_claim_stage_one, validate_admitted_body)
+    read_bytes, sha, validate_claim_stage_one, validate_admitted_body, validate_claim_success)
 
 def main():
     set_deadline(90)
@@ -22,7 +22,7 @@ def main():
         require(intent.get('config_sha256') == value_sha(config) and intent.get('fkanban_authority') == config['fkanban_authority'] and
                 intent.get('dispatch_authority') == config['dispatch_authority'] and intent.get('card') == config['admitted'][0]['card'] and
                 intent.get('owner') == 'loom:factory-repair-slot', 'adapter-finite-identity')
-        binary = verify_fk(intent['fkanban_authority'])
+        binary = verify_fk(intent['fkanban_authority'], require_claim_chain=True)
         args = sys.argv[1:]; card = intent['card']; owner = intent['owner']
         witness = validate_snapshot(intent['witness'], card)
         original = validate_snapshot(intent['original_witness'], card)
@@ -57,11 +57,7 @@ def main():
         receipt_path = Path(intent['receipt_path']).resolve()
         require(receipt_path.parent == path.parent and receipt_path.name == 'claim-' + intent['intent']['attempt'] + '.json', 'adapter-receipt-path')
         if rc == 0:
-            require(receipt.get('result') == 'claimed' and receipt.get('durability') == 'durable' and
-                    receipt.get('guard_snapshot_sha256') == witness['sha256'] and receipt.get('contract_sha256') == intent['fkanban_authority']['contract_sha256'], 'adapter-claim-receipt')
-            next_item = {'slug': card, 'snapshot_json': receipt.get('next_snapshot_json'), 'snapshot_sha256': receipt.get('next_snapshot_sha256')}
-            fields = validate_snapshot(next_item, card)['fields']
-            require(fields['column'] == 'doing' and fields['assignee'] == owner, 'adapter-claim-owner-column')
+            validate_claim_success(intent['witness'], receipt, owner, intent['fkanban_authority']['contract_sha256'])
             atomic_json(receipt_path, receipt)
         elif receipt.get('code') == 'claim_recovery_pending':
             accepted = receipt.get('accepted_held', {})

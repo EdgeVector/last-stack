@@ -243,7 +243,7 @@ def validate_local(root):
 def validate_snapshot(item, slug):
     require(isinstance(item, dict) and item.get('slug') == slug and item.get('missing') is not True, 'snapshot-key')
     text = item.get('snapshot_json'); expected = item.get('snapshot_sha256')
-    require(isinstance(text, str) and text.endswith('\n') and len(text.encode()) <= 1024 * 1024, 'snapshot-bytes')
+    require(isinstance(text, str) and len(text.encode()) <= 1024 * 1024, 'snapshot-bytes')
     require(isinstance(expected, str) and HEX.fullmatch(expected) and sha(text.encode()) == expected, 'snapshot-byte-sha')
     value = strict_json(text)
     require(set(value) == {'version', 'schema_hash', 'fields'} and version1(value['version']) and
@@ -261,7 +261,9 @@ def synthetic_claim_reason(owner):
 
 
 def validate_claim_stage_one(previous_item, item, owner):
-    slug = previous_item['slug']; previous = validate_snapshot(previous_item, slug)['fields']; fields = validate_snapshot(item, slug)['fields']
+    slug = previous_item['slug']; before = validate_snapshot(previous_item, slug); after = validate_snapshot(item, slug)
+    require(before['schema_hash'] == after['schema_hash'], 'claim-stage-one-schema-drift')
+    previous = before['fields']; fields = after['fields']
     reason = synthetic_claim_reason(owner)
     require(previous['column'] == 'todo' and previous['assignee'] == '' and previous['block_status'] in ('', 'none') and previous['block_reason'] == '' or
             previous['column'] == 'doing' and previous['assignee'] == owner and previous['block_status'] == 'needs_human' and previous['block_reason'] == reason,
@@ -275,6 +277,67 @@ def validate_claim_stage_one(previous_item, item, owner):
             all(fields[k] == previous[k] for k in previous if k not in ('assignee', 'column', 'position', 'tags', 'block_status', 'block_reason', 'updated_at')),
             'claim-stage-one-field-drift')
     return fields
+
+
+CLAIM_RECEIPT_KEYS = {'next_snapshot_json', 'next_snapshot_sha256', 'durability',
+                      'guard_snapshot_sha256', 'contract_sha256', 'membership_cleanup'}
+
+def claim_receipt_snapshot(previous, receipt, contract):
+    require(isinstance(receipt, dict) and set(receipt) == CLAIM_RECEIPT_KEYS, 'claim-success-stage-shape')
+    require(receipt.get('durability') == 'durable' and receipt.get('contract_sha256') == contract and
+            receipt.get('guard_snapshot_sha256') == previous['snapshot_sha256'] and
+            receipt.get('membership_cleanup') == 'deferred', 'claim-success-stage-authority')
+    item = {'slug': previous['slug'], 'snapshot_json': receipt.get('next_snapshot_json'),
+            'snapshot_sha256': receipt.get('next_snapshot_sha256')}
+    require(validate_snapshot(previous, previous['slug'])['schema_hash'] == validate_snapshot(item, item['slug'])['schema_hash'],
+            'claim-success-schema-drift')
+    return item
+
+def validate_claim_success(previous, receipt, owner, contract):
+    require(isinstance(receipt, dict) and receipt.get('result') == 'claimed' and
+            receipt.get('from') == 'todo' and receipt.get('to') == 'doing' and receipt.get('worker') == owner,
+            'claim-success-result')
+    fields = validate_snapshot(previous, previous['slug'])['fields']
+    chain = receipt.get('claim_chain')
+    if 'claim_chain' in receipt:
+        require(isinstance(chain, dict) and set(chain) == {'version', 'mode', 'initial_snapshot_sha256', 'stages'} and
+                version1(chain.get('version')) and chain.get('mode') == 'fresh' and
+                chain.get('initial_snapshot_sha256') == previous['snapshot_sha256'] and
+                isinstance(chain.get('stages'), list) and len(chain['stages']) == 2 and
+                fields['column'] == 'todo' and fields['assignee'] == '' and fields['block_status'] in ('', 'none') and fields['block_reason'] == '',
+                'claim-success-chain-shape')
+        for stage, name in zip(chain['stages'], ('accepted-held', 'cleared')):
+            require(isinstance(stage, dict) and set(stage) == {'stage', 'receipt'} and stage.get('stage') == name,
+                    'claim-success-stage-shape')
+        held = claim_receipt_snapshot(previous, chain['stages'][0]['receipt'], contract)
+        validate_claim_stage_one(previous, held, owner)
+        clear_receipt = chain['stages'][1]['receipt']
+    else:
+        require(fields['column'] == 'doing' and fields['assignee'] == owner and
+                fields['block_status'] == 'needs_human' and fields['block_reason'] == synthetic_claim_reason(owner),
+                'claim-success-resume-state')
+        held = previous
+        clear_receipt = {key: receipt.get(key) for key in CLAIM_RECEIPT_KEYS}
+    cleared = claim_receipt_snapshot(held, clear_receipt, contract)
+    require(all(receipt.get(key) == clear_receipt[key] for key in CLAIM_RECEIPT_KEYS), 'claim-success-final-receipt')
+    before = validate_snapshot(held, held['slug'])['fields']; after = validate_snapshot(cleared, cleared['slug'])['fields']
+    require(after['block_status'] == 'none' and after['block_reason'] == '' and
+            re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z', after['updated_at']) and
+            all(after[key] == before[key] for key in before if key not in ('block_status', 'block_reason', 'updated_at')),
+            'claim-success-clear-delta')
+    return cleared
+
+def validate_dispatch_claim(state, receipt, contract):
+    previous = state['original_witness']
+    if 'claim_chain' not in receipt and state.get('accepted_held'):
+        accepted = state['accepted_held']
+        require(isinstance(accepted, dict) and version1(accepted.get('version')) and accepted.get('stage') == 'accepted-held' and
+                accepted.get('durability') == 'durable' and accepted.get('contract_sha256') == contract and
+                accepted.get('guard_snapshot_sha256') == state['original_witness']['snapshot_sha256'], 'claim-success-retained-hold-authority')
+        previous = {'slug': state['card'], 'snapshot_json': accepted.get('snapshot_json'),
+                    'snapshot_sha256': accepted.get('snapshot_sha256')}
+        validate_claim_stage_one(state['original_witness'], previous, state['owner'])
+    return validate_claim_success(previous, receipt, state['owner'], contract)
 
 
 def validate_card_batch(reply, keys):
@@ -386,7 +449,7 @@ def verify_artifact(authority, current=False):
     return root
 
 
-def verify_fk(authority, current=True):
+def verify_fk(authority, current=True, require_claim_chain=False):
     root = verify_artifact(authority, current)
     receipt = read_json(root / 'dist/guarded-contract.json')
     require(receipt.get('source_commit') == authority['source_oid'] and receipt.get('contract_sha256') == authority['contract_sha256'], 'fkanban-contract-identity')
@@ -395,6 +458,11 @@ def verify_fk(authority, current=True):
     require(version1(contract.get('version')) and contract.get('snapshot_batch_shape') == 'ordered-items-with-explicit-missing' and
             contract.get('max_snapshot_keys') == 256 and contract.get('durability') == 'durable' and
             set(contract.get('card_fields', [])) == set(SCALARS + ARRAYS), 'fkanban-contract-capabilities')
+    if require_claim_chain:
+        require(contract.get('exact_claim_success_chain') == {
+            'version': 1, 'field': 'claim_chain', 'mode': 'fresh', 'stages': ['accepted-held', 'cleared'],
+            'guard_snapshot_sha256': 'per-stage-input', 'resume': 'single-clear-receipt'} and
+            version1(contract['exact_claim_success_chain'].get('version')), 'fkanban-claim-chain-capability')
     return root / 'dist/kanban'
 
 
@@ -567,8 +635,8 @@ def require_lifecycle_intent_clear(directory, config_sha256, contract_sha256):
         # effect. Its complete receipt stays unchanged across this runtime
         # successor. Other predecessor receipts retain the unknown-write gate.
         reviewed_predecessor = sha(raw) == '55d438ce9b0429006af29297e8424c089f58db78e109d445f358114a38cecb29'
-        require(version1(intent.get('version')) and intent.get('config_sha256') == config_sha256 and
-                (intent.get('contract_sha256') == contract_sha256 or reviewed_predecessor) and intent.get('status') == 'complete' and
+        current_authority = intent.get('config_sha256') == config_sha256 and intent.get('contract_sha256') == contract_sha256
+        require(version1(intent.get('version')) and (current_authority or reviewed_predecessor) and intent.get('status') == 'complete' and
                 isinstance(intent.get('result_sha256'), str) and HEX.fullmatch(intent['result_sha256']),
                 'lifecycle-close-unknown-retained')
 
@@ -931,7 +999,7 @@ class Runtime:
         self.fk = config['fkanban_authority']; self.baseline = config['dispatch_authority']
 
     def check_authority(self, state=None):
-        self.kanban = verify_fk(self.fk)
+        self.kanban = verify_fk(self.fk, require_claim_chain=True)
         if state is None or state['phase'] in ('reserved', 'dispatch-pending', 'claim-recovery-pending', 'execution', 'candidate', 'install'):
             self.loom = verify_loom(self.baseline, current=state is None or state['phase'] in ('reserved', 'dispatch-pending', 'claim-recovery-pending', 'execution', 'candidate'))
         else:
@@ -944,7 +1012,7 @@ class Runtime:
         return self.read_card(current=False)
 
     def read_card(self, current):
-        self.kanban = verify_fk(self.fk, current=current)
+        self.kanban = verify_fk(self.fk, current=current, require_claim_chain=True)
         item = public_card_batch(self.kanban, [COUNT_CARD])['items'][0]
         require(item.get('missing') is not True, 'finite-card-missing')
         return item
@@ -989,12 +1057,7 @@ class Runtime:
         ids = [line for line in lines if EXEC_ID.fullmatch(line)]
         require(len(set(ids)) <= 1, 'kickoff-execution-ambiguous')
         receipt = read_json(intent['receipt_path'])
-        allowed_guards = {state['intent']['witness_sha256'], state.get('accepted_held', {}).get('snapshot_sha256')}
-        require(receipt.get('result') == 'claimed' and receipt.get('durability') == 'durable' and
-                receipt.get('contract_sha256') == self.fk['contract_sha256'] and
-                receipt.get('guard_snapshot_sha256') in allowed_guards, 'claim-durable-receipt')
-        witness = {'slug': state['card'], 'snapshot_json': receipt['next_snapshot_json'], 'snapshot_sha256': receipt['next_snapshot_sha256']}
-        validate_snapshot(witness, state['card'])
+        witness = validate_dispatch_claim(state, receipt, self.fk['contract_sha256'])
         return {'execution_id': ids[-1] if ids else '', 'key': key, 'original_input': strict_json(raw_input), 'witness': witness, 'claim_receipt': receipt}
 
     def recover_dispatch(self, state):
@@ -1003,10 +1066,7 @@ class Runtime:
             return None
         receipt = read_json(path)
         if receipt.get('result') == 'claimed':
-            require(receipt.get('durability') == 'durable' and receipt.get('contract_sha256') == self.fk['contract_sha256'] and
-                    receipt.get('guard_snapshot_sha256') in (state['intent']['witness_sha256'], state.get('accepted_held', {}).get('snapshot_sha256')), 'recovered-claim-authority')
-            witness = {'slug': state['card'], 'snapshot_json': receipt.get('next_snapshot_json'), 'snapshot_sha256': receipt.get('next_snapshot_sha256')}
-            validate_snapshot(witness, state['card'])
+            witness = validate_dispatch_claim(state, receipt, self.fk['contract_sha256'])
             return {'witness': witness, 'claim_receipt': receipt}
         require(receipt.get('code') == 'claim_recovery_pending', 'unknown-claim-recovery-receipt')
         accepted = receipt.get('accepted_held', {})
