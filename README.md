@@ -179,7 +179,8 @@ Dogfood evidence (2026-07-15, non-secret): staged + approved
 The Last Stack is homed on GitHub at `EdgeVector/last-stack` (since 2026-09-30;
 LastGit is retired). Agent-authored changes go through GitHub pull requests
 (`gh pr create`) with the required `ci-required` check from
-`.github/workflows/ci-required.yml`, which runs `.lastgit/ci.sh` in shards.
+`.github/workflows/ci-required.yml`, which runs `.lastgit/ci.sh` (bash -n and
+the global lint passes; the repo has no tests).
 Merge with `gh pr merge <n> -R EdgeVector/last-stack --auto --squash`.
 
 The committed `.last-stack/pr-venue` marker (`github`) is what makes the shared

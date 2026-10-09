@@ -133,7 +133,6 @@ For a small DevOps/docs/tooling fix:
    edits in Last Stack, include:
    ```bash
    ./bin/last-stack-lint-prompts <changed-prompt.md>
-   ./tests/last-stack-lint-prompts.sh
    ```
 5. Open a reviewer-ready PR with a body that includes:
    - Motivation/problem.

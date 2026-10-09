@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Toolchain the last-stack test suite expects on a GitHub macOS runner.
+# Toolchain the last-stack lint gate (.lastgit/ci.sh) expects on a GitHub macOS runner.
 # The former Forge host lane had these on PATH already.
 set -euo pipefail
 git config --global user.name "ci"
@@ -20,15 +20,6 @@ if [ "${#missing[@]}" -gt 0 ]; then
 fi
 export PATH="/opt/homebrew/bin:$PATH"
 [ -z "${GITHUB_PATH:-}" ] || echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
-# python http.server calls socket.getfqdn() when it binds. On a GitHub macOS
-# runner the reverse lookup of 127.0.0.1 takes ~35 s, and the mock-server tests
-# give up after 2-10 s. A sitecustomize shim makes getfqdn answer at once.
-shim="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/pyshim"
-export PYTHONPATH="$shim${PYTHONPATH:+:$PYTHONPATH}"
-[ -z "${GITHUB_ENV:-}" ] || echo "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
-# A cold python start on a fresh runner VM took longer than the 2.5 s the mock
-# server tests wait for; warm the import cache first.
-python3 -c "import http.server, json, sqlite3, socket; import time; t=time.time(); socket.getfqdn('127.0.0.1'); print('getfqdn secs', round(time.time()-t,2))"
 bash --version | head -1
 jq --version
 python3 --version
