@@ -36,23 +36,54 @@ soft="$(printf '%s' "$json_out" | python3 -c 'import sys,json; print(json.load(s
 hard="$(printf '%s' "$json_out" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("hard_findings",0))' 2>/dev/null || echo '?')"
 new="$(printf '%s' "$json_out" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("new_soft",0))' 2>/dev/null || echo '?')"
 
+# A GitHub token in a global `url.<token>@github.com/.insteadOf` rewrite is printed
+# by every `git remote -v`, push line and git error on this host, and lands in
+# agent transcripts. last-stack-scrub-github-token-remotes removes it, but only
+# when somebody runs it, so this check reports the rewrite coming back.
+# papercut-fold-git-remote-url-embeds-credential-20261001
+#   clean       the scrub tool read every git config source and found no rewrite
+#   found       a rewrite exists (or git expands one the tool cannot edit)
+#   unreadable  git could not read its config, so the scan could not look
+#   error       the scrub tool is missing or too old to know --global
+# Anything but clean fails the scan. The tool prints counts only. Even so, keep
+# the output out of the log: only the fixed state word below is written.
+# `/var/empty` keeps the per-repo remote scan empty; only the global config is read.
+scrub="$ROOT/bin/last-stack-scrub-github-token-remotes"
+global_token=error
+if [ -x "$scrub" ]; then
+  set +e
+  scrub_out="$("$scrub" --check --global /var/empty 2>/dev/null)"
+  scrub_ec=$?
+  set -e
+  case "$scrub_ec" in
+    0) global_token=clean ;;
+    1)
+      if printf '%s\n' "$scrub_out" | grep -q '^unreadable-global'; then
+        global_token=unreadable
+      else
+        global_token=found
+      fi
+      ;;
+  esac
+fi
+
 status=ok
-if [ "$gate_ec" -ne 0 ]; then
+if [ "$gate_ec" -ne 0 ] || [ "$global_token" != clean ]; then
   status=fail
 fi
 
-printf '%s machine-leak-scan %s soft=%s hard=%s new=%s gate_ec=%s\n' \
-  "$ts" "$status" "$soft" "$hard" "$new" "$gate_ec" | tee -a "$log"
+printf '%s machine-leak-scan %s soft=%s hard=%s new=%s global_token=%s gate_ec=%s\n' \
+  "$ts" "$status" "$soft" "$hard" "$new" "$global_token" "$gate_ec" | tee -a "$log"
 
 # Optional notify when red (ra if present)
 if [ "$status" = "fail" ] && command -v ra >/dev/null 2>&1; then
-  ra notify "last-stack machine-leak-scan RED soft=$soft hard=$hard new=$new" 2>/dev/null || true
+  ra notify "last-stack machine-leak-scan RED soft=$soft hard=$hard new=$new global_token=$global_token" 2>/dev/null || true
 fi
 
 # Heartbeat file for routinesd / morning digest
 hb_dir="${LAST_STACK_HEARTBEAT_DIR:-$HOME/.last-stack/logs}"
 mkdir -p "$hb_dir"
-printf '%s\n' "$ts machine-leak-scan $status soft=$soft hard=$hard new=$new" \
+printf '%s\n' "$ts machine-leak-scan $status soft=$soft hard=$hard new=$new global_token=$global_token" \
   >>"$hb_dir/routine-heartbeats.log" 2>/dev/null || true
 
 exit 0
