@@ -13,7 +13,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HELPER = ROOT / "skills/lastdb-safe-upgrade/scripts/cleanup-stopped-copy.py"
+FIXTURE_ENTRY = ROOT / "tests/probes/lastdb_stopped_copy_fixture_entry.py"
 TEMP_ROOT = Path("/private/tmp")
 
 
@@ -31,6 +31,11 @@ class CleanupTest(unittest.TestCase):
         self.store_uuid = "fixture-store-uuid"
         self.db_hash = hashlib.sha256(f"laststore-db:{self.store_uuid}".encode()).hexdigest()
         self.counter = 618
+        self.epoch = 2
+        self.descriptor_sha = "b" * 64
+        self.descriptor_name = (
+            f"lastdb-recovery-v1-{self.db_hash}-{self.sha}-{self.descriptor_sha}.enc"
+        )
         (self.copy / "data").mkdir()
         (self.restored / "data").mkdir()
         (self.copy / "identity.key").write_bytes(b"fixture identity")
@@ -50,14 +55,20 @@ class CleanupTest(unittest.TestCase):
             "version": 1, "db_hash": self.db_hash, "store_uuid": self.store_uuid,
             "manifest_sha256": self.sha, "counter": self.counter, "cloud_sync_off": True,
         }
-        self.put_json(self.copy / ".rescue_s0_complete", {
-            **common, "descriptor_name": "fixture.enc", "descriptor_sha256": "b" * 64,
-            "rescue_key": f"rescue/s0/{self.sha}.json",
+        self.pointer = self.copy / ".rescue_s0_committed_v1.json"
+        self.put_json(self.pointer, {
+            "version": 1, "source_scope": "primary_only", "db_hash": self.db_hash,
+            "store_uuid": self.store_uuid, "manifest_sha256": self.sha,
+            "epoch": self.epoch, "counter": self.counter,
+            "descriptor_name": self.descriptor_name,
+            "descriptor_sha256": self.descriptor_sha,
         })
         result = {**common, "ok": True, "restore_mode": "s0_only"}
         self.put_json(self.restored / ".rescue_s0_restore_ready", result)
         self.put_json(self.report, {
             **result, "source_scope_verified": True, "remote_read_only": True,
+            "latest_key": f"rescue/s0/{self.sha}.json",
+            "restored_epoch": self.epoch + 1,
         })
 
     def cleanup_fixture(self) -> None:
@@ -74,9 +85,9 @@ class CleanupTest(unittest.TestCase):
     def put_json(path: Path, value: dict) -> None:
         path.write_text(json.dumps(value))
 
-    def run_helper(self, *extra: str, environment=None) -> subprocess.CompletedProcess[str]:
+    def run_helper(self, *extra: str, environment=None, owner_lock="absent") -> subprocess.CompletedProcess[str]:
         return subprocess.run([
-            sys.executable, str(HELPER), "--copy", str(self.copy),
+            sys.executable, str(FIXTURE_ENTRY), owner_lock, "--copy", str(self.copy),
             "--restored-home", str(self.restored), "--restore-report", str(self.report),
             "--expect-db-hash", self.db_hash, "--expect-manifest-sha256", self.sha,
             *extra,
@@ -84,8 +95,14 @@ class CleanupTest(unittest.TestCase):
 
     def test_check_only_keeps_the_copy(self) -> None:
         result = self.run_helper()
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 0, f"FAIL: current S0 pointer was rejected: {result.stderr}")
         self.assertIn("STOPPED_COPY_CLEANUP=checked", result.stdout)
+        self.assertTrue(self.copy.is_dir())
+
+    def test_safe_upgrade_owner_lock_refuses_delete(self) -> None:
+        result = self.run_helper("--execute", owner_lock="present")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("a safe-upgrade owner lock is present", result.stderr)
         self.assertTrue(self.copy.is_dir())
 
     def test_report_identity_mismatch_refuses_delete(self) -> None:
@@ -94,6 +111,97 @@ class CleanupTest(unittest.TestCase):
         self.put_json(self.report, report)
         result = self.run_helper("--execute")
         self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(self.copy.is_dir())
+
+    def test_old_completion_marker_cannot_replace_current_pointer(self) -> None:
+        self.pointer.rename(self.copy / ".rescue_s0_complete")
+        result = self.run_helper("--execute")
+        self.assertNotEqual(result.returncode, 0, "FAIL: old completion marker was accepted")
+        self.assertTrue(self.copy.is_dir())
+
+    def test_pointer_source_scope_must_be_primary_only(self) -> None:
+        pointer = json.loads(self.pointer.read_text())
+        pointer["source_scope"] = "account_wide"
+        self.put_json(self.pointer, pointer)
+        result = self.run_helper("--execute")
+        self.assertNotEqual(result.returncode, 0, "FAIL: wrong S0 source scope was accepted")
+        self.assertTrue(self.copy.is_dir())
+
+    def test_pointer_manifest_must_match_the_source(self) -> None:
+        pointer = json.loads(self.pointer.read_text())
+        pointer["manifest_sha256"] = "c" * 64
+        self.put_json(self.pointer, pointer)
+        result = self.run_helper("--execute")
+        self.assertNotEqual(result.returncode, 0, "FAIL: wrong S0 manifest was accepted")
+        self.assertTrue(self.copy.is_dir())
+
+    def test_pointer_version_must_be_one(self) -> None:
+        pointer = json.loads(self.pointer.read_text())
+        pointer["version"] = 2
+        self.put_json(self.pointer, pointer)
+        result = self.run_helper("--execute")
+        self.assertNotEqual(result.returncode, 0, "FAIL: wrong S0 pointer version was accepted")
+        self.assertTrue(self.copy.is_dir())
+
+    def test_pointer_epoch_must_be_u64(self) -> None:
+        pointer = json.loads(self.pointer.read_text())
+        pointer["epoch"] = -1
+        self.put_json(self.pointer, pointer)
+        report = json.loads(self.report.read_text())
+        report["restored_epoch"] = 0
+        self.put_json(self.report, report)
+        result = self.run_helper("--execute")
+        self.assertNotEqual(result.returncode, 0, "FAIL: invalid S0 epoch was accepted")
+        self.assertTrue(self.copy.is_dir())
+
+    def test_pointer_descriptor_name_must_bind_the_hashes(self) -> None:
+        pointer = json.loads(self.pointer.read_text())
+        pointer["descriptor_name"] = "lastdb-recovery-v1-wrong.enc"
+        self.put_json(self.pointer, pointer)
+        result = self.run_helper("--execute")
+        self.assertNotEqual(result.returncode, 0, "FAIL: wrong descriptor name was accepted")
+        self.assertTrue(self.copy.is_dir())
+
+    def test_pointer_descriptor_hash_must_be_lowercase_sha256(self) -> None:
+        pointer = json.loads(self.pointer.read_text())
+        pointer["descriptor_sha256"] = "G" * 64
+        pointer["descriptor_name"] = (
+            f"lastdb-recovery-v1-{self.db_hash}-{self.sha}-{pointer['descriptor_sha256']}.enc"
+        )
+        self.put_json(self.pointer, pointer)
+        result = self.run_helper("--execute")
+        self.assertNotEqual(result.returncode, 0, "FAIL: invalid descriptor hash was accepted")
+        self.assertTrue(self.copy.is_dir())
+
+    def test_restore_report_must_name_exact_s0_pointer(self) -> None:
+        report = json.loads(self.report.read_text())
+        report["latest_key"] = "backup/latest"
+        self.put_json(self.report, report)
+        result = self.run_helper("--execute")
+        self.assertNotEqual(result.returncode, 0, "FAIL: wrong restore pointer was accepted")
+        self.assertTrue(self.copy.is_dir())
+
+    def test_restore_report_epoch_must_match_pointer(self) -> None:
+        report = json.loads(self.report.read_text())
+        report["restored_epoch"] += 1
+        self.put_json(self.report, report)
+        result = self.run_helper("--execute")
+        self.assertNotEqual(result.returncode, 0, "FAIL: wrong restore epoch was accepted")
+        self.assertTrue(self.copy.is_dir())
+
+    def test_rescue_counter_must_be_u64(self) -> None:
+        pointer = json.loads(self.pointer.read_text())
+        pointer["counter"] = 1 << 64
+        self.put_json(self.pointer, pointer)
+        ready_path = self.restored / ".rescue_s0_restore_ready"
+        ready = json.loads(ready_path.read_text())
+        ready["counter"] = pointer["counter"]
+        self.put_json(ready_path, ready)
+        report = json.loads(self.report.read_text())
+        report["counter"] = pointer["counter"]
+        self.put_json(self.report, report)
+        result = self.run_helper("--execute")
+        self.assertNotEqual(result.returncode, 0, "FAIL: invalid S0 counter was accepted")
         self.assertTrue(self.copy.is_dir())
 
     def test_missing_restored_receipt_refuses_delete(self) -> None:
