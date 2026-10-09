@@ -129,7 +129,7 @@ validate_shutdown_receipt() {
   ' "$path" >/dev/null || { fail shutdown-flush-receipt-mismatch; return 1; }
 }
 
-verify_stopped_waiver_session() {
+verify_stopped_session() {
   local home="$1" pid="$2" start_ts="$3" service="$4" session ledger ledger_size
   session="$home/current-session.json"
   ledger="$home/sessions.jsonl"
@@ -164,6 +164,16 @@ verify_stopped_waiver_session() {
     and .[0].last_heartbeat_ts >= .[0].start_ts
   ' "$session" >/dev/null || { fail stopped-session-marker-mismatch; return 1; }
   shasum -a 256 "$session" | awk '{print $1}'
+}
+
+verify_stopped_receipt_session() {
+  local home="$1" pid="$2" start_ts="$3" service="$4" session_sha
+  # A detached heartbeat can leave this marker after a clean exit. Accept it
+  # only with the same stopped-session proof and an exact final-flush receipt.
+  session_sha="$(verify_stopped_session "$home" "$pid" "$start_ts" "$service")" \
+    || return 1
+  validate_shutdown_receipt "$home" "$pid" "$start_ts" || return 1
+  printf '%s\n' "$session_sha"
 }
 
 require_plain_data_tree() {
@@ -243,7 +253,7 @@ copy_stopped_home() {
     cmp -s "$home/$WAIVER_CLAIM_FILE" "$copy/$WAIVER_CLAIM_FILE" \
       || { fail stopped-copy-waiver-claim-mismatch; return 1; }
   fi
-  if [ "$mode" = waiver ] && [ -n "$session_sha" ]; then
+  if [ -n "$session_sha" ]; then
     [ -f "$home/current-session.json" ] && [ ! -L "$home/current-session.json" ] \
       && [ -f "$copy/current-session.json" ] && [ ! -L "$copy/current-session.json" ] \
       && [ "$(shasum -a 256 "$home/current-session.json" | awk '{print $1}')" = "$session_sha" ] \
@@ -452,12 +462,10 @@ main() {
     && ! live_unix_socket_has_listener "$PRIMARY_HOME/data/folddb-full.sock" \
     || { fail old-daemon-still-serving; return 1; }
   if [ "$mode" = receipt ]; then
-    [ ! -e "$PRIMARY_HOME/current-session.json" ] \
-      && [ ! -L "$PRIMARY_HOME/current-session.json" ] \
-      || { fail stopped-home-live-session-present; return 1; }
-    validate_shutdown_receipt "$PRIMARY_HOME" "$OLD_PID" "$start_ts" || return 1
+    session_sha="$(verify_stopped_receipt_session "$PRIMARY_HOME" "$OLD_PID" "$start_ts" "$service")" \
+      || return 1
   else
-    session_sha="$(verify_stopped_waiver_session "$PRIMARY_HOME" "$OLD_PID" "$start_ts" "$service")" \
+    session_sha="$(verify_stopped_session "$PRIMARY_HOME" "$OLD_PID" "$start_ts" "$service")" \
       || return 1
     [ ! -e "$PRIMARY_HOME/.shutdown_flush_ready" ] \
       && [ ! -L "$PRIMARY_HOME/.shutdown_flush_ready" ] \
