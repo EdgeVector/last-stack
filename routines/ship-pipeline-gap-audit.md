@@ -54,8 +54,9 @@ heartbeat `ship-pipeline-gap-audit <ISO> noop busy-node` and exit.
 Run and capture JSON:
 
 ```bash
-last-stack-ship-pipeline-gap-snapshot --json > /tmp/ship-pipeline-gap-snapshot.json \
-  || "$last_stack/bin/last-stack-ship-pipeline-gap-snapshot" --json > /tmp/ship-pipeline-gap-snapshot.json
+d="$(mktemp -d "${TMPDIR:-/tmp}/ship-pipeline-gap-audit.XXXXXX")"
+last-stack-ship-pipeline-gap-snapshot --json > "$d/snapshot.json" \
+  || "$last_stack/bin/last-stack-ship-pipeline-gap-snapshot" --json > "$d/snapshot.json"
 ```
 
 Also skim (bounded, targeted — no full-brain sweeps):

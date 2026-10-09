@@ -36,6 +36,10 @@
 # `mutated=yes verdict=RED expect=RED restored=ok offtarget=none`.
 # brain: papercut-mutation-probe-cannot-state-which-assertion-the-red-should-be-about-20261004
 #
+# Name the assertion in a form that appears whether it passes or fails (a test
+# name, `case B`), not only in its failure text: a passing run that never prints
+# the pattern cannot be told from a filter that selected nothing, and is exit 7.
+#
 # --patch and --test are shell commands run with `bash -c` from the caller's
 # cwd. The patch must change at least one --target; creating a target that was
 # absent, or removing one that was present, both count as a mutation.
@@ -62,6 +66,16 @@
 #      has no verdict about the assertion it targeted. Only possible with
 #      --expect-red-on; a probe without one can never reach this code, which is
 #      the point of reporting expect_red_on= on every verdict line.
+#   7  NO VERDICT: THE TEST PASSED AND NEVER NAMED THE ASSERTION. --expect-red-on
+#      was given, --expect red, the test went GREEN, and nothing in its output
+#      matched the pattern. The test command may have selected no assertion
+#      that this probe targets (a cargo/pytest/go name filter that matched
+#      other tests is the recorded cause), so "the guard does not catch this
+#      defect" would be a claim about a guard that was never run. Widen the
+#      filter until the targeted assertion appears in the output, or correct
+#      the pattern. A green run whose output DID match is still exit 1: the
+#      assertion ran and passed. Only possible with --expect-red-on.
+#      brain: papercut-mutation-probe-reports-a-blind-guard-when-the-test-filter-selected-no-assertion-20261007
 set -euo pipefail
 
 name=""
@@ -349,7 +363,24 @@ if [ "$restored" = "FAILED" ]; then
 fi
 
 case "$expect" in
-  red)   [ "$verdict" = "RED" ]   || { printf 'last-stack-mutation-probe: %s expected RED and the test PASSED; the guard does not catch this defect\n' "$name" >&2; [ "$keep_on_fail" -eq 0 ] || snap_kept=1; exit 1; } ;;
+  red)
+    if [ "$verdict" != "RED" ]; then
+      [ "$keep_on_fail" -eq 0 ] || snap_kept=1
+      # 7. A GREEN run is only evidence about the guard if the assertion the
+      #    probe targets actually RAN. With --expect-red-on the output is in
+      #    hand: if the pattern never appears, the test command selected
+      #    something else, and "the guard does not catch this defect" would be
+      #    a false claim about a guard nobody ran.
+      if [ "$expect_red_on_set" -eq 1 ] && ! grep -E -q -- "$expect_red_on" "$test_output" 2>/dev/null; then
+        printf 'last-stack-mutation-probe: %s NO VERDICT. The test PASSED and nothing in its output matched --expect-red-on %s, so the test command may have selected no assertion this probe targets. That is NOT evidence that the guard is blind. Widen the test filter until the targeted assertion appears in the output, or correct the pattern.\n' \
+          "$name" "$expect_red_on" >&2
+        printf 'last-stack-mutation-probe: the test output it DID produce (last 20 lines):\n' >&2
+        tail -20 -- "$test_output" | sed 's/^/  test: /' >&2
+        exit 7
+      fi
+      printf 'last-stack-mutation-probe: %s expected RED and the test PASSED; the guard does not catch this defect\n' "$name" >&2
+      exit 1
+    fi ;;
   green) [ "$verdict" = "GREEN" ] || { printf 'last-stack-mutation-probe: %s expected GREEN and the test FAILED (test_rc=%s)\n' "$name" "$test_rc" >&2; [ "$keep_on_fail" -eq 0 ] || snap_kept=1; exit 1; } ;;
 esac
 

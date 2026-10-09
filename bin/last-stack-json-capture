@@ -35,8 +35,9 @@ usage: last-stack-json-capture <outfile> [--] <cmd> [args...]
 
 Exits with the wrapped command's exit status.
 
-  last-stack-json-capture /tmp/cards.json kanban list --column todo --json
-  jq -r '.cards[].slug' /tmp/cards.json
+  d="$(mktemp -d "${TMPDIR:-/tmp}/x.XXXXXX")"     # a fixed /tmp name is shared with every other agent
+  last-stack-json-capture "$d/cards.json" kanban list --column todo --json
+  jq -r '.cards[].slug' "$d/cards.json"
 USAGE
 }
 

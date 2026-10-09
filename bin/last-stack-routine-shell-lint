@@ -37,9 +37,21 @@
 #                     13-minute-old log read as 7 hours stale and nearly became
 #                     a p1 "the refresh agent is dead" finding). TZ=UTC on the
 #                     same line is correct and passes.
+#   seq-empty-range   seq A "$var" (the end is a variable): BSD seq counts DOWN
+#                     when the end is below the start, so seq 1 0 prints 1 and
+#                     0 and `for i in $(seq 1 "$n")` runs TWICE at n=0. It only
+#                     fires at zero, the case a zero-iteration control tests.
+#                     GNU gseq prints nothing. Use a C-style loop.
 #   printf-dash       printf '- x' / printf '--- x': a format that starts with - is an option
 #   bin-path          /bin/sed, /bin/grep, the /bin temp-file tool ... do not exist on macOS (they are in /usr/bin)
 #   mktemp-suffix     an X run that is not at the END of a mktemp template never substitutes on BSD mktemp
+#   tmp-fixed-scratch a fixed /tmp/<name> as a WRITE target: a redirect (> >> 2>
+#                     &>) or the first argument of last-stack-json-capture. /tmp
+#                     is shared by every process of this user, so two agents that
+#                     pick /tmp/card.json read each other's file (measured: an
+#                     agent read /tmp/fetch.err and got another agent's git
+#                     output). Reads, $TMPDIR paths, /tmp/x-$$ and nested
+#                     directories are not refused.
 #   zsh-status        (--shell zsh only) status is read-only in zsh
 #   zsh-mapfile       (--shell zsh only) mapfile/readarray do not exist in zsh
 #   zsh-word-split    (--shell zsh only) for x in $VAR does not split; one pass over the whole string
@@ -55,6 +67,18 @@
 #                     unknown option (measured 2026-10-08: brain papercut
 #                     close --fixed-by silently no-opped on 14 rows, with the
 #                     wrapper's own rc/echo still reporting success).
+#   zsh-nomatch-query  (--shell zsh only) an UNQUOTED word with ?name= in it,
+#                     typically gh api repos/o/r/commits/abc?per_page=1. zsh
+#                     reads ? as a glob character; with no matching file it
+#                     aborts the command before it runs ("no matches found").
+#                     The pipeline still exits 0 with an EMPTY capture, so a
+#                     later grep -c answers 0 -- the same answer as "my change
+#                     is not in the merge". bash passes the word through.
+#   zsh-modifier-expansion  (--shell zsh only) an unbraced $NAME followed by
+#                     :a :A :c :e :h :l :P :q :Q :r :s :t or :u, as in
+#                     git show "$REF:tests/x". zsh applies the modifier to the
+#                     value (:t keeps the tail, :l lowercases), so git gets a
+#                     wrong revision. "${REF}:tests/x" is correct in both shells.
 #   home-root-scan    a scanner walks $HOME itself, or reads a macOS
 #                     TCC-protected folder (Desktop/Documents/Downloads/
 #                     Pictures/Movies/Music); the walk BLOCKS on a privacy
@@ -92,6 +116,9 @@
 #                     and not refused.
 #
 # Text inside a heredoc body is data, so only heredoc-backticks looks there.
+# So is the interior of a quoted data argument (--body, --evidence,
+# --verified-by ..., git commit -m): a single-quoted one always, a double-quoted
+# one unless it holds $( , a backtick or ${ (those RUN). See blank_data_args.
 # Escape hatch: put "shell-lint-ok: <reason>" anywhere in the command.
 # home-root-scan also honors the older "home-scan-ok: <reason>" phrase, so a
 # command already annotated for the standalone Claude Code hook still passes.
@@ -127,8 +154,9 @@ while [ "$#" -gt 0 ]; do
     --quiet) quiet=1; shift ;;
     --list-rules)
       printf '%s\n' spin-wait heredoc-backticks dquote-backticks jq-optional-call jq-escaped-quote \
-        awk-match-array sed-inplace date-nanos stat-local-zulu printf-dash bin-path mktemp-suffix zsh-status zsh-mapfile \
-        zsh-word-split zsh-cond-flag-expansion home-root-scan piped-count-false-zero grep-binary-false-zero
+        awk-match-array sed-inplace date-nanos stat-local-zulu seq-empty-range printf-dash bin-path mktemp-suffix tmp-fixed-scratch zsh-status zsh-mapfile \
+        zsh-word-split zsh-cond-flag-expansion zsh-nomatch-query zsh-modifier-expansion home-root-scan \
+        piped-count-false-zero grep-binary-false-zero
       exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 64 ;;
@@ -167,12 +195,15 @@ rule_slug() {
     sed-inplace) echo papercut-macos-sed-inplace-requires-extension-20260923 ;;
     date-nanos) echo papercut-routine-zsh-date-percent-n-no-millisecond-timer-20260923 ;;
     stat-local-zulu) echo papercut-stat-t-format-prints-local-time-with-a-literal-z-so-a-fresh-log-reads-as-hours-stale-20261003 ;;
+    seq-empty-range) echo papercut-bsd-seq-counts-down-so-seq-1-0-runs-a-zero-iteration-loop-twice-20261001 ;;
     printf-dash) echo papercut-routine-printf-leading-dash-format-20260923 ;;
     bin-path) echo papercut-routine-hard-coded-bin-mktemp-20260923 ;;  # fix form: mktemp "$TMPDIR/x.XXXXXX"
     mktemp-suffix) echo papercut-mktemp-same-template-collides-within-one-second-20260925 ;;
+    tmp-fixed-scratch) echo papercut-fixed-tmp-scratch-name-collides-with-a-concurrent-agent-and-is-read-as-your-own-20261003 ;;
     zsh-status|zsh-mapfile) echo papercut-routine-shell-word-splitting ;;
     zsh-word-split) echo papercut-claude-zsh-for-loop-over-an-unquoted-scalar-does-not-word-split-20260926 ;;
     zsh-cond-flag-expansion) echo papercut-zsh-conditional-flag-expansion-silently-mangles-brain-close-fixedby-20261008 ;;
+    zsh-nomatch-query|zsh-modifier-expansion) echo papercut-zsh-nomatch-aborts-an-unquoted-gh-api-path-with-a-query-string-20261001 ;;
     home-root-scan) echo papercut-codex-routines-lack-home-root-scan-guard-20260927 ;;
     piped-count-false-zero) echo papercut-piped-count-from-a-home-path-producer-answers-zero-when-the-path-is-absent-20261003 ;;
     grep-binary-false-zero) echo papercut-grep-c-symbol-on-bun-binary-answers-zero-false-negative-20261008 ;;
@@ -211,6 +242,9 @@ rule_fix() {
       "To compare ages, never format: age_s=\$(( \$(date +%s) - \$(stat -f %m -- \"\$f\") ))" \
       "For a human-readable UTC stamp: date -u -r \"\$(stat -f %m -- \"\$f\")\" +%FT%TZ" \
       "TZ=UTC on the same line also gives the right value and is NOT refused, but it is one missing TZ= away from the same lie; prefer date -u -r." ;;
+    seq-empty-range) printf '%s\n' \
+      "BSD/macOS seq counts DOWN when the end is below the start: seq 1 0 prints 1 and then 0, so for i in \$(seq 1 \"\$n\") runs TWICE when n is 0 instead of never. The shape fails only at zero, so a zero-iteration control is the one that breaks. GNU gseq prints nothing, so the result depends on which seq the PATH finds." \
+      "Use a C-style loop, which runs zero times at n=0 in bash and zsh: for ((i = 1; i <= n; i++)); do ...; done" ;;
     printf-dash) printf '%s\n' \
       "A printf format that starts with - is read as an option (bash: printf: --: invalid option)." \
       "Use: printf '%s\\n' '- item'   or   printf -- '- item\\n'" ;;
@@ -221,6 +255,10 @@ rule_fix() {
       "BSD/macOS mktemp substitutes a run of X's only at the END of the template. With anything after it (card.XXXXXX.json) there is NO substitution: the literal name is created, so the FIRST call succeeds and every later call with that template fails 'mkstemp failed ... File exists' until someone deletes the literal file." \
       "Put the X run last: f=\"\$(mktemp \"\${TMPDIR:-/tmp}/card.XXXXXX\")\"" \
       "When the extension matters, take a directory: f=\"\$(mktemp -d \"\${TMPDIR:-/tmp}/card.XXXXXX\")/card.json\"" ;;
+    tmp-fixed-scratch) printf '%s\n' \
+      "A fixed /tmp/<name> is shared by every process of this user. Two agents that pick the same name read each other's file: a board dump, a git log or a card body from another run, taken as your own. A stale /tmp/card.json can feed another card's body into a kanban add --body that REPLACES the card." \
+      "Make a fresh directory per run and write inside it: d=\"\$(mktemp -d \"\$TMPDIR/x.XXXXXX\")\"; last-stack-json-capture \"\$d/sit.json\" -- situations list --json; jq . \"\$d/sit.json\"" \
+      "A lock or a hand-off that another process finds BY NAME needs a fixed path: add '# shell-lint-ok: <reason>'." ;;
     zsh-status) printf '%s\n' \
       "zsh makes status a read-only special variable (same as \$?)." \
       "Use another name: rc, pr_state, ci_state." ;;
@@ -234,6 +272,12 @@ rule_fix() {
       "zsh has no SH_WORD_SPLIT: \${var:+--flag \"\$val\"} keeps the flag and the quoted value as ONE word, so a CLI sees a single argument '--flag value' and reports an unknown option. bash would split this into two words; zsh never does, with no error." \
       "Pass the flag and its value as two separate literal arguments, built with an array: args=(); [ -n \"\$val\" ] && args+=(--flag \"\$val\"); cmd \"\${args[@]}\"" \
       "Then NEVER trust a wrapper's rc/echo after a brain/kanban mutation -- point-read the record back before reporting success." ;;
+    zsh-nomatch-query) printf '%s\n' \
+      "zsh reads an unquoted ? as a glob character. When no file matches, zsh aborts the command BEFORE it runs ('no matches found'). A pipeline still exits 0 with an EMPTY capture, and a later grep -c answers 0, which reads as 'the change is not there'." \
+      "Quote the word: gh api 'repos/o/r/commits/abc?per_page=1'   (the same applies to curl and any URL with a query string)" ;;
+    zsh-modifier-expansion) printf '%s\n' \
+      "In zsh, \$NAME:t, \$NAME:l, \$NAME:s ... are modifiers applied to the value: \"\$REF:tests/x\" is the TAIL of \$REF followed by 'ests/x', so git receives a wrong revision. Every path that starts with a, A, c, e, h, l, P, q, Q, r, s, t or u is affected. bash keeps the text." \
+      "Brace the name: git show \"\${REF}:tests/x\"   (correct in both shells)" ;;
     home-root-scan) printf '%s\n' \
       "macOS treats \$HOME/Desktop, \$HOME/Documents, \$HOME/Downloads and the Photos library as protected. A routine agent runs under routinesd, so the walk raises a privacy prompt attributed to \`routines\` and BLOCKS until a human clicks it." \
       "Name the root you actually need: find \"\$HOME/code\" -maxdepth 4 -name '<what>'   or   find \"\$HOME/.routines\" \"\$HOME/.last-stack\" \"\$HOME/.fkanban\" -maxdepth 4 -name '<what>'" \
@@ -281,6 +325,12 @@ re_awk_word='(^|[^[:alnum:]_-])awk([[:space:]]|$)'
 re_awk_match='match\([^,()]*,[[:space:]]*/([^/]|\\/)*/[[:space:]]*,[[:space:]]*[[:alpha:]_]'
 q="'"
 re_sed_inplace='(^|[^[:alnum:]_-])sed[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*-i[[:space:]]+([^'"$q"'"[:space:]-]|'"$q"'[^'"$q"']|"[^"]|-e[[:space:]]|-E[[:space:]])'
+# seq-empty-range: `seq` with up to three plain arguments and then an argument
+# that starts with $ (a variable, ${..} or $((..))). The plain arguments exclude
+# $ | ; & ( ) < >, so the chain stops at a pipe, a list separator or a redirect:
+# `seq 1 5 > "$f"` is not a bound. A leading / is allowed (/usr/bin/seq); an
+# alphanumeric before seq is not (gseq counts correctly).
+re_seq_empty_range='(^|[^[:alnum:]_.-])seq([[:space:]]+[^[:space:]|;&()<>$]+){0,3}[[:space:]]+"?\$'
 re_printf_dash='(^|[;&|({[:space:]])printf[[:space:]]+["'"'"']-'
 # /bin/<tool> names below; the temp-file tool is listed as mk[t]emp (same match). XXXXXX
 # A template whose X run is followed by another TEMPLATE character never
@@ -292,6 +342,17 @@ re_printf_dash='(^|[;&|({[:space:]])printf[[:space:]]+["'"'"']-'
 # template that ENDS in X's inside $( ) is not a false positive.
 re_mktemp_suffix='(^|[^[:alnum:]_-])mktemp([[:space:]]+-[^[:space:]]+)*[[:space:]]+["'"'"']?[^[:space:]"'"'"'`]*XXX+[^[:space:]"'"'"'`(){}|&;<>X]'  # mktemp-ok: this is the recogniser for an mktemp call, not a call
 re_bin_path='(^|[^[:alnum:]_./-])/bin/(mk[t]emp|sed|grep|egrep|awk|find|xargs|sort|uniq|head|tail|wc|tr|cut|jq|env|dirname|basename|timeout|readlink|stat)([^[:alnum:]_-]|$)'
+# tmp-fixed-scratch: a literal /tmp/<name> (or /private/tmp/<name>) that is
+# written. <name> is ONE path component with no $ and no quote, so $TMPDIR/..,
+# ${TMPDIR:-/tmp}/.., /tmp/x-$$ and a nested /tmp/claude-501/../x never match,
+# and the terminator stops the match from ending inside a longer path. The
+# write side is a redirect (> >> 2> &>, with or without a space) or the first
+# argument of last-stack-json-capture; reading a fixed name is not refused.
+# Brain: papercut-fixed-tmp-scratch-name-collides-with-a-concurrent-agent-and-is-read-as-your-own-20261003
+tmp_name='(/private)?/tmp/[^/[:space:]"'"'"'`;|&()<>$]+'
+tmp_end='(["'"'"';|&)<>]|[[:space:]]|$)'
+re_tmp_fixed_redirect='>[[:space:]]*["'"'"']?'"$tmp_name$tmp_end"
+re_tmp_fixed_capture='(^|[^[:alnum:]_-])last-stack-json-capture["'"'"']?[[:space:]]+["'"'"']?'"$tmp_name$tmp_end"
 re_date_nanos='(^|[^[:alnum:]_-])date[[:space:]][^;|&]*%[0-9]*N'
 # stat-local-zulu: a `stat` call whose -t format ends in a literal Z. The
 # char before that final Z must not be `%`, because `%Z` is a real strftime
@@ -323,6 +384,17 @@ re_zsh_word_split='(^|[^[:alnum:]_])for[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:spac
 # what scopes the match to the composed-flag shape.
 # Brain: papercut-zsh-conditional-flag-expansion-silently-mangles-brain-close-fixedby-20261008
 re_zsh_cond_flag_expansion='\$\{[A-Za-z_][A-Za-z0-9_]*:[+-][[:space:]]*--?[A-Za-z][A-Za-z0-9_-]*[[:space:]]+"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?[^}]*"'
+# zsh-nomatch-query: a word that does not start with a quote and holds
+# <word char>?<name>=. The class before the ? excludes quotes, whitespace and =,
+# so a quoted word ("..." or '...'), a NAME=value assignment (not filename
+# expanded) and a ${x:?msg} check never match. A quoted string with a space
+# before the ? can still match; # shell-lint-ok: covers it.
+# Brain: papercut-zsh-nomatch-aborts-an-unquoted-gh-api-path-with-a-query-string-20261001
+re_zsh_nomatch_query='(^|[[:space:]])[^"'"'"'[:space:]=]*[A-Za-z0-9_/.-]\?[A-Za-z_][A-Za-z0-9_]*='
+# zsh-modifier-expansion: the modifier letters zsh really applies to a scalar
+# (measured on zsh 5.9: a A c e h l P q Q r s t u). p, d, b, m, n and the rest
+# leave the text alone, so "$host:port" is not refused.
+re_zsh_modifier_expansion='\$[A-Za-z_][A-Za-z0-9_]*:[aAcehlPqQrstu]'
 
 # home-root-scan: normalize $HOME / ${HOME} / ~ to the real home path (as
 # text, not by expanding anything) so a scanner pointed at any written form
@@ -423,64 +495,206 @@ re_grep_count_binary="(^|[^[:alnum:]_-])grep[[:space:]]+(-[[:alnum:]]*[cq][[:aln
 # worth re-deriving which specific grep invocation it was attached to.
 re_grep_binary_safe='(^|[^[:alnum:]_-])grep[[:space:]]+-[[:alnum:]]*a[[:alnum:]]*([[:space:]]|$)|--text([[:space:]]|$)|--binary-files[=[:space:]]+text'
 
+# Data arguments. Every code rule below matches the line TEXT, so prose inside a
+# quoted --body / --evidence / --verified-by read as code and was refused: an
+# agent that files or closes a papercut quotes the very pattern it reports
+# (measured 2026-10-08, stat-local-zulu refused a --verified-by sentence).
+# blank_data_args prints the command with the interior of each such argument
+# replaced by spaces (newlines kept, so line N is still line N). The code rules
+# then read that text. dquote-backticks and heredoc-backticks read the ORIGINAL.
+# Brain: papercut-shell-lint-stat-local-zulu-matches-whole-line-prose-not-shell-code-20261008
+#
+# What counts as data, and what does not:
+#   * Only a quoted string that DIRECTLY follows a data flag (--body --evidence
+#     --symptom --title --summary --verified-by --fixed-by --reason --message
+#     --note --description, after a space or =) or `git commit -m`. A bare -m
+#     is not a data flag: `du -m "$HOME"` is a megabyte scan, not a message.
+#   * A single-quoted string is pure data. A double-quoted string is data only
+#     when its interior holds no $( , no backtick and no ${ : those three RUN
+#     inside double quotes, so such a string stays visible to every rule.
+#   * The lexer follows quotes, $( ), ${ }, backticks, comments, \ escapes, $'..'
+#     and heredoc bodies, so an apostrophe in a comment or a heredoc cannot open
+#     a string that swallows later code. Any construct it cannot close (an
+#     unterminated string or heredoc) cancels ALL blanking: the text is then
+#     scanned whole, as before. awk failing does the same (see below).
+# POSIX ERE and awk only: macOS ships bash 3.2 and BSD awk 20200816.
+blank_data_args() {
+  awk '
+  function push(kind, cl) { sp++; sk[sp] = kind; sc[sp] = cl; sd[sp] = 0 }
+  function isdata(at,    from, pre) {
+    from = at - 240; if (from < 1) from = 1
+    pre = substr(s, from, at - from)
+    return match(pre, DATA_RE) || match(pre, GIT_RE)
+  }
+  function rec(a, b, dq,    t) {
+    if (b < a) return
+    t = substr(s, a, b - a + 1)
+    if (dq && (index(t, "$(") || index(t, BT) || index(t, "${"))) return
+    nr++; ra[nr] = a; rb[nr] = b
+  }
+  BEGIN {
+    SQ = "\047"; DQ = "\042"; BT = "\140"; NL = "\n"
+    DATA_RE = "(^|[ \t\n;&|(])--(body|evidence|symptom|title|summary|verified-by|fixed-by|reason|message|note|description)(=|[ \t]+)$"
+    GIT_RE = "(^|[ \t\n;&|(])git[ \t]+([^;&|\n]*[ \t])?commit[ \t]+([^;&|\n]*[ \t])?-[A-Za-z]*m[ \t]+$"
+    while ((getline ln) > 0) s = s ln NL
+    n = length(s); ok = 1; i = 1; sp = 0; push("C", "")
+    while (ok && i <= n) {
+      c = substr(s, i, 1); d = substr(s, i + 1, 1)
+      if (sk[sp] == "D") {
+        if (c == "\\") i += 2
+        else if (c == DQ) { if (sd[sp] > 0) rec(sd[sp] + 1, i - 1, 1); sp--; i++ }
+        else if (c == "$" && d == "(") { push("C", ")"); i += 2 }
+        else if (c == "$" && d == "{") { push("C", "}"); i += 2 }
+        else if (c == BT) { push("C", BT); i++ }
+        else i++
+        continue
+      }
+      if (c == "\\") { i += 2; continue }
+      if (c == SQ) {
+        j = index(substr(s, i + 1), SQ)
+        if (j == 0) { ok = 0; break }
+        if (isdata(i)) rec(i + 1, i + j - 1, 0)
+        i += j + 1; continue
+      }
+      if (c == DQ) { push("D", ""); if (isdata(i)) sd[sp] = i; i++; continue }
+      if (c == "$") {
+        if (d == "(") { push("C", ")"); i += 2; continue }
+        if (d == "{") { push("C", "}"); i += 2; continue }
+        if (d == SQ) {
+          j = i + 2
+          while (j <= n && substr(s, j, 1) != SQ) { if (substr(s, j, 1) == "\\") j++; j++ }
+          if (j > n) { ok = 0; break }
+          i = j + 1; continue
+        }
+        i++; continue
+      }
+      if (c == BT) { if (sc[sp] == BT) sp--; else push("C", BT); i++; continue }
+      if (c == "(") { push("C", ")"); i++; continue }
+      if (c == ")") { if (sc[sp] == ")") sp--; i++; continue }
+      if (c == "}") { if (sc[sp] == "}") sp--; i++; continue }
+      if (c == "#" && sc[sp] != "}") {
+        p = (i == 1) ? NL : substr(s, i - 1, 1)
+        if (p == " " || p == "\t" || p == NL || p == ";" || p == "&" || p == "|" || p == "(") {
+          j = index(substr(s, i), NL)
+          if (j == 0) i = n + 1; else i += j - 1
+          continue
+        }
+      }
+      if (c == "<" && d == "<") {
+        if (substr(s, i + 2, 1) == "<") { i += 3; continue }
+        j = i + 2; strip = 0
+        if (substr(s, j, 1) == "-") { strip = 1; j++ }
+        while (substr(s, j, 1) == " " || substr(s, j, 1) == "\t") j++
+        q = substr(s, j, 1)
+        if (q == DQ || q == SQ || q == "\\") j++
+        if (match(substr(s, j, 256), "^[A-Za-z_][A-Za-z0-9_.-]*")) {
+          npend++; pd[npend] = substr(s, j, RLENGTH); ps[npend] = strip
+          i = j + RLENGTH
+          if ((q == DQ || q == SQ) && substr(s, i, 1) == q) i++
+          continue
+        }
+        i += 2; continue
+      }
+      if (c == NL) {
+        i++
+        for (h = 1; h <= npend && ok; h++) {
+          found = 0
+          while (i <= n) {
+            j = index(substr(s, i), NL)
+            if (j == 0) { hl = substr(s, i); i = n + 1 } else { hl = substr(s, i, j - 1); i += j }
+            if (ps[h]) sub(/^\t+/, "", hl)
+            if (hl == pd[h]) { found = 1; break }
+          }
+          if (!found) ok = 0
+        }
+        npend = 0
+        continue
+      }
+      i++
+    }
+    if (!ok || sp != 1) nr = 0
+    out = ""; pos = 1
+    for (r = 1; r <= nr; r++) {
+      seg = substr(s, ra[r], rb[r] - ra[r] + 1); gsub(/[^\n]/, " ", seg)
+      out = out substr(s, pos, ra[r] - pos) seg
+      pos = rb[r] + 1
+    }
+    printf "%s", out substr(s, pos)
+  }'
+}
+
+# check_command_line <line> <blanked line>: the code rules read the blanked
+# text, dquote-backticks the original; a rejection prints the original.
 check_command_line() {
-  local line="$1"
-  if [[ $line =~ $re_spin ]] || [[ $line =~ $re_spin_b ]]; then
+  local line="$1" bline="$2"
+  if [[ $bline =~ $re_spin ]] || [[ $bline =~ $re_spin_b ]]; then
     reject spin-wait "$line"
   fi
   if [[ $line =~ $re_dquote_backticks ]]; then
     reject dquote-backticks "$line"
   fi
-  if [[ $line =~ $re_jq_word ]]; then
-    if [[ $line =~ $re_jq_optional_call ]]; then
+  if [[ $bline =~ $re_jq_word ]]; then
+    if [[ $bline =~ $re_jq_optional_call ]]; then
       reject jq-optional-call "$line"
     fi
-    if [[ $line =~ $re_jq_escaped_quote ]]; then
+    if [[ $bline =~ $re_jq_escaped_quote ]]; then
       reject jq-escaped-quote "$line"
     fi
   fi
-  if [[ $line =~ $re_awk_word ]] && [[ $line =~ $re_awk_match ]]; then
+  if [[ $bline =~ $re_awk_word ]] && [[ $bline =~ $re_awk_match ]]; then
     reject awk-match-array "$line"
   fi
-  if [[ $line =~ $re_sed_inplace ]]; then
+  if [[ $bline =~ $re_sed_inplace ]]; then
     reject sed-inplace "$line"
   fi
-  if [[ $line =~ $re_date_nanos ]]; then
+  if [[ $bline =~ $re_date_nanos ]]; then
     reject date-nanos "$line"
   fi
-  if [[ $line =~ $re_stat_word ]] && [[ $line =~ $re_stat_zulu_fmt ]] \
-     && ! [[ $line =~ $re_tz_utc ]]; then
+  if [[ $bline =~ $re_stat_word ]] && [[ $bline =~ $re_stat_zulu_fmt ]] \
+     && ! [[ $bline =~ $re_tz_utc ]]; then
     reject stat-local-zulu "$line"
   fi
-  if [[ $line =~ $re_printf_dash ]]; then
+  if [[ $bline =~ $re_seq_empty_range ]]; then
+    reject seq-empty-range "$line"
+  fi
+  if [[ $bline =~ $re_printf_dash ]]; then
     reject printf-dash "$line"
   fi
-  if [[ $line =~ $re_bin_path ]]; then
+  if [[ $bline =~ $re_bin_path ]]; then
     reject bin-path "$line"
   fi
-  if [[ $line =~ $re_mktemp_suffix ]]; then
+  if [[ $bline =~ $re_mktemp_suffix ]]; then
     reject mktemp-suffix "$line"
   fi
-  if [[ $line =~ $re_grep_count_binary ]] && ! [[ $line =~ $re_grep_binary_safe ]]; then
+  if [[ $bline =~ $re_tmp_fixed_redirect ]] || [[ $bline =~ $re_tmp_fixed_capture ]]; then
+    reject tmp-fixed-scratch "$line"
+  fi
+  if [[ $bline =~ $re_grep_count_binary ]] && ! [[ $bline =~ $re_grep_binary_safe ]]; then
     reject grep-binary-false-zero "$line"
   fi
   if [ "$shell_kind" = zsh ]; then
-    if [[ $line =~ $re_zsh_status ]]; then
+    if [[ $bline =~ $re_zsh_status ]]; then
       reject zsh-status "$line"
     fi
-    if [[ $line =~ $re_zsh_mapfile ]]; then
+    if [[ $bline =~ $re_zsh_mapfile ]]; then
       reject zsh-mapfile "$line"
     fi
-    if [[ $line =~ $re_zsh_word_split ]]; then
+    if [[ $bline =~ $re_zsh_word_split ]]; then
       reject zsh-word-split "$line"
     fi
-    if [[ $line =~ $re_zsh_cond_flag_expansion ]]; then
+    if [[ $bline =~ $re_zsh_cond_flag_expansion ]]; then
       reject zsh-cond-flag-expansion "$line"
+    fi
+    if [[ $bline =~ $re_zsh_nomatch_query ]]; then
+      reject zsh-nomatch-query "$line"
+    fi
+    if [[ $bline =~ $re_zsh_modifier_expansion ]]; then
+      reject zsh-modifier-expansion "$line"
     fi
   fi
   if [ -n "$home" ]; then
     local hline
-    hline="$(normalize_home_line "$line")"
+    hline="$(normalize_home_line "$bline")"
     # home-root-scan honors its own older escape phrase; piped-count-false-zero
     # does NOT -- it is a different defect, so it takes only the generic
     # "shell-lint-ok:" hatch that `reject` already enforces for every rule.
@@ -527,7 +741,19 @@ open_next_body() {
   in_body=1
 }
 
+# Blank the data arguments once, then walk the original and the blanked text in
+# step (same line count). A missing blanked line, or awk failing, falls back to
+# the original text: the lint then reads the whole command, as it always did.
+blanked_text="$(printf '%s\n' "$command_text" | blank_data_args)" || blanked_text="$command_text"
+blank_lines=()
+while IFS= read -r bl || [ -n "$bl" ]; do
+  blank_lines+=("$bl")
+done <<< "$blanked_text"
+lineno=0
+
 while IFS= read -r line || [ -n "$line" ]; do
+  bline="${blank_lines[$lineno]-$line}"
+  lineno=$((lineno + 1))
   if [ "$in_body" -eq 1 ]; then
     probe="$line"
     if [ "$body_strip" = 1 ]; then
@@ -547,8 +773,8 @@ while IFS= read -r line || [ -n "$line" ]; do
     fi
     continue
   fi
-  check_command_line "$line"
-  queue_heredocs "$line"
+  check_command_line "$line" "$bline"
+  queue_heredocs "$bline"
   if [ "${#pending[@]}" -gt 0 ]; then
     body_start_line="$line"
     open_next_body

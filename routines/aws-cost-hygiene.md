@@ -63,8 +63,9 @@ do
 done
 
 if [ -n "$PROBE" ]; then
-  "$PROBE" --json > /tmp/aws-cost-hygiene.json
-  "$PROBE" | tee /tmp/aws-cost-hygiene.txt
+  d="$(mktemp -d "${TMPDIR:-/tmp}/aws-cost-hygiene.XXXXXX")"
+  "$PROBE" --json > "$d/aws-cost-hygiene.json"
+  "$PROBE" | tee "$d/aws-cost-hygiene.txt"
   RC=$?
 else
   echo "PROBE_MISSING — cannot measure" >&2

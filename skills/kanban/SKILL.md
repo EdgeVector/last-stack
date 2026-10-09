@@ -204,14 +204,16 @@ inline it with a nested heredoc (`--body "$(cat <<'EOF' ... EOF)"`) — that
 mangles and can silently produce an empty card.
 
 ```bash
-# 1. write the spec
-cat > /tmp/card-body.md <<'EOF'
+# 1. write the spec (a fresh directory per run: /tmp is shared by every agent,
+#    and a stale fixed name can feed another card's body into `kanban add`)
+d="$(mktemp -d "${TMPDIR:-/tmp}/card-body.XXXXXX")"
+cat > "$d/card-body.md" <<'EOF'
 ...full markdown body...
 EOF
 # 2. file the card (stdin body)
 kanban add my-slug \
   --title "Short imperative title" \
-  --column todo --tags "app,cli,perf" < /tmp/card-body.md
+  --column todo --tags "app,cli,perf" < "$d/card-body.md"
 # 3. verify it landed
 kanban show my-slug | head -8
 ```

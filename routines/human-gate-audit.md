@@ -121,9 +121,10 @@ active investigation card / in-run rec.
 ### 1. Inventory holds
 
 ```bash
-kanban list --column backlog --limit 200 --json > /tmp/hga-backlog.json
-kanban list --column todo --limit 100 --json > /tmp/hga-todo.json
-kanban list --column doing --limit 50 --json > /tmp/hga-doing.json
+d="$(mktemp -d "${TMPDIR:-/tmp}/hga.XXXXXX")"
+kanban list --column backlog --limit 200 --json > "$d/hga-backlog.json"
+kanban list --column todo --limit 100 --json > "$d/hga-todo.json"
+kanban list --column doing --limit 50 --json > "$d/hga-doing.json"
 ```
 
 Select every card with `block_status` in

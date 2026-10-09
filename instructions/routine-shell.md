@@ -19,13 +19,24 @@ fix, and the command does not run.
 | awk-match-array | macOS awk has no `match(s, /re/, arr)` | `sed -n 's/^KEY:[[:space:]]*//p' file` |
 | sed-inplace | macOS `sed -i` takes the next word as an extension | `sed -i '' 's/a/b/' file` |
 | date-nanos | macOS `date` has no `%N` | `gdate +%s%3N` |
+| seq-empty-range | BSD `seq 1 0` counts down and prints `1` and `0`, so `for i in $(seq 1 "$n")` runs twice when `n` is 0 | `for ((i = 1; i <= n; i++)); do ...; done` |
 | printf-dash | `printf '- x'` reads `-` as an option | `printf '%s\n' '- x'` |
 | bin-path | `/bin/mktemp` does not exist on macOS | `mktemp "$TMPDIR/x.XXXXXX"` (a bare call ignores TMPDIR) |
+| tmp-fixed-scratch | a fixed `/tmp/<name>` as a WRITE target (`> /tmp/x.json`, `2>/tmp/x.err`, `last-stack-json-capture /tmp/x.json`): `/tmp` is shared by every agent, so two runs read each other's file | `d="$(mktemp -d "$TMPDIR/x.XXXXXX")"`, then `> "$d/x.json"`; a lock another process finds by name: `# shell-lint-ok: <reason>` |
 | zsh-status (Claude) | `status` is read-only in zsh | `rc`, `pr_state`, `ci_state` |
 | zsh-mapfile (Claude) | zsh has no `mapfile` | `while IFS= read -r x; do ...; done < "$file"` |
 | zsh-word-split (Claude) | `for x in $VAR` does not split; one pass over the whole string | `FILES=(a b c)` and `for x in "${FILES[@]}"`, in a bash script file |
 | zsh-cond-flag-expansion (Claude) | `${v:+--flag "$x"}` unquoted stays ONE word in zsh (bash splits it); a CLI sees one bad argument, not two | `args=(); [ -n "$x" ] && args+=(--flag "$x"); cmd "${args[@]}"` |
+| zsh-nomatch-query (Claude) | an unquoted `?name=` word such as `gh api repos/o/r/commits/abc?per_page=1`: zsh reads `?` as a glob, aborts BEFORE the command runs, and a pipeline still exits 0 with an empty capture | quote the URL: `gh api 'repos/o/r/commits/abc?per_page=1'` |
+| zsh-modifier-expansion (Claude) | `"$REF:tests/x"`: zsh applies the `:t` modifier to `$REF` (also `:a :A :c :e :h :l :P :q :Q :r :s :u`), so git gets a wrong revision | `"${REF}:tests/x"` |
 | home-root-scan | a scanner walks `$HOME`/`~` itself, or reads Desktop/Documents/Downloads/Pictures/Movies/Music — macOS BLOCKS on a privacy prompt attributed to `routines` | `find "$HOME/code" -maxdepth 4 ...`; escape with `# shell-lint-ok: <reason>` or `# home-scan-ok: <reason>` |
+
+The guard reads code, not prose. The interior of a quoted `--body`,
+`--evidence`, `--verified-by`, `--title`, `--summary`, `--symptom`,
+`--fixed-by`, `--reason`, `--message`, `--note` or `--description` argument (and
+of `git commit -m`) is not scanned, so a papercut text may quote `sed -i` or
+`stat -t`. A single-quoted argument is always data. A double-quoted one is
+scanned whole when it holds `$(`, a backtick or `${`, because those run.
 
 Hazards that no guard can see:
 

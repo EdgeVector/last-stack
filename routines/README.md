@@ -285,7 +285,8 @@ frontmatter suggests a cadence. The pattern every routine follows:
    `routines/<routine>.md` directly. Use `last-stack-routine-read` so missing
    files and stale installed checkouts produce one actionable error:
    ```bash
-   "$last_stack/bin/last-stack-routine-read" "<routine>" >/tmp/last-stack-routine.md
+   d="$(mktemp -d "${TMPDIR:-/tmp}/routine-read.XXXXXX")"   # never a fixed /tmp name: concurrent agents share /tmp
+   "$last_stack/bin/last-stack-routine-read" "<routine>" > "$d/routine.md"
    ```
    On staleness the reader **auto-heals when the install tree is clean**: it
    runs `last-stack-self-upgrade` (fast-forward + `./setup`), then re-checks.
