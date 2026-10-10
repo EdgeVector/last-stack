@@ -35,11 +35,10 @@ for command_name in jq shasum; do
   fi
 done
 
-fixture_test="$ROOT/tests/last-stack-artifact-host-track-proof.sh"
 fleet_gate="$ROOT/bin/last-stack-fleet-channel-freshness-gate"
 live_proof="$ROOT/bin/last-stack-artifact-host-track-proof"
 
-for required_file in "$fixture_test" "$fleet_gate" "$live_proof"; do
+for required_file in "$fleet_gate" "$live_proof"; do
   if [ ! -f "$required_file" ]; then
     finish FAIL "The proof input is absent: $required_file."
   fi
@@ -47,8 +46,6 @@ done
 
 if [ "$MODE" = offline ]; then
   set +e
-  fixture_output="$(HOME="$TMP/home" bash "$fixture_test" 2>&1)"
-  fixture_rc=$?
   fleet_output="$(HOME="$TMP/home" "$fleet_gate" \
     --registry "$ROOT/config/host-track/apps.json" \
     --registry-only --proof "$TMP/fleet-proof.md" 2>&1)"
@@ -59,14 +56,8 @@ if [ "$MODE" = offline ]; then
 Artifact-driven Host Track terminal proof.
 
 Mode: offline.
-The fixture test creates its own throwaway HOME and artifact store.
 The fleet gate checks registry policy only.
-Neither command opens a LastDB home or changes shared infrastructure.
-
-Fixture proof rc=$fixture_rc
-\`\`\`text
-$fixture_output
-\`\`\`
+The command does not open a LastDB home or change shared infrastructure.
 
 Fleet registry gate rc=$fleet_rc
 \`\`\`text
@@ -75,7 +66,7 @@ $fleet_output
 EOF
   )"
 
-  if [ "$fixture_rc" -ne 0 ] || [ "$fleet_rc" -ne 0 ]; then
+  if [ "$fleet_rc" -ne 0 ]; then
     finish FAIL "$body"
   fi
   finish PASS-OFFLINE "$body"

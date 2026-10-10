@@ -4,6 +4,11 @@ cadence: every 5 minutes
 description: Drain the ready board queue fast (one unit default, optional second sequential) — YOU perform kanban-agent WORK mode yourself in an isolated worktree and drive to a MERGED PR. No subagents, no collab SpawnAgent, no background harness fan-out. If ready=0 (including full todo of unclaimable cards), exit immediately (no claim, no idle invent) to save credits; optional Idle mode smart-heal only when explicitly requested.
 ---
 
+No-tests policy: `instructions/no-tests.md`; Situation
+`no-tests-all-repos-20261009`. Remove stale test and test coverage requirements
+from any card or instruction you use. Keep non-test product proof and gates.
+
+
 ## NO REVIEW COLUMN (Tom 2026-07-16 — won't-undo)
 
 There is **no `review` column**. Board columns are only:
@@ -690,8 +695,8 @@ Why this runs after the claim, not before, as of 2026-09-05:
   checkout, or run `last-stack-repark-shared-checkouts` to salvage attributable
   leftovers. Do not leave abandoned root-checkout edits behind.
 4. **Implement** per the card brief and repo conventions. Honor OUT OF SCOPE.
-   Run VERIFY commands from the brief; validate by running the app when the
-   brief requires it, not only unit tests. Before starting any long-running
+   Remove test commands from VERIFY. Run the remaining non-test commands
+   and the app proof that the brief requires. Before starting any long-running
    VERIFY / END STATE proof such as a deploy wait, cloud sync drain, status
    watch, or log-follow, recompute remaining budget. Do not begin the wait
    unless it can plausibly finish with at least a 5-minute closeout margin. If
@@ -900,7 +905,7 @@ Cheap read only — do **not** run a full fold capture every idle fire:
   weekly growth cards, or a recent snapshot summary if already on disk/brain.
 - If you can identify **one** localizable hotspot (oversized file, dead export,
   obvious duplication, unused path) with a **small** fix:
-  - **High confidence** (delete-only / internal, tests prove safe) → implement
+  - **High confidence** (delete-only / internal, source and app checks support the change) → implement
     as a normal WORK unit (synthetic card optional but preferred for audit).
   - **Medium/low or API/data/crypto** → **file a PR card** only for human/groom
     pickup; do not force a large refactor.
@@ -917,7 +922,7 @@ Only if (1)–(2) yield nothing. At most one of:
 
 **4) Low-risk simplification (fallback)**  
 File **one** small improvement for later pickup:
-- Prefer: unused private code, dead flags, clear bug with test, redundant
+- Prefer: unused private code, dead flags, clear bug with observed evidence, redundant
   wrapper, docs that block installs (dev-only).
 - Prefer repos with green CI and no open migration/human gate on that surface.
 - Create a full PR-shaped kanban card in `todo` with Repo/Base/Branch/Kind,

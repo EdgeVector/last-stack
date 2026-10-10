@@ -19,22 +19,16 @@ write_report() {
 }
 
 if [ "$MODE" = "offline" ]; then
-  fixture="$ROOT/harness/north-star/org-cloud-membership/offline-fixture.sh"
-  if [ ! -f "$fixture" ]; then
-    write_report "FAIL org cloud membership harness contract" \
-      "offline fixture missing under packed harness/ tree"
+  if [ ! -x "$ROOT/bin/last-stack-org-cloud-membership-dogfood" ]; then
+    write_report "FAIL org cloud membership source" "The live command is absent."
     exit 1
   fi
-  if bash "$fixture" >/dev/null; then
-    write_report "PASS-OFFLINE org cloud membership harness contract" \
-      "live_product_proof=false" \
-      "fixture_contract=grant-member-list-presign-revoke-403-owner-list-e2e-unchanged" \
-      "live_command=NORTH_STAR_PROOF_MODE=live last-stack-north-star-proof $SLUG"
-    cat "$REPORT"
-    exit 0
-  fi
-  write_report "FAIL org cloud membership harness contract" "offline fixture contract failed"
-  exit 1
+  write_report "PASS-OFFLINE org cloud membership source" \
+    "live_product_proof=false" \
+    "source_command=bin/last-stack-org-cloud-membership-dogfood" \
+    "The offline test fixture is retired by no-tests-all-repos-20261009."
+  cat "$REPORT"
+  exit 0
 fi
 
 missing=""

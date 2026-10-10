@@ -33,8 +33,7 @@ Brain = intent · Board = queue · Pickup = only code shipper · Watch = only cl
 *every agent, every run*: file a Brain papercut for any friction you hit, and
 never a board card. The rule lives in `instructions/brain-kanban.md` (injected
 into every harness's global instructions by `setup`) and in
-`sop-routine-shared-contract` §5; `tests/last-stack-papercut-filing-contract.sh`
-gates both. Write to the user in ASD-STE100; that rule lives in
+`sop-routine-shared-contract` §5. Write to the user in ASD-STE100; that rule lives in
 `instructions/asd-ste100.md` and setup injects it the same way. The approved
 words live in the user file `~/.local/state/last-stack/vocabulary.md`.
 Setup injects that block next. Add a word with `last-stack-vocab add`.

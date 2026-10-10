@@ -4,6 +4,11 @@ cadence: daily
 description: Pull unresolved issues from every configured Sentry project, dedupe against the brain ledger and live board, and file actionable kanban cards. Triage-only; never ships fixes.
 ---
 
+No-tests policy: `instructions/no-tests.md`; Situation
+`no-tests-all-repos-20261009`. Remove stale test and test coverage requirements
+from any card or instruction you use. Keep non-test product proof and gates.
+
+
 # Sentry Triage Routine
 
 You are running an unattended daily routine in the workspace. Objective: triage
@@ -132,8 +137,7 @@ Drop `level:info` and `level:debug` unless volume is high and clearly a real
 defect.
 
 Steps 2 and 3 are one decision. Run the helper instead of re-deriving the rules
-by hand — it is the executable form of this policy and it is regression-tested
-(`tests/last-stack-sentry-triage-classify.sh`):
+by hand — it is the executable form of this policy:
 
 ```bash
 "$last_stack/bin/last-stack-sentry-triage-classify" \
@@ -203,7 +207,7 @@ File one `todo` card per surviving issue. The body must include, in order:
    frames exist.
 5. Suggested investigation/fix grounded in the message and repo mapping.
 6. VERIFY: re-query this issue after the fix ships and assert recurrence stops,
-   plus any unit/regression test.
+   plus relevant syntax, lint, build, and live checks. Do not add tests.
 
 Use the `repo_mapping` from `signal-sources` to route the card. If no clear
 North Star exists, use the canonical fallback `North Star: north-star` and note

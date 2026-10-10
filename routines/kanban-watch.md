@@ -4,6 +4,11 @@ cadence: every 10–20 min
 description: Reconcile the board — advance merged PRs to `done`, re-arm/un-stick stranded in-flight PRs, and detect+unstick a merge-queue head deadlocked for over an hour (investigate root cause before dequeuing). When the sweep is quiet, optionally FILE a card for the pickup pipeline. Never authors/ships new feature code itself.
 ---
 
+No-tests policy: `instructions/no-tests.md`; Situation
+`no-tests-all-repos-20261009`. Remove stale test and test coverage requirements
+from any card or instruction you use. Keep non-test product proof and gates.
+
+
 ## NO REVIEW COLUMN (Tom 2026-07-16 — won't-undo)
 
 There is **no `review` column**. Board columns are only:
@@ -82,7 +87,6 @@ envelope). Do not invent trailers when `DRIVEN_BY` is unset.
 - **Board JSON is an envelope.** `kanban list --json` / `kanban search --json`
   print `{cards, total, truncated}`. Iterate `.cards[]`, never `.[]` or
   `(.cards // .[])` (papercut-kanban-watch-list-json-envelope-20260923).
-  `tests/last-stack-prompt-kanban-json-envelope.sh` fails CI on the array form.
 - **HEAVY work IS capped at ONE bounded unit per wake**: a worktree CI-fix, a
   conflict rebase, OR (on a quiet sweep) filing one card. Pick the highest-value
   one, do it, then exit.

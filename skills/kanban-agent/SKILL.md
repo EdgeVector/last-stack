@@ -14,6 +14,11 @@ description: |
   the kanban board".
 ---
 
+No-tests policy: `instructions/no-tests.md`; Situation
+`no-tests-all-repos-20261009`. Remove stale test and test coverage requirements
+from any card or instruction you use. Keep non-test product proof and gates.
+
+
 ## NO REVIEW COLUMN (Tom 2026-07-16 — won't-undo)
 
 There is **no `review` column**. Board columns are only:
@@ -376,8 +381,8 @@ to `review`, append a one-line note explaining what's missing, and exit.
    >    This replaces the older "describe the split and let a human add
    >    cards" behavior — a human can still redirect or re-scope any of the
    >    filed cards afterward, but filing them is no longer a human-only step.
-4. **Verify locally** — run the brief's exact VERIFY commands. Green tests are
-   not sufficient if the brief says to run the app — do that too. For direct
+4. **Verify locally** — remove stale test commands from VERIFY. Run the
+   remaining syntax, lint, build, security, and product proof commands. For direct
    host-local Cargo commands, prefer `last-stack-cargo` when installed (or the
    `RUSTC_WRAPPER=` environment established by `last-stack-shell-prelude`): a
    pinned global sccache disk cache can serialize Fold builds and turn a
@@ -667,7 +672,7 @@ Scheduled entrypoint: routine `kanban-validate` /
    bounded. Examples: query a dev deploy health check, trigger and watch a
    release verification workflow, run a clean-machine install against a temporary
    environment, execute a dogfood script against an isolated data dir, or run
-   the card's documented `cargo test` / harness. If the check would spend real
+   the card's documented non-test app or command proof. If the check would spend real
    production money, cut over prod, mutate public data, or require a human
    credential/device decision, do not run it; append a `BLOCKED: <human gate>`
    note and leave it in `backlog`/`todo` with `block_status=needs_human`.

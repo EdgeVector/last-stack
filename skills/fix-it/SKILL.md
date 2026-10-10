@@ -24,6 +24,11 @@ triggers:
   - make this stay fixed
 ---
 
+No-tests policy: `instructions/no-tests.md`; Situation
+`no-tests-all-repos-20261009`. Remove stale test and test coverage requirements
+from any card or instruction you use. Keep non-test product proof and gates.
+
+
 # fix-it — land the permanent fix
 
 The question this skill answers: **where does the bad output get made, and
@@ -42,8 +47,8 @@ A change is a permanent fix only if:
 3. **Residue.** Every temporary repair, retry wrapper, downstream-only check,
    and leftover comment-as-fix for this class is gone from the tree you ship.
 4. **Live signal.** The original failing observation, in the original
-   environment, cannot recur. Prove it with a negative test *and* a live
-   recheck of that signal. Green CI on a fixture is not enough.
+   environment, cannot recur. Recheck that live signal. Use source, syntax,
+   lint, and build checks where useful. Do not add a negative test or fixture.
 
 If any predicate fails, you have a temporary repair. Say so. Do not present
 it as the fix.
@@ -97,7 +102,7 @@ Write one sentence: "This is the class of \<X\>, of which this instance is
 Generalize along a predictable dimension (all delimited files, not `.csv`;
 all harness skill links, not `diagram`). Do not over-generalize.
 
-The class-coverage test: if the next cousin appeared tomorrow, would
+The class review: if the next cousin appeared tomorrow, would
 today's change already cover it? If no, you are minting a special case.
 
 ### 3. Find the producer
@@ -137,7 +142,7 @@ One mechanism. State:
 - What the producer will do instead (the **final state**).
 - Why a sibling is already covered.
 - What residue comes out.
-- The exact VERIFY: original live signal + negative case.
+- The exact VERIFY: original live signal and the relevant non-test checks.
 
 If this needs product judgment you cannot make, stop. Present the final
 state options. Do not land a guess.
@@ -152,9 +157,9 @@ If a kanban card has `## LEGACY RESIDUE`, honor that gate
 
 ### 7. Prove it
 
-- Negative test: the class cannot be produced the old way.
+- Source review: the producer removes the cause of the class.
 - Live recheck of the original signal in the original environment
-  (see kanban-agent "Live symptom recheck"). Fixture-only is not enough.
+  (see kanban-agent "Live symptom recheck").
 - If you cannot recheck live this turn, the work is not done. Leave it
   open with `PROOF: pending live recheck of <signal> on <env>`.
 
@@ -183,10 +188,10 @@ Use this shape every time:
 <what came out, or "none — first repair">
 
 ## Proof
-- Negative: <test>
+- Source review: <cause removed>
 - Live signal: <command + result in original env>
 
-## Recurrence test
+## Recurrence review
 <the cousin that is already covered>
 ```
 

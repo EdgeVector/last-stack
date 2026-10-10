@@ -1,5 +1,9 @@
 # The Last Stack
 
+No tests in EdgeVector repos (Tom, 2026-10-09). Read `instructions/no-tests.md`.
+Situation: `no-tests-all-repos-20261009`. Keep syntax, lint, build, security,
+and real operational checks. Remove stale test and test coverage requirements.
+
 **The Last Stack** is a small, curated set of **agent skills** for driving a
 LastDB-backed workflow with an AI coding agent — the agent layer that sits on
 top of [LastDB](https://thelastdb.com) and its two companion tools:

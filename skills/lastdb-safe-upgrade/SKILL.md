@@ -742,10 +742,7 @@ those runs.
 The rollback point, the DEV photograph copy, and the stopped-home backup copy
 keep `done/`. `search bootstrap` replays it, so a copy that can restore the
 primary must hold it. Helper: `probe_clone_home_without_search_receipts` in
-`scripts/probe-copy-guards.sh`. Tests: the exclusion itself in
-`tests/last-stack-lastdb-safe-upgrade-probe-copy-search-receipts.sh`, and where
-it may appear in
-`tests/last-stack-lastdb-safe-upgrade-recovery-copies-keep-receipts.sh`. Brain:
+`scripts/probe-copy-guards.sh`. Brain:
 `papercut-safe-upgrade-probes-copy-search-receipts-20261007`.
 
 ### Release one retained RED point without a new probe

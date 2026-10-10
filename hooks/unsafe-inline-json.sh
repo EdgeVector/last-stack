@@ -21,8 +21,7 @@
 # The two brain papercuts this used to cite -- one for a guard that matched a
 # redirect on a DIFFERENT command in the same call, one for a guard that matched
 # PROSE rather than shell syntax -- are not in LastDB, so the rule they bought is
-# written above rather than pointed at. Both defects are regression-tested in
-# tests/last-stack-hooks-guards.sh; that file is the live authority, not a slug.
+# written above rather than pointed at. The executable guard is the authority.
 set -u
 
 input="$(cat)" || exit 0

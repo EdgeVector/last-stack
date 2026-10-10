@@ -53,7 +53,7 @@
 #   --board-cli PATH        kanban/fkanban binary (tests)
 #   --factory-reviewed-decision  exact reviewed Count/pr/repair/backlog creation gate
 #   --decision-fixture DIR  offline brain for last-stack-kanban-decision-check
-#   --skip-decision-check   tests/operator only — generators must not pass this
+#   --skip-decision-check   operator only — generators must not pass this
 #   --work-class CLASS      feature (default, gated) | closeout | proof |
 #                           repair | incident (not gated by admission)
 #   --admission-fixture DIR offline brain for last-stack-feature-portfolio-admission

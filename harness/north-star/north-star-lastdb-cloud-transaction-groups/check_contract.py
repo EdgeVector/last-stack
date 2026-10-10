@@ -198,69 +198,6 @@ def source_failures(text):
         failures,
     )
 
-    require_region(
-        text,
-        "async fn multi_schema_cloud_publish_failure_keeps_record_and_frontier(",
-        [
-            (
-                "mutation_log.frontier_f, frontier_before",
-                "A failed upload does not keep the published frontier.",
-            ),
-            (
-                "mutation_log.segments_uploaded, 0",
-                "A failed upload does not keep the upload count at zero.",
-            ),
-        ],
-        failures,
-    )
-    require_region(
-        text,
-        "async fn transaction_group_seals_one_shard_per_schema_and_a_manifest_last(",
-        [
-            (
-                "TRANSACTION_GROUP_MANIFEST_SCHEMA",
-                "The seal test does not expect the manifest schema last.",
-            ),
-            (
-                "a retry must use stable object keys",
-                "A retry can mint new object keys.",
-            ),
-        ],
-        failures,
-    )
-    require_region(
-        text,
-        "async fn transaction_group_without_manifest_fails_before_replay(",
-        [
-            (
-                'error.contains("no commit manifest")',
-                "The missing-manifest test does not fail before replay.",
-            )
-        ],
-        failures,
-    )
-    require_region(
-        text,
-        "async fn transaction_group_with_missing_shard_fails_before_replay(",
-        [
-            (
-                'error.contains("shard count")',
-                "The missing-shard test does not fail before replay.",
-            )
-        ],
-        failures,
-    )
-    require_region(
-        text,
-        "async fn transaction_group_rejects_a_resealed_shard_not_named_by_manifest(",
-        [
-            (
-                'error.contains("manifest validation")',
-                "A resealed shard can pass the manifest check.",
-            )
-        ],
-        failures,
-    )
     return failures
 
 

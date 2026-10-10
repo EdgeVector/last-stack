@@ -52,7 +52,7 @@ A new Kind:pr card must not contradict a settled brain record.
 - **Scope:** brain `type: decision`, `type: design`, and `type: preference`. Search is candidate slugs only. Each slug is point-got.
 - **Honor:** if the stamp lists slugs, read those records with the stamp's `read:` lines (for example `read: gbrain get decision/<slug>` while gbrain is primary; `brain get` reads LastDB, which does not hold most settled records). Rewrite the brief so it follows them, or do not file.
 - **Unavailable:** `verdict: unavailable` means the check could not run. Only repair/incident/proof/closeout cards are filed that way; re-run `last-stack-kanban-decision-check --title ... --inject < body` before you act on the card.
-- **Do not** pass `--skip-decision-check` from a generator or routine. That flag is tests/operator only.
+- **Do not** pass `--skip-decision-check` from a generator or routine. That flag is operator only.
 - Raw `kanban add` / MCP `fkanban_add` for Kind:pr skips this gate. Use `last-stack-kanban-file-pr`.
 - Metadata-only upserts (`--pr-url`, `--branch` on a live card) are not a create. Do not re-run the helper for those.
 
