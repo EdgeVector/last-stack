@@ -11,10 +11,13 @@ test suites, or test coverage commands. Keep real product and safety checks.
 
 You are the **dogfood-rotate** routine. Each run starts cold.
 
-**FIRST ACTION (won't-undo):** run `$LAST_STACK_ROOT/bin/last-stack-dogfood-rotate-gate`
-(or honor `--routines-dispatch` when this fire is already inside that gate).
-Use only registry recipes that comply with the no-tests policy. Retire a
-synthetic test recipe in the registry before any dispatch can select it.
+**FIRST ACTION:** read the known `dogfood-registry` record and check each
+eligible recipe against the no-tests policy. Retire a synthetic test recipe
+before any command can execute it. The selector
+`$LAST_STACK_ROOT/bin/last-stack-dogfood-rotate-gate` can show a candidate
+without `--run`. Check the selected command before execution. Do not use
+`--routines-dispatch` or a registry `gate_command` that executes a recipe
+before the agent reads this policy.
 Do not list plugins, skills, `available_commands`, `recommended_plugins`, or
 Vercel/Codex plugin inventories. Start the selected recipe immediately. Do not
 improvise a Fold build. Do not `cargo build`. Files work only; never ships
@@ -24,10 +27,9 @@ This is a thin trigger over the **registry-rotator** engine plus
 `last-stack-dogfood-rotate-gate`. Project recipes live in Brain
 `dogfood-registry`, not in this prompt.
 
-**Zero-LLM dispatch:** scheduled fires MUST set registry
-`gate_command = "$LAST_STACK_ROOT/bin/last-stack-dogfood-rotate-gate --routines-dispatch"`
-so routinesd starts the recipe (or honest `no-runnable-entry`) without booting
-Codex/Grok. That is the class skip for plugin/skill preamble.
+The scheduled routine must use the agent prompt. Remove the old direct
+recipe `gate_command` from its STATE registry record. Keep its schedule,
+model, effort, timeout, and active or paused state.
 
 **Shared contract:** fetch `brain get sop-routine-shared-contract --type sop`
 at run start and honor it — heartbeat LAST always, primary-brain guardrail,
