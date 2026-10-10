@@ -3,9 +3,9 @@
 # Safe LastDB Mini upgrade against Tom's PRIMARY brain home.
 #
 # ALWAYS:
-#   1. Create a fresh ephemeral CoW rollback point from the current primary
+#   1. Create a fresh ephemeral CoW trial copy from the current primary
 #      outside $HOME before any candidate check.
-#   2. Boot the CANDIDATE lastdbd against a separate copy of that point.
+#   2. Boot the CANDIDATE lastdbd against a separate copy of that trial copy.
 #      The candidate never boots on the live primary home.
 #   3. Require GREEN (identity decrypts, schemas load, keyed Board and
 #      BoardCards reads return valid real-data responses)
@@ -46,9 +46,8 @@
 #      CAS-flipped backup/latest. Never point the candidate at live ~/.lastdb
 #      for that upload. The exact DEV manifest must restore into a new home
 #      with no local database data. A mock object store is not DEV.
-#   4. Only then venue-aware live install:
-#        sidebin → atomic install + launchd bootout/bootstrap job-definition reload
-#        brew    → brew upgrade + brew services restart (only if formula installed)
+#   4. Strictly stop and flush the old primary, then copy its fixed data as
+#      the rollback point before the sidebin install and LaunchAgent reload.
 #   5. Post-check the LIVE home (incl. lastdb/lastdbd version parity and live
 #      RSS vs guard); print rollback if wrong
 #
@@ -56,7 +55,7 @@
 #
 # NEVER:
 #   - Run the candidate against the live ~/.lastdb before probe is GREEN
-#   - Skip the rollback point before a live change
+#   - Treat the live trial copy as the rollback point
 #   - Install only lastdbd without the sibling lastdb CLI from the same build
 #   - Kill/restart the primary on a RED probe
 #   - brew upgrade when formula is not installed / primary is sidebin+launchd
@@ -73,7 +72,7 @@
 #
 # Live cutovers run only as a Loom lastdb-safe-upgrade graph node. Use
 # last-stack-safe-upgrade-loom --candidate /path/to/lastdbd.
-# Env (ephemeral rollback):
+# Env (ephemeral trial copy and rollback):
 #   LASTDB_ROLLBACK_ROOT=<path>    # defaults under TMPDIR, never under $HOME
 #   LASTDB_ROLLBACK_TTL_HOURS=24   # RED retention metadata; explicit cleanup
 # Env (candidate data):
@@ -166,6 +165,8 @@ CANDIDATE_CLI_BIN=""
 TARGET_VERSION=""
 WORK=""
 BACKUP=""
+TRIAL_COPY=""
+TRIAL_READY=0
 ROLLBACK_READY=0
 
 usage() {
@@ -309,7 +310,7 @@ if [ "$PROBE_DATA" != "real" ]; then
   echo "safe upgrade requires --data real" >&2
   exit 2
 fi
-# Every candidate copy starts from this run's fresh primary rollback point.
+# Every candidate copy starts from this run's fresh primary trial copy.
 PROBE_SOURCE_HOME="$PRIMARY_HOME"
 PROBE_CLI_HOME=""
 
@@ -343,22 +344,32 @@ if [ "${CHECK_DEV_STAMP:-0}" -eq 1 ]; then
   exit 0
 fi
 
+release_trial_copy() {
+  [ -n "${TRIAL_COPY:-}" ] && [ -d "$TRIAL_COPY" ] && rm -rf "$TRIAL_COPY"
+  TRIAL_READY=0
+}
+
 release_rollback_point() {
-  [ "${ROLLBACK_READY:-0}" -eq 1 ] || return 0
-  [ -n "${BACKUP:-}" ] && [ -d "$BACKUP" ] && rm -rf "$BACKUP"
-  ROLLBACK_READY=0
+  local had_rollback="${ROLLBACK_READY:-0}"
+  if [ "$had_rollback" -eq 1 ]; then
+    [ -n "${BACKUP:-}" ] && [ -d "$BACKUP" ] && rm -rf "$BACKUP"
+    ROLLBACK_READY=0
+  fi
+  release_trial_copy
   rmdir "$ROLLBACK_ROOT" 2>/dev/null || true
-  log "rollback: released after GREEN ($BACKUP)"
+  if [ "$had_rollback" -eq 1 ]; then
+    log "rollback: released after GREEN ($BACKUP)"
+  fi
 }
 
 # The BACKUP line of a RED verdict.
 backup_red_note() {
   if [ "${ROLLBACK_READY:-0}" -eq 1 ] && [ -n "${BACKUP:-}" ]; then
-    printf 'BACKUP: %s  (kept; primary NOT upgraded)\n' "$BACKUP"
+    printf 'BACKUP: %s  (kept; inspect the primary before restore)\n' "$BACKUP"
   elif [ -n "${BACKUP:-}" ]; then
-    printf 'BACKUP: none  (the new copy is incomplete at %s; primary NOT upgraded)\n' "$BACKUP"
+    printf 'BACKUP: none  (the stopped copy is incomplete at %s)\n' "$BACKUP"
   else
-    printf 'BACKUP: none  (failure occurred before the rollback copy; primary NOT upgraded)\n'
+    printf 'BACKUP: none  (failure occurred before the stopped rollback copy)\n'
   fi
 }
 
@@ -368,9 +379,9 @@ retain_rollback_point() {
   {
     printf 'retained_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'ttl_hours=%s\n' "$ROLLBACK_TTL_HOURS"
-    printf 'cleanup_owner=explicit-retained-point-helper\n'
+    printf 'cleanup_owner=manual-after-primary-recovery\n'
   } >"$BACKUP/.safe-upgrade/retention"
-  warn "rollback: RED retained at $BACKUP ttl_hours=$ROLLBACK_TTL_HOURS cleanup_owner=explicit-retained-point-helper"
+  warn "rollback: RED retained at $BACKUP ttl_hours=$ROLLBACK_TTL_HOURS cleanup_owner=manual-after-primary-recovery"
 }
 
 OWNER_LOCK_DIR="${LASTDB_SAFE_UPGRADE_OWNER_LOCK_DIR:-/tmp/lastdb-safe-upgrade-owner-${UID:-$(id -u)}.lock.d}"
@@ -382,6 +393,10 @@ DRIVER_ENDED_STEP=0
 SIDEBIN_BACKUP_DAEMON=""
 SIDEBIN_BACKUP_CLI=""
 CUTOVER_RECOVERY_STATE_TMP=""
+STAGE_BACKUP=""
+OLD_PRIMARY_PID=""
+OLD_PRIMARY_START_TS=""
+OLD_PRIMARY_PS_LSTART=""
 
 cleanup_work() {
   local rc=$?
@@ -401,6 +416,12 @@ cleanup_work() {
       warn "rollback: driver ended the step; kept newest point ${BACKUP:-none}"
     fi
   fi
+  if [ "$rc" -ne 0 ] && [ -n "${TRIAL_COPY:-}" ] && [ -d "$TRIAL_COPY" ]; then
+    warn "trial copy retained for cleanup-retained-upgrade-copy.sh: $TRIAL_COPY (not a rollback point)"
+  fi
+  if [ "$rc" -ne 0 ] && [ -n "${STAGE_BACKUP:-}" ] && [ -d "$STAGE_BACKUP" ]; then
+    warn "incomplete stopped copy retained for cleanup-retained-upgrade-copy.sh: $STAGE_BACKUP (not a rollback point)"
+  fi
   if type safe_upgrade_owner_lock_release >/dev/null 2>&1; then
     safe_upgrade_owner_lock_release "$OWNER_LOCK_DIR" "$OWNER_LOCK_TOKEN" "$OWNER_LOCK_HELD" \
       || warn "owner lock release failed: $OWNER_LOCK_DIR"
@@ -415,8 +436,9 @@ trap 'on_driver_end' HUP INT TERM
 trap cleanup_work EXIT
 
 write_cutover_recovery_state() {
-  # The Loom wrapper owns this mode-600 file and removes it after the CUTOVER
-  # process ends. Keep a complete atomic record before the first live rename.
+  # The Loom wrapper owns this mode-600 file and removes it after CUTOVER.
+  # Record the old process identity before the first stop. Recovery never
+  # kills a process that may still be in its flush drain.
   local stage="$1" effect_started="$2"
   local state="${LASTDB_CUTOVER_RECOVERY_STATE:-}"
   local daemon_sha="" cli_sha=""
@@ -447,13 +469,16 @@ write_cutover_recovery_state() {
   (
     umask 077
     jq -cn \
-      --argjson state_version 1 \
+      --argjson state_version 3 \
       --arg loom_execution_id "${LOOM_EXEC_ID:-}" \
       --arg stage "$stage" \
       --argjson effect_started "$effect_started" \
       --arg venue "${VENUE:-}" \
       --arg primary_home "$PRIMARY_HOME" \
       --arg primary_socket "$PRIMARY_SOCK" \
+      --arg old_pid "${OLD_PRIMARY_PID:-}" \
+      --arg old_start_ts "${OLD_PRIMARY_START_TS:-}" \
+      --arg old_ps_lstart "${OLD_PRIMARY_PS_LSTART:-}" \
       --arg sidebin_dir "$SIDEBIN_DIR" \
       --arg launchd_label "$LAUNCHD_LABEL" \
       --arg launchd_plist "$LAUNCHD_PLIST" \
@@ -464,6 +489,8 @@ write_cutover_recovery_state() {
       '{state_version:$state_version,loom_execution_id:$loom_execution_id,
         stage:$stage,effect_started:$effect_started,venue:$venue,
         primary_home:$primary_home,primary_socket:$primary_socket,
+        old_pid:$old_pid,old_start_ts:$old_start_ts,
+        old_ps_lstart:$old_ps_lstart,
         sidebin_dir:$sidebin_dir,launchd_label:$launchd_label,
         launchd_plist:$launchd_plist,backup_lastdbd:$backup_lastdbd,
         backup_lastdb:$backup_lastdb,backup_lastdbd_sha256:$backup_lastdbd_sha256,
@@ -487,11 +514,11 @@ backup_essentials_ok() {
   [ -e "$root/data/db" ] || [ -d "$root/data/data" ] || [ -d "$root/data/laststore" ]
 }
 
-rollback_clone_socket_errors_only() {
+trial_clone_socket_errors_only() {
   local line seen=0
   # cp can refuse the live Unix socket, or lose that exact socket during a
   # daemon restart. A vanished regular or CAS file is not an allowed race.
-  [ -s "$WORK/rollback-clone.err" ] || return 1
+  [ -s "$WORK/trial-clone.err" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       "cp: $PRIMARY_SOCK: Operation not supported"|\
@@ -503,25 +530,25 @@ rollback_clone_socket_errors_only() {
         seen=$((seen + 1)) ;;
       *) return 1 ;;
     esac
-  done <"$WORK/rollback-clone.err"
+  done <"$WORK/trial-clone.err"
   [ "$seen" -gt 0 ]
 }
 
-rollback_clone_red() {
+trial_clone_red() {
   local reason="$1" evidence
-  evidence="$(umask 077; mktemp "$ROLLBACK_ROOT/.clone-failure.${TS}.XXXXXX")" \
+  evidence="$(umask 077; mktemp "$ROLLBACK_ROOT/.trial-failure.${TS}.XXXXXX")" \
     || die "$reason (cp exit=$CP_RC; could not retain clone evidence)"
   {
     printf 'reason=%s\ncp_exit=%s\npartial_copy=<copy>\n' "$reason" "$CP_RC"
     printf 'cp_stderr_first_16384_bytes:\n'
-    head -c 16384 "$WORK/rollback-clone.err" | while IFS= read -r line || [ -n "$line" ]; do
+    head -c 16384 "$WORK/trial-clone.err" | while IFS= read -r line || [ -n "$line" ]; do
       line="${line//"$PRIMARY_HOME"/<primary>}"
-      line="${line//"$BACKUP"/<copy>}"
+      line="${line//"$TRIAL_COPY"/<copy>}"
       printf '%s\n' "$line"
     done
   } >"$evidence"
   chmod 600 "$evidence"
-  die "$reason (cp exit=$CP_RC; evidence=$evidence; incomplete copy=$BACKUP)"
+  die "$reason (cp exit=$CP_RC; evidence=$evidence; incomplete trial copy=$TRIAL_COPY)"
 }
 
 backup_data_is_not_live() {
@@ -533,7 +560,7 @@ backup_data_is_not_live() {
 }
 
 prepare_rollback_root() {
-  local root_real home_real
+  local root_real home_real stale
   mkdir -p "$ROLLBACK_ROOT"
   [ ! -L "$ROLLBACK_ROOT" ] || die "rollback root must not be a symlink: $ROLLBACK_ROOT"
   root_real="$(cd "$ROLLBACK_ROOT" && pwd -P)"
@@ -543,9 +570,15 @@ prepare_rollback_root() {
       die "rollback root must be ephemeral and outside HOME: $root_real"
       ;;
   esac
+  # A RED run keeps these copies until the recovered primary permits explicit
+  # cleanup. Refuse another large trial while one remains.
+  for stale in "$ROLLBACK_ROOT"/trial-* "$ROLLBACK_ROOT"/*.incomplete; do
+    [ -e "$stale" ] || [ -L "$stale" ] || continue
+    die "retained trial or incomplete copy needs cleanup before another trial: $stale"
+  done
   # An older name and timestamp cannot prove that its copy completed. Keep
   # all older points until the explicit safe cleanup path verifies them.
-  log "rollback: root=$root_real previous points kept; cleanup requires the retained-point helper"
+  log "rollback: root=$root_real previous points kept; use the matching explicit cleanup helper"
 }
 
 rss_mb_of_pid() {
@@ -1812,46 +1845,179 @@ ensure_primary_launchd_exit_timeout() {
   log "stamped primary LaunchAgent ExitTimeOut=${want}s (was ${current:-unset}); the reloaded job gets the full graceful-drain window"
 }
 
-# The bootout below stops the OLD job with the exit timeout launchd loaded for
-# it, not the new plist value. Say so loudly when that window is short.
-warn_loaded_exit_timeout_short() {
-  local service="$1" loaded
-  loaded="$(lastdb_launchd_job_exit_timeout launchctl "$service")"
-  if [ -z "$loaded" ]; then
-    return 0
-  fi
-  if [ "$loaded" -lt "$PRIMARY_EXIT_TIMEOUT_SECS" ] 2>/dev/null; then
-    warn "loaded primary job exit timeout is ${loaded}s (< ${PRIMARY_EXIT_TIMEOUT_SECS}s): this bootout can SIGKILL the old daemon before its persist-lane drain and final flush finish. The next cutover uses the stamped ExitTimeOut."
-  else
-    log "loaded primary job exit timeout ${loaded}s"
+# A stopped copy is valid only after this exact process reports a clean flush.
+verify_old_primary_stopped() {
+  local service="$1" receipt="$PRIMARY_HOME/.shutdown_flush_ready"
+  local ledger="$PRIMARY_HOME/sessions.jsonl" session="$PRIMARY_HOME/current-session.json" ledger_size
+  ! kill -0 "$OLD_PRIMARY_PID" 2>/dev/null \
+    && ! lastdb_launchd_job_loaded launchctl "$service" \
+    && ! live_unix_socket_has_listener "$PRIMARY_SOCK" \
+    && ! live_unix_socket_has_listener "$PRIMARY_HOME/data/folddb-full.sock" \
+    || die "old primary still runs or serves after the strict stop"
+  [ -f "$receipt" ] && [ ! -L "$receipt" ] \
+    || die "old primary did not write a safe shutdown flush receipt"
+  jq -e --argjson pid "$OLD_PRIMARY_PID" --argjson start_ts "$OLD_PRIMARY_START_TS" '
+    (keys | sort) == (["flush_ok","pid","start_ts","version"] | sort)
+    and .version == 1 and .pid == $pid and .start_ts == $start_ts
+    and .flush_ok == true
+  ' "$receipt" >/dev/null || die "old primary flush receipt does not match the stopped session"
+  [ -f "$ledger" ] && [ ! -L "$ledger" ] \
+    || die "old primary session ledger is absent or unsafe"
+  ledger_size="$(stat -f '%z' "$ledger")" \
+    || die "old primary session ledger is unreadable"
+  [ "$ledger_size" -le 16777216 ] \
+    || die "old primary session ledger exceeds 16 MiB"
+  jq -se --argjson pid "$OLD_PRIMARY_PID" --argjson start_ts "$OLD_PRIMARY_START_TS" '
+    all(.[]; type == "object" and (.pid | type) == "number"
+      and (.start_ts | type) == "number")
+    and ([ .[] | select(.pid == $pid and .start_ts == $start_ts) ] as $matches |
+      ($matches | length) == 1 and $matches[0].exit == "clean"
+      and ($matches[0].end_ts | type) == "number"
+      and $matches[0].end_ts >= $start_ts)
+  ' "$ledger" >/dev/null || die "old primary session did not end cleanly"
+  if [ -e "$session" ] || [ -L "$session" ]; then
+    [ -f "$session" ] && [ ! -L "$session" ] \
+      || die "old primary current session marker is unsafe"
+    jq -se --argjson pid "$OLD_PRIMARY_PID" --argjson start_ts "$OLD_PRIMARY_START_TS" '
+      length == 1 and (.[0] | type) == "object"
+      and (.[0] | keys | sort) == (["pid","start_ts","last_heartbeat_ts"] | sort)
+      and .[0].pid == $pid and .[0].start_ts == $start_ts
+      and (.[0].last_heartbeat_ts | type) == "number"
+      and .[0].last_heartbeat_ts >= .[0].start_ts
+    ' "$session" >/dev/null || die "old primary current session marker changed"
   fi
 }
 
-# A short LOADED exit timeout cannot change without a reload, and the reload
-# is the stop. So stop the old daemon first with launchctl kill SIGTERM and
-# the full PRIMARY_EXIT_TIMEOUT_SECS window, while its program path is held
-# aside so KeepAlive cannot respawn it. A failure falls back to the plain
-# reload (the old behavior) after the program is back in place.
-graceful_prestop_old_primary() {
-  local service="$1" program="$2" plist_program="" out="" rc=0 line=""
+strict_prestop_old_primary() {
+  local service="$1" program="$2" plist_program="" listener_pid="" out=""
   plist_program="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$LAUNCHD_PLIST" 2>/dev/null || true)"
-  if [ "$plist_program" != "$program" ]; then
-    warn "graceful pre-stop skipped: plist program '${plist_program:-unset}' is not $program"
-    return 0
-  fi
-  set +e
+  [ "$plist_program" = "$program" ] \
+    || die "primary plist program does not match the installed old daemon"
+  [ ! -e "$PRIMARY_HOME/.shutdown_flush_ready" ] \
+    && [ ! -L "$PRIMARY_HOME/.shutdown_flush_ready" ] \
+    || die "a stale shutdown flush receipt exists before the stop"
+  OLD_PRIMARY_PID="$(lastdb_launchd_job_pid launchctl "$service")"
+  listener_pid="$(live_unix_socket_listener_pid "$PRIMARY_SOCK" || true)"
+  [ -n "$OLD_PRIMARY_PID" ] && [ "$OLD_PRIMARY_PID" = "$listener_pid" ] \
+    && live_unix_socket_is_healthy "$PRIMARY_SOCK" \
+    || die "old primary is not supervised and healthy before the stop"
+  OLD_PRIMARY_START_TS="$(jq -er --argjson pid "$OLD_PRIMARY_PID" '
+    select(.pid == $pid and (.start_ts | type) == "number") | .start_ts
+  ' "$PRIMARY_HOME/current-session.json")" \
+    || die "old primary session identity is absent before the stop"
+  OLD_PRIMARY_PS_LSTART="$(ps -p "$OLD_PRIMARY_PID" -o lstart= 2>/dev/null)" \
+    || die "old primary process start time is unreadable before the stop"
+  [ -n "$OLD_PRIMARY_PS_LSTART" ] \
+    || die "old primary process start time is absent before the stop"
+  write_cutover_recovery_state "sidebin-stop-started" true
   out="$(lastdb_launchd_graceful_prestop launchctl "$service" "$program" \
-    "${LASTDB_PRIMARY_GRACEFUL_STOP_WAIT_SECS:-$PRIMARY_EXIT_TIMEOUT_SECS}" \
-    "$PRIMARY_EXIT_TIMEOUT_SECS" 2>&1)"
-  rc=$?
-  set -e
-  while IFS= read -r line; do
-    [ -n "$line" ] && log "$line"
-  done <<< "$out"
-  if [ "$rc" -ne 0 ]; then
-    warn "graceful pre-stop failed (rc=$rc); the job reload stops the old daemon with its loaded exit timeout"
+    "${LASTDB_PRIMARY_GRACEFUL_STOP_WAIT_SECS:-300}" \
+    "$PRIMARY_EXIT_TIMEOUT_SECS" 1 2>&1)" \
+    || die "strict old-primary stop failed: $out"
+  log "$out"
+  case "$out" in
+    *'LASTDB_LAUNCHD_PRESTOP=ok '*'forced_kill=0'*) ;;
+    *) die "strict old-primary stop did not prove a clean exit" ;;
+  esac
+  verify_old_primary_stopped "$service"
+  write_cutover_recovery_state "sidebin-stopped" true
+}
+
+stopped_rollback_preflight() {
+  local free_kib
+  [ "$(uname -s)" = Darwin ] || die "stopped rollback requires APFS on macOS"
+  [ -n "$(command -v gtimeout || command -v timeout || true)" ] \
+    && command -v rsync >/dev/null \
+    || die "stopped rollback requires timeout and rsync"
+  [ "$(stat -f '%d' "$PRIMARY_HOME")" = "$(stat -f '%d' "$ROLLBACK_ROOT")" ] \
+    || die "stopped rollback root is not on the primary volume"
+  free_kib="$(df -Pk "$ROLLBACK_ROOT" | awk 'NR==2 {print $4}')"
+  case "$free_kib" in ''|*[!0-9]*) die "stopped rollback free space is unreadable" ;; esac
+  [ "$free_kib" -ge 31457280 ] \
+    || die "stopped rollback requires 30 GiB free before the primary stops"
+}
+
+copy_stopped_primary_rollback() {
+  # A measured unfiltered home clone took about 13 minutes. Allow 15 minutes
+  # for the stopped clone and 10 minutes for a full-home checksum comparison.
+  # A slow operation fails RED and the wrapper restores the old primary.
+  local timeout_bin copy_time=900 compare_time=600 sock special marker_tmp
+  local before_free after_free copied_at receipt_sha
+  stopped_rollback_preflight
+  timeout_bin="$(command -v gtimeout || command -v timeout)"
+  before_free="$(df -Pk "$ROLLBACK_ROOT" | awk 'NR==2 {print $4}')"
+  case "$before_free" in ''|*[!0-9]*) die "stopped rollback free space is unreadable before the copy" ;; esac
+  BACKUP="$ROLLBACK_ROOT/pre-${CAND_VER}-from-${CURRENT_VER}-$(date -u +%Y%m%dT%H%M%SZ)"
+  STAGE_BACKUP="${BACKUP}.incomplete"
+  [ ! -e "$BACKUP" ] && [ ! -L "$BACKUP" ] \
+    && [ ! -e "$STAGE_BACKUP" ] && [ ! -L "$STAGE_BACKUP" ] \
+    || die "stopped rollback path already exists"
+  for sock in "$PRIMARY_SOCK" "$PRIMARY_HOME/data/folddb-full.sock"; do
+    if [ -e "$sock" ] || [ -L "$sock" ]; then
+      [ -S "$sock" ] && ! live_unix_socket_has_listener "$sock" \
+        || die "the stopped primary has a live or unsafe socket path"
+      unlink_stale_unix_socket "$sock" >/dev/null \
+        || die "could not remove a stale stopped-primary socket"
+    fi
+  done
+  # walk-ok: the stopped LastDB data tree needs a complete special-path check.
+  special="$("$timeout_bin" -s TERM 120 find "$PRIMARY_HOME/data" ! -type f ! -type d -print -quit)" \
+    || die "stopped rollback data path check failed"
+  [ -z "$special" ] || die "stopped rollback data contains a special path"
+  write_cutover_recovery_state "sidebin-rollback-copy-started" true
+  if ! (umask 077; "$timeout_bin" -s TERM "$copy_time" cp -cRp "$PRIMARY_HOME" "$STAGE_BACKUP") \
+      2>"$WORK/stopped-rollback-copy.err"; then
+    die "stopped rollback copy failed; the old primary must restart"
   fi
-  return 0
+  [ ! -s "$WORK/stopped-rollback-copy.err" ] \
+    || die "stopped rollback copy reported an error"
+  backup_essentials_ok "$STAGE_BACKUP" && backup_data_is_not_live "$STAGE_BACKUP" \
+    || die "stopped rollback copy lacks required durable data"
+  [ ! -L "$STAGE_BACKUP" ] && [ ! -L "$STAGE_BACKUP/data" ] \
+    || die "stopped rollback copy contains an unsafe data root"
+  if ! "$timeout_bin" -s TERM "$compare_time" rsync -rclptn --delete --itemize-changes \
+      "$PRIMARY_HOME/" "$STAGE_BACKUP/" \
+      >"$WORK/stopped-rollback-diff" 2>"$WORK/stopped-rollback-compare.err"; then
+    die "stopped rollback byte check failed"
+  fi
+  [ ! -s "$WORK/stopped-rollback-diff" ] \
+    && [ ! -s "$WORK/stopped-rollback-compare.err" ] \
+    || die "stopped rollback differs from the stopped primary"
+  verify_old_primary_stopped "gui/$(id -u)/${LAUNCHD_LABEL}"
+  cmp -s "$PRIMARY_HOME/.shutdown_flush_ready" "$STAGE_BACKUP/.shutdown_flush_ready" \
+    || die "stopped rollback flush receipt differs from the primary"
+  receipt_sha="$(dev_stamp_sha256_file "$STAGE_BACKUP/.shutdown_flush_ready")"
+  copied_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "$STAGE_BACKUP/.safe-upgrade" \
+    || die "stopped rollback marker directory cannot be created"
+  [ ! -L "$STAGE_BACKUP/.safe-upgrade" ] \
+    && [ ! -e "$STAGE_BACKUP/.safe-upgrade/complete" ] \
+    || die "stopped rollback marker path is unsafe"
+  marker_tmp="$(umask 077; mktemp "$STAGE_BACKUP/.safe-upgrade/.complete.XXXXXX")" \
+    || die "stopped rollback completion marker cannot be created"
+  printf 'kind=stopped-rollback\nsource_home=%s\nsource_pid=%s\nsource_start_ts=%s\nflush_receipt_sha256=%s\ncopied_at=%s\n' \
+    "$PRIMARY_HOME" "$OLD_PRIMARY_PID" "$OLD_PRIMARY_START_TS" "$receipt_sha" "$copied_at" \
+    >"$marker_tmp" \
+    && chmod 600 "$marker_tmp" \
+    && mv "$marker_tmp" "$STAGE_BACKUP/.safe-upgrade/complete" \
+    || die "stopped rollback completion marker cannot be written"
+  after_free="$(df -Pk "$ROLLBACK_ROOT" | awk 'NR==2 {print $4}')"
+  case "$after_free" in ''|*[!0-9]*) die "stopped rollback free space is unreadable after the copy" ;; esac
+  [ "$after_free" -ge 31457280 ] \
+    || die "stopped rollback requires 30 GiB free after the copy"
+  [ "$((before_free - after_free))" -le 23068672 ] \
+    || die "stopped rollback consumed more than the existing 22 GiB APFS copy limit"
+  # The comparison can be stale if launchd or another actor restarts the old
+  # daemon before publication. Require the same stopped session again.
+  verify_old_primary_stopped "gui/$(id -u)/${LAUNCHD_LABEL}"
+  cmp -s "$PRIMARY_HOME/.shutdown_flush_ready" "$STAGE_BACKUP/.shutdown_flush_ready" \
+    || die "stopped rollback flush receipt changed before publication"
+  mv "$STAGE_BACKUP" "$BACKUP" \
+    || die "stopped rollback cannot be published"
+  STAGE_BACKUP=""
+  ROLLBACK_READY=1
+  write_cutover_recovery_state "sidebin-rollback-ready" true
+  log "stopped rollback ready: $BACKUP source_pid=$OLD_PRIMARY_PID flush_receipt_sha256=$receipt_sha"
 }
 
 # Version parity cannot detect replacement bytes that report the same version.
@@ -1985,6 +2151,19 @@ live_install_sidebin() {
     die "staged sidebin pair differs from the photographed candidate; live pair remains unchanged"
   fi
 
+  ensure_primary_launchd_rss_limit
+  ensure_primary_launchd_warm_cache_limit
+  ensure_primary_launchd_exit_timeout
+  stopped_rollback_preflight
+  local uid
+  uid="$(id -u)"
+  strict_prestop_old_primary "gui/${uid}/${LAUNCHD_LABEL}" "$dest/lastdbd"
+  copy_stopped_primary_rollback
+  sidebin_pair_hashes_match_expected \
+    "$dest/lastdbd.new" "$dest/lastdb.new" "staged pair after stopped copy" \
+    || die "candidate pair changed during the stopped rollback copy"
+  verify_old_primary_stopped "gui/${uid}/${LAUNCHD_LABEL}"
+
   # Same-directory rename changes each path atomically. A partial pair swap or
   # a later hash mismatch restores both saved files before this process exits.
   write_cutover_recovery_state "sidebin-swap-started" true
@@ -2002,15 +2181,6 @@ live_install_sidebin() {
   assert_sidebin_installed_hashes_or_restore "post-rename sidebin pair"
   write_cutover_recovery_state "sidebin-candidate-installed" true
 
-  ensure_primary_launchd_rss_limit
-  ensure_primary_launchd_warm_cache_limit
-  ensure_primary_launchd_exit_timeout
-
-  local uid
-  uid="$(id -u)"
-  warn_loaded_exit_timeout_short "gui/${uid}/${LAUNCHD_LABEL}"
-  CUTOVER_T0="$(date +%s)"
-  graceful_prestop_old_primary "gui/${uid}/${LAUNCHD_LABEL}" "$dest/lastdbd"
   assert_sidebin_installed_hashes_or_restore "pre-reload sidebin pair"
   write_cutover_recovery_state "sidebin-reload-started" true
   if ! lastdb_launchd_reload_job \
@@ -2306,71 +2476,71 @@ log "candidate class GREEN: path/version/size ok (vs baseline ${BASELINE_FOR_CLA
 PROBE_DATA_LABEL="the primary home (real data)"
 log "candidate data: a fresh copy of $PROBE_DATA_LABEL"
 
-# --- 1) ephemeral CoW rollback point -----------------------------------------
+# --- 1) ephemeral CoW trial copy ---------------------------------------------
 
-# The rollback point guards the live change and supplies real candidate data.
-step1_rollback_point() {
+# The trial copy supplies real data for the candidate and DEV proof.
+step1_trial_copy() {
   local stable marker_tmp
   prepare_rollback_root
   TS="$(date -u +%Y%m%dT%H%M%SZ)"
-  BACKUP="$ROLLBACK_ROOT/pre-${CAND_VER}-from-${CURRENT_VER}-${TS}"
-  [ ! -e "$BACKUP" ] && [ ! -L "$BACKUP" ] \
-    || die "the new rollback path already exists; refusing a stale primary copy"
+  TRIAL_COPY="$ROLLBACK_ROOT/trial-${CAND_VER}-from-${CURRENT_VER}-${TS}"
+  [ ! -e "$TRIAL_COPY" ] && [ ! -L "$TRIAL_COPY" ] \
+    || die "the new trial path already exists; refusing a stale primary copy"
   # A prior rollback point may protect an earlier failed run. Keep it until
   # its own cleanup. This run always reads a new copy of the current primary.
   # A live primary can race with this copy. Only the runtime socket may be
   # absent. A missing regular or CAS file makes this copy unusable.
-  log "STEP 1/4: fresh ephemeral CoW rollback point → $BACKUP"
+  log "STEP 1/4: fresh ephemeral CoW trial copy → $TRIAL_COPY"
   set +e
   if stat --version >/dev/null 2>&1; then
-    cp -R "$PRIMARY_HOME" "$BACKUP" 2>"$WORK/rollback-clone.err"
+    cp -R "$PRIMARY_HOME" "$TRIAL_COPY" 2>"$WORK/trial-clone.err"
   else
-    cp -cR "$PRIMARY_HOME" "$BACKUP" 2>"$WORK/rollback-clone.err"
+    cp -cR "$PRIMARY_HOME" "$TRIAL_COPY" 2>"$WORK/trial-clone.err"
   fi
   CP_RC=$?
   set -e
-  if [ "$CP_RC" -ne 0 ] || [ -s "$WORK/rollback-clone.err" ]; then
-    rollback_clone_socket_errors_only \
-      || rollback_clone_red "CoW rollback clone has an unexpected cp error"
+  if [ "$CP_RC" -ne 0 ] || [ -s "$WORK/trial-clone.err" ]; then
+    trial_clone_socket_errors_only \
+      || trial_clone_red "CoW trial clone has an unexpected cp error"
   fi
-  backup_essentials_ok "$BACKUP" \
-    || rollback_clone_red "CoW rollback clone lacks a required durable file"
-  [ ! -L "$BACKUP" ] && [ ! -L "$BACKUP/data" ] \
-    || rollback_clone_red "CoW rollback clone resolved to a symlink"
-  backup_data_is_not_live "$BACKUP" \
-    || rollback_clone_red "CoW rollback clone data aliases the live primary"
+  backup_essentials_ok "$TRIAL_COPY" \
+    || trial_clone_red "CoW trial clone lacks a required durable file"
+  [ ! -L "$TRIAL_COPY" ] && [ ! -L "$TRIAL_COPY/data" ] \
+    || trial_clone_red "CoW trial clone resolved to a symlink"
+  backup_data_is_not_live "$TRIAL_COPY" \
+    || trial_clone_red "CoW trial clone data aliases the live primary"
   for stable in identity.key .bootstrap_done data/.device_id; do
-    [ ! -L "$BACKUP/$stable" ] && cmp -s "$PRIMARY_HOME/$stable" "$BACKUP/$stable" \
-      || rollback_clone_red "CoW rollback clone has a missing or changed stable file"
+    [ ! -L "$TRIAL_COPY/$stable" ] && cmp -s "$PRIMARY_HOME/$stable" "$TRIAL_COPY/$stable" \
+      || trial_clone_red "CoW trial clone has a missing or changed stable file"
   done
-  mkdir -p "$BACKUP/.safe-upgrade" \
-    || rollback_clone_red "CoW rollback clone marker directory cannot be created"
-  [ -d "$BACKUP/.safe-upgrade" ] && [ ! -L "$BACKUP/.safe-upgrade" ] \
-    && [ ! -e "$BACKUP/.safe-upgrade/complete" ] \
-    || rollback_clone_red "CoW rollback clone marker path is unsafe"
-  marker_tmp="$(umask 077; mktemp "$BACKUP/.safe-upgrade/.complete.XXXXXX")" \
-    || rollback_clone_red "CoW rollback clone completion marker cannot be created"
-  if ! printf 'source_home=%s\ncreated_at=%s\ncp_exit=%s\n' \
+  mkdir -p "$TRIAL_COPY/.safe-upgrade" \
+    || trial_clone_red "CoW trial clone marker directory cannot be created"
+  [ -d "$TRIAL_COPY/.safe-upgrade" ] && [ ! -L "$TRIAL_COPY/.safe-upgrade" ] \
+    && [ ! -e "$TRIAL_COPY/.safe-upgrade/complete" ] \
+    || trial_clone_red "CoW trial clone marker path is unsafe"
+  marker_tmp="$(umask 077; mktemp "$TRIAL_COPY/.safe-upgrade/.complete.XXXXXX")" \
+    || trial_clone_red "CoW trial clone completion marker cannot be created"
+  if ! printf 'kind=trial\nsource_home=%s\ncreated_at=%s\ncp_exit=%s\n' \
       "$PRIMARY_HOME" "$TS" "$CP_RC" >"$marker_tmp" \
-      || ! chmod 600 "$marker_tmp" \
-      || ! mv "$marker_tmp" "$BACKUP/.safe-upgrade/complete"; then
-    rollback_clone_red "CoW rollback clone completion marker cannot be written"
+    || ! chmod 600 "$marker_tmp" \
+    || ! mv "$marker_tmp" "$TRIAL_COPY/.safe-upgrade/complete"; then
+    trial_clone_red "CoW trial clone completion marker cannot be written"
   fi
-  ROLLBACK_READY=1
-  log "rollback: CoW clone ready (cp exit=$CP_RC; only runtime socket errors accepted)"
-  if [ "$CP_RC" -ne 0 ] && [ -s "$WORK/rollback-clone.err" ]; then
-    log "rollback: non-fatal cp notes (first 5 lines):"
-    head -5 "$WORK/rollback-clone.err" | while IFS= read -r line; do log "  $line"; done
+  TRIAL_READY=1
+  log "trial: CoW clone ready (cp exit=$CP_RC; only runtime socket errors accepted)"
+  if [ "$CP_RC" -ne 0 ] && [ -s "$WORK/trial-clone.err" ]; then
+    log "trial: non-fatal cp notes (first 5 lines):"
+    head -5 "$WORK/trial-clone.err" | while IFS= read -r line; do log "  $line"; done
   fi
-  log "rollback point ok ($(du -sh "$BACKUP" 2>/dev/null | awk '{print $1}'))"
+  log "trial copy ok ($(du -sh "$TRIAL_COPY" 2>/dev/null | awk '{print $1}'))"
 }
 
-step1_rollback_point
+step1_trial_copy
 
 if [ "$PROBE_DATA" = "real" ]; then
-  [ -n "$BACKUP" ] && [ "$ROLLBACK_READY" -eq 1 ] \
-    || die "the real-data deployment check needs a durable rollback point"
-  PROBE_SOURCE_HOME="$BACKUP"
+  [ -n "$TRIAL_COPY" ] && [ "$TRIAL_READY" -eq 1 ] \
+    || die "the real-data deployment check needs a complete trial copy"
+  PROBE_SOURCE_HOME="$TRIAL_COPY"
   candidate_deployment_check \
     || die "the candidate failed the real-data deployment check; the primary is unchanged"
 fi
@@ -2609,7 +2779,7 @@ if [ "$PROBE_ONLY" -eq 1 ]; then
   echo "VERDICT: GREEN_PROBE_ONLY"
   echo "SUMMARY: candidate $CAND_VER boots and serves a CoW of $PROBE_DATA_LABEL; peak_rss_mb=${PROBE_RSS_MB} under guard limit=$(resolve_rss_limit_mb); latency within bar. Primary left on $CURRENT_VER."
   echo "PROBE_DATA: $PROBE_DATA"
-  echo "ROLLBACK: released (probe GREEN; primary untouched)"
+  echo "TRIAL_COPY: released (probe GREEN; primary untouched)"
   echo "RSS:     peak_mb=${PROBE_RSS_MB} limit_mb=$(resolve_rss_limit_mb) fail_at_mb=$(rss_fail_threshold_mb "$(resolve_rss_limit_mb)")"
   echo "LATENCY: cold_point=${CAND_LAT_COLD_POINT_MS}ms(base ${BASE_LAT_COLD_POINT_MS}ms) cold_scan=${CAND_LAT_COLD_SCAN_MS}ms(base ${BASE_LAT_COLD_SCAN_MS}ms) hot_point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) hot_scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) boot=${CAND_BOOT_SECS}s(base ${BASE_BOOT_SECS:-?}s)"
   echo "ROWCOUNT: point cand=${CAND_ROWS_POINT}(base ${BASE_ROWS_POINT}) scan cand=${CAND_ROWS_SCAN}(base ${BASE_ROWS_SCAN})"
@@ -2620,7 +2790,7 @@ if [ "$PROBE_ONLY" -eq 1 ]; then
 fi
 
 # --- 2c) exact-candidate DEV photograph proof (Tom 2026-08-19) ---------------
-# Reuse the rollback CoW that this safe-upgrade sequence selected in step 1.
+# Reuse the trial CoW that this safe-upgrade sequence selected in step 1.
 # The exact candidate pair clones that static point, connects its copied identity
 # to compiled DEV, and publishes one photograph. A receipt from another
 # execution, source, path, version, or byte pair cannot authorize this change.
@@ -2643,12 +2813,12 @@ else
   DEV_STAMP_OUT=""
   set +e
   DEV_STAMP_OUT="$(assert_dev_photograph_stamp_ok \
-    "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" "$BACKUP" 2>&1)"
+    "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" "$TRIAL_COPY" 2>&1)"
   DEV_STAMP_RC=$?
   set -e
   if [ "$DEV_STAMP_RC" -ne 0 ]; then
     log "exact-candidate DEV photograph: create a fresh isolated proof"
-    DEV_CLONE_SOURCE="$BACKUP"
+    DEV_CLONE_SOURCE="$TRIAL_COPY"
     DEV_PROOF_OUT=""
     set +e
     DEV_PROOF_OUT="$(LASTDB_LAUNCHD_PLIST="$LAUNCHD_PLIST" bash "$DEV_PHOTOGRAPH_PROOF_SH" \
@@ -2670,7 +2840,7 @@ else
 
   DEV_STAMP_OUT=""
   set +e
-  DEV_STAMP_OUT="$(assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" "$BACKUP" 2>&1)"
+  DEV_STAMP_OUT="$(assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" "$TRIAL_COPY" 2>&1)"
   DEV_STAMP_RC=$?
   set -e
   if [ -n "$DEV_STAMP_OUT" ]; then
@@ -2728,12 +2898,13 @@ if [ "$ASSUME_YES" -eq 0 ]; then
     echo "  brew services restart lastdb"
   fi
   echo "  post-check live /health + Board title"
-  echo "Ephemeral rollback point: $BACKUP (released if the operator aborts)"
+  echo "Candidate trial copy: $TRIAL_COPY (released if the operator aborts)"
+  echo "A stopped-primary rollback copy follows the strict flush check."
   printf "Proceed with LIVE upgrade? [y/N] "
   read -r ans
   case "$ans" in
     y|Y|yes|YES) ;;
-    *) release_rollback_point; log "aborted by user; primary still on $CURRENT_VER; rollback point released"; exit 0 ;;
+    *) release_rollback_point; log "aborted by user; primary still on $CURRENT_VER; trial copy released"; exit 0 ;;
   esac
 fi
 
@@ -2746,7 +2917,7 @@ log "STEP 3/4: live install + supervisor restart (venue=$VENUE)"
 assert_final_candidate_binding
 
 if [ "${LASTDB_PROBE_DEV_STAMP_SKIP:-0}" != "1" ]; then
-  assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" "$BACKUP" >/dev/null \
+  assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" "$TRIAL_COPY" >/dev/null \
     || die "exact-candidate DEV photograph receipt changed before the live section"
 fi
 
@@ -3222,5 +3393,5 @@ else
 fi
 echo ""
 echo "DATA ROLLBACK: not retained after GREEN. Any RED or driver-ended step keeps the newest"
-echo "ephemeral CoW rollback point for ${ROLLBACK_TTL_HOURS}h; the next safe-upgrade run reuses it."
+echo "verified stopped rollback point for ${ROLLBACK_TTL_HOURS}h if its copy completed."
 exit 0

@@ -404,8 +404,9 @@ EOF
       || [ ! -d "$real_clone/data" ] || [ -L "$real_clone/data" ] \
       || [ ! -f "$real_clone/.safe-upgrade/complete" ] \
       || [ -L "$real_clone/.safe-upgrade/complete" ] \
+      || ! grep -qx 'kind=trial' "$real_clone/.safe-upgrade/complete" \
       || ! _dev_stamp_paths_do_not_overlap "$real_clone" "$phome"; then
-    printf 'RED: DEV photograph receipt does not name this run\047s fresh rollback copy\n'
+    printf 'RED: DEV photograph receipt does not name this run\047s fresh trial copy\n'
     failed=1
   fi
 
@@ -525,7 +526,8 @@ write_dev_stamp_receipt_v3() {
   [ -d "$clone_source/data" ] && [ ! -L "$clone_source" ] \
     && [ ! -L "$clone_source/data" ] \
     && [ -f "$clone_source/.safe-upgrade/complete" ] \
-    && [ ! -L "$clone_source/.safe-upgrade/complete" ] || return 1
+    && [ ! -L "$clone_source/.safe-upgrade/complete" ] \
+    && grep -qx 'kind=trial' "$clone_source/.safe-upgrade/complete" || return 1
   clone_source="$(_dev_stamp_real_dir "$clone_source")" || return 1
   _dev_stamp_paths_do_not_overlap "$clone_source" "$primary_home" || return 1
   [ -f "${path}.restore.json" ] && [ ! -L "${path}.restore.json" ] \

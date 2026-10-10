@@ -75,9 +75,10 @@ jq -e '
     "backup_lastdb", "backup_lastdb_sha256", "backup_lastdbd",
     "backup_lastdbd_sha256", "effect_started", "launchd_label",
     "launchd_plist", "loom_execution_id", "primary_home",
-    "primary_socket", "sidebin_dir", "stage", "state_version", "venue"
+    "primary_socket", "old_pid", "old_start_ts", "old_ps_lstart",
+    "sidebin_dir", "stage", "state_version", "venue"
   ] | sort)
-  and .state_version == 1
+  and .state_version == 3
   and (.effect_started | type) == "boolean"
 ' "$STATE" >/dev/null || recovery_die "state-schema-invalid"
 
@@ -99,6 +100,17 @@ primary_home="$(json_string "$STATE" primary_home)" \
   || recovery_die "state-primary-home-invalid"
 primary_socket="$(json_string "$STATE" primary_socket)" \
   || recovery_die "state-primary-socket-invalid"
+old_pid="$(json_string "$STATE" old_pid)" \
+  || recovery_die "state-old-pid-invalid"
+case "$old_pid" in ''|*[!0-9]*) recovery_die "state-old-pid-invalid" ;; esac
+[ "$old_pid" -gt 0 ] || recovery_die "state-old-pid-invalid"
+old_start_ts="$(json_string "$STATE" old_start_ts)" \
+  || recovery_die "state-old-start-ts-invalid"
+case "$old_start_ts" in ''|*[!0-9]*) recovery_die "state-old-start-ts-invalid" ;; esac
+[ "$old_start_ts" -gt 0 ] || recovery_die "state-old-start-ts-invalid"
+old_ps_lstart="$(json_string "$STATE" old_ps_lstart)" \
+  || recovery_die "state-old-process-start-invalid"
+[ -n "$old_ps_lstart" ] || recovery_die "state-old-process-start-invalid"
 sidebin_dir="$(json_string "$STATE" sidebin_dir)" \
   || recovery_die "state-sidebin-dir-invalid"
 launchd_label="$(json_string "$STATE" launchd_label)" \
@@ -217,6 +229,13 @@ installed_cli_version="$("$sidebin_dir/lastdb" --version 2>/dev/null | awk '{pri
 [ "$installed_daemon_version" = "$backup_daemon_version" ] \
   && [ "$installed_cli_version" = "$backup_cli_version" ] \
   || recovery_die "installed-rollback-version-mismatch"
+hold="$sidebin_dir/lastdbd.prestop-hold"
+if [ -e "$hold" ] || [ -L "$hold" ]; then
+  [ -f "$hold" ] && [ ! -L "$hold" ] \
+    && [ "$(sha256_file "$hold")" = "$backup_daemon_sha" ] \
+    || recovery_die "prestop-hold-not-old-daemon"
+  rm -f -- "$hold" || recovery_die "prestop-hold-remove-failed"
+fi
 
 launchctl_bin="${LASTDB_CUTOVER_RECOVERY_LAUNCHCTL_BIN:-launchctl}"
 command -v "$launchctl_bin" >/dev/null 2>&1 \
@@ -224,6 +243,72 @@ command -v "$launchctl_bin" >/dev/null 2>&1 \
 uid="$(id -u)"
 domain="gui/$uid"
 service="$domain/$launchd_label"
+same_old_process() {
+  local observed=""
+  kill -0 "$old_pid" 2>/dev/null || return 1
+  observed="$(ps -p "$old_pid" -o lstart= 2>/dev/null)" \
+    || recovery_die "old-process-start-unreadable-no-reload"
+  [ -n "$observed" ] || recovery_die "old-process-start-absent-no-reload"
+  [ "$observed" = "$old_ps_lstart" ]
+}
+
+wait_for_exact_old_exit() {
+  local waited=0 limit="${LASTDB_CUTOVER_RECOVERY_OLD_EXIT_WAIT_SECS:-330}"
+  local session="$primary_home/current-session.json"
+  case "$limit" in ''|*[!0-9]*) recovery_die "old-exit-wait-invalid" ;; esac
+  [ "$limit" -ge 300 ] && [ "$limit" -le 360 ] \
+    || recovery_die "old-exit-wait-outside-300-to-360-seconds"
+  while same_old_process; do
+    if [ -e "$session" ] || [ -L "$session" ]; then
+      [ -f "$session" ] && [ ! -L "$session" ] \
+        || recovery_die "old-session-marker-unsafe-during-drain"
+      jq -e --argjson pid "$old_pid" --argjson start_ts "$old_start_ts" \
+        '.pid == $pid and .start_ts == $start_ts' "$session" >/dev/null \
+        || recovery_die "old-session-identity-changed-during-drain"
+    fi
+    if [ "$waited" -ge "$limit" ]; then
+      recovery_die "old-primary-still-draining pid=$old_pid start_ts=$old_start_ts waited_s=$waited"
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  printf 'CUTOVER_TIMEOUT_RECOVERY=old-exit-confirmed pid=%s start_ts=%s waited_s=%s\n' \
+    "$old_pid" "$old_start_ts" "$waited"
+}
+case "$stage" in
+  sidebin-stop-started|sidebin-stopped|sidebin-rollback-copy-started|sidebin-rollback-ready)
+    # The candidate did not replace the old pair. A failed strict stop may
+    # leave the old daemon in its flush drain. Wait for the exact saved
+    # process identity to exit; never bootout or kill it.
+    wait_for_exact_old_exit
+    if lastdb_launchd_job_loaded "$launchctl_bin" "$service"; then
+      # A loaded job with no process can remain idle after the interrupted
+      # stop. A plain kickstart starts it without killing a process. Never
+      # use kickstart -k, and never kickstart while any job PID exists.
+      live_pid="$(lastdb_launchd_job_pid "$launchctl_bin" "$service")"
+      if [ -z "$live_pid" ]; then
+        if live_unix_socket_has_listener "$primary_socket"; then
+          recovery_die "unexpected-listener-before-old-kickstart"
+        fi
+        if ! "$launchctl_bin" kickstart "$service"; then
+          printf 'CUTOVER_TIMEOUT_RECOVERY=warn reason=old-primary-kickstart-error-checking-health\n' >&2
+        fi
+      fi
+      wait_for_live_unix_socket_health "$primary_socket" 45 \
+        || recovery_die "old-primary-loaded-but-unhealthy-no-reload"
+      live_pid="$(live_unix_socket_health_pid "$primary_socket" || true)"
+      [ -n "$live_pid" ] \
+        && lastdb_require_supervised_primary "$launchctl_bin" "$service" "$live_pid" \
+        || recovery_die "old-primary-not-supervised"
+      printf 'CUTOVER_TIMEOUT_RECOVERY=green stage=%s rollback=old-primary-serving service=%s pid=%s\n' \
+        "$stage" "$service" "$live_pid"
+      exit 0
+    fi
+    if live_unix_socket_has_listener "$primary_socket"; then
+      recovery_die "unexpected-listener-before-old-bootstrap"
+    fi
+    ;;
+esac
 lastdb_launchd_reload_job "$launchctl_bin" "$domain" "$launchd_label" "$launchd_plist" \
   || recovery_die "launchd-reload-failed"
 
@@ -232,7 +317,7 @@ case "$health_wait" in ''|*[!0-9]*) recovery_die "health-wait-invalid" ;; esac
 [ "$health_wait" -gt 0 ] || recovery_die "health-wait-invalid"
 wait_for_live_unix_socket_health "$primary_socket" "$health_wait" \
   || recovery_die "primary-health-failed"
-live_pid="$(live_unix_socket_listener_pid "$primary_socket" || true)"
+live_pid="$(live_unix_socket_health_pid "$primary_socket" || true)"
 [ -n "$live_pid" ] || recovery_die "primary-listener-pid-absent"
 lastdb_require_supervised_primary "$launchctl_bin" "$service" "$live_pid" \
   || recovery_die "primary-not-supervised"

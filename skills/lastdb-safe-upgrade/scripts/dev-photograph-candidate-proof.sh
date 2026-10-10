@@ -218,13 +218,14 @@ CANDIDATE_CLI="$(_dev_stamp_real_file "$CANDIDATE_CLI")"
 PRIMARY_HOME_ARG="$(_dev_stamp_real_dir "$PRIMARY_HOME_ARG")" \
   || proof_die "the primary home cannot resolve"
 CLONE_SOURCE="$(_dev_stamp_real_dir "$CLONE_SOURCE")" \
-  || proof_die "the static rollback clone source cannot resolve"
+  || proof_die "the static trial clone source cannot resolve"
 [ -d "$PRIMARY_HOME_ARG/data" ] || proof_die "the primary data directory is absent"
 [ ! -L "$PRIMARY_HOME_ARG" ] || proof_die "the primary home argument is a symlink"
 [ -d "$CLONE_SOURCE/data" ] && [ ! -L "$CLONE_SOURCE" ] && [ ! -L "$CLONE_SOURCE/data" ] \
   && [ -f "$CLONE_SOURCE/.safe-upgrade/complete" ] \
   && [ ! -L "$CLONE_SOURCE/.safe-upgrade/complete" ] \
-  || proof_die "the static rollback clone source is absent or unsafe"
+  && grep -qx 'kind=trial' "$CLONE_SOURCE/.safe-upgrade/complete" \
+  || proof_die "the static trial clone source is absent or unsafe"
 if ! _dev_stamp_paths_do_not_overlap "$CLONE_SOURCE" "$PRIMARY_HOME_ARG"; then
   proof_die "the DEV proof clone source overlaps the live primary"
 fi
