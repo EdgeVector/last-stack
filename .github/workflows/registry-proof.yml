@@ -27,7 +27,7 @@
 # moved" and "already proved" holds.
 #
 # Public source reads use github.token. The existing org GH_PAT is required
-# only for a declared pre-cutover 0.23.3 build from archived fold. Neither token
+# only for a declared pre-cutover 0.23.2 or 0.23.3 build from archived fold. Neither token
 # reaches the build or the smoke. Legacy fold_oid input/output names remain
 # compatible with the proof bundle and the Mac proof consumer.
 name: registry-proof
@@ -213,7 +213,7 @@ jobs:
           set -euo pipefail
           source_repository=EdgeVector/lastdb
           case "$PLAN_BUILD" in
-            0.23.3-*) source_repository=EdgeVector/fold ;;
+            0.23.2-*|0.23.3-*) source_repository=EdgeVector/fold ;;
           esac
           echo "PLAN_SOURCE_REPOSITORY=$source_repository" >> "$GITHUB_ENV"
           echo "source_repository=$source_repository"
