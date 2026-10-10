@@ -76,7 +76,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
 SOURCE="${CLOUD_OWNED_GC_FOLD_SOURCE:-${FOLD_REPO:-}}"
 [ -n "$SOURCE" ] || fail FOLD_SOURCE_REQUIRED
 [ -d "$SOURCE" ] || fail FOLD_SOURCE_MISSING
-FOLD="$(FOLD_REPO="$SOURCE" ns_repo_path fold)"
+FOLD="$(LASTDB_REPO="$SOURCE" ns_repo_path lastdb)"
 FOLD="$(cd "$FOLD" && pwd -P)" || fail FOLD_SOURCE_MISSING
 [ ! -e "$FOLD/.portal" ] && [ ! -L "$FOLD/.portal" ] || fail FOLD_SOURCE_IS_PORTAL
 [ -f "$FOLD/.git" ] || [ -d "$FOLD/.git" ] || fail FOLD_SOURCE_NOT_GIT_ROOT

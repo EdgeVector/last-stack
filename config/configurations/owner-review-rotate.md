@@ -52,7 +52,7 @@ used zero whole-type Brain enumeration calls.
 track: repository owner review
 area: fold
 charter: owner-fold
-repos: EdgeVector/fold
+repos: EdgeVector/lastdb
 owned_paths: lastdb_node/, lastdb_host/, lastdb_identity/, lastdb_uds/, fold_db/, schema_service/, exemem_service/, app_identity_crypto/, lastdb_app_sdk/, apps/, folddb_profile/
 cadence: 1d
 recipe: owner-review
@@ -132,7 +132,7 @@ isolation: read current code only; never mutate primary LastDB data or a live wo
 track: domain owner review
 area: fold-ci
 charter: owner-fold-ci
-repos: EdgeVector/fold
+repos: EdgeVector/lastdb
 owned_paths: CI, Forgejo Actions, runners, build cache, ci-required gate
 cadence: 1d
 recipe: owner-review
@@ -142,7 +142,7 @@ isolation: read current code only; never mutate primary LastDB data or a live wo
 track: domain owner review
 area: fbrain
 charter: owner-fbrain
-repos: EdgeVector/brain, EdgeVector/fold
+repos: EdgeVector/brain, EdgeVector/lastdb
 owned_paths: brain CLI/MCP, schema registry, socket transport
 cadence: 1d
 recipe: owner-review

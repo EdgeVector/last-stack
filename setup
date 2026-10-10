@@ -451,7 +451,7 @@ append_managed_md_block() {
 }
 
 prepend_managed_md_block() {
-  # Put an overriding policy before unmanaged instructions and older blocks.
+  # Put the overriding rule before unmanaged instructions and older blocks.
   local file="$1"
   local src="$2"
   local start="$3"
@@ -484,7 +484,7 @@ upsert_harness_instruction_blocks() {
   strip_managed_md_block "$file" "$BA_START" "$BA_END"
   strip_managed_md_block "$file" "$JC_START" "$JC_END"
   strip_managed_md_block "$file" "$RS_START" "$RS_END"
-  # Remove the retired mandatory test/probe block from older installs.
+  # Retire the mandatory test/probe rule from older installs.
   strip_managed_md_block "$file" "$MP_START" "$MP_END"
   strip_managed_md_block "$file" "$NT_START" "$NT_END"
   strip_managed_md_block "$file" "$NT_LEGACY_START" "$NT_END"
@@ -823,7 +823,7 @@ EOF
 
 install_host_track_refresh_agent() {
   [ "$(uname -s)" = "Darwin" ] || return 0
-  local plist label="com.edgevector.host-track-refresh"
+  local plist disabled_reply disabled_state label="com.edgevector.host-track-refresh"
   plist="$(host_track_launchd_plist_path)"
   write_host_track_refresh_agent_plist "$plist"
   echo "  host-track refresh agent: $plist"
@@ -836,6 +836,40 @@ install_host_track_refresh_agent() {
     echo "  host-track refresh agent: launchctl not found; plist written only" >&2
     return 0
   }
+
+  if ! disabled_reply="$(launchctl print-disabled "gui/$(id -u)")"; then
+    echo "  host-track refresh agent: disabled overrides unavailable; load skipped" >&2
+    return 0
+  fi
+  if ! disabled_state="$(printf '%s\n' "$disabled_reply" | awk -v label="$label" '
+    {
+      sub(/^[[:space:]]+/, "")
+      sub(/[[:space:]]+$/, "")
+      if ($0 == "") next
+      if ($0 == "disabled services = {" && !opened && !closed) { opened=1; next }
+      if ($0 == "}" && opened && !closed) { closed=1; next }
+      if (!opened || closed || $0 !~ /^"[^"]+"[[:space:]]*=>[[:space:]]*(enabled|disabled)$/) {
+        invalid=1; next
+      }
+      key=$0
+      sub(/^"/, "", key)
+      sub(/"[[:space:]]*=>.*$/, "", key)
+      value=$0
+      sub(/^.*=>[[:space:]]*/, "", value)
+      if (key == label) { count++; state=value }
+    }
+    END {
+      if (invalid || !opened || !closed || count > 1) exit 1
+      print count == 0 ? "absent" : state
+    }
+  ')"; then
+    echo "  host-track refresh agent: disabled overrides malformed; load skipped" >&2
+    return 0
+  fi
+  if [ "$disabled_state" = "disabled" ]; then
+    echo "  host-track refresh agent: deliberate disabled override preserved; load skipped"
+    return 0
+  fi
 
   launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
   if launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1; then

@@ -122,7 +122,7 @@ load_github_repos() {
       list="${list:+${list},}${repo}"
     done <"$cfg"
   fi
-  [ -n "$list" ] || list="EdgeVector/fold,EdgeVector/last-stack,EdgeVector/fkanban,EdgeVector/routines,EdgeVector/loom,EdgeVector/brain,EdgeVector/situations,EdgeVector/configurations,EdgeVector/lastsecrets,EdgeVector/search,EdgeVector/remote,EdgeVector/state-machine,EdgeVector/reconciler,EdgeVector/lastdb-browser,EdgeVector/lastseek,EdgeVector/exemem-infra,EdgeVector/exemem-workspace,EdgeVector/schema-infra,EdgeVector/fold_db_website,EdgeVector/homebrew-lastdb,EdgeVector/ops-terminal,EdgeVector/kanban-factory,EdgeVector/code-atlas,EdgeVector/discovery,EdgeVector/dogfood-graph,EdgeVector/factory-graph,EdgeVector/demo-repository"
+  [ -n "$list" ] || list="EdgeVector/lastdb,EdgeVector/last-stack,EdgeVector/fkanban,EdgeVector/routines,EdgeVector/loom,EdgeVector/brain,EdgeVector/situations,EdgeVector/configurations,EdgeVector/lastsecrets,EdgeVector/search,EdgeVector/remote,EdgeVector/state-machine,EdgeVector/reconciler,EdgeVector/lastdb-browser,EdgeVector/lastseek,EdgeVector/exemem-infra,EdgeVector/exemem-workspace,EdgeVector/schema-infra,EdgeVector/fold_db_website,EdgeVector/homebrew-lastdb,EdgeVector/ops-terminal,EdgeVector/kanban-factory,EdgeVector/code-atlas,EdgeVector/discovery,EdgeVector/dogfood-graph,EdgeVector/factory-graph,EdgeVector/demo-repository"
   printf '%s\n' "$list"
 }
 

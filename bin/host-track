@@ -369,7 +369,7 @@ git_dirty() {
 # `freshness=hard_broken` for a healthy install. The publish lane was never the
 # problem. Measured 2026-09-07:
 #
-#   git ls-remote http://localhost:3300/EdgeVector/fold.git refs/heads/main
+#   git ls-remote https://github.com/EdgeVector/lastdb.git refs/heads/main
 #     -> fatal: could not read Username for 'http://localhost:3300'
 #   same ref with the token as an extraHeader
 #     -> 120627d8889c074ffe31e7ee4d11e6606f788b22
@@ -945,7 +945,7 @@ github_main_tip() {
 # The registry is the ONLY correct source for this. Three of the seventeen
 # registered apps do not share a name with their repo -- kanban is
 # EdgeVector/fkanban, state-machine is EdgeVector/state-machine-app, and both
-# lastdb and lastdbd are EdgeVector/fold -- so deriving the repo from the app
+# lastdbd is EdgeVector/lastdb -- so deriving the repo from the app
 # name would ask the policy store about a repo that does not exist and get an
 # unconditional OK. Both venue spellings appear in the wild: the forge URL form
 # every app uses today, and the retired `lastdb:///<slug>` form.
@@ -2566,9 +2566,11 @@ artifact_install_problem() {
 }
 
 verify_active_artifact() {
-  local app="$1" json="$2" artifact_app channel artifact_root install_root manifest digest current_target
+  local app="$1" json="$2" channel_override="${3:-}" artifact_app channel artifact_root install_root manifest digest current_target
   local encoded entry rel expected_sha active_file actual_sha
   IFS=$'\t' read -r artifact_app channel artifact_root install_root < <(artifact_paths "$app" "$json")
+  # An install can select a different channel from the registry default.
+  [ -z "$channel_override" ] || channel="$channel_override"
   if ! manifest="$(artifact_desired_manifest "$app" "$json" "$artifact_app" "$channel" "$artifact_root" 2>/dev/null)"; then
     printf 'host-track: %s artifact resolve failed (channel=%s root=%s)\n' \
       "$app" "$channel" "$artifact_root" >&2
@@ -4209,7 +4211,7 @@ artifact_install_app() {
 
   # Stamp only after the active tree verifies (digest match + hashes). Never
   # stamp a half-install as fresh.
-  if ! verify_active_artifact "$app" "$json"; then
+  if ! verify_active_artifact "$app" "$json" "$channel"; then
     printf 'host-track: %s post-cutover verification failed; not stamping fresh\n' "$app" >&2
     # Attempt rollback to previous if live.
     if [ -L "$install_root/previous" ] && [ -d "$install_root/$(readlink "$install_root/previous")" ]; then
@@ -4245,7 +4247,7 @@ artifact_install_app() {
     if [ "$(readlink "$install_root/current" 2>/dev/null || true)" != "versions/$expected_digest" ] \
       || ! jq -e --arg oid "$expected_oid" --arg digest "$expected_digest" --arg tree "$(printf '%s' "$EXACT_INSTALL_OFFICIAL" | jq -r '.tree_oid')" \
         '.source_oid == $oid and .manifest_digest == $digest and .tree_oid == $tree' "$stamp_path" >/dev/null \
-      || ! verify_active_artifact "$app" "$json"; then
+      || ! verify_active_artifact "$app" "$json" "$channel"; then
       EXACT_INSTALL_CODE=installed_verification_failed
       finish_artifact_install_lock "$reuse_install_lock"
       return 1

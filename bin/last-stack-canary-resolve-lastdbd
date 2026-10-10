@@ -39,7 +39,7 @@ Resolve a pre-built lastdbd for daily canaries. Never compiles.
 
 Options:
   --json           Machine-readable JSON on stdout
-  --allow-newest   If the exact fold-main SHA is not staged, use the newest
+  --allow-newest   If the exact LastDB-main SHA is not staged, use the newest
                    canary-builds/*/lastdbd (reports sha_drift=true)
   --allow-current  Last resort: ~/.lastdb/current/lastdbd
   --allow-daemon-only
@@ -53,10 +53,10 @@ Options:
   -h, --help       Show help
 
 Env:
-  LAST_STACK_CANARY_FOLD_MIRROR    fold git mirror (default ~/.cache/edgevector-git/fold.git)
+  LAST_STACK_CANARY_FOLD_MIRROR    LastDB git mirror (default ~/.cache/edgevector-git/lastdb.git)
   LAST_STACK_CANARY_BUILDS_DIR     canary stage root (default ~/.local/state/last-stack/canary-builds)
   LAST_STACK_SMOKE_STAGED_DIR      smoke-staged copies (default ~/.lastdb-test-copies)
-  LAST_STACK_CANARY_MAIN_OID       test override for fold main tip
+  LAST_STACK_CANARY_MAIN_OID       test override for LastDB main tip
   LAST_STACK_CANARY_FETCH_MAIN     1 (default) fetch origin main before resolve
   LASTDB_CURRENT_BIN               primary lastdbd (default ~/.lastdb/current/lastdbd)
 EOF
@@ -90,7 +90,7 @@ done
 RESTORE_SCRIPT_REL="scripts/run-lastdb-restore-probe.sh"
 
 HOME_DIR="${HOME:-$(eval echo ~)}"
-FOLD_MIRROR="${LAST_STACK_CANARY_FOLD_MIRROR:-$HOME_DIR/.cache/edgevector-git/fold.git}"
+FOLD_MIRROR="${LAST_STACK_CANARY_FOLD_MIRROR:-$HOME_DIR/.cache/edgevector-git/lastdb.git}"
 BUILDS_DIR="${LAST_STACK_CANARY_BUILDS_DIR:-$HOME_DIR/.local/state/last-stack/canary-builds}"
 STAGED_DIR="${LAST_STACK_SMOKE_STAGED_DIR:-$HOME_DIR/.lastdb-test-copies}"
 FETCH_MAIN="${LAST_STACK_CANARY_FETCH_MAIN:-1}"
@@ -101,7 +101,7 @@ maybe_fetch_main() {
     return 0
   fi
   [ -d "$FOLD_MIRROR" ] || return 0
-  git -C "$FOLD_MIRROR" fetch origin refs/heads/main:refs/heads/main 2>/dev/null || true
+  git -C "$FOLD_MIRROR" fetch origin +refs/heads/main:refs/remotes/origin/main 2>/dev/null || true
 }
 
 resolve_main_oid() {
@@ -109,16 +109,16 @@ resolve_main_oid() {
     printf '%s\n' "$LAST_STACK_CANARY_MAIN_OID"
     return 0
   fi
-  [ -d "$FOLD_MIRROR" ] || die "fold mirror not found: $FOLD_MIRROR"
+  [ -d "$FOLD_MIRROR" ] || die "LastDB mirror not found: $FOLD_MIRROR"
   maybe_fetch_main
   local ref
-  for ref in refs/heads/main refs/remotes/origin/main; do
+  for ref in refs/remotes/origin/main refs/heads/main; do
     if git -C "$FOLD_MIRROR" rev-parse --verify -q "$ref^{commit}" >/dev/null 2>&1; then
       git -C "$FOLD_MIRROR" rev-parse "$ref"
       return 0
     fi
   done
-  die "could not resolve fold main tip in $FOLD_MIRROR"
+  die "could not resolve LastDB main tip in $FOLD_MIRROR"
 }
 
 sibling_lastdb() {

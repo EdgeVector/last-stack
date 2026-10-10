@@ -9,7 +9,7 @@ ROOT="$(cd "$(dirname "$0")/../../.." && pwd -P)"
 
 SLUG=north-star-lastdb-uuid-hash-group-addressing
 MODE="$(ns_mode)"
-FOLD_ROOT="$(ns_repo_path fold)"
+FOLD_ROOT="$(ns_repo_path lastdb)"
 COW_PROOF="${UUID_HASH_GROUP_COW_PROOF_FILE:-$HOME/.local/state/last-stack/runtime/north-star-proofs/${SLUG}-cow.md}"
 PRIMARY_HOME="${UUID_HASH_GROUP_PRIMARY_HOME:-$HOME/.lastdb}"
 

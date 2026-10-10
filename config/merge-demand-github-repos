@@ -2,7 +2,7 @@
 # Every EdgeVector repo is on GitHub (decision-2026-09-29-retire-lastgit-all-repos-to-github);
 # fold moved on 2026-09-29, last-stack on 2026-09-30, lastgit (the last one) on 2026-10-08.
 # merge-demand-forge-repos is empty. Add a new repo here when it is created (new repos start on GitHub).
-EdgeVector/fold
+EdgeVector/lastdb
 EdgeVector/last-stack
 EdgeVector/fkanban
 EdgeVector/routines

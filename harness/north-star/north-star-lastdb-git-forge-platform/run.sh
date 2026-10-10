@@ -95,7 +95,7 @@ refuse_primary "$(ns_proof_dir)"
 
 SOURCE_ROOT="${NORTH_STAR_LASTDB_GIT_FORGE_SOURCE_DIR:-${FOLD_REPO:-}}"
 if [ -z "$SOURCE_ROOT" ]; then
-  SOURCE_ROOT="$(ns_repo_path fold)"
+  SOURCE_ROOT="$(ns_repo_path lastdb)"
 fi
 refuse_primary "$SOURCE_ROOT"
 

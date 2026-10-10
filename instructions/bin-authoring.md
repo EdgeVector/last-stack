@@ -29,8 +29,8 @@ workspace walk. The stable rule is one language per helper and a bounded walk.
    find ~/.fkanban/worktrees -maxdepth 3 -name feature_catalog.toml
    ```
 
-3. Use syntax and lint checks before you run the helper against the live
-   board or brain. Do not add tests or a fixture harness.
+3. Use syntax, build, format, and lint checks before you run the helper
+   against the live board or brain. Do not write or run tests or a fixture harness.
 4. Parse a format from the first byte. Do not require a leading newline
    before the first TOML table or the first YAML document.
 5. After a rewrite, stop or ignore the background tasks of the old drafts.

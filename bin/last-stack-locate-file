@@ -21,7 +21,7 @@ Examples:
 
   last-stack-locate-file --name feature_catalog.toml \\
     --env PRODUCT_FEATURE_CATALOG \\
-    --candidate ~/code/edgevector/fold/folddb_profile/feature_catalog.toml \\
+    --candidate ~/code/edgevector/lastdb/folddb_profile/feature_catalog.toml \\
     --root ~/.fkanban/worktrees --maxdepth 3
 
   last-stack-locate-file --name ci.sh --root ~/.fkanban/worktrees/x --maxdepth 2 --json

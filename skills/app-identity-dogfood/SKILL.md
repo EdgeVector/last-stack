@@ -300,7 +300,7 @@ Route failures this way:
 | Symptom | Repo |
 |---|---|
 | deployed app registry route missing or unhealthy | `EdgeVector/schema-infra` |
-| consolidated CLI behavior, manifest, login, init, push, status | `EdgeVector/fold` |
+| consolidated CLI behavior, manifest, login, init, push, status | `EdgeVector/lastdb` |
 | brain schema source or schema count mismatch | `EdgeVector/brain` |
 | Exemem dev credential or invite behavior | `EdgeVector/exemem-infra` |
 | this dogfood recipe | `EdgeVector/last-stack` |

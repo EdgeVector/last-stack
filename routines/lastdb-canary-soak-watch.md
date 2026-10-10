@@ -64,7 +64,7 @@ attempts (default 6), at least `LAST_STACK_CANARY_V2_PROMOTE_RETRY_SECONDS`
 apart (default 3000). Each retry posts a Situations notice, and so does the
 last failed attempt. Other actions stay one attempt per verdict token.
 The publisher takes fold's promote script from fold's Forgejo main (the
-bare mirror `~/.cache/edgevector-git/fold.git`, fetched first), never from
+bare mirror `~/.cache/edgevector-git/lastdb.git`, fetched first), never from
 `~/.lastgit/mirrors`, and refuses a script that names a `lastdb:///` remote. The other actions stay planned until a command is
 configured.
 

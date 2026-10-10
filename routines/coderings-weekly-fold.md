@@ -39,7 +39,7 @@ path) to `--repo`. Resolve a real checkout or the bare mirror first.
    fi
 
    # Fold scan target: prefer bare mirror (coderings only needs git objects).
-   FOLD_MIRROR="${FOLD_MIRROR:-$HOME/.cache/edgevector-git/fold.git}"
+   FOLD_MIRROR="${FOLD_MIRROR:-$HOME/.cache/edgevector-git/lastdb.git}"
    FOLD_REPO=""
    if [ -d "$FOLD_MIRROR" ] && git -C "$FOLD_MIRROR" rev-parse --git-dir >/dev/null 2>&1; then
      git -C "$FOLD_MIRROR" fetch --quiet origin 2>/dev/null || true
@@ -70,7 +70,7 @@ path) to `--repo`. Resolve a real checkout or the bare mirror first.
    cd "$CODERINGS_WT"
    bun src/cli.ts weekly fold \
      --repo "$FOLD_REPO" \
-     --repo-id EdgeVector/fold \
+     --repo-id EdgeVector/lastdb \
      --dry-run --json
    ```
    If dry-run is clean and store policy in `docs/weekly-fold-capture.md` allows

@@ -169,7 +169,7 @@ the repo/ref and command, ending in `0 hits`, for example:
 
 ```
 ## OUTCOME
-- fold@abc1234: `last-stack-legacy-residue-probe EdgeVector/fold 'old_flag|old_fn'` -> 0 hits
+- lastdb@abc1234: `last-stack-legacy-residue-probe EdgeVector/lastdb 'old_flag|old_fn'` -> 0 hits
 ```
 
 The closeout helper re-runs this gate and refuses `done` if the proof is absent

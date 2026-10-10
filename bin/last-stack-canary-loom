@@ -142,7 +142,8 @@ resolve_oid() {
     printf '%s\n' "$OID"
     return
   fi
-  git -C "${HOME}/.cache/edgevector-git/fold.git" rev-parse refs/heads/main 2>/dev/null || true
+  git -C "${LAST_STACK_CANARY_FOLD_MIRROR:-$HOME/.cache/edgevector-git/lastdb.git}" rev-parse --verify refs/remotes/origin/main 2>/dev/null || \
+    git -C "${LAST_STACK_CANARY_FOLD_MIRROR:-$HOME/.cache/edgevector-git/lastdb.git}" rev-parse --verify refs/heads/main 2>/dev/null || true
 }
 
 export LAST_STACK_CANARY_LOOM_STAMP="$STAMP"

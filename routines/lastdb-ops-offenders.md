@@ -92,7 +92,7 @@ offender-filing. Do not double-file the same client+kind+schema.
 
 Use `$last_stack/bin/last-stack-kanban-file-pr`. Never raw `kanban add` for
 Kind:pr. Resolve `Repo:` from `repo-venue-map` / the offending client
-(kanban → `EdgeVector/fkanban` or `EdgeVector/fold` only if the path is
+(kanban → `EdgeVector/fkanban` or `EdgeVector/lastdb` only if the path is
 proven; last-stack → `EdgeVector/last-stack`; lastgit → its LastGit venue).
 A dirty `Repo:` line parks the card.
 
