@@ -121,7 +121,8 @@ if [ -d "$copy_real/data" ]; then
 fi
 
 check_primary_and_copy() {
-  local service="gui/$uid/$label" job_pid health_pid session command_line processes
+  local service="gui/$uid/$label" job_pid health_pid session command_line processes pid executable
+  local logical_copy logical_real copy_path
   job_pid="$(lastdb_launchd_job_pid launchctl "$service")"
   health_pid="$(live_unix_socket_health_pid "$sock" || true)"
   [ "$job_pid" = "$expected_pid" ] && [ "$health_pid" = "$expected_pid" ] \
@@ -136,16 +137,40 @@ check_primary_and_copy() {
     && [ "$(stat -f '%u' "$copy_real")" = "$uid" ] \
     && [ "$(CDPATH= cd -- "$copy_real" && pwd -P)" = "$root_real/$base" ] \
     || die copy-changed
+  logical_copy=""
+  case "$copy_real" in
+    /private/var/*|/private/tmp/*)
+      logical_copy="${copy_real#/private}"
+      [ -d "$logical_copy" ] && [ ! -L "$logical_copy" ] \
+        && logical_real="$(CDPATH='' cd -- "$logical_copy" && pwd -P)" \
+        && [ "$logical_real" = "$copy_real" ] \
+        || die copy-logical-alias-unverified
+      ;;
+  esac
   if live_unix_socket_has_listener "$copy_real/data/folddb.sock" \
       || live_unix_socket_has_listener "$copy_real/data/folddb-full.sock"; then
     die copy-has-live-listener
   fi
-  processes="$(ps -axo command=)" || die active-process-list-unavailable
-  while IFS= read -r command_line; do
-    case "$command_line" in
-      *lastdbd*"$copy_real"*|*"$copy_real"*lastdbd*)
-        die copy-is-named-by-active-daemon ;;
-    esac
+  # comm identifies the executable, so a helper's launchd label cannot make
+  # that helper a lastdbd process. Read arguments only for actual daemons.
+  processes="$(ps -ww -axo pid=,comm=)" || die active-process-list-unavailable
+  while read -r pid executable; do
+    case "$pid" in ''|*[!0-9]*) die active-process-list-invalid ;; esac
+    [ "${executable##*/}" = lastdbd ] || continue
+    command_line="$(ps -ww -p "$pid" -o args=)" \
+      || die active-daemon-arguments-unavailable
+    [ -n "$command_line" ] || die active-daemon-arguments-unavailable
+    # Include the caller path, canonical path, and verified macOS alias.
+    # A daemon can name the logical alias before its socket listener exists.
+    # Require the data-dir flag/value boundary, including descendants.
+    for copy_path in "$copy" "$copy_real" "$logical_copy"; do
+      [ -n "$copy_path" ] || continue
+      case " $command_line " in
+        *" --data-dir $copy_path "*|*" --data-dir=$copy_path "*|\
+        *" --data-dir $copy_path/"*|*" --data-dir=$copy_path/"*)
+          die copy-is-named-by-active-daemon ;;
+      esac
+    done
   done <<< "$processes"
 }
 

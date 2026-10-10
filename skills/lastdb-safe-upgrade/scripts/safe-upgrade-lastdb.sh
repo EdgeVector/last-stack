@@ -496,6 +496,8 @@ trial_clone_socket_errors_only() {
   [ -s "$WORK/trial-clone.err" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
+      "cp: $PRIMARY_HOME/data/folddb.sock is a socket (not copied)."|\
+      "cp: $PRIMARY_HOME/data/folddb-full.sock is a socket (not copied)."|\
       "cp: $PRIMARY_SOCK: Operation not supported"|\
       "cp: $PRIMARY_SOCK: No such file or directory"|\
       "cp: cannot copy a socket file: '$PRIMARY_SOCK'"|\
