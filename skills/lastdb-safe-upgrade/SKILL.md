@@ -238,7 +238,7 @@ How the seed is made (`scripts/build-synthetic-home.sh`):
 - **Tom's identity.** The builder copies `identity.key` (mode 600, never
   printed) and the bootstrap marker. It reads nothing else from the primary.
   The DEV photograph therefore registers the same identity as before.
-- **Current app schemas.** `kanban init` and `brain init --yes` register the
+- **Current app schema setup.** `kanban init` and `brain init --yes` register the
   schemas, so the seed needs the network (schema service). It adds one
   milestone, `LASTDB_SYNTHETIC_CARDS` cards (default 120) in todo, backlog and
   done, and `LASTDB_SYNTHETIC_RECORDS` brain records (default 20). All writes
@@ -328,7 +328,7 @@ the key layout.
    retained rollback point) — do not improvise.
 5. Probe bar = smoke bar: identity decrypts, `/api/schemas` > 0, `Board` query
    returns real **title values** (counts alone are not proof). On the seed the
-   title is `Default board`. The driver sets
+   title is "Default board". The driver sets
    `LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1` on this separate candidate copy.
    The smoke bar does not assert stamp completion. The primary stays free of
    this copy-only startup work.
@@ -433,9 +433,9 @@ the key layout.
    **ephemeral throwaway node** of the candidate only (never live primary).
    A node that ignores a false `expected` precondition and applies the write
    is **RED** — promotion is blocked with an actionable failure that names the
-   candidate binary. Reuses LastGit's `test/cas-expected-node-enforced.sh`
-   when present; otherwise a self-contained discriminator with the same
-   true→200 / false→409 / refused-did-not-land sequence. Skipping
+   candidate binary. The self-contained product diagnostic uses the
+   true→200 / false→409 / refused-did-not-land sequence. It does not delegate
+   to a repository test script. Skipping
    (`LASTDB_PROBE_CAS_SKIP=1`) requires Tom clearance. Not a routine health
    check and not a live-primary mutation path.
 10. **Binary-pair bar (lastdb + lastdbd):** before backup/probe, require a

@@ -91,26 +91,6 @@ check_embedding_ledger_is_honest() {
   return 0
 }
 
-# --- Gate B3: purge's tombstone DELIVERY is asserted, not just its code path -
-# Removing the `continue` makes gate B green while proving nothing about what
-# reaches the sink. The Search app is a separate process holding a derived copy
-# of deleted content, so the claim that has to hold is delivery: a Purge
-# mutation produces an IndexChangeKind::Tombstone on the index sink for that
-# key. Gate on a named test so the assertion cannot quietly disappear.
-check_purge_tombstone_delivery_tested() {
-  local core="$FOLD/fold_db/crates/core"
-  if [ ! -d "$core" ]; then
-    append "B3: fold_db/crates/core not found at expected path"
-    return 1
-  fi
-  if ! grep -rq 'purge_delivers_tombstone_to_index_sink' "$core" 2>/dev/null; then
-    append "B3: FAIL — no test asserts a Purge delivers IndexChangeKind::Tombstone to the index sink; the Search app's vector plane has no proof it is told"
-    return 1
-  fi
-  append "B3: purge->tombstone delivery to the index sink is asserted by a named test"
-  return 0
-}
-
 # --- Gate D1: the tips plane is compactable -------------------------------
 compact_allowlist_block() {
   local source="$1"
@@ -410,7 +390,6 @@ if [ "$ok" -eq 0 ]; then
   check_delete_is_single_write   || ok=1
   check_purge_updates_search_index || ok=1
   check_embedding_ledger_is_honest || ok=1
-  check_purge_tombstone_delivery_tested || ok=1
   check_tips_compactable         || ok=1
   check_atoms_retire_on_purge    || ok=1
   check_atoms_compactable        || ok=1

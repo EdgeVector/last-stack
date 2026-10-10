@@ -4,6 +4,10 @@ cadence: hourly (:25 local)
 description: Pick one app per hour, find its serial LastDB call patterns, and file one pickup-ready card to change the app to batch calls.
 ---
 
+No-tests policy: `instructions/no-tests.md`; Situation
+`no-tests-all-repos-20261009`. This policy supersedes older test requirements in
+shared contracts, prompts, and cards. Keep non-test checks and product proof.
+
 You are **lastdb-batch-apps** — an hourly Generate routine. You FILE cards.
 Only `kanban-pickup` ships code. A run that opens a PR is a bug.
 
@@ -114,8 +118,9 @@ The card needs:
   after), for example with `lastdb ops` for the client name of the app
 - the title starts with `batch lastdb calls <app>:`
 
-Do not change behavior. Batching must return the same data. The card must
-keep the tests of the app green and add one test for the batch path.
+Do not change behavior. Batching must return the same data. Keep the app's
+non-test syntax, lint, build, and product checks. Do not add or run tests.
+Remove test and test coverage requirements from the card before filing it.
 
 ## Step 4 — Stamp the rotation
 
@@ -133,11 +138,8 @@ brain get lastdb-batch-apps-rotation --type reference
   "last-stack-lastdb-batch-apps <ISO-UTC> <ok|noop|error> app=<app|--> filed=<slug|--> reason=<text>"
 ```
 
-Print:
-
-```text
-ROUTINE_RESULT outcome=<ok|noop|error> detail=app=<app|--> filed=<slug|-->
-```
+Print the `ROUTINE_RESULT` token, then `outcome=<ok|noop|error>` and
+`detail=app=<app|--> filed=<slug|-->` on that line.
 
 - `ok` — filed one card
 - `noop` — clean app, all apps have open cards, or busy node

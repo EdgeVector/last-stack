@@ -7,8 +7,8 @@
 # gate: the candidate binary must reject a false precondition with 409
 # cas_conflict and must not land the refused write, before live promotion.
 #
-# GUARDRAIL: boots a throwaway lastdbd under /tmp (or reuses LastGit's
-# cas-expected-node-enforced.sh). NEVER points at ~/.lastdb / ~/.folddb.
+# GUARDRAIL: boots a throwaway lastdbd under /tmp.
+# NEVER points at ~/.lastdb / ~/.folddb or delegates to a repository test.
 # Not for routine health checks or live-primary mutation paths.
 #
 # Usage:
@@ -28,7 +28,6 @@ CLASSIFY=0
 HTTP_CODE=""
 RESP_FILE=""
 SCHEMA_MAP="${LASTDB_PROBE_CAS_SCHEMA_MAP:-${LASTGIT_SCHEMA_MAP:-$HOME/.lastgit/schema-map.json}}"
-LASTGIT_PROBE="${LASTDB_PROBE_CAS_LASTGIT_SCRIPT:-}"
 
 usage() {
   sed -n '2,22p' "$0"
@@ -61,7 +60,7 @@ fail_red() {
   exit 1
 }
 
-# --- pure classify (unit tests; no node) -------------------------------------
+# --- response classification (no node) --------------------------------------
 # GREEN when false-precondition returns 409 with cas_conflict.
 # RED when HTTP is 200 (unconditional write) or any non-409.
 classify_false_cas_response() {
@@ -111,68 +110,15 @@ for tool in jq curl; do
   }
 done
 
-# Prefer LastGit's battle-tested discriminator when present (same machine
-# that runs LastGit). LASTDBD pins the candidate, not the live primary.
-find_lastgit_cas_script() {
-  if [ -n "$LASTGIT_PROBE" ] && [ -f "$LASTGIT_PROBE" ]; then
-    echo "$LASTGIT_PROBE"
-    return 0
-  fi
-  local c
-  for c in \
-    "$HOME/.lastgit/host-checkout/lastgit/test/cas-expected-node-enforced.sh" \
-    "$HOME/code/edgevector/lastgit/test/cas-expected-node-enforced.sh" \
-    "${LASTGIT_ROOT:-}/test/cas-expected-node-enforced.sh"
-  do
-    [ -n "$c" ] && [ -f "$c" ] && { echo "$c"; return 0; }
-  done
-  return 1
-}
-
-run_via_lastgit() {
-  local script="$1" out rc
-  out="$(mktemp "${TMPDIR:-/tmp}/cas-probe-lg.XXXXXX")"
-  set +e
-  LASTDBD="$LASTDBD_BIN" LASTGIT_SCHEMA_MAP="$SCHEMA_MAP" \
-    bash "$script" >"$out" 2>&1
-  rc=$?
-  set -e
-  cat "$out"
-  if grep -q 'CAS EXPECTED NODE-ENFORCED PASS' "$out"; then
-    log "GREEN: LastGit cas-expected-node-enforced passed for $LASTDBD_BIN"
-    echo "VERDICT: GREEN"
-    echo "CANDIDATE: $LASTDBD_BIN"
-    echo "REASON: false CAS precondition → 409 cas_conflict; refused write did not land"
-    rm -f "$out"
-    return 0
-  fi
-  if grep -qE '^SKIP:|SKIP: no ' "$out"; then
-    log "SKIP: LastGit CAS script skipped (schema map / binary preflight)"
-    echo "VERDICT: SKIP"
-    echo "CANDIDATE: $LASTDBD_BIN"
-    rm -f "$out"
-    return 0
-  fi
-  # Non-PASS without explicit SKIP = RED (node ignored expected, or probe broken)
-  rm -f "$out"
-  fail_red "$LASTDBD_BIN" "LastGit cas-expected-node-enforced failed (exit $rc) against candidate"
-}
-
-if lg_script="$(find_lastgit_cas_script)"; then
-  log "using LastGit discriminator: $lg_script"
-  run_via_lastgit "$lg_script"
-  exit 0
-fi
-
 # --- self-contained path (no LastGit checkout) --------------------------------
 # Boots ephemeral node under /tmp, loads LastgitCiStatus from schema map when
 # present, runs the same true→200 / false→409 / refused-did-not-land sequence.
 
 if [ ! -f "$SCHEMA_MAP" ]; then
-  log "SKIP: no schema map at $SCHEMA_MAP and no LastGit CAS script — cannot load LastgitCiStatus"
+  log "SKIP: no schema map at $SCHEMA_MAP — cannot load LastgitCiStatus"
   echo "VERDICT: SKIP"
   echo "CANDIDATE: $LASTDBD_BIN"
-  echo "REASON: missing schema map and LastGit cas-expected-node-enforced.sh"
+  echo "REASON: missing schema map"
   exit 0
 fi
 

@@ -4,6 +4,10 @@ cadence: weekly (Thursday ~08:05)
 description: Weekly steward for Revenant Watch — did the daily miner fire, are findings useful, any false positives, and improve the detector/prompt/registry if needed. Report to Tom.
 ---
 
+No-tests policy: `instructions/no-tests.md`; Situation
+`no-tests-all-repos-20261009`. This policy supersedes older test requirements in
+shared contracts, prompts, and cards. Keep non-test checks and product proof.
+
 You are the **weekly Revenant Watch steward**. Each run starts fresh. You do
 **not** re-mine all transcripts from scratch unless the daily miner is broken;
 you audit whether Revenant Watch is healthy and useful, then fix small gaps.
@@ -25,7 +29,7 @@ week:
 
 1. **Did it run?** Daily `last-stack-revenant-watch` heartbeats / run logs.
 2. **Is output useful?** Ledger + `revenant-*` quality (noise vs signal).
-3. **Is the product still installable?** Classifier + harness still green.
+3. **Is the product still installable?** Classifier and required product source files exist.
 4. **Improve** small prompt/profile/registry issues when safe.
 5. **Report Tom** with a short scorecard and any actions taken.
 
@@ -81,7 +85,7 @@ Record:
 | runs_in_window | count of completed runs last 7d |
 | last_ok_at | latest ok heartbeat / exit 0 |
 | last_failure | any error/noop reasons |
-| registry_active | status=active in registry |
+| registry_active | registry status is active |
 
 If the routine is missing/paused/misconfigured: **heal** (re-write registry
 entry, restore prompt path, set status=active) using the product files under
@@ -112,12 +116,12 @@ Score roughly:
 If the ledger is empty every week **and** the daily ran: that can be healthy
 (conservative detector) **or** dead extraction. Distinguishing check:
 
-1. Confirm classifier fixtures still pass (Step 3).
+1. Check the classifier path and product source files (Step 3).
 2. Spot-check 1–2 recent agent sessions for an obvious won't-undo contradiction
    (e.g. TCP :9001 as primary, full-DB React packaging). If found and unflagged,
    treat as **miss** and tighten profile/SOP examples.
 
-## Step 3 — Product bar (deterministic)
+## Step 3 — Product source check
 
 Prefer install tree, else worktree/main checkout of last-stack:
 
@@ -128,16 +132,20 @@ if [ -z "$classify" ] && [ -x "$last_stack/bin/last-stack-revenant-classify" ]; 
   classify="$last_stack/bin/last-stack-revenant-classify"
 fi
 
-# Fixtures live in the last-stack product tree
-proof="$(find "$last_stack" "$HOME/code/edgevector" -path '*/harness/north-star/revenant-watch/run.sh' 2>/dev/null | head -1)"
-if [ -n "$proof" ] && [ -x "$proof" ]; then
-  "$proof"
+# The source check lives at one fixed path in the Last Stack product tree.
+proof="$last_stack/harness/north-star/revenant-watch/run.sh"
+if [ -z "$classify" ] || [ ! -x "$proof" ]; then
+  echo "FAIL classifier or product source check is missing" >&2
+  exit 1
 fi
+LAST_STACK_REVENANT_CLASSIFY="$classify" "$proof"
 ```
 
-Expect exit 0 and `/^PASS/` for A/B/C. If red: file a Brain papercut
+Expect exit 0 and `PASS-OFFLINE` for the product source check. This result does
+not prove classifier behavior or a live mining run. Do not restore fixtures.
+If red: file a Brain papercut
 `papercut-revenant-watch-…` (Brain only) **and** a Kind:pr card on last-stack
-only if the harness itself is broken (real product regression).
+only if the product file/profile check is broken.
 
 ## Step 4 — Improve (bounded)
 
@@ -180,7 +188,7 @@ Body template:
 - Daily runs (7d): N (last_ok=…)
 - Signal / noise: …
 - Coverage: ok | thin | broken
-- Harness A/B/C: PASS | FAIL
+- Product source check: PASS-OFFLINE | FAIL
 
 ## Top findings (or "none — quiet week")
 - …

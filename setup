@@ -410,6 +410,7 @@ RS_END='<!-- last-stack:routine-shell:end -->'
 MP_START='<!-- last-stack:mutation-probe:start (managed by last-stack setup; edits inside are overwritten) -->'
 MP_END='<!-- last-stack:mutation-probe:end -->'
 NT_START='<!-- last-stack:no-tests:start (managed by last-stack setup; edits inside are overwritten) -->'
+NT_LEGACY_START='<!-- last-stack:no-tests:start -->'
 NT_END='<!-- last-stack:no-tests:end -->'
 LB_START='<!-- last-stack:lastdb-batching:start (managed by last-stack setup; edits inside are overwritten) -->'
 LB_END='<!-- last-stack:lastdb-batching:end -->'
@@ -449,6 +450,24 @@ append_managed_md_block() {
   } >> "$file"
 }
 
+prepend_managed_md_block() {
+  # Put an overriding policy before unmanaged instructions and older blocks.
+  local file="$1"
+  local src="$2"
+  local start="$3"
+  local end="$4"
+  [ -f "$src" ] || return 0
+  local tmp
+  tmp="$(mktemp)"
+  {
+    printf '%s\n' "$start"
+    cat "$src"
+    printf '%s\n\n' "$end"
+    cat "$file"
+  } > "$tmp"
+  mv "$tmp" "$file"
+}
+
 upsert_harness_instruction_blocks() {
   # Strip the managed blocks, then append in a stable order so re-runs are byte-identical.
   local file="$1"
@@ -468,6 +487,7 @@ upsert_harness_instruction_blocks() {
   # Remove the retired mandatory test/probe block from older installs.
   strip_managed_md_block "$file" "$MP_START" "$MP_END"
   strip_managed_md_block "$file" "$NT_START" "$NT_END"
+  strip_managed_md_block "$file" "$NT_LEGACY_START" "$NT_END"
   strip_managed_md_block "$file" "$LB_START" "$LB_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/brain-kanban.md" "$BK_START" "$BK_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/asd-ste100.md" "$STE_START" "$STE_END"
@@ -480,9 +500,9 @@ upsert_harness_instruction_blocks() {
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/bin-authoring.md" "$BA_START" "$BA_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/safe-json-capture.md" "$JC_START" "$JC_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/routine-shell.md" "$RS_START" "$RS_END"
-  append_managed_md_block "$file" "$SOURCE_ROOT/instructions/no-tests.md" "$NT_START" "$NT_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/lastdb-batching.md" "$LB_START" "$LB_END"
-  echo "  ${label} instructions: brain-kanban + asd-ste100 + user-vocabulary + no-home-root-scan + bin-authoring + safe-json-capture + routine-shell + no-tests + lastdb-batching -> $file"
+  prepend_managed_md_block "$file" "$SOURCE_ROOT/instructions/no-tests.md" "$NT_START" "$NT_END"
+  echo "  ${label} instructions: no-tests + brain-kanban + asd-ste100 + user-vocabulary + no-home-root-scan + bin-authoring + safe-json-capture + routine-shell + lastdb-batching -> $file"
 }
 
 # ── Codex routine shell: zsh -lc -> bash ─────────────────────────────────────

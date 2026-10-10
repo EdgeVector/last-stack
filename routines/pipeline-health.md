@@ -4,6 +4,10 @@ cadence: every 10 min
 description: Keep merge + post-merge deploy pipelines unblocked — aged-open PRs (GitHub for every repo except lastgit, Forgejo for lastgit) and blocked deploys. LastGit is retired and is not demand. Anything blocked is P0 severity — fix this wake or file a Brain papercut so papercut-reconciler can promote clustered board work.
 ---
 
+No-tests policy: `instructions/no-tests.md`; Situation
+`no-tests-all-repos-20261009`. This policy supersedes older test requirements in
+shared contracts, prompts, and cards. Keep non-test checks and product proof.
+
 You are the **pipeline-health** routine for `<WORKSPACE>`. Run ONE bounded pass,
 then exit. Your job is to keep **merge and post-merge deploy pipelines** healthy
 so nothing silently rots:
@@ -449,8 +453,10 @@ immediately before ANY mutation. The list can be stale: a PR that the point read
 3. **Red required CI** → read the log first (GitHub: `gh -R <owner>/<repo> pr
    checks <n>`, then `gh -R <owner>/<repo> run view <run-id> --log-failed`;
    Forgejo: `"$last_stack/bin/last-stack-forge-ci-log" <owner/repo> --sha <sha>`),
-   then split: **infra flake** (timeout, lost runner, cancelled with tests
-   passing) → on GitHub, re-run the failed jobs with `gh -R <owner>/<repo> run
+   then split: **retired test or test coverage requirement** → remove it in an
+   isolated worktree, keeping non-test gates; do not rerun or repair tests;
+   **infra flake** (timeout, lost runner, cancelled without a non-test check
+   failure) → on GitHub, re-run the failed jobs with `gh -R <owner>/<repo> run
    rerun <run-id> --failed` and make sure auto-merge is armed. On Forgejo there
    is no compliant automated retry for this case on an unowned PR or on
    `main`. Forgejo 15.0.3 has no rerun API, workflow_dispatch is a tested
@@ -458,7 +464,7 @@ immediately before ANY mutation. The list can be stale: a PR that the point read
    branch you do not own is exactly what the hard guardrail above forbids.
    Write the diagnosis into the ledger's papercut row and leave it — a
    real retry needs the branch owner (or a human) to push a commit;
-   **mechanical** (fmt, lint, typecheck, snapshot) → fix in a fresh worktree off
+   **mechanical** (fmt, lint, typecheck) → fix in a fresh worktree off
    the head branch, push with lease; **real product failure** → leave it to the
    owner. The ledger row already records it; do not file a second one.
 4. **405 merge / stuck status-check** while green → on GitHub a 405 means a

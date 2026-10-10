@@ -4,6 +4,10 @@ cadence: six workers, staggered every 2.5 minutes
 description: Run one bounded validation per worker wake. Use a post-merge END STATE check or a Kind:validation / capstone proof card. Never author feature code or run prod cutovers.
 ---
 
+No-tests policy: `instructions/no-tests.md`; Situation
+`no-tests-all-repos-20261009`. This policy supersedes older test requirements in
+shared contracts, prompts, and cards. Keep non-test checks and product proof.
+
 ## NO REVIEW COLUMN (Tom 2026-07-16 — won't-undo)
 
 There is **no `review` column**. Board columns are only:
@@ -280,11 +284,12 @@ for an old card).
 
 ## Run the validation
 
-Run the card's `VERIFY` / `## END STATE` literally when autonomous and bounded.
+Remove test and test coverage requirements from the card's `VERIFY` / `## END
+STATE`. Run its remaining non-test commands when autonomous and bounded.
 Keep it on **dev/staging/throwaway** surfaces:
 
 - Dev deploy status probes and route checks — in scope
-- Clean-machine install / release-test machinery — in scope when non-prod
+- Clean-machine install / release artifact checks — in scope when non-prod
 - Dogfood only against isolated data dirs / documented non-prod accounts
 - **Out of scope:** prod cutovers, public data mutation, real customer traffic,
   primary Mini unsafe upgrade, human-only credentials/devices

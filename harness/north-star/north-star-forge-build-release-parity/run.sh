@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # north-star-slug: north-star-forge-build-release-parity
 # Prove the checked-in Forge build and release routing contract.
-# Offline mode uses source files and isolated runner fixtures only. It does not
+# Offline mode reads source files only. It does not
 # open a LastDB home, call the Forge API, or publish an artifact.
 set -euo pipefail
 
@@ -111,65 +111,6 @@ require_text "$PROMOTE_RESOLVER" "Forge promotion resolver" "refs/remotes/origin
 require_text "$PROMOTE_RESOLVER" "Forge promotion resolver" "http://localhost:3300/"
 require_text "$PROMOTE_RESOLVER" "Forge promotion resolver" "lastdb:///"
 
-# Exercise the real lane checker against throwaway homes. This proves the
-# checker and avoids dependence on the shared runner homes in offline mode.
-mkdir -p "$TMP/merge" "$TMP/heavy"
-cat >"$TMP/merge/.runner" <<'EOF'
-{
-  "id": 1,
-  "name": "fixture-merge-gate",
-  "address": "http://fixture.invalid",
-  "labels": ["macos-arm64:host"]
-}
-EOF
-cat >"$TMP/merge/config.yml" <<'EOF'
-runner:
-  capacity: 2
-  labels:
-    - macos-arm64:host
-EOF
-cat >"$TMP/heavy/.runner" <<'EOF'
-{
-  "id": 2,
-  "name": "fixture-heavy-release",
-  "address": "http://fixture.invalid",
-  "labels": ["macos:host", "heavy:host"]
-}
-EOF
-cat >"$TMP/heavy/config.yml" <<'EOF'
-runner:
-  capacity: 1
-  labels:
-    - macos:host
-    - heavy:host
-EOF
-
-LANES_JSON="$TMP/lanes.json"
-LANES_ERR="$TMP/lanes.err"
-set +e
-bash "$ROOT/bin/last-stack-forge-runner-lanes" \
-  --json --check --config "$CONFIG" \
-  --homes "$TMP/merge:$TMP/heavy" >"$LANES_JSON" 2>"$LANES_ERR"
-lanes_rc=$?
-set -e
-if [ "$lanes_rc" -eq 0 ] && python3 - "$LANES_JSON" <<'PY'
-import json
-import sys
-
-data = json.load(open(sys.argv[1], encoding="utf-8"))
-assert data["check_ok"] is True
-assert data["heavy_ok_local"] is True
-assert data["merge_gate_has_heavy"] is False
-assert data["separated_from_merge_gate"] is True
-assert data["merge_gate_unchanged"] is True
-PY
-then
-  pass "real Forge lane checker accepts isolated merge-gate and heavy fixtures."
-else
-  lanes_error="$(tr '\n' ' ' <"$LANES_ERR")"
-  fail "real Forge lane checker rejected isolated fixtures (rc=$lanes_rc): ${lanes_error:-invalid JSON output}."
-fi
-
 if [ "$MODE" = live ]; then
   # Live mode adds the read-only Forge inventory check. The release proof
   # itself remains a separate signed promotion receipt, because this harness
@@ -200,7 +141,7 @@ fi
 body="Forge build and release parity terminal proof.
 
 Mode: $MODE
-The offline proof reads checked-in source and uses throwaway runner fixtures.
+The offline proof reads checked-in source only.
 It does not open a LastDB home, call the Forge API, publish an artifact, or
 promote a stable release.
 

@@ -1,108 +1,50 @@
 ---
 name: coderings-capstone-exerciser
 cadence: daily 07:15 local
-description: Continuous CodeRings capstone E2E canary (memory-store default; never primary brain).
+description: Read-only CodeRings capstone source check against public LastDB; the synthetic exercise is retired.
 ---
 
-You are the scheduled **coderings-capstone-exerciser** canary. Work only against
-a **live** CodeRings checkout (portal-resolved worktree), never against a portal
-front door as if it were product source. Do not touch the primary LastDB brain
-except via the documented isolated/memory store paths in the product docs.
+The synthetic CodeRings capstone exercise was deleted under the no-tests policy.
+Do not run, repair, or restore it. Situation: `no-tests-all-repos-20261009`.
+This routine keeps only the existing read-only `capstone prove-fold` command.
 
 ## Shared contract
-Honor `sop-routine-shared-contract` (heartbeat, shell discipline, no primary-brain
-mutations outside declared isolation).
 
-## Portal model (won't-undo)
-
-`~/code/edgevector/<repo>` is a **portal**, not a product checkout — no `.git`,
-no source (see `instructions/run-dev-state-board.md`). Before grepping or
-running scripts against a configured repo path, **prove it is live** with
-`last-stack-portal-live-checkout`. That helper either:
-
-- returns a real git worktree path (pass-through or dedicated `portal-wt` start), or
-- fails loudly with a message containing **`portal, not a checkout`**
-
-Never silent-skip live proof. Never borrow another card's
-`~/.fkanban/worktrees/*` worktree as `--repo`.
-
-## Isolated scratch (won't-undo)
-
-Scheduled Codex `exec` defaults to read-only unless the harness passes
-`--sandbox workspace-write`. Host `/tmp` is still denied even then. Never
-`mkdir /tmp/...` for the fixture store. Pin scratch under the run dir (already
-an `--add-dir` root) and talk to LastDB only at the real unix socket
-`$HOME/.lastdb/data/folddb.sock`. Socket EPERM is a sandbox deny, not a dead
-node — do **not** restart `lastdbd`.
-
-If the exercise cannot create its isolated work root (`skip_reason=sandbox_unwritable_work_root`
-or `EPERM mkdir`), **outcome=noop** (tooling deny), not `error`. Do not file
-`coderings-capstone-exerciser-fail` for a sandbox deny.
+Honor `sop-routine-shared-contract` for heartbeat, shell discipline, and primary
+safety. The no-tests policy supersedes earlier test requirements in that contract.
+Never kill or restart the primary LastDB or Forgejo.
 
 ## Procedure
-1. `situations list` (or equivalent). If a fence blocks this routine, report blocked and exit cleanly.
-2. Resolve a live CodeRings checkout, then run the exercise:
+
+1. Check Situations. If a fence blocks this routine, report blocked and exit.
+2. Resolve dedicated CodeRings and public LastDB worktrees with the portal helper.
+   Never use a portal directory as a product checkout or borrow an active card's
+   worktree. The frozen Fold repo is not a target.
+3. Run the existing read-only source check:
+
    ```bash
    last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
    . "$last_stack/bin/last-stack-shell-prelude"
-   "$last_stack/bin/last-stack-cli-preflight" bun git jq
-
-   scratch="${ROUTINES_RUN_DIR:-.}/scratch"
-   mkdir -p "$scratch"
-   export TMPDIR="$scratch" TMP="$scratch" TEMP="$scratch"
-   export CODERINGS_CAPSTONE_WORK_ROOT="$scratch/capstone-work"
-   mkdir -p "$CODERINGS_CAPSTONE_WORK_ROOT"
+   "$last_stack/bin/last-stack-cli-preflight" bun git
 
    CODERINGS_PORTAL="${CODERINGS_PORTAL:-$HOME/code/edgevector/coderings}"
+   LASTDB_PORTAL="${LASTDB_PORTAL:-$HOME/code/edgevector/lastdb}"
    CODERINGS_WT="$("$last_stack/bin/last-stack-portal-live-checkout" \
-     --name coderings-capstone-exerciser \
-     "$CODERINGS_PORTAL")"
+     --name coderings-proof-caller "$CODERINGS_PORTAL")"
+   LASTDB_LIVE="$("$last_stack/bin/last-stack-portal-live-checkout" \
+     --name coderings-prove-lastdb "$LASTDB_PORTAL")"
    cd "$CODERINGS_WT"
-   bun src/cli.ts capstone exercise --json --work-root "$CODERINGS_CAPSTONE_WORK_ROOT"
+   bun src/cli.ts capstone prove-fold --repo "$LASTDB_LIVE" --json
    ```
-   Prefer the memory-store default. Do **not** point at Tom's primary `~/.lastdb`
-   unless the CLI's documented isolated-node path is explicit and safe.
-3. Interpret the JSON result:
-   - **GREEN** (`ok: true`): continue to optional prove-fold (step 4); then heartbeat ok; no card; one-line report; stop.
-   - **SKIP / sandbox deny** (`skipped: true` / `skip_reason=sandbox_unwritable_work_root` / `EPERM mkdir`): heartbeat noop; **do not** file the fail card; stop.
-   - **RED / failure** (exercise ran and assertions failed): file or refresh one deduplicated kanban card
-     `coderings-capstone-exerciser-fail` with the failure evidence; heartbeat;
-     stop. Do not open drive-by PRs.
-4. **Optional prove-fold (when exercise is green)** — still **must not silent-skip**:
-   ```bash
-   FOLD_PORTAL="${FOLD_PORTAL:-$HOME/code/edgevector/fold}"
-   prove_err="$scratch/prove-fold-resolve.err"
-   set +e
-   FOLD_LIVE="$("$last_stack/bin/last-stack-portal-live-checkout" \
-     --name coderings-prove-fold \
-     "$FOLD_PORTAL" 2>"$prove_err")"
-   resolve_rc=$?
-   set -e
-   if [ "$resolve_rc" -ne 0 ] || [ -z "${FOLD_LIVE:-}" ]; then
-     # Loud report — not a silent skip. Exercise green still ends the routine ok.
-     echo "prove-fold: portal resolve failed (see $prove_err); not running bare git against portal"
-     cat "$prove_err" 2>/dev/null || true
-   else
-     # Guard: never pass a portal directory to --repo
-     if [ -d "$FOLD_LIVE/.portal" ] && [ ! -e "$FOLD_LIVE/.git" ]; then
-       echo "RESULT: error reason=fold-path-is-portal path=$FOLD_LIVE"
-       exit 1
-     fi
-     bun src/cli.ts capstone prove-fold --repo "$FOLD_LIVE" --json
-   fi
-   ```
-   Prove-fold failure alone does not fail the routine when exercise was green —
-   **report** the prove-fold result (or the loud resolve failure). What is
-   forbidden is treating "portal has no .git" as an invisible skip with no
-   resolve attempt and no diagnostic line.
+
+4. Report the command result and the resolved source paths. A source check does
+   not prove a live product result. If a path cannot resolve, report the exact
+   failure; do not silently skip the check or start the deleted exercise.
+5. For a product-source failure, file a Brain papercut with the command output.
+   Do not create a test-repair or de-flake card.
 
 ## Heartbeat
-Stamp `routine-heartbeats` last with ok/noop/error and a one-line detail.
-Include `prove-fold=ok|failed|resolve-failed|skipped-budget` when step 4 ran.
 
-## Hard rules
-- Never use `$HOME/code/edgevector/fold` or `$HOME/code/edgevector/coderings`
-  (or any portal path) as a product checkout / `--repo` without
-  `last-stack-portal-live-checkout` first.
-- Never kill/restart primary brain or forgejo.
-- Dedicated worktrees only — no borrowing in-flight card worktrees.
+Stamp `routine-heartbeats` last with `ok|noop|error` and a one-line detail.
+Include `prove-fold=ok|failed|resolve-failed`. Use `ok` only when the source check
+ran successfully. Do not report the retired synthetic exercise as a pass.
