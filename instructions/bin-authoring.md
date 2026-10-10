@@ -29,8 +29,7 @@ workspace walk. The stable rule is one language per helper and a bounded walk.
    find ~/.fkanban/worktrees -maxdepth 3 -name feature_catalog.toml
    ```
 
-3. Write a fixture test under `tests/` before you run the helper against the
-   live board or brain.
+3. Use syntax, build, format, and lint checks. Do not write or run tests.
 4. Parse a format from the first byte. Do not require a leading newline
    before the first TOML table or the first YAML document.
 5. After a rewrite, stop or ignore the background tasks of the old drafts.
