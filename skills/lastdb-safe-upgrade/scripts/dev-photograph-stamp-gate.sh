@@ -7,7 +7,7 @@
 
 LASTDB_DEV_BACKUP_API_URL_DEFAULT="https://ygyu7ritx8.execute-api.us-west-2.amazonaws.com"
 LASTDB_PROD_BACKUP_API_HOST="jdsx4ixk2i.execute-api.us-east-1.amazonaws.com"
-LASTDB_DEV_STAMP_RECEIPT_VERSION="2"
+LASTDB_DEV_STAMP_RECEIPT_VERSION="3"
 LASTDB_DEV_STAMP_MAX_AGE_SECS_DEFAULT="3600"
 LASTDB_DEV_STAMP_FUTURE_SKEW_SECS_DEFAULT="60"
 
@@ -111,10 +111,17 @@ lastdb_version
 api_url
 home
 primary_home
+clone_source
 counter
 cas_counter
 manifest_sha256
 cloud_db_hash
+restore_manifest_sha256
+restore_db_hash
+restore_mode
+restore_source_scope_verified
+restore_cloud_sync_off
+restore_report_sha256
 manifest_key
 latest_key
 user_hash
@@ -137,7 +144,9 @@ _dev_stamp_key_is_known() {
   case "$1" in
     receipt_version|verdict|loom_execution_id|source_git_oid|lastdbd_path|lastdb_path|\
     lastdbd_sha256|lastdb_sha256|lastdbd_version|lastdb_version|api_url|home|\
-    primary_home|counter|cas_counter|manifest_sha256|cloud_db_hash|manifest_key|latest_key|user_hash|\
+    primary_home|clone_source|counter|cas_counter|manifest_sha256|cloud_db_hash|\
+    restore_manifest_sha256|restore_db_hash|restore_mode|restore_source_scope_verified|\
+    restore_cloud_sync_off|restore_report_sha256|manifest_key|latest_key|user_hash|\
     manifest_cache|report_top_level|committed_at|committed_epoch|\
     fresh_device_id|production_cloud_config_absent|\
     production_cloud_residue_absent|production_presence_cache_absent|\
@@ -277,15 +286,17 @@ _dev_stamp_paths_do_not_overlap() {
   return 0
 }
 
-# Validate one v2 receipt. Every failure prints a fixed RED reason. Receipt
+# Validate one v3 receipt. Every failure prints a fixed RED reason. Receipt
 # values do not reach output because a path or cloud key can contain secrets.
 assert_dev_photograph_stamp_ok() {
   local receipt="${1:-$(dev_stamp_receipt_path)}"
   local primary="${2:-${LASTDB_HOME:-$HOME/.lastdb}}"
+  local clone_source="${3:-${LASTDB_SAFE_UPGRADE_EXPECTED_CLONE_SOURCE:-}}"
   local failed=0 line key required value expected
   local mode home phome counter cas_counter manifest_sha256 cloud_db_hash manifest_key latest_key
   local user_hash manifest_cache
-  local expected_manifest_cache committed_at committed_epoch
+  local expected_manifest_cache committed_at committed_epoch stored_clone real_clone
+  local restore_report restore_report_sha256 restore_report_bytes
 
   if [ ! -f "$receipt" ] || [ -L "$receipt" ]; then
     printf 'RED: exact-candidate DEV photograph receipt is absent or unsafe\n'
@@ -324,7 +335,7 @@ $(_dev_stamp_required_keys)
 EOF
 
   [ "$(dev_stamp_receipt_get "$receipt" receipt_version || true)" = "$LASTDB_DEV_STAMP_RECEIPT_VERSION" ] \
-    || { printf 'RED: DEV photograph receipt version is not 2\n'; failed=1; }
+    || { printf 'RED: DEV photograph receipt version is not 3\n'; failed=1; }
   [ "$(dev_stamp_receipt_get "$receipt" verdict || true)" = "GREEN" ] \
     || { printf 'RED: DEV photograph receipt verdict is not GREEN\n'; failed=1; }
   [ "$(dev_stamp_receipt_get "$receipt" loom_execution_id || true)" = "${LOOM_EXEC_ID:-}" ] \
@@ -384,6 +395,19 @@ EOF
     printf 'RED: DEV photograph home overlaps the live primary\n'
     failed=1
   fi
+  stored_clone="$(dev_stamp_receipt_get "$receipt" clone_source || true)"
+  real_clone=""
+  if [ -n "$clone_source" ] && [ -d "$clone_source" ] && [ ! -L "$clone_source" ]; then
+    real_clone="$(_dev_stamp_real_dir "$clone_source" || true)"
+  fi
+  if [ -z "$real_clone" ] || [ "$stored_clone" != "$real_clone" ] \
+      || [ ! -d "$real_clone/data" ] || [ -L "$real_clone/data" ] \
+      || [ ! -f "$real_clone/.safe-upgrade/complete" ] \
+      || [ -L "$real_clone/.safe-upgrade/complete" ] \
+      || ! _dev_stamp_paths_do_not_overlap "$real_clone" "$phome"; then
+    printf 'RED: DEV photograph receipt does not name this run\047s fresh rollback copy\n'
+    failed=1
+  fi
 
   counter="$(dev_stamp_receipt_get "$receipt" counter || true)"
   cas_counter="$(dev_stamp_receipt_get "$receipt" cas_counter || true)"
@@ -411,11 +435,52 @@ EOF
   esac
   [ "${#cloud_db_hash}" -eq 64 ] \
     || { printf 'RED: DEV photograph cloud DB hash is not full length\n'; failed=1; }
+  [ "$(dev_stamp_receipt_get "$receipt" restore_manifest_sha256 || true)" = "$manifest_sha256" ] \
+    && [ "$(dev_stamp_receipt_get "$receipt" restore_db_hash || true)" = "$cloud_db_hash" ] \
+    && [ "$(dev_stamp_receipt_get "$receipt" restore_mode || true)" = "replay_tail" ] \
+    && [ "$(dev_stamp_receipt_get "$receipt" restore_source_scope_verified || true)" = "true" ] \
+    && [ "$(dev_stamp_receipt_get "$receipt" restore_cloud_sync_off || true)" = "true" ] \
+    || { printf 'RED: DEV photograph receipt lacks exact source-free restore proof\n'; failed=1; }
   [ -n "$cloud_db_hash" ] && [ "$latest_key" = "$cloud_db_hash/backup/latest" ] \
     || { printf 'RED: DEV photograph latest key does not match its cloud DB hash\n'; failed=1; }
   [ -n "$cloud_db_hash" ] && [ -n "$manifest_sha256" ] \
     && [ "$manifest_key" = "$cloud_db_hash/backup/manifests/$manifest_sha256" ] \
     || { printf 'RED: DEV photograph manifest key does not match its cloud DB hash and digest\n'; failed=1; }
+
+  restore_report="${receipt}.restore.json"
+  restore_report_sha256="$(dev_stamp_receipt_get "$receipt" restore_report_sha256 || true)"
+  case "$restore_report_sha256" in
+    *[!0-9a-f]*|'') printf 'RED: DEV restore report digest is invalid\n'; failed=1 ;;
+  esac
+  [ "${#restore_report_sha256}" -eq 64 ] \
+    || { printf 'RED: DEV restore report digest is not full length\n'; failed=1; }
+  if [ ! -f "$restore_report" ] || [ -L "$restore_report" ] \
+      || [ "$(_dev_stamp_file_mode "$restore_report" || true)" != "600" ] \
+      || [ "$(_dev_stamp_file_owner "$restore_report" || true)" != "$(id -u)" ]; then
+    printf 'RED: DEV restore report evidence is absent or unsafe\n'
+    failed=1
+  else
+    restore_report_bytes="$(wc -c <"$restore_report" | tr -d ' ')"
+    case "$restore_report_bytes" in
+      ''|*[!0-9]*) restore_report_bytes=4097 ;;
+    esac
+    if [ "$restore_report_bytes" -gt 4096 ] \
+        || [ "$(dev_stamp_sha256_file "$restore_report" || true)" != "$restore_report_sha256" ] \
+        || ! jq -e --arg manifest "$manifest_sha256" --arg db_hash "$cloud_db_hash" '
+          type == "object"
+          and (keys | sort) == ["cloud_sync_off","db_hash","manifest_sha256","ok", "remote_read_only","restore_mode","source_scope_verified"]
+          and .ok == true
+          and .manifest_sha256 == $manifest
+          and .db_hash == $db_hash
+          and .restore_mode == "replay_tail"
+          and .remote_read_only == true
+          and .source_scope_verified == true
+          and .cloud_sync_off == true
+        ' "$restore_report" >/dev/null 2>&1; then
+      printf 'RED: DEV restore report evidence differs from the exact source-free result\n'
+      failed=1
+    fi
+  fi
 
   manifest_cache="$(dev_stamp_receipt_get "$receipt" manifest_cache || true)"
   expected_manifest_cache=""
@@ -444,18 +509,28 @@ EOF
   [ "$failed" -eq 0 ]
 }
 
-# Write a v2 receipt from an already validated proof. The immutable candidate
+# Write a v3 receipt from an already validated snapshot and restore. The immutable candidate
 # fields come only from the Loom environment. The rename is same-directory.
-write_dev_stamp_receipt_v2() {
+write_dev_stamp_receipt_v3() {
   local path="$1" primary_home="$2" cow_home="$3" counter="$4" cas_counter="$5"
   local manifest_sha256="$6" cloud_db_hash="$7" manifest_key="$8" latest_key="$9"
   local user_hash="${10}" manifest_cache="${11}" committed_at="${12}" committed_epoch="${13}"
+  local clone_source="${14}" restore_report_sha256="${15}"
   local dir base tmp
 
   dev_stamp_expected_binding_is_complete >/dev/null || return 1
   primary_home="$(_dev_stamp_real_maybe_absent "$primary_home")" || return 1
   cow_home="$(_dev_stamp_real_maybe_absent "$cow_home")" || return 1
   _dev_stamp_paths_do_not_overlap "$cow_home" "$primary_home" || return 1
+  [ -d "$clone_source/data" ] && [ ! -L "$clone_source" ] \
+    && [ ! -L "$clone_source/data" ] \
+    && [ -f "$clone_source/.safe-upgrade/complete" ] \
+    && [ ! -L "$clone_source/.safe-upgrade/complete" ] || return 1
+  clone_source="$(_dev_stamp_real_dir "$clone_source")" || return 1
+  _dev_stamp_paths_do_not_overlap "$clone_source" "$primary_home" || return 1
+  [ -f "${path}.restore.json" ] && [ ! -L "${path}.restore.json" ] \
+    && [ "$(dev_stamp_sha256_file "${path}.restore.json" || true)" = "$restore_report_sha256" ] \
+    || return 1
   dir="$(dirname -- "$path")"
   base="$(basename -- "$path")"
   mkdir -p "$dir"
@@ -475,10 +550,17 @@ write_dev_stamp_receipt_v2() {
     printf 'api_url=%s\n' "$LASTDB_DEV_BACKUP_API_URL_DEFAULT"
     printf 'home=%s\n' "$cow_home"
     printf 'primary_home=%s\n' "$primary_home"
+    printf 'clone_source=%s\n' "$clone_source"
     printf 'counter=%s\n' "$counter"
     printf 'cas_counter=%s\n' "$cas_counter"
     printf 'manifest_sha256=%s\n' "$manifest_sha256"
     printf 'cloud_db_hash=%s\n' "$cloud_db_hash"
+    printf 'restore_manifest_sha256=%s\n' "$manifest_sha256"
+    printf 'restore_db_hash=%s\n' "$cloud_db_hash"
+    printf 'restore_mode=replay_tail\n'
+    printf 'restore_source_scope_verified=true\n'
+    printf 'restore_cloud_sync_off=true\n'
+    printf 'restore_report_sha256=%s\n' "$restore_report_sha256"
     printf 'manifest_key=%s\n' "$manifest_key"
     printf 'latest_key=%s\n' "$latest_key"
     printf 'user_hash=%s\n' "$user_hash"

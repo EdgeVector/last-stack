@@ -28,6 +28,7 @@ COW_HOME=""
 CANDIDATE_PID=""
 DAEMON_LOG=""
 SNAPSHOT_LOG=""
+RESTORE_LOG=""
 FAILURE_PHASE="preflight"
 FAILURE_REASON="DEV photograph proof failed"
 SNAPSHOT_ATTEMPT=0
@@ -111,7 +112,7 @@ emit_dev_photograph_failure_summary() {
 }
 
 persist_dev_photograph_failure_evidence() {
-  local root root_real bundle bundle_tmp summary daemon_tail snapshot_tail stamp
+  local root root_real bundle bundle_tmp summary daemon_tail snapshot_tail restore_tail stamp
   [ -n "${PROOF_ROOT_REAL:-}" ] && [ -d "$PROOF_ROOT_REAL" ] || return 1
   root="$(dev_photograph_evidence_root)" || return 1
   case "$root" in /*) ;; *) return 1 ;; esac
@@ -134,6 +135,7 @@ persist_dev_photograph_failure_evidence() {
   summary="$bundle_tmp/summary.txt"
   daemon_tail="$bundle_tmp/daemon.tail.log"
   snapshot_tail="$bundle_tmp/snapshot.tail.log"
+  restore_tail="$bundle_tmp/restore.tail.log"
   {
     emit_dev_photograph_failure_summary
     printf 'reason=%s\n' "${FAILURE_REASON:-DEV photograph proof failed}"
@@ -142,7 +144,9 @@ persist_dev_photograph_failure_evidence() {
     || { rm -rf -- "$bundle_tmp"; return 1; }
   sanitize_proof_log_tail "${SNAPSHOT_LOG:-}" >"$snapshot_tail" \
     || { rm -rf -- "$bundle_tmp"; return 1; }
-  chmod 600 "$summary" "$daemon_tail" "$snapshot_tail" \
+  sanitize_proof_log_tail "${RESTORE_LOG:-}" >"$restore_tail" \
+    || { rm -rf -- "$bundle_tmp"; return 1; }
+  chmod 600 "$summary" "$daemon_tail" "$snapshot_tail" "$restore_tail" \
     || { rm -rf -- "$bundle_tmp"; return 1; }
   [ ! -e "$root_real/$bundle" ] || { rm -rf -- "$bundle_tmp"; return 1; }
   mv "$bundle_tmp" "$root_real/$bundle" || { rm -rf -- "$bundle_tmp"; return 1; }
@@ -163,6 +167,9 @@ emit_dev_photograph_failure_evidence() {
   printf 'DEV_PHOTOGRAPH_SNAPSHOT_TAIL_BEGIN\n' >&2
   cat "$FAILURE_EVIDENCE/snapshot.tail.log" >&2
   printf 'DEV_PHOTOGRAPH_SNAPSHOT_TAIL_END\n' >&2
+  printf 'DEV_PHOTOGRAPH_RESTORE_TAIL_BEGIN\n' >&2
+  cat "$FAILURE_EVIDENCE/restore.tail.log" >&2
+  printf 'DEV_PHOTOGRAPH_RESTORE_TAIL_END\n' >&2
 }
 
 while [ "$#" -gt 0 ]; do
@@ -215,6 +222,8 @@ CLONE_SOURCE="$(_dev_stamp_real_dir "$CLONE_SOURCE")" \
 [ -d "$PRIMARY_HOME_ARG/data" ] || proof_die "the primary data directory is absent"
 [ ! -L "$PRIMARY_HOME_ARG" ] || proof_die "the primary home argument is a symlink"
 [ -d "$CLONE_SOURCE/data" ] && [ ! -L "$CLONE_SOURCE" ] && [ ! -L "$CLONE_SOURCE/data" ] \
+  && [ -f "$CLONE_SOURCE/.safe-upgrade/complete" ] \
+  && [ ! -L "$CLONE_SOURCE/.safe-upgrade/complete" ] \
   || proof_die "the static rollback clone source is absent or unsafe"
 if ! _dev_stamp_paths_do_not_overlap "$CLONE_SOURCE" "$PRIMARY_HOME_ARG"; then
   proof_die "the DEV proof clone source overlaps the live primary"
@@ -268,7 +277,8 @@ PROOF_TOKEN="${LOOM_EXEC_ID}:$$:${PROOF_ROOT_REAL}"
 chmod 600 "$PROOF_SENTINEL"
 DAEMON_LOG="$PROOF_ROOT_REAL/candidate-daemon.log"
 SNAPSHOT_LOG="$PROOF_ROOT_REAL/snapshot.stderr.log"
-(umask 077; : >"$DAEMON_LOG"; : >"$SNAPSHOT_LOG")
+RESTORE_LOG="$PROOF_ROOT_REAL/restore.progress.jsonl"
+(umask 077; : >"$DAEMON_LOG"; : >"$SNAPSHOT_LOG"; : >"$RESTORE_LOG")
 
 proof_root_is_owned() {
   local base_real
@@ -690,20 +700,84 @@ if ! assert_candidate_binding_matches_expected \
   proof_die "the exact candidate binding changed during the DEV proof"
 fi
 
+FAILURE_PHASE="source_free_restore"
+restore_timeout="${LASTDB_DEV_PHOTOGRAPH_RESTORE_TIMEOUT_SECS:-3600}"
+case "$restore_timeout" in ''|*[!0-9]*|0) proof_die "the DEV restore timeout is invalid" ;; esac
+RESTORE_CREDS_HOME="$PROOF_ROOT_REAL/restore-credentials"
+RESTORE_HOME="$PROOF_ROOT_REAL/restored"
+RESTORE_REPORT="$PROOF_ROOT_REAL/restore-report.json"
+mkdir -m 700 "$RESTORE_CREDS_HOME" \
+  || proof_die "the source-free restore credential home cannot be created"
+cp -p "$COW_HOME/identity.key" "$RESTORE_CREDS_HOME/identity.key" \
+  && cp -p "$COW_HOME/cloud_sync.json" "$RESTORE_CREDS_HOME/cloud_sync.json" \
+  || proof_die "the DEV identity and cloud config cannot be copied for restore"
+[ ! -e "$RESTORE_CREDS_HOME/data" ] \
+  || proof_die "the source-free restore credential home contains local data"
+if ! run_op_with_deadline "$restore_timeout" \
+    env -u LASTDB_HOME -u FOLDDB_HOME -u FOLD_SYNC_DEVICE_ID \
+    ${LIVE_LASTDB_ENV_ARGS[@]+"${LIVE_LASTDB_ENV_ARGS[@]}"} \
+    "$CANDIDATE_CLI" --data-dir "$RESTORE_CREDS_HOME" restore \
+      --remote-latest --env dev --db-hash "$cloud_db_hash" \
+      --manifest-sha256 "$manifest_sha256" --into "$RESTORE_HOME" \
+      --json --progress-json \
+      >"$RESTORE_REPORT" 2>"$RESTORE_LOG"; then
+  proof_die "the exact DEV snapshot did not restore into a fresh home"
+fi
+if ! jq -e --arg manifest "$manifest_sha256" --arg db_hash "$cloud_db_hash" '
+    .ok == true
+    and .manifest_sha256 == $manifest
+    and .db_hash == $db_hash
+    and .restore_mode == "replay_tail"
+    and .remote_read_only == true
+    and .source_scope_verified == true
+    and .cloud_sync_off == true
+  ' "$RESTORE_REPORT" >/dev/null 2>&1; then
+  proof_die "the DEV restore report lacks source-free proof for the exact snapshot"
+fi
+[ -f "$RESTORE_HOME/cloud_sync.json.paused" ] \
+  && [ -f "$RESTORE_HOME/.cloud_resume_required" ] \
+  && [ ! -e "$RESTORE_HOME/cloud_sync.json" ] \
+  || proof_die "the source-free restored home is not Cloud Off"
+
 FAILURE_PHASE="receipt_write"
 committed_epoch="$(date +%s)"
 committed_at="$(date -u -r "$committed_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
   || date -u -d "@$committed_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
 rm -f -- "$RECEIPT" \
   || proof_die "the prior exact receipt cannot be removed"
-write_dev_stamp_receipt_v2 \
+receipt_dir="$(dirname -- "$RECEIPT")"
+mkdir -p -- "$receipt_dir" && chmod 700 "$receipt_dir" \
+  || proof_die "the DEV receipt directory cannot hold restore evidence"
+[ -d "$receipt_dir" ] && [ ! -L "$receipt_dir" ] \
+  || proof_die "the DEV receipt directory is unsafe"
+restore_evidence="${RECEIPT}.restore.json"
+[ ! -L "$restore_evidence" ] \
+  || proof_die "the DEV restore evidence path is unsafe"
+restore_evidence_tmp="$(umask 077; mktemp "$receipt_dir/.restore-report.XXXXXX")" \
+  || proof_die "the DEV restore evidence file cannot be created"
+if ! jq -c '{ok,manifest_sha256,db_hash,restore_mode,remote_read_only,source_scope_verified,cloud_sync_off}' \
+    "$RESTORE_REPORT" >"$restore_evidence_tmp"; then
+  rm -f -- "$restore_evidence_tmp"
+  proof_die "the DEV restore evidence cannot be reduced to its checked fields"
+fi
+restore_evidence_bytes="$(wc -c <"$restore_evidence_tmp" | tr -d ' ')"
+if [ "$restore_evidence_bytes" -gt 4096 ] \
+    || ! chmod 600 "$restore_evidence_tmp" \
+    || ! mv -f -- "$restore_evidence_tmp" "$restore_evidence"; then
+  rm -f -- "$restore_evidence_tmp"
+  proof_die "the DEV restore evidence cannot be retained safely"
+fi
+restore_report_sha256="$(dev_stamp_sha256_file "$restore_evidence")" \
+  || proof_die "the DEV restore evidence digest is unavailable"
+write_dev_stamp_receipt_v3 \
   "$RECEIPT" "$PRIMARY_HOME_ARG" "$COW_HOME" \
   "$counter" "$cas_counter" "$manifest_sha256" "$cloud_db_hash" "$manifest_key" "$latest_key" \
   "$user_hash" "$manifest_cache" "$committed_at" "$committed_epoch" \
+  "$CLONE_SOURCE" "$restore_report_sha256" \
   || proof_die "the exact-candidate DEV photograph receipt could not be written"
-assert_dev_photograph_stamp_ok "$RECEIPT" "$PRIMARY_HOME_ARG" >/dev/null \
+assert_dev_photograph_stamp_ok "$RECEIPT" "$PRIMARY_HOME_ARG" "$CLONE_SOURCE" >/dev/null \
   || proof_die "the exact-candidate DEV photograph receipt failed its own gate"
 
 FAILURE_PHASE="complete"
 printf 'DEV_PHOTOGRAPH: GREEN\n'
-printf 'SUMMARY: the exact candidate pair committed one isolated DEV photograph\n'
+printf 'SUMMARY: the exact candidate pair committed and restored one isolated DEV snapshot\n'

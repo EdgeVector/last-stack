@@ -140,8 +140,14 @@ owned_by_user "$marker" || die "retention marker belongs to another user"
 ttl="$(sed -n 's/^ttl_hours=//p' "$marker")"
 case "$ttl" in ""|*[!0-9]*) die "retention TTL is invalid" ;; esac
 [ "$ttl" -gt 0 ] && [ "$ttl" -le 168 ] || die "retention TTL is outside 1..168 hours"
-cmp -s "$marker" <(printf 'retained_at=%s\nttl_hours=%s\ncleanup_owner=next-lastdb-safe-upgrade-run\n' \
-  "$expected_retained_at" "$ttl") || die "retention marker differs from the expected RED marker"
+cleanup_owner="$(sed -n 's/^cleanup_owner=//p' "$marker")"
+case "$cleanup_owner" in
+  explicit-retained-point-helper|next-lastdb-safe-upgrade-run) ;;
+  *) die "retention cleanup owner is invalid" ;;
+esac
+cmp -s "$marker" <(printf 'retained_at=%s\nttl_hours=%s\ncleanup_owner=%s\n' \
+  "$expected_retained_at" "$ttl" "$cleanup_owner") \
+  || die "retention marker differs from the expected RED marker"
 
 [ -f "$point_real/identity.key" ] && [ -d "$point_real/data" ] \
   || die "rollback point lacks the primary home essentials"
@@ -187,8 +193,9 @@ fi
 
 # Recheck the live process and marker just before the only destructive call.
 check_live_state
-cmp -s "$marker" <(printf 'retained_at=%s\nttl_hours=%s\ncleanup_owner=next-lastdb-safe-upgrade-run\n' \
-  "$expected_retained_at" "$ttl") || die "retention marker changed before release"
+cmp -s "$marker" <(printf 'retained_at=%s\nttl_hours=%s\ncleanup_owner=%s\n' \
+  "$expected_retained_at" "$ttl" "$cleanup_owner") \
+  || die "retention marker changed before release"
 [ -d "$point_real" ] && [ ! -L "$point_real" ] \
   || die "rollback point changed before release"
 owned_by_user "$point_real" || die "rollback point owner changed before release"
