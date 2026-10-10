@@ -71,9 +71,9 @@ FEATURES = {'exact_card_selector': '--only-card', 'canonical_resume_fence': True
                 'native_route': 'owner-uid-mode0600-uds-hash-range-keys', 'no_card_write': True,
                 'claim_authority': 'supplied-raw23-snapshot-sha-before-decision-read',
                 'policy_file': 'release/factory-reviewed-decision.json'}}
-COUNT_PREDECESSOR_SOURCE = '1c4f6af5a296c6b4ff78bcec2cd5f85dc416f8c5'
-COUNT_PREDECESSOR_CONTRACT_SHA = 'bef392a30569c1db2925ae36e1aaf36281128cfa4384db5c87a2377dda716877'
-COUNT_DISPATCH_CONTRACT_SHA = 'bef392a30569c1db2925ae36e1aaf36281128cfa4384db5c87a2377dda716877'
+COUNT_PREDECESSOR_SOURCE = '582bb3650a4af655f413e98d2625bae7e6c250ec'
+COUNT_PREDECESSOR_CONTRACT_SHA = 'cb029ab54c4f5b644558736e5efa59c492044464f6f082b1f2bbc9abb2122919'
+COUNT_DISPATCH_CONTRACT_SHA = 'cb029ab54c4f5b644558736e5efa59c492044464f6f082b1f2bbc9abb2122919'
 # The Count predecessor is the exact accepted no-tests dispatch release.
 COUNT_PREDECESSOR_CONTRACT_JSON = '''{
   "budget_recovery_source_sha256": "0f1840ca33218a0f50974c568464ea11c99a4727fa09d103b2ddda7bbf99126f",
@@ -142,9 +142,9 @@ COUNT_PREDECESSOR_CONTRACT_JSON = '''{
     "scripts/loom-execution-dashboard.sh": "9bd44edd4415f3b161c44c648b1080c373b77b9c0b55d9658f2c087405fe667e",
     "scripts/loom-factory-contract.py": "ef112ec59357f828ea8aff9fb8766437349d39b0a74b9f672df25fc3d60de755",
     "scripts/loom-factory-kickoff.sh": "c2ac251466affb5b28743979f4f598646b17b6ecfc9eed65d362847583475c80",
-    "scripts/loom-factory-lib.sh": "a60dfdac7354c0a96c3419a8933820723b0a2c19bcb31ecc58eea6969d3716ac",
+    "scripts/loom-factory-lib.sh": "cdfc006fbd2653eb71cf47ec04bcb40f864625698a64bba2d007057faed87f0b",
     "scripts/loom-gate-open.sh": "0698929bcc3c7c0b2f642d6ac2cfeb11813720025f98a20f4fbd1600955d7484",
-    "scripts/loom-implement.sh": "00de8ff045267ea303f08f293f74113fa5199154be73aea8290be065d52e67ee",
+    "scripts/loom-implement.sh": "3f8fdb8dd3870c4125b310ac92c8d77fe1781e8e428db613d12da2fe4f29fe7e",
     "scripts/loom-land-card-kickoff.sh": "50cdcd47f86a8aab49f1e573074fde81f8df96f09dce38ec7e8596a0e3d5708b",
     "scripts/loom-land-cr-normalize.sh": "a3f70a0fcb07abe5c3f8106ca682c98b57fd53a5d1184aafdda9e19cb890d928",
     "scripts/loom-live-release-receipt-step.sh": "9fd02e579ebfb38e5148c81b28d990fbbcfb7983888412dc9da69118cac6a106",
@@ -169,7 +169,7 @@ COUNT_PREDECESSOR_CONTRACT_JSON = '''{
     "scripts/loom-review.sh": "dac1d3cb17ff1d2a3649459ed46bdad0469a2c03ff876742a6c69973bccc59b3",
     "scripts/loom-reviewed-decision.py": "159c35cb1c687346e67936e7092fbd958a191bef955b97199c2fc0c221feb2d4",
     "scripts/loom-safe-upgrade-step.sh": "e0a4bce94a89d0d387ecc11bda9a02b64fa5c4203979551a6870b98f9161c8d5",
-    "scripts/loom-ship-north-star-live-proof.sh": "8cc994b6edc7efbc8552322006ef102781ac80293e51d73cb687d579cabc59f7",
+    "scripts/loom-ship-north-star-live-proof.sh": "e751751a4871d6f4df596702de90f7f03011049dd39aa9a4cb08da2032cbf083",
     "scripts/loom-ship-review.sh": "1de45b477795331984debc3c38a9a8a73d1ba033491e5e7d1abe205e7145cf2c",
     "scripts/loom-ship-soak-enabler.sh": "eb62680309e6358d8341b140c5b7c94d1e1b71f0e0405527f43f8df245538571",
     "scripts/loom-ship-soak-heal.sh": "03e458a27e5f10795282099dd83d9e3b76f71f1a2392a23ab0a64097ff03da1d",
