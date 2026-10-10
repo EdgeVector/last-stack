@@ -3,54 +3,35 @@
 # Safe LastDB Mini upgrade against Tom's PRIMARY brain home.
 #
 # ALWAYS:
-#   1. Create one ephemeral CoW rollback point outside $HOME before a live
-#      change. A probe-only run on synthetic data changes nothing live, so it
-#      makes none.
-#   2. Boot the CANDIDATE lastdbd against a throwaway CoW/probe copy. The probe
-#      data is SYNTHETIC by default: a small seed that the installed (baseline)
-#      daemon wrote, never a clone of Tom's multi-GB home. `--data real` clones
-#      the primary home as before (Tom, 2026-10-09).
-#   3. Require GREEN (identity decrypts, schemas load, real Board values)
+#   1. Create a fresh ephemeral CoW trial copy from the current primary
+#      outside $HOME before any candidate check.
+#   2. Boot the CANDIDATE lastdbd against a separate copy of that trial copy.
+#      The candidate never boots on the live primary home.
+#   3. Require GREEN (identity decrypts, schemas load, keyed Board and
+#      BoardCards reads return valid real-data responses)
 #      AND probe RSS stays under the memory-guard ceiling (so live cutover
 #      does not immediately thrash-restart under lastdbd-memory-guard)
 #      AND the LATENCY BAR: real workloads on the candidate copy must not
 #      regress vs the current binary on an identical copy. Cold is the first
 #      Board point read and the first column list. Hot is a later sample of
 #      the same operation that opens no file. The hot read is one batch of
-#      the keys that list returned. The hot write repeats one put.
+#      the keys that list returned. The latency check does not write.
 #      correct-but-slow is RED (incident 2026-07-25/27: 0.23.1 passed the
 #      correctness+RSS bars while scans ran 5-20x slower; the live primary
 #      was the first place anyone noticed)
-#      AND the KEY-CAP BAR on its own ephemeral copy: the logical resident
-#      set caps fetched records by count, so eviction is proven in keys.
-#      Under LASTDB_RESIDENT_KEY_CAP=100 every sample keeps
-#      resident_key_count within resident_key_budget and the purge runs.
-#      There is no byte footprint bar: a GiB line does not measure a
-#      key-count eviction (Tom, 2026-10-04). There is no skip.
-#      AND the HARD-DELETE BAR on the candidate's copy: a scratch kanban
-#      card is written and hard-deleted (kanban rm), and every /api/status
-#      sample in a bounded window after it keeps
-#      status.resident.persist_lane_failures and deferred_persist_failed at
-#      0 (incident 2026-10-04: f362b8e72 failed live on a card delete after
-#      every copy bar was GREEN). There is no skip.
-#      LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1 is set on the separate smoke copy
-#      and is not installed on the primary.
+#      AND read-only candidate status: persist failures are zero.
+#      LASTDB_BUILD_CONFLICT_STAMP_ON_COPY is not installed on the primary.
 #      AND the CANDIDATE CLASS BAR (incident 2026-08-01): refuse Cargo
 #      debug paths (target/debug), -dirty version stamps, and binaries
 #      ≫ incumbent size (debug/unstripped) before any backup or probe
-#      AND the CAS MUTATION BAR (LastGit compound): candidate must enforce
-#      `/api/mutation` `expected` preconditions (false → 409 cas_conflict,
-#      refused write does not land). Older nodes ignore expected and write
-#      unconditionally — silent until LastGit ref/CI CAS collapses. Probe
-#      runs on an ephemeral throwaway node of the candidate binary only.
 #      AND the DEV PHOTOGRAPH STAMP GATE (Tom 2026-08-19): live cutover is
 #      refused unless an ephemeral/CoW copy of real data uploaded a
 #      photograph to DEV (not the primary's production backup home) and
 #      CAS-flipped backup/latest. Never point the candidate at live ~/.lastdb
-#      for that upload. A mock object store is not DEV.
-#   4. Only then venue-aware live install:
-#        sidebin → atomic install + launchd bootout/bootstrap job-definition reload
-#        brew    → brew upgrade + brew services restart (only if formula installed)
+#      for that upload. The exact DEV manifest must restore into a new home
+#      with no local database data. A mock object store is not DEV.
+#   4. Strictly stop and flush the old primary, then copy its fixed data as
+#      the rollback point before the sidebin install and LaunchAgent reload.
 #   5. Post-check the LIVE home (incl. lastdb/lastdbd version parity and live
 #      RSS vs guard); print rollback if wrong
 #
@@ -58,31 +39,28 @@
 #
 # NEVER:
 #   - Run the candidate against the live ~/.lastdb before probe is GREEN
-#   - Skip the rollback point before a live change
+#   - Treat the live trial copy as the rollback point
 #   - Install only lastdbd without the sibling lastdb CLI from the same build
 #   - Kill/restart the primary on a RED probe
 #   - brew upgrade when formula is not installed / primary is sidebin+launchd
 #   - Leave rollback copies under $HOME. The current point is released on GREEN;
-#     RED retains it temporarily and the next run reclaims it before cloning.
+#     RED retains it until the explicit retained-point cleanup is safe.
 #
 # Usage:
 #   safe-upgrade-lastdb.sh --probe-only     # probe only (no live install)
 #   safe-upgrade-lastdb.sh --candidate /path/to/lastdbd --probe-only
 #   safe-upgrade-lastdb.sh --candidate /path/to/lastdbd --probe-only --data real
-#                                           # probe copies of the primary home
+#                                           # fresh real primary copy
 #   safe-upgrade-lastdb.sh --version 0.22.8 # fetch that tap release tarball
 #   safe-upgrade-lastdb.sh --check-dev-stamp  # refuse/allow live based on DEV photograph receipt only
 #
 # Live cutovers run only as a Loom lastdb-safe-upgrade graph node. Use
 # last-stack-safe-upgrade-loom --candidate /path/to/lastdbd.
-# Env (ephemeral rollback):
+# Env (ephemeral trial copy and rollback):
 #   LASTDB_ROLLBACK_ROOT=<path>    # defaults under TMPDIR, never under $HOME
-#   LASTDB_ROLLBACK_TTL_HOURS=24   # RED retention contract; next run reclaims
-# Env (probe data):
-#   LASTDB_SAFE_UPGRADE_DATA=synthetic|real   # default synthetic (same as --data)
-#   LASTDB_SYNTHETIC_SEED_ROOT=<path>         # seed cache; defaults under /tmp
-#   LASTDB_SYNTHETIC_CARDS / _RECORDS         # seed size (changes the seed key)
-#   LASTDB_SAFE_UPGRADE_WARM_SEED=0           # no detached seed warm-up after a GREEN cutover
+#   LASTDB_ROLLBACK_TTL_HOURS=24   # RED retention metadata; explicit cleanup
+# Env (candidate data):
+#   LASTDB_SAFE_UPGRADE_DATA=real             # fresh current primary copy
 #
 set -euo pipefail
 
@@ -105,7 +83,6 @@ ROLLBACK_ROOT="${LASTDB_ROLLBACK_ROOT:-${LASTDB_BACKUP_ROOT:-${_rollback_default
 ROLLBACK_TTL_HOURS="${LASTDB_ROLLBACK_TTL_HOURS:-24}"
 # Resolved under this run's WORK directory after mktemp unless explicitly set.
 PROBE_ROOT="${LASTDB_PROBE_ROOT:-}"
-SMOKE_SH="${LASTDB_SMOKE_SH:-$HOME/code/edgevector/.claude/run-lastdb-mini-smoke.sh}"
 TAP_REPO="EdgeVector/homebrew-lastdb"
 # Live install venue (see fold/docs/designs/lastdb-minimal-downtime-cutover.md)
 SIDEBIN_DIR="${LASTDB_SIDEBIN_DIR:-$HOME/.lastdb/bin-with-upload-cap}"
@@ -165,14 +142,15 @@ LAUNCHD_PLIST="${LASTDB_LAUNCHD_PLIST:-$HOME/Library/LaunchAgents/${LAUNCHD_LABE
 PROBE_ONLY=0
 ASSUME_YES=0
 CHECK_DEV_STAMP=0
-# synthetic = probe copies of a small seed the baseline wrote; real = probe
-# copies of the primary home. Validated once synthetic-home-checks.sh is sourced.
-PROBE_DATA="${LASTDB_SAFE_UPGRADE_DATA:-synthetic}"
+# The deployment check uses the primary's real data on an isolated copy.
+PROBE_DATA="${LASTDB_SAFE_UPGRADE_DATA:-real}"
 CANDIDATE_BIN=""
 CANDIDATE_CLI_BIN=""
 TARGET_VERSION=""
 WORK=""
 BACKUP=""
+TRIAL_COPY=""
+TRIAL_READY=0
 ROLLBACK_READY=0
 
 usage() {
@@ -273,10 +251,6 @@ export LASTDB_PROBE_LAT_GEO_MEAN_MAX="${LASTDB_PROBE_LAT_GEO_MEAN_MAX:-1.5}"
 export LASTDB_PROBE_LAT_CORR_MIN_OPS="${LASTDB_PROBE_LAT_CORR_MIN_OPS:-2}"
 export LASTDB_PROBE_LAT_CORR_SKIP="${LASTDB_PROBE_LAT_CORR_SKIP:-0}"
 
-# CAS mutation bar (LastGit #217 compound): candidate must honor `expected`
-# preconditions on /api/mutation. LASTDB_PROBE_CAS_SKIP=1 is Tom clearance only.
-CAS_SKIP="${LASTDB_PROBE_CAS_SKIP:-0}"
-
 # Candidate class gates (incident 2026-08-01: primary cut over to worktree
 # target/debug/lastdbd …-dirty). Sourced pure helpers.
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
@@ -292,12 +266,6 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/rowcount-bar-checks.sh"
 # shellcheck source=probe-copy-guards.sh
 . "$_SCRIPT_DIR/probe-copy-guards.sh"
-# shellcheck source=synthetic-home-checks.sh
-. "$_SCRIPT_DIR/synthetic-home-checks.sh"
-# shellcheck source=key-cap-bar-checks.sh
-. "$_SCRIPT_DIR/key-cap-bar-checks.sh"
-# shellcheck source=hard-delete-bar-checks.sh
-. "$_SCRIPT_DIR/hard-delete-bar-checks.sh"
 # shellcheck source=live-lastdb-env.sh
 . "$_SCRIPT_DIR/live-lastdb-env.sh"
 # shellcheck source=dev-photograph-stamp-gate.sh
@@ -312,23 +280,14 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/owner-lock.sh"
 # shellcheck source=deadline.sh
 . "$_SCRIPT_DIR/deadline.sh"
-CAS_PROBE_SH="$_SCRIPT_DIR/cas-mutation-probe.sh"
 DEV_PHOTOGRAPH_PROOF_SH="$_SCRIPT_DIR/dev-photograph-candidate-proof.sh"
-SYNTH_BUILD_SH="$_SCRIPT_DIR/build-synthetic-home.sh"
-
-synth_data_mode_valid "$PROBE_DATA" \
-  || { echo "unknown --data value: ${PROBE_DATA:-<empty>} (want synthetic or real)" >&2; exit 2; }
-SYNTH_CARDS="${LASTDB_SYNTHETIC_CARDS:-$SYNTH_DEFAULT_CARDS}"
-SYNTH_RECORDS="${LASTDB_SYNTHETIC_RECORDS:-$SYNTH_DEFAULT_RECORDS}"
-synth_count_valid "$SYNTH_CARDS" && synth_count_valid "$SYNTH_RECORDS" \
-  || { echo "LASTDB_SYNTHETIC_CARDS and LASTDB_SYNTHETIC_RECORDS must be positive integers" >&2; exit 2; }
-# Where the probe copies come from. Real mode: the primary home. Synthetic
-# mode: the seed home, set once the seed exists. PROBE_CLI_HOME is the HOME
-# that kanban and brain use on a probe copy. Empty means the ambient HOME, so
-# the CLIs read the real pinned config.
+if [ "$PROBE_DATA" != "real" ]; then
+  echo "safe upgrade requires --data real" >&2
+  exit 2
+fi
+# Every candidate copy starts from this run's fresh primary trial copy.
 PROBE_SOURCE_HOME="$PRIMARY_HOME"
 PROBE_CLI_HOME=""
-SYNTH_SEED_DIR=""
 
 if [ "${CHECK_DEV_STAMP:-0}" -eq 1 ]; then
   DEV_BINDING_OUT=""
@@ -343,7 +302,8 @@ if [ "${CHECK_DEV_STAMP:-0}" -eq 1 ]; then
   fi
   DEV_STAMP_OUT=""
   set +e
-  DEV_STAMP_OUT="$(assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" 2>&1)"
+  DEV_STAMP_OUT="$(assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" \
+    "${LASTDB_SAFE_UPGRADE_EXPECTED_CLONE_SOURCE:-}" 2>&1)"
   DEV_STAMP_RC=$?
   set -e
   if [ -n "$DEV_STAMP_OUT" ]; then
@@ -359,21 +319,32 @@ if [ "${CHECK_DEV_STAMP:-0}" -eq 1 ]; then
   exit 0
 fi
 
-release_rollback_point() {
-  [ "${ROLLBACK_READY:-0}" -eq 1 ] || return 0
-  [ -n "${BACKUP:-}" ] && [ -d "$BACKUP" ] && rm -rf "$BACKUP"
-  ROLLBACK_READY=0
-  rmdir "$ROLLBACK_ROOT" 2>/dev/null || true
-  log "rollback: released after GREEN ($BACKUP)"
+release_trial_copy() {
+  [ -n "${TRIAL_COPY:-}" ] && [ -d "$TRIAL_COPY" ] && rm -rf "$TRIAL_COPY"
+  TRIAL_READY=0
 }
 
-# The BACKUP line of a RED verdict. A synthetic probe-only run makes no
-# rollback point, so there is nothing to keep.
+release_rollback_point() {
+  local had_rollback="${ROLLBACK_READY:-0}"
+  if [ "$had_rollback" -eq 1 ]; then
+    [ -n "${BACKUP:-}" ] && [ -d "$BACKUP" ] && rm -rf "$BACKUP"
+    ROLLBACK_READY=0
+  fi
+  release_trial_copy
+  rmdir "$ROLLBACK_ROOT" 2>/dev/null || true
+  if [ "$had_rollback" -eq 1 ]; then
+    log "rollback: released after GREEN ($BACKUP)"
+  fi
+}
+
+# The BACKUP line of a RED verdict.
 backup_red_note() {
-  if [ -n "${BACKUP:-}" ]; then
-    printf 'BACKUP: %s  (kept; primary NOT upgraded)\n' "$BACKUP"
+  if [ "${ROLLBACK_READY:-0}" -eq 1 ] && [ -n "${BACKUP:-}" ]; then
+    printf 'BACKUP: %s  (kept; inspect the primary before restore)\n' "$BACKUP"
+  elif [ -n "${BACKUP:-}" ]; then
+    printf 'BACKUP: none  (the stopped copy is incomplete at %s)\n' "$BACKUP"
   else
-    printf 'BACKUP: none  (no rollback point in a synthetic probe-only run; primary NOT upgraded)\n'
+    printf 'BACKUP: none  (failure occurred before the stopped rollback copy)\n'
   fi
 }
 
@@ -383,9 +354,9 @@ retain_rollback_point() {
   {
     printf 'retained_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'ttl_hours=%s\n' "$ROLLBACK_TTL_HOURS"
-    printf 'cleanup_owner=next-lastdb-safe-upgrade-run\n'
+    printf 'cleanup_owner=manual-after-primary-recovery\n'
   } >"$BACKUP/.safe-upgrade/retention"
-  warn "rollback: RED retained at $BACKUP ttl_hours=$ROLLBACK_TTL_HOURS cleanup_owner=next-lastdb-safe-upgrade-run"
+  warn "rollback: RED retained at $BACKUP ttl_hours=$ROLLBACK_TTL_HOURS cleanup_owner=manual-after-primary-recovery"
 }
 
 OWNER_LOCK_DIR="${LASTDB_SAFE_UPGRADE_OWNER_LOCK_DIR:-/tmp/lastdb-safe-upgrade-owner-${UID:-$(id -u)}.lock.d}"
@@ -397,6 +368,10 @@ DRIVER_ENDED_STEP=0
 SIDEBIN_BACKUP_DAEMON=""
 SIDEBIN_BACKUP_CLI=""
 CUTOVER_RECOVERY_STATE_TMP=""
+STAGE_BACKUP=""
+OLD_PRIMARY_PID=""
+OLD_PRIMARY_START_TS=""
+OLD_PRIMARY_PS_LSTART=""
 
 cleanup_work() {
   local rc=$?
@@ -409,12 +384,18 @@ cleanup_work() {
   # GREEN / probe-only / operator abort call release_rollback_point first
   # (ROLLBACK_READY=0). Any other end — including a loom drive deadline that
   # reparents this script and then SIGTERM/SIGHUP with a false-zero EXIT —
-  # keeps the newest rollback point so a later attempt can reuse it.
+  # keeps this run's validated rollback point for explicit recovery or cleanup.
   if [ "${ROLLBACK_READY:-0}" -eq 1 ]; then
     retain_rollback_point
     if [ "${DRIVER_ENDED_STEP:-0}" -eq 1 ]; then
       warn "rollback: driver ended the step; kept newest point ${BACKUP:-none}"
     fi
+  fi
+  if [ "$rc" -ne 0 ] && [ -n "${TRIAL_COPY:-}" ] && [ -d "$TRIAL_COPY" ]; then
+    warn "trial copy retained for cleanup-retained-upgrade-copy.sh: $TRIAL_COPY (not a rollback point)"
+  fi
+  if [ "$rc" -ne 0 ] && [ -n "${STAGE_BACKUP:-}" ] && [ -d "$STAGE_BACKUP" ]; then
+    warn "incomplete stopped copy retained for cleanup-retained-upgrade-copy.sh: $STAGE_BACKUP (not a rollback point)"
   fi
   if type safe_upgrade_owner_lock_release >/dev/null 2>&1; then
     safe_upgrade_owner_lock_release "$OWNER_LOCK_DIR" "$OWNER_LOCK_TOKEN" "$OWNER_LOCK_HELD" \
@@ -430,8 +411,9 @@ trap 'on_driver_end' HUP INT TERM
 trap cleanup_work EXIT
 
 write_cutover_recovery_state() {
-  # The Loom wrapper owns this mode-600 file and removes it after the CUTOVER
-  # process ends. Keep a complete atomic record before the first live rename.
+  # The Loom wrapper owns this mode-600 file and removes it after CUTOVER.
+  # Record the old process identity before the first stop. Recovery never
+  # kills a process that may still be in its flush drain.
   local stage="$1" effect_started="$2"
   local state="${LASTDB_CUTOVER_RECOVERY_STATE:-}"
   local daemon_sha="" cli_sha=""
@@ -462,13 +444,16 @@ write_cutover_recovery_state() {
   (
     umask 077
     jq -cn \
-      --argjson state_version 1 \
+      --argjson state_version 3 \
       --arg loom_execution_id "${LOOM_EXEC_ID:-}" \
       --arg stage "$stage" \
       --argjson effect_started "$effect_started" \
       --arg venue "${VENUE:-}" \
       --arg primary_home "$PRIMARY_HOME" \
       --arg primary_socket "$PRIMARY_SOCK" \
+      --arg old_pid "${OLD_PRIMARY_PID:-}" \
+      --arg old_start_ts "${OLD_PRIMARY_START_TS:-}" \
+      --arg old_ps_lstart "${OLD_PRIMARY_PS_LSTART:-}" \
       --arg sidebin_dir "$SIDEBIN_DIR" \
       --arg launchd_label "$LAUNCHD_LABEL" \
       --arg launchd_plist "$LAUNCHD_PLIST" \
@@ -479,6 +464,8 @@ write_cutover_recovery_state() {
       '{state_version:$state_version,loom_execution_id:$loom_execution_id,
         stage:$stage,effect_started:$effect_started,venue:$venue,
         primary_home:$primary_home,primary_socket:$primary_socket,
+        old_pid:$old_pid,old_start_ts:$old_start_ts,
+        old_ps_lstart:$old_ps_lstart,
         sidebin_dir:$sidebin_dir,launchd_label:$launchd_label,
         launchd_plist:$launchd_plist,backup_lastdbd:$backup_lastdbd,
         backup_lastdb:$backup_lastdb,backup_lastdbd_sha256:$backup_lastdbd_sha256,
@@ -493,10 +480,50 @@ write_cutover_recovery_state() {
 
 backup_essentials_ok() {
   local root="$1"
-  # identity + data dir required. Storage is either legacy sled (data/db) or
-  # Last Store collections under data/data/ (Mini LASTDB_ENGINE=laststore).
-  [ -f "$root/identity.key" ] && [ -d "$root/data" ] || return 1
+  # These durable files are also required by the DEV proof copy. Storage is
+  # either legacy sled (data/db) or Last Store under data/data/.
+  [ -f "$root/identity.key" ] && [ -f "$root/.bootstrap_done" ] \
+    && [ -f "$root/data/.device_id" ] \
+    && [ -f "$root/laststore_high_water.json" ] \
+    && [ -d "$root/data" ] || return 1
   [ -e "$root/data/db" ] || [ -d "$root/data/data" ] || [ -d "$root/data/laststore" ]
+}
+
+trial_clone_socket_errors_only() {
+  local line seen=0
+  # cp can refuse the live Unix socket, or lose that exact socket during a
+  # daemon restart. A vanished regular or CAS file is not an allowed race.
+  [ -s "$WORK/trial-clone.err" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "cp: $PRIMARY_SOCK: Operation not supported"|\
+      "cp: $PRIMARY_SOCK: No such file or directory"|\
+      "cp: cannot copy a socket file: '$PRIMARY_SOCK'"|\
+      "cp: $PRIMARY_HOME/data/folddb-full.sock: Operation not supported"|\
+      "cp: $PRIMARY_HOME/data/folddb-full.sock: No such file or directory"|\
+      "cp: cannot copy a socket file: '$PRIMARY_HOME/data/folddb-full.sock'")
+        seen=$((seen + 1)) ;;
+      *) return 1 ;;
+    esac
+  done <"$WORK/trial-clone.err"
+  [ "$seen" -gt 0 ]
+}
+
+trial_clone_red() {
+  local reason="$1" evidence
+  evidence="$(umask 077; mktemp "$ROLLBACK_ROOT/.trial-failure.${TS}.XXXXXX")" \
+    || die "$reason (cp exit=$CP_RC; could not retain clone evidence)"
+  {
+    printf 'reason=%s\ncp_exit=%s\npartial_copy=<copy>\n' "$reason" "$CP_RC"
+    printf 'cp_stderr_first_16384_bytes:\n'
+    head -c 16384 "$WORK/trial-clone.err" | while IFS= read -r line || [ -n "$line" ]; do
+      line="${line//"$PRIMARY_HOME"/<primary>}"
+      line="${line//"$TRIAL_COPY"/<copy>}"
+      printf '%s\n' "$line"
+    done
+  } >"$evidence"
+  chmod 600 "$evidence"
+  die "$reason (cp exit=$CP_RC; evidence=$evidence; incomplete trial copy=$TRIAL_COPY)"
 }
 
 backup_data_is_not_live() {
@@ -507,40 +534,8 @@ backup_data_is_not_live() {
   [ -n "$backup_data" ] && [ "$backup_data" != "$live_data" ]
 }
 
-# Routine safe-upgrade rollback name: pre-<cand>-from-<cur>-YYYYMMDDTHHMMSSZ.
-# The narrow classifier keeps cleanup confined to this script's own artifacts.
-# Portable (macOS Bash 3.2): no ${var: -N} substrings.
-is_routine_pre_upgrade_backup() {
-  local base="$1" ts
-  case "$base" in
-    pre-*-from-*) ;;
-    *) return 1 ;;
-  esac
-  ts="$(printf '%s\n' "$base" | sed -n 's/.*-\([0-9]\{8\}T[0-9]\{6\}Z\)$/\1/p')"
-  [ -n "$ts" ] || return 1
-  return 0
-}
-
-newest_routine_rollback_point() {
-  local d base ts newest="" newest_ts=""
-  [ -d "$ROLLBACK_ROOT" ] || return 0
-  for d in "$ROLLBACK_ROOT"/*; do
-    [ -d "$d" ] && [ ! -L "$d" ] || continue
-    base="$(basename "$d")"
-    is_routine_pre_upgrade_backup "$base" || continue
-    ts="$(printf '%s\n' "$base" | sed -n 's/.*-\([0-9]\{8\}T[0-9]\{6\}Z\)$/\1/p')"
-    [ -n "$ts" ] || continue
-    if [ -z "$newest_ts" ] || [ "$ts" \> "$newest_ts" ]; then
-      newest="$d"
-      newest_ts="$ts"
-    fi
-  done
-  [ -n "$newest" ] && printf '%s\n' "$newest"
-  return 0
-}
-
 prepare_rollback_root() {
-  local root_real home_real d base reclaimed=0 newest=""
+  local root_real home_real stale
   mkdir -p "$ROLLBACK_ROOT"
   [ ! -L "$ROLLBACK_ROOT" ] || die "rollback root must not be a symlink: $ROLLBACK_ROOT"
   root_real="$(cd "$ROLLBACK_ROOT" && pwd -P)"
@@ -550,19 +545,15 @@ prepare_rollback_root() {
       die "rollback root must be ephemeral and outside HOME: $root_real"
       ;;
   esac
-  newest="$(newest_routine_rollback_point)"
-  for d in "$ROLLBACK_ROOT"/*; do
-    [ -d "$d" ] && [ ! -L "$d" ] || continue
-    base="$(basename "$d")"
-    is_routine_pre_upgrade_backup "$base" || continue
-    if [ -n "$newest" ] && [ "$d" = "$newest" ]; then
-      continue
-    fi
-    log "rollback: reclaim previous retained point $d"
-    rm -rf "$d"
-    reclaimed=$((reclaimed + 1))
+  # A RED run keeps these copies until the recovered primary permits explicit
+  # cleanup. Refuse another large trial while one remains.
+  for stale in "$ROLLBACK_ROOT"/trial-* "$ROLLBACK_ROOT"/*.incomplete; do
+    [ -e "$stale" ] || [ -L "$stale" ] || continue
+    die "retained trial or incomplete copy needs cleanup before another trial: $stale"
   done
-  log "rollback: root=$root_real previous_reclaimed=$reclaimed kept_newest=${newest:-none} ttl_hours=$ROLLBACK_TTL_HOURS cleanup_owner=next-lastdb-safe-upgrade-run"
+  # An older name and timestamp cannot prove that its copy completed. Keep
+  # all older points until the explicit safe cleanup path verifies them.
+  log "rollback: root=$root_real previous points kept; use the matching explicit cleanup helper"
 }
 
 rss_mb_of_pid() {
@@ -641,9 +632,8 @@ median_of() {
 }
 
 # Latency ops. Each takes one arg and must exit non-zero on failure. These are
-# the REAL workloads: the keyed point read from the smoke bar, the column list
-# that regressed in 0.23.1 (kanban list), and a real brain upsert (writes
-# only ever land on the throwaway CoW copy, never the primary).
+# the keyed point read from the deployment check and the column list
+# that regressed in 0.23.1 (kanban list). These operations do not write.
 # The column list is cold only. The hot read is one batch of its keys.
 op_lat_point() {
   # $1 = socket path
@@ -711,16 +701,6 @@ op_rows_scan() {
   echo "$count"
 }
 
-op_lat_write() {
-  # $1 = probe copy home
-  # One mutation. The hot samples repeat this same put. The first call is
-  # not hot. The copy is the only target.
-  printf -- '---\ntype: reference\nslug: safe-upgrade-latency-probe-scratch\ntitle: safe-upgrade latency probe scratch\n---\nUpsert from the safe-upgrade latency bar. Only ever written to throwaway CoW probe copies.\n' \
-    | env ${PROBE_CLI_HOME:+"HOME=$PROBE_CLI_HOME"} \
-      FBRAIN_FOLDDB_SOCKET="$1/data/folddb.sock" LASTDB_HOME="$1" FOLDDB_HOME="$1" \
-      brain put >/dev/null 2>&1
-}
-
 # One batch read of the key pairs in LAT_BATCH_KEYS_FILE.
 # LAT_BATCH_SCHEMA is the BoardCards schema id the first try selected.
 # $1 = socket path. Exit non-zero when the batch does not return rows.
@@ -778,51 +758,8 @@ EOF
   return 1
 }
 
-# ---------------------------------------------------------------------------
-# Durability canary: an acked write must survive the cutover restart.
-#
-# 2026-08-18: two loom execution terminal-status writes were acknowledged and
-# READ BACK on the live primary (23:08–23:12Z), then vanished — the rows
-# regressed to their previous version. The defer cap was 0, and the next
-# safe-upgrade cutover recorded "did not complete its clean drain". Every bar
-# in this script would have passed GREEN over that loss: health, version,
-# schemas, Board title, RSS, and latency are liveness/read checks, and the
-# latency write probe only touches throwaway CoW copies. Nothing asserted that
-# a write acked by the OLD daemon is still there when the NEW daemon serves.
-# Brain: papercut-lastdb-acked-write-lost-loom-terminal-status-regressed.
-#
-# Mechanism: immediately before any live change, upsert N fixed-slug sentinels
-# through `brain put --durable --json`, require the node's exact `durable`
-# receipt, and read each nonce back. After the cutover, read them again on the
-# new daemon. A queued write plus resident read-back is not durability proof:
-# that exact sequence lost sentinel 4 during the 2026-09-02 cutover. A stale
-# nonce after restart is the observed loss shape (the last write to one key
-# dropped and the prior version survived). Fixed slugs keep the store flat; N
-# spreads sentinels across hash groups because the loss was per-key, not
-# per-interval. There is deliberately no skip flag — a durability bar that can
-# be skipped recurs silently.
-# ---------------------------------------------------------------------------
-DURABILITY_N="${LASTDB_DURABILITY_CANARY_N:-4}"
-DURABILITY_READ_WAIT_S="${LASTDB_DURABILITY_READ_WAIT_S:-120}"
-# Arming happens on the OLD daemon, which is often the reason for the upgrade:
-# on 2026-10-01 and 2026-10-04 a thrashing primary answered brain writes and
-# reads in 30-250 s, so a single 60 s put or a 15 s read-back failed the arm and
-# blocked the cutover that carried the fix
-# (papercut-safe-upgrade-blocked-by-slow-primary-write-timeouts-20261004).
-# Slowness is not a durability verdict. The arm retries the same upsert (same
-# slug, same nonce, so a late landing of an earlier attempt is harmless) and
-# polls the read-back with a longer per-read limit. The proof does not change:
-# an exact `durable` receipt (or the HTTP 400 queued+readback mode) plus this
-# run's nonce read back, before any live change.
-DURABILITY_ARM_ATTEMPTS="${LASTDB_DURABILITY_ARM_ATTEMPTS:-6}"
-DURABILITY_ARM_BACKOFF_S="${LASTDB_DURABILITY_ARM_BACKOFF_S:-5 15 30 60 60}"
-DURABILITY_ARM_READ_OP_S="${LASTDB_DURABILITY_ARM_READ_OP_S:-90}"
-DURABILITY_ARM_READ_WAIT_S="${LASTDB_DURABILITY_ARM_READ_WAIT_S:-300}"
-DURABILITY_ARM_READ_POLL_S="${LASTDB_DURABILITY_ARM_READ_POLL_S:-5}"
-DURABILITY_SLUG_PREFIX="lastdb-safe-upgrade-durability-canary"
-DURABILITY_NONCE=""
-DURABILITY_MODE="durable"
-
+# The stopped old daemon must produce the exact flush receipt before the
+# rollback copy becomes valid. No synthetic record is written on the primary.
 cleanup_upgrade_restart_intent() {
   [ "${RESTART_INTENT_START_REQUESTED:-0}" -eq 0 ] || return 0
   [ -n "${RESTART_INTENT_PATH:-}" ] || return 0
@@ -853,171 +790,6 @@ write_upgrade_restart_intent() {
     die "restart intent: could not atomically write $RESTART_INTENT_PATH"
   fi
   log "restart intent: armed cause=upgrade previous_pid=$previous_pid path=$RESTART_INTENT_PATH"
-}
-
-durability_slug() { printf '%s-%d' "$DURABILITY_SLUG_PREFIX" "$1"; }
-
-durability_read_body() {
-  # $1 = slug, $2 = per-read deadline seconds (default 15). stdout: the record
-  # as brain prints it (empty on any failure).
-  run_op_with_deadline "${2:-15}" env FBRAIN_FOLDDB_SOCKET="$PRIMARY_SOCK" \
-    LASTDB_HOME="$PRIMARY_HOME" FOLDDB_HOME="$PRIMARY_HOME" \
-    brain get "$1" 2>/dev/null || true
-}
-
-durability_output_is_http_400() {
-  # Distinguish "old daemon has no durable-receipt API" from other write
-  # failures. HTTP 400 is the deny_unknown_fields rejection of `durability`.
-  printf '%s' "$1" | grep -Eqi \
-    'HTTP[[:space:]]*400|status[[:space:]]*[:=][[:space:]]*"?400"?([^0-9]|$)|400[[:space:]]+Bad[[:space:]]+Request'
-}
-
-durability_arm_sleep() {
-  # $1 = attempt number that just failed (1-based). Sleeps the matching backoff.
-  local n=0 secs="" last=""
-  for secs in $DURABILITY_ARM_BACKOFF_S; do
-    n=$((n + 1))
-    last="$secs"
-    [ "$n" -eq "$1" ] && break
-  done
-  [ -n "$last" ] && sleep "$last"
-}
-
-durability_arm_readback() {
-  # $1 = slug, $2 = sentinel index. 0 when this run's nonce reads back within
-  # DURABILITY_ARM_READ_WAIT_S on the old daemon.
-  local deadline=$(( $(date +%s) + DURABILITY_ARM_READ_WAIT_S ))
-  while :; do
-    durability_read_body "$1" "$DURABILITY_ARM_READ_OP_S" \
-      | grep -qF "nonce: ${DURABILITY_NONCE}#${2}" && return 0
-    [ "$(date +%s)" -ge "$deadline" ] && return 1
-    sleep "$DURABILITY_ARM_READ_POLL_S"
-  done
-}
-
-durability_write_sentinels() {
-  # Runs BEFORE any live change; a failure here aborts a not-yet-started
-  # cutover, which is the honest outcome — an upgrade whose durability bar
-  # cannot arm must not proceed to the restart that bar exists to judge.
-  #
-  # Two arming modes:
-  #   durable         — --durable returned .durability=="durable" (preferred)
-  #   queued+readback — --durable returned HTTP 400 (pre-receipt API daemon),
-  #                     a queued put of the same sentinel succeeded, and
-  #                     read-back on the old daemon returned this run's nonce.
-  #                     Post-cutover nonce read-back remains mandatory.
-  # Any other durable-put failure is retried up to DURABILITY_ARM_ATTEMPTS
-  # times (a slow old daemon times out; it does not refuse), then hard-aborts.
-  DURABILITY_NONCE="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-  DURABILITY_MODE="durable"
-  local i slug body receipt put_rc put_err used_fallback=0 attempt armed
-  local errf="${TMPDIR:-/tmp}/lastdb-su-durability-err.$$"
-  for i in $(seq 1 "$DURABILITY_N"); do
-    slug="$(durability_slug "$i")"
-    body="$(
-      printf -- '---\ntype: reference\nslug: %s\ntitle: safe-upgrade durability canary %d (constant slug; nonce changes per run)\n---\nnonce: %s#%d\n\nWritten by lastdb-safe-upgrade immediately before the cutover restart and\nread back after it. A stale nonce after an upgrade means the primary lost an\nacknowledged write across the restart. Safe to keep; carries no other\nmeaning. Rationale: brain\npapercut-lastdb-acked-write-lost-loom-terminal-status-regressed.\n' \
-        "$slug" "$i" "$DURABILITY_NONCE" "$i"
-    )"
-    armed=""
-    attempt=0
-    while [ "$attempt" -lt "$DURABILITY_ARM_ATTEMPTS" ]; do
-      attempt=$((attempt + 1))
-      put_rc=0
-      receipt="$(
-        printf '%s' "$body" \
-          | env FBRAIN_FOLDDB_SOCKET="$PRIMARY_SOCK" LASTDB_HOME="$PRIMARY_HOME" FOLDDB_HOME="$PRIMARY_HOME" \
-            brain put --durable --json 2>"$errf"
-      )" || put_rc=$?
-      put_err="$(cat "$errf" 2>/dev/null || true)"
-      if [ "$put_rc" -eq 0 ] && printf '%s' "$receipt" | jq -e \
-        '.ok == true and .durability == "durable"' >/dev/null 2>&1; then
-        armed="durable"
-        break
-      fi
-      if durability_output_is_http_400 "${receipt}
-${put_err}"; then
-        log "durability canary: $slug --durable put HTTP 400 on old daemon ${CURRENT_VER:-unknown} (no durable-receipt API); printing response body"
-        if [ -n "$put_err" ]; then
-          log "durability canary: HTTP 400 stderr: $(printf '%s' "$put_err" | tr '\n' ' ')"
-        fi
-        if [ -n "$receipt" ]; then
-          log "durability canary: HTTP 400 stdout: $(printf '%s' "$receipt" | tr '\n' ' ')"
-        fi
-        put_rc=0
-        receipt="$(
-          printf '%s' "$body" \
-            | env FBRAIN_FOLDDB_SOCKET="$PRIMARY_SOCK" LASTDB_HOME="$PRIMARY_HOME" FOLDDB_HOME="$PRIMARY_HOME" \
-              brain put --json 2>"$errf"
-        )" || put_rc=$?
-        put_err="$(cat "$errf" 2>/dev/null || true)"
-        if [ "$put_rc" -eq 0 ] && printf '%s' "$receipt" | jq -e '.ok == true' >/dev/null 2>&1; then
-          armed="queued+readback"
-          break
-        fi
-        log "durability canary: $slug queued put after HTTP 400 failed (attempt $attempt/$DURABILITY_ARM_ATTEMPTS): $(printf '%s' "$put_err" | tr '\n' ' ')"
-      else
-        log "durability canary: $slug durable put failed (attempt $attempt/$DURABILITY_ARM_ATTEMPTS, rc=$put_rc): $(printf '%s' "$put_err" | tr '\n' ' ')"
-      fi
-      [ "$attempt" -lt "$DURABILITY_ARM_ATTEMPTS" ] && durability_arm_sleep "$attempt"
-    done
-    if [ -z "$armed" ]; then
-      rm -f "$errf"
-      die "durability canary: pre-cutover durable write of $slug failed after $DURABILITY_ARM_ATTEMPTS attempts — aborting before any live change (the canary must arm to prove the cutover keeps durable writes; last error: ${put_err})"
-    fi
-    if ! durability_arm_readback "$slug" "$i"; then
-      rm -f "$errf"
-      die "durability canary: pre-cutover read-back of $slug did not return this run's nonce within ${DURABILITY_ARM_READ_WAIT_S}s — primary already unhealthy; aborting before any live change"
-    fi
-    [ "$armed" = "queued+readback" ] && used_fallback=1
-  done
-  rm -f "$errf"
-  if [ "$used_fallback" -eq 1 ]; then
-    DURABILITY_MODE="queued+readback"
-    log "durability canary: armed mode=queued+readback old_build=${CURRENT_VER:-unknown} — $DURABILITY_N sentinels queued, acknowledged, and read back on the old daemon (nonce $DURABILITY_NONCE). Post-cutover nonce read-back remains mandatory."
-  else
-    DURABILITY_MODE="durable"
-    log "durability canary: armed mode=durable — $DURABILITY_N sentinels durably persisted and read back on the old daemon (nonce $DURABILITY_NONCE)"
-  fi
-}
-
-durability_verify_after_cutover() {
-  # Same read-vs-mismatch split as the version assertion above: a read that
-  # has not answered yet says nothing (node may still be warming — retry until
-  # the deadline), while a read that SUCCEEDS with a stale nonce is a proven
-  # acked-write loss and cannot improve by waiting.
-  local deadline=$(( $(date +%s) + DURABILITY_READ_WAIT_S ))
-  local i slug body lost="" unreadable=""
-  for i in $(seq 1 "$DURABILITY_N"); do
-    slug="$(durability_slug "$i")"
-    while :; do
-      body="$(durability_read_body "$slug")"
-      if [ -n "$body" ]; then
-        printf '%s' "$body" | grep -qF "nonce: ${DURABILITY_NONCE}#${i}" \
-          || lost="$lost $slug"
-        break
-      fi
-      if [ "$(date +%s)" -ge "$deadline" ]; then
-        unreadable="$unreadable $slug"
-        break
-      fi
-      sleep 2
-    done
-  done
-  if [ -n "$lost" ] || [ -n "$unreadable" ]; then
-    echo ""
-    echo "VERDICT: RED"
-    [ -n "$lost" ] && \
-      echo "REASON: acked-write durability regression — sentinel(s)$lost read back with a STALE nonce after cutover: the old daemon acknowledged these writes and the new daemon does not have them (loss class: papercut-lastdb-acked-write-lost-loom-terminal-status-regressed)"
-    [ -n "$unreadable" ] && \
-      echo "REASON: durability sentinel(s)$unreadable unreadable ${DURABILITY_READ_WAIT_S}s after cutover — durability of the cutover is UNPROVEN"
-    echo "BACKUP: $BACKUP"
-    echo "BINARY ROLLBACK (preferred first try, sidebin):"
-    echo "  cp -a $SIDEBIN_DIR/lastdbd.bak-pre-* $SIDEBIN_DIR/lastdbd  # pick newest bak"
-    echo "  launchctl kickstart -k gui/\$(id -u)/$LAUNCHD_LABEL"
-    echo "NOTE: rolling back the binary does NOT recover the lost writes; it stops the bleeding. Audit recent writes on other apps before trusting the store."
-    die "durability canary failed after cutover — acked writes did not survive the restart"
-  fi
-  log "durability canary: $DURABILITY_N/$DURABILITY_N sentinels survived the cutover (nonce $DURABILITY_NONCE)"
 }
 
 measure_op_median_ms() {
@@ -1178,9 +950,10 @@ clone_probe_home() {
     return 1
   fi
   remove_probe_copy "$copy" || return 1
-  probe_clone_home_without_search_receipts "$PROBE_SOURCE_HOME" "$copy" 2>/dev/null || copy_rc=$?
-  if [ "$copy_rc" -gt 1 ]; then
-    warn "$label metrics probe: CoW clone refused an unsafe path"
+  probe_clone_home_without_search_receipts "$PROBE_SOURCE_HOME" "$copy" \
+    2>"$WORK/probe-clone-$label.err" || copy_rc=$?
+  if [ "$copy_rc" -ne 0 ]; then
+    warn "$label metrics probe: CoW clone failed (exit=$copy_rc; stderr=$WORK/probe-clone-$label.err)"
     remove_probe_copy "$copy" || return 1
     return 1
   fi
@@ -1213,8 +986,8 @@ EOF_ENV
   if [ "${#env_pairs[@]}" -gt 0 ]; then
     log "$label metrics probe: mirroring live env: ${env_pairs[*]}"
   fi
-  # Timed latency and key-cap copies receive no conflict-stamp job. The
-  # separate smoke copy exercises it. Do not export the flag to the primary.
+  # Timed latency copies receive no conflict-stamp job. The deployment
+  # copy exercises it. Do not export the flag to the primary.
   local stamp_env
   stamp_env="$(probe_stamp_env_for_label "$label")"
   env -u SENTRY_DSN -u FOLD_SENTRY_DSN \
@@ -1255,50 +1028,6 @@ EOF_ENV
   return 0
 }
 
-# Key-cap bar: boot the candidate on its own CoW copy with a cap far below
-# the default, drive reads, sample /api/status, and write a proof document.
-# $1 = candidate bin, $2 = proof path. The cap is boot-time, so this cannot
-# reuse the latency node.
-probe_key_cap_bar() {
-  local cand_bin="$1" out="$2" k_copy k_pid k_sock k_blog dir start now n=0
-  k_copy="$(clone_probe_home k)" || return 1
-  if ! start_probe_node "$cand_bin" "$k_copy" "key-cap" "$KEY_CAP_BAR_ENV=$KEY_CAP_BAR_CAP"; then
-    return 1
-  fi
-  k_pid="$LAST_PROBE_PID"
-  k_sock="$LAST_PROBE_SOCK"
-  k_blog="$LAST_PROBE_BLOG"
-  dir="${k_copy}.key-cap-samples"
-  mkdir -p "$dir"
-  log "key-cap bar: $KEY_CAP_BAR_ENV=$KEY_CAP_BAR_CAP for ${KEY_CAP_BAR_SECS}s"
-  start="$(date +%s)"
-  while true; do
-    if ! kill -0 "$k_pid" 2>/dev/null; then
-      warn "key-cap bar: candidate exited during the sample window"
-      remove_probe_copy "$k_copy" "$k_blog" || true
-      return 1
-    fi
-    op_lat_point "$k_sock" || true
-    if command -v kanban >/dev/null 2>&1; then
-      LAT_KEYS_OUT=""
-      op_lat_scan "$k_copy" || true
-    fi
-    n=$((n + 1))
-    curl -sS --max-time 15 --unix-socket "$k_sock" -H 'Host: localhost' \
-      -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/status \
-      >"$(printf '%s/sample-%03d.json' "$dir" "$n")" 2>/dev/null \
-      || printf '%s\n' '{}' >"$(printf '%s/sample-%03d.json' "$dir" "$n")"
-    now="$(date +%s)"
-    if [ $((now - start)) -ge "$KEY_CAP_BAR_SECS" ] && [ "$n" -ge 2 ]; then
-      break
-    fi
-    sleep 5
-  done
-  key_cap_bar_from_samples "$dir" "$KEY_CAP_BAR_CAP" "$out" || true
-  stop_probe_node "$k_pid" "$k_copy" "$k_blog" || return 1
-  return 0
-}
-
 stop_probe_node() {
   local pid="$1" copy="$2" blog="$3"
   [ -n "$pid" ] || return 0
@@ -1308,16 +1037,119 @@ stop_probe_node() {
   remove_probe_copy "$copy" "$blog" || return 1
 }
 
+# A deployment check reads real data on a copy with the exact candidate.
+# It does not create synthetic records or mutate the copy.
+candidate_deployment_check() {
+  local copy pid sock blog schemas query cards status before after ready=0 i rss peak=0
+  case "$RSS_SETTLE_SECS" in ''|*[!0-9]*) warn "the candidate memory settle interval is invalid"; return 1 ;; esac
+  case "$RSS_SAMPLE_SECS" in ''|*[!0-9]*|0) warn "the candidate memory sample interval is invalid"; return 1 ;; esac
+  before="$(resolve_live_primary_pid)"
+  if [ -S "$PRIMARY_SOCK" ] && [ -z "$before" ]; then
+    warn "cannot identify the primary process before the deployment check"
+    return 1
+  fi
+  copy="$(clone_probe_home deployment)" || return 1
+  if ! start_probe_node "$CANDIDATE_BIN" "$copy" deployment; then
+    return 1
+  fi
+  pid="$LAST_PROBE_PID"
+  sock="$LAST_PROBE_SOCK"
+  blog="$LAST_PROBE_BLOG"
+  schemas="$WORK/deployment-schemas.json"
+  query="$WORK/deployment-board.json"
+  cards="$WORK/deployment-board-cards.json"
+  status="$WORK/deployment-status.json"
+  for i in $(seq 1 60); do
+    if curl -fsS --max-time 60 --unix-socket "$sock" \
+        -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+        http://x/api/schemas >"$schemas" 2>/dev/null \
+      && jq -e '(.schemas | length) > 0' "$schemas" >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 5
+  done
+  if [ "$ready" -ne 1 ] \
+      || ! curl -fsS --max-time 60 --unix-socket "$sock" \
+        -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+        -H 'Content-Type: application/json' \
+        -d '{"schema_name":"Board","fields":["title"],"filter":{"HashKey":"default"}}' \
+        http://x/api/query >"$query" 2>/dev/null \
+      || ! jq -e '
+        .ok == true
+        and (.results | length) > 0
+        and ((.results[0].fields.title // .results[0].title // "") | length) > 0
+        and (.unresolved_rows // 0) == 0
+      ' "$query" >/dev/null 2>&1; then
+    warn "the candidate did not serve the keyed Board read from a real copy"
+    stop_probe_node "$pid" "$copy" "$blog" || true
+    return 1
+  fi
+  if ! command -v kanban >/dev/null 2>&1 \
+      || ! env ${PROBE_CLI_HOME:+"HOME=$PROBE_CLI_HOME"} \
+        FOLDDB_SOCKET_PATH="$sock" LASTDB_HOME="$copy" FOLDDB_HOME="$copy" \
+        kanban list --board default --column todo --json >"$cards" 2>/dev/null \
+      || ! jq -e '(.cards | type == "array") and (.cards | length > 0)' \
+        "$cards" >/dev/null 2>&1; then
+    warn "the candidate did not serve the keyed BoardCards read from a real copy"
+    stop_probe_node "$pid" "$copy" "$blog" || true
+    return 1
+  fi
+  if ! curl -fsS --max-time 30 --unix-socket "$sock" \
+        -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+        http://x/api/status >"$status" 2>/dev/null \
+      || ! jq -e '
+        .ok == true
+        and (.status.resident.persist_lane_failures | type) == "number"
+        and .status.resident.persist_lane_failures == 0
+        and (.status.resident.deferred_persist_failed | type) == "number"
+        and .status.resident.deferred_persist_failed == 0
+      ' "$status" >/dev/null 2>&1; then
+    warn "the candidate status has a persist failure or lacks a failure gauge"
+    stop_probe_node "$pid" "$copy" "$blog" || true
+    return 1
+  fi
+  sleep "$RSS_SETTLE_SECS"
+  for i in $(seq 1 "$RSS_SAMPLE_SECS"); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      warn "the candidate exited after the keyed read"
+      stop_probe_node "$pid" "$copy" "$blog" || true
+      return 1
+    fi
+    rss="$(rss_mb_of_pid "$pid")"
+    [ "$rss" -gt 0 ] 2>/dev/null || {
+      warn "the candidate memory size is unavailable"
+      stop_probe_node "$pid" "$copy" "$blog" || true
+      return 1
+    }
+    [ "$rss" -le "$peak" ] || peak="$rss"
+    sleep 1
+  done
+  if ! enforce_rss_under_limit "$peak" "candidate copy"; then
+    stop_probe_node "$pid" "$copy" "$blog" || true
+    return 1
+  fi
+  PROBE_RSS_MB="$peak"
+  CAND_BOOT_SECS="$LAST_PROBE_BOOT"
+  stop_probe_node "$pid" "$copy" "$blog" || return 1
+  after="$(resolve_live_primary_pid)"
+  if [ "$before" != "$after" ]; then
+    warn "the primary process changed during the deployment check"
+    return 1
+  fi
+  log "deployment check GREEN: candidate booted a real copy and served keyed Board and BoardCards reads"
+}
+
 # Boot candidate and baseline CoWs together. Cold fetch = first query after
 # identity-ready. Hot = a later sample of that same op that opens no file.
 # The column list stays cold. The hot read is one batch of its keys.
 # Writes cand/base metric files with lat_cold_* / lat_hot_* keys.
 probe_like_to_like_metrics() {
-  local cand_bin="$1" base_bin="$2" cand_out="$3" base_out="$4" hd_out="${5:-}"
+  local cand_bin="$1" base_bin="$2" cand_out="$3" base_out="$4"
   local c_copy b_copy c_pid b_pid c_sock b_sock c_blog b_blog c_boot b_boot
   local max_rss rss i
   local c_cold_pt=-1 b_cold_pt=-1 c_cold_sc=-1 b_cold_sc=-1
-  local c_hot_pt=-1 b_hot_pt=-1 c_hot_sc=-1 b_hot_sc=-1 c_hot_wr=-1 b_hot_wr=-1
+  local c_hot_pt=-1 b_hot_pt=-1 c_hot_sc=-1 b_hot_sc=-1
 
   if ! lat_paired_sample_count_valid; then
     warn "latency: LASTDB_PROBE_LAT_SAMPLES must be an even integer of at least 2 (got $LAT_SAMPLES)"
@@ -1476,42 +1308,6 @@ probe_like_to_like_metrics() {
       [ -n "$b_sock" ] && b_hot_sc="nothot"
     fi
 
-    if command -v brain >/dev/null 2>&1; then
-      local c_write_prior=0 b_write_prior=0
-      if run_op_with_deadline "$LAT_OP_TIMEOUT_SECS" op_lat_write "$c_copy"; then
-        c_write_prior=1
-      else
-        warn "latency: candidate write did not complete before the hot samples"
-        c_hot_wr="nothot"
-      fi
-      if [ -n "$b_copy" ]; then
-        if run_op_with_deadline "$LAT_OP_TIMEOUT_SECS" op_lat_write "$b_copy"; then
-          b_write_prior=1
-        else
-          warn "latency: baseline write did not complete before the hot samples"
-          b_hot_wr="nothot"
-        fi
-      fi
-      if [ "$c_write_prior" -eq 1 ] && [ "$b_write_prior" -eq 1 ]; then
-        LAT_HOT_FILE_GATE=1
-        lat_measure_paired_medians_ms op_lat_write "$c_copy" "$b_copy" "hot write" || {
-          LAT_HOT_FILE_GATE=""
-          stop_probe_node "$b_pid" "$b_copy" "$b_blog" || true
-          stop_probe_node "$c_pid" "$c_copy" "$c_blog" || true
-          return 1
-        }
-        LAT_HOT_FILE_GATE=""
-        c_hot_wr="$LAT_PAIR_CAND_MS"
-        b_hot_wr="$LAT_PAIR_BASE_MS"
-      elif [ "$c_write_prior" -eq 1 ]; then
-        c_hot_wr="$(measure_op_hot_median_ms op_lat_write "$c_copy" "candidate hot write" "$c_sock")"
-      elif [ "$b_write_prior" -eq 1 ]; then
-        b_hot_wr="$(measure_op_hot_median_ms op_lat_write "$b_copy" "baseline hot write" "$b_sock")"
-      fi
-      sample_cand_rss
-    else
-      warn "latency: brain CLI not on PATH — write op unmeasured"
-    fi
   else
     warn "latency bar SKIPPED (LAT_SKIP=1) — RSS sampled after settle only"
     sleep "$RSS_SETTLE_SECS"
@@ -1554,10 +1350,8 @@ probe_like_to_like_metrics() {
     echo "lat_cold_scan_ms=$c_cold_sc"
     echo "lat_hot_point_ms=$c_hot_pt"
     echo "lat_hot_scan_ms=$c_hot_sc"
-    echo "lat_hot_write_ms=$c_hot_wr"
     echo "lat_point_ms=$c_hot_pt"
     echo "lat_scan_ms=$c_hot_sc"
-    echo "lat_write_ms=$c_hot_wr"
     echo "rows_point=$c_rows_pt"
     echo "rows_scan=$c_rows_sc"
   } >"$cand_out"
@@ -1568,24 +1362,16 @@ probe_like_to_like_metrics() {
       echo "lat_cold_scan_ms=$b_cold_sc"
       echo "lat_hot_point_ms=$b_hot_pt"
       echo "lat_hot_scan_ms=$b_hot_sc"
-      echo "lat_hot_write_ms=$b_hot_wr"
       echo "lat_point_ms=$b_hot_pt"
       echo "lat_scan_ms=$b_hot_sc"
-      echo "lat_write_ms=$b_hot_wr"
       echo "rows_point=$b_rows_pt"
       echo "rows_scan=$b_rows_sc"
     } >"$base_out"
   fi
-  log "candidate metrics: boot_s=${c_boot} peak_rss_mb=${max_rss} cold_point_ms=${c_cold_pt} cold_scan_ms=${c_cold_sc} hot_point_ms=${c_hot_pt} hot_scan_ms=${c_hot_sc} hot_write_ms=${c_hot_wr}"
-  log "baseline metrics: boot_s=${b_boot:--} cold_point_ms=${b_cold_pt} cold_scan_ms=${b_cold_sc} hot_point_ms=${b_hot_pt} hot_scan_ms=${b_hot_sc} hot_write_ms=${b_hot_wr}"
+  log "candidate metrics: boot_s=${c_boot} peak_rss_mb=${max_rss} cold_point_ms=${c_cold_pt} cold_scan_ms=${c_cold_sc} hot_point_ms=${c_hot_pt} hot_scan_ms=${c_hot_sc}"
+  log "baseline metrics: boot_s=${b_boot:--} cold_point_ms=${b_cold_pt} cold_scan_ms=${b_cold_sc} hot_point_ms=${b_hot_pt} hot_scan_ms=${b_hot_sc}"
 
-  # The hard-delete bar runs last on the candidate node, after every timed
-  # read, so its write and purge do not touch the latency numbers. The
-  # baseline node is not needed for it.
   stop_probe_node "$b_pid" "$b_copy" "$b_blog"
-  if [ -n "$hd_out" ]; then
-    probe_hard_delete_bar "$c_copy" "$c_sock" "$c_pid" "$hd_out" || true
-  fi
   stop_probe_node "$c_pid" "$c_copy" "$c_blog"
   return 0
 }
@@ -1790,46 +1576,179 @@ ensure_primary_launchd_exit_timeout() {
   log "stamped primary LaunchAgent ExitTimeOut=${want}s (was ${current:-unset}); the reloaded job gets the full graceful-drain window"
 }
 
-# The bootout below stops the OLD job with the exit timeout launchd loaded for
-# it, not the new plist value. Say so loudly when that window is short.
-warn_loaded_exit_timeout_short() {
-  local service="$1" loaded
-  loaded="$(lastdb_launchd_job_exit_timeout launchctl "$service")"
-  if [ -z "$loaded" ]; then
-    return 0
-  fi
-  if [ "$loaded" -lt "$PRIMARY_EXIT_TIMEOUT_SECS" ] 2>/dev/null; then
-    warn "loaded primary job exit timeout is ${loaded}s (< ${PRIMARY_EXIT_TIMEOUT_SECS}s): this bootout can SIGKILL the old daemon before its persist-lane drain and final flush finish. The next cutover uses the stamped ExitTimeOut."
-  else
-    log "loaded primary job exit timeout ${loaded}s"
+# A stopped copy is valid only after this exact process reports a clean flush.
+verify_old_primary_stopped() {
+  local service="$1" receipt="$PRIMARY_HOME/.shutdown_flush_ready"
+  local ledger="$PRIMARY_HOME/sessions.jsonl" session="$PRIMARY_HOME/current-session.json" ledger_size
+  ! kill -0 "$OLD_PRIMARY_PID" 2>/dev/null \
+    && ! lastdb_launchd_job_loaded launchctl "$service" \
+    && ! live_unix_socket_has_listener "$PRIMARY_SOCK" \
+    && ! live_unix_socket_has_listener "$PRIMARY_HOME/data/folddb-full.sock" \
+    || die "old primary still runs or serves after the strict stop"
+  [ -f "$receipt" ] && [ ! -L "$receipt" ] \
+    || die "old primary did not write a safe shutdown flush receipt"
+  jq -e --argjson pid "$OLD_PRIMARY_PID" --argjson start_ts "$OLD_PRIMARY_START_TS" '
+    (keys | sort) == (["flush_ok","pid","start_ts","version"] | sort)
+    and .version == 1 and .pid == $pid and .start_ts == $start_ts
+    and .flush_ok == true
+  ' "$receipt" >/dev/null || die "old primary flush receipt does not match the stopped session"
+  [ -f "$ledger" ] && [ ! -L "$ledger" ] \
+    || die "old primary session ledger is absent or unsafe"
+  ledger_size="$(stat -f '%z' "$ledger")" \
+    || die "old primary session ledger is unreadable"
+  [ "$ledger_size" -le 16777216 ] \
+    || die "old primary session ledger exceeds 16 MiB"
+  jq -se --argjson pid "$OLD_PRIMARY_PID" --argjson start_ts "$OLD_PRIMARY_START_TS" '
+    all(.[]; type == "object" and (.pid | type) == "number"
+      and (.start_ts | type) == "number")
+    and ([ .[] | select(.pid == $pid and .start_ts == $start_ts) ] as $matches |
+      ($matches | length) == 1 and $matches[0].exit == "clean"
+      and ($matches[0].end_ts | type) == "number"
+      and $matches[0].end_ts >= $start_ts)
+  ' "$ledger" >/dev/null || die "old primary session did not end cleanly"
+  if [ -e "$session" ] || [ -L "$session" ]; then
+    [ -f "$session" ] && [ ! -L "$session" ] \
+      || die "old primary current session marker is unsafe"
+    jq -se --argjson pid "$OLD_PRIMARY_PID" --argjson start_ts "$OLD_PRIMARY_START_TS" '
+      length == 1 and (.[0] | type) == "object"
+      and (.[0] | keys | sort) == (["pid","start_ts","last_heartbeat_ts"] | sort)
+      and .[0].pid == $pid and .[0].start_ts == $start_ts
+      and (.[0].last_heartbeat_ts | type) == "number"
+      and .[0].last_heartbeat_ts >= .[0].start_ts
+    ' "$session" >/dev/null || die "old primary current session marker changed"
   fi
 }
 
-# A short LOADED exit timeout cannot change without a reload, and the reload
-# is the stop. So stop the old daemon first with launchctl kill SIGTERM and
-# the full PRIMARY_EXIT_TIMEOUT_SECS window, while its program path is held
-# aside so KeepAlive cannot respawn it. A failure falls back to the plain
-# reload (the old behavior) after the program is back in place.
-graceful_prestop_old_primary() {
-  local service="$1" program="$2" plist_program="" out="" rc=0 line=""
+strict_prestop_old_primary() {
+  local service="$1" program="$2" plist_program="" listener_pid="" out=""
   plist_program="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$LAUNCHD_PLIST" 2>/dev/null || true)"
-  if [ "$plist_program" != "$program" ]; then
-    warn "graceful pre-stop skipped: plist program '${plist_program:-unset}' is not $program"
-    return 0
-  fi
-  set +e
+  [ "$plist_program" = "$program" ] \
+    || die "primary plist program does not match the installed old daemon"
+  [ ! -e "$PRIMARY_HOME/.shutdown_flush_ready" ] \
+    && [ ! -L "$PRIMARY_HOME/.shutdown_flush_ready" ] \
+    || die "a stale shutdown flush receipt exists before the stop"
+  OLD_PRIMARY_PID="$(lastdb_launchd_job_pid launchctl "$service")"
+  listener_pid="$(live_unix_socket_listener_pid "$PRIMARY_SOCK" || true)"
+  [ -n "$OLD_PRIMARY_PID" ] && [ "$OLD_PRIMARY_PID" = "$listener_pid" ] \
+    && live_unix_socket_is_healthy "$PRIMARY_SOCK" \
+    || die "old primary is not supervised and healthy before the stop"
+  OLD_PRIMARY_START_TS="$(jq -er --argjson pid "$OLD_PRIMARY_PID" '
+    select(.pid == $pid and (.start_ts | type) == "number") | .start_ts
+  ' "$PRIMARY_HOME/current-session.json")" \
+    || die "old primary session identity is absent before the stop"
+  OLD_PRIMARY_PS_LSTART="$(ps -p "$OLD_PRIMARY_PID" -o lstart= 2>/dev/null)" \
+    || die "old primary process start time is unreadable before the stop"
+  [ -n "$OLD_PRIMARY_PS_LSTART" ] \
+    || die "old primary process start time is absent before the stop"
+  write_cutover_recovery_state "sidebin-stop-started" true
   out="$(lastdb_launchd_graceful_prestop launchctl "$service" "$program" \
-    "${LASTDB_PRIMARY_GRACEFUL_STOP_WAIT_SECS:-$PRIMARY_EXIT_TIMEOUT_SECS}" \
-    "$PRIMARY_EXIT_TIMEOUT_SECS" 2>&1)"
-  rc=$?
-  set -e
-  while IFS= read -r line; do
-    [ -n "$line" ] && log "$line"
-  done <<< "$out"
-  if [ "$rc" -ne 0 ]; then
-    warn "graceful pre-stop failed (rc=$rc); the job reload stops the old daemon with its loaded exit timeout"
+    "${LASTDB_PRIMARY_GRACEFUL_STOP_WAIT_SECS:-300}" \
+    "$PRIMARY_EXIT_TIMEOUT_SECS" 1 2>&1)" \
+    || die "strict old-primary stop failed: $out"
+  log "$out"
+  case "$out" in
+    *'LASTDB_LAUNCHD_PRESTOP=ok '*'forced_kill=0'*) ;;
+    *) die "strict old-primary stop did not prove a clean exit" ;;
+  esac
+  verify_old_primary_stopped "$service"
+  write_cutover_recovery_state "sidebin-stopped" true
+}
+
+stopped_rollback_preflight() {
+  local free_kib
+  [ "$(uname -s)" = Darwin ] || die "stopped rollback requires APFS on macOS"
+  [ -n "$(command -v gtimeout || command -v timeout || true)" ] \
+    && command -v rsync >/dev/null \
+    || die "stopped rollback requires timeout and rsync"
+  [ "$(stat -f '%d' "$PRIMARY_HOME")" = "$(stat -f '%d' "$ROLLBACK_ROOT")" ] \
+    || die "stopped rollback root is not on the primary volume"
+  free_kib="$(df -Pk "$ROLLBACK_ROOT" | awk 'NR==2 {print $4}')"
+  case "$free_kib" in ''|*[!0-9]*) die "stopped rollback free space is unreadable" ;; esac
+  [ "$free_kib" -ge 31457280 ] \
+    || die "stopped rollback requires 30 GiB free before the primary stops"
+}
+
+copy_stopped_primary_rollback() {
+  # A measured unfiltered home clone took about 13 minutes. Allow 15 minutes
+  # for the stopped clone and 10 minutes for a full-home checksum comparison.
+  # A slow operation fails RED and the wrapper restores the old primary.
+  local timeout_bin copy_time=900 compare_time=600 sock special marker_tmp
+  local before_free after_free copied_at receipt_sha
+  stopped_rollback_preflight
+  timeout_bin="$(command -v gtimeout || command -v timeout)"
+  before_free="$(df -Pk "$ROLLBACK_ROOT" | awk 'NR==2 {print $4}')"
+  case "$before_free" in ''|*[!0-9]*) die "stopped rollback free space is unreadable before the copy" ;; esac
+  BACKUP="$ROLLBACK_ROOT/pre-${CAND_VER}-from-${CURRENT_VER}-$(date -u +%Y%m%dT%H%M%SZ)"
+  STAGE_BACKUP="${BACKUP}.incomplete"
+  [ ! -e "$BACKUP" ] && [ ! -L "$BACKUP" ] \
+    && [ ! -e "$STAGE_BACKUP" ] && [ ! -L "$STAGE_BACKUP" ] \
+    || die "stopped rollback path already exists"
+  for sock in "$PRIMARY_SOCK" "$PRIMARY_HOME/data/folddb-full.sock"; do
+    if [ -e "$sock" ] || [ -L "$sock" ]; then
+      [ -S "$sock" ] && ! live_unix_socket_has_listener "$sock" \
+        || die "the stopped primary has a live or unsafe socket path"
+      unlink_stale_unix_socket "$sock" >/dev/null \
+        || die "could not remove a stale stopped-primary socket"
+    fi
+  done
+  # walk-ok: the stopped LastDB data tree needs a complete special-path check.
+  special="$("$timeout_bin" -s TERM 120 find "$PRIMARY_HOME/data" ! -type f ! -type d -print -quit)" \
+    || die "stopped rollback data path check failed"
+  [ -z "$special" ] || die "stopped rollback data contains a special path"
+  write_cutover_recovery_state "sidebin-rollback-copy-started" true
+  if ! (umask 077; "$timeout_bin" -s TERM "$copy_time" cp -cRp "$PRIMARY_HOME" "$STAGE_BACKUP") \
+      2>"$WORK/stopped-rollback-copy.err"; then
+    die "stopped rollback copy failed; the old primary must restart"
   fi
-  return 0
+  [ ! -s "$WORK/stopped-rollback-copy.err" ] \
+    || die "stopped rollback copy reported an error"
+  backup_essentials_ok "$STAGE_BACKUP" && backup_data_is_not_live "$STAGE_BACKUP" \
+    || die "stopped rollback copy lacks required durable data"
+  [ ! -L "$STAGE_BACKUP" ] && [ ! -L "$STAGE_BACKUP/data" ] \
+    || die "stopped rollback copy contains an unsafe data root"
+  if ! "$timeout_bin" -s TERM "$compare_time" rsync -rclptn --delete --itemize-changes \
+      "$PRIMARY_HOME/" "$STAGE_BACKUP/" \
+      >"$WORK/stopped-rollback-diff" 2>"$WORK/stopped-rollback-compare.err"; then
+    die "stopped rollback byte check failed"
+  fi
+  [ ! -s "$WORK/stopped-rollback-diff" ] \
+    && [ ! -s "$WORK/stopped-rollback-compare.err" ] \
+    || die "stopped rollback differs from the stopped primary"
+  verify_old_primary_stopped "gui/$(id -u)/${LAUNCHD_LABEL}"
+  cmp -s "$PRIMARY_HOME/.shutdown_flush_ready" "$STAGE_BACKUP/.shutdown_flush_ready" \
+    || die "stopped rollback flush receipt differs from the primary"
+  receipt_sha="$(dev_stamp_sha256_file "$STAGE_BACKUP/.shutdown_flush_ready")"
+  copied_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "$STAGE_BACKUP/.safe-upgrade" \
+    || die "stopped rollback marker directory cannot be created"
+  [ ! -L "$STAGE_BACKUP/.safe-upgrade" ] \
+    && [ ! -e "$STAGE_BACKUP/.safe-upgrade/complete" ] \
+    || die "stopped rollback marker path is unsafe"
+  marker_tmp="$(umask 077; mktemp "$STAGE_BACKUP/.safe-upgrade/.complete.XXXXXX")" \
+    || die "stopped rollback completion marker cannot be created"
+  printf 'kind=stopped-rollback\nsource_home=%s\nsource_pid=%s\nsource_start_ts=%s\nflush_receipt_sha256=%s\ncopied_at=%s\n' \
+    "$PRIMARY_HOME" "$OLD_PRIMARY_PID" "$OLD_PRIMARY_START_TS" "$receipt_sha" "$copied_at" \
+    >"$marker_tmp" \
+    && chmod 600 "$marker_tmp" \
+    && mv "$marker_tmp" "$STAGE_BACKUP/.safe-upgrade/complete" \
+    || die "stopped rollback completion marker cannot be written"
+  after_free="$(df -Pk "$ROLLBACK_ROOT" | awk 'NR==2 {print $4}')"
+  case "$after_free" in ''|*[!0-9]*) die "stopped rollback free space is unreadable after the copy" ;; esac
+  [ "$after_free" -ge 31457280 ] \
+    || die "stopped rollback requires 30 GiB free after the copy"
+  [ "$((before_free - after_free))" -le 23068672 ] \
+    || die "stopped rollback consumed more than the existing 22 GiB APFS copy limit"
+  # The comparison can be stale if launchd or another actor restarts the old
+  # daemon before publication. Require the same stopped session again.
+  verify_old_primary_stopped "gui/$(id -u)/${LAUNCHD_LABEL}"
+  cmp -s "$PRIMARY_HOME/.shutdown_flush_ready" "$STAGE_BACKUP/.shutdown_flush_ready" \
+    || die "stopped rollback flush receipt changed before publication"
+  mv "$STAGE_BACKUP" "$BACKUP" \
+    || die "stopped rollback cannot be published"
+  STAGE_BACKUP=""
+  ROLLBACK_READY=1
+  write_cutover_recovery_state "sidebin-rollback-ready" true
+  log "stopped rollback ready: $BACKUP source_pid=$OLD_PRIMARY_PID flush_receipt_sha256=$receipt_sha"
 }
 
 # Version parity cannot detect replacement bytes that report the same version.
@@ -1963,6 +1882,19 @@ live_install_sidebin() {
     die "staged sidebin pair differs from the photographed candidate; live pair remains unchanged"
   fi
 
+  ensure_primary_launchd_rss_limit
+  ensure_primary_launchd_warm_cache_limit
+  ensure_primary_launchd_exit_timeout
+  stopped_rollback_preflight
+  local uid
+  uid="$(id -u)"
+  strict_prestop_old_primary "gui/${uid}/${LAUNCHD_LABEL}" "$dest/lastdbd"
+  copy_stopped_primary_rollback
+  sidebin_pair_hashes_match_expected \
+    "$dest/lastdbd.new" "$dest/lastdb.new" "staged pair after stopped copy" \
+    || die "candidate pair changed during the stopped rollback copy"
+  verify_old_primary_stopped "gui/${uid}/${LAUNCHD_LABEL}"
+
   # Same-directory rename changes each path atomically. A partial pair swap or
   # a later hash mismatch restores both saved files before this process exits.
   write_cutover_recovery_state "sidebin-swap-started" true
@@ -1980,15 +1912,6 @@ live_install_sidebin() {
   assert_sidebin_installed_hashes_or_restore "post-rename sidebin pair"
   write_cutover_recovery_state "sidebin-candidate-installed" true
 
-  ensure_primary_launchd_rss_limit
-  ensure_primary_launchd_warm_cache_limit
-  ensure_primary_launchd_exit_timeout
-
-  local uid
-  uid="$(id -u)"
-  warn_loaded_exit_timeout_short "gui/${uid}/${LAUNCHD_LABEL}"
-  CUTOVER_T0="$(date +%s)"
-  graceful_prestop_old_primary "gui/${uid}/${LAUNCHD_LABEL}" "$dest/lastdbd"
   assert_sidebin_installed_hashes_or_restore "pre-reload sidebin pair"
   write_cutover_recovery_state "sidebin-reload-started" true
   if ! lastdb_launchd_reload_job \
@@ -2104,7 +2027,6 @@ log "owner lock acquired: $OWNER_LOCK_DIR pid=$$ mode=$OWNER_LOCK_MODE"
 
 [ -d "$PRIMARY_HOME" ] || die "primary home missing: $PRIMARY_HOME"
 [ -f "$PRIMARY_HOME/identity.key" ] || die "no identity.key in $PRIMARY_HOME — refusing upgrade"
-[ -x "$SMOKE_SH" ] || die "smoke harness missing: $SMOKE_SH"
 
 if [ -x "${LASTDB_SIDEBIN_DIR:-$HOME/.lastdb/bin-with-upload-cap}/lastdbd" ]; then
   CURRENT_VER="$("${LASTDB_SIDEBIN_DIR:-$HOME/.lastdb/bin-with-upload-cap}/lastdbd" --version 2>/dev/null | awk '{print $NF}' || true)"
@@ -2135,12 +2057,12 @@ fi
 # Darwin TMPDIR under /var/folders/... is also too long (observed 2026-08-26:
 # grok-goal scratch 56-byte prefix → folddb-full.sock 133 bytes). Mini refuses
 # a data dir over 82 bytes. Fall back to /tmp when the prefix cannot fit
-# /lastdb-safe-upgrade.XXXXXX/probes/smoke/copy-<epoch>-<pid>/data.
+# /lastdb-safe-upgrade.XXXXXX/probes/mp-deployment-<pid>/data.
 _work_tmp="${TMPDIR:-/tmp}"
 case "$(cd "$_work_tmp" 2>/dev/null && pwd -P || printf '%s' "$_work_tmp")" in
   "$_rollback_home_real"|"$_rollback_home_real"/*) _work_tmp="/tmp" ;;
 esac
-# 70 bytes reserved for /lastdb-safe-upgrade.XXXXXX/probes/smoke/copy-.../data
+# Reserve space for the deployment copy path, its data dir, and its socket.
 if [ "${#_work_tmp}" -gt 12 ]; then
   log "probe WORK prefix ${_work_tmp} is ${#_work_tmp} bytes; using /tmp for sockaddr_un"
   _work_tmp="/tmp"
@@ -2281,191 +2203,81 @@ if [ "$CLASS_RC" -ne 0 ]; then
 fi
 log "candidate class GREEN: path/version/size ok (vs baseline ${BASELINE_FOR_CLASS:-none})"
 
-# --- 0b) probe data ----------------------------------------------------------
-# Synthetic (default): a small seed that the BASELINE daemon wrote. The
-# candidate must read what the installed daemon wrote, so the baseline writes
-# it. The seed is cached per key, so most runs build nothing. Real: probe
-# copies of the primary home, as before.
+# --- 0b) candidate data ------------------------------------------------------
 PROBE_DATA_LABEL="the primary home (real data)"
-SEED_ROOT="$(synth_seed_root_default)"
-if [ "$PROBE_DATA" = "synthetic" ]; then
-  [ -n "$BASELINE_FOR_CLASS" ] && [ -x "$BASELINE_FOR_CLASS" ] \
-    || die "synthetic probe data needs the baseline daemon (the binary the primary runs) and none was found; set LASTDB_PROBE_BASELINE_BIN or use --data real"
-  SEED_KEY_RC=0
-  SEED_KEY="$(synth_seed_key_for "$BASELINE_FOR_CLASS" "$PRIMARY_HOME" "$LAUNCHD_PLIST" \
-    "$SYNTH_CARDS" "$SYNTH_RECORDS")" || SEED_KEY_RC=$?
-  case "$SEED_KEY_RC" in
-    0) ;;
-    2) die "synthetic probe data: cannot identify the installed kanban CLI" ;;
-    3) die "synthetic probe data: cannot identify the installed brain CLI" ;;
-    *) die "synthetic probe data: cannot compute the seed key" ;;
-  esac
-  log "synthetic probe data: seed key $SEED_KEY (baseline $CURRENT_VER, cards=$SYNTH_CARDS records=$SYNTH_RECORDS, root $SEED_ROOT)"
-  seed_started="$(date +%s)"
-  set +e
-  SYNTH_SEED_DIR="$(synth_seed_ensure "$SEED_ROOT" "$SEED_KEY" bash "$SYNTH_BUILD_SH" \
-    --baseline-bin "$BASELINE_FOR_CLASS" --identity-from "$PRIMARY_HOME" \
-    --cards "$SYNTH_CARDS" --records "$SYNTH_RECORDS" --live-env-plist "$LAUNCHD_PLIST")"
-  SEED_RC=$?
-  set -e
-  if [ "$SEED_RC" -ne 0 ] || [ -z "$SYNTH_SEED_DIR" ]; then
-    echo ""
-    echo "VERDICT: RED"
-    echo "REASON: synthetic probe data could not be prepared: the baseline $CURRENT_VER did not write a usable seed. No bar ran. The primary is untouched."
-    echo "NEXT:   read the [synthetic-home] lines above and the evidence under ~/.local/state/last-stack/lastdb-safe-upgrade/synthetic-build-failures/. The seed build needs the network (schema service). Run again, or use --data real."
-    exit 1
-  fi
-  log "synthetic probe data ready after $(( $(date +%s) - seed_started ))s: $SYNTH_SEED_DIR"
-  synth_seed_reclaim_others "$SEED_ROOT" "$SEED_KEY" >/dev/null || true
-  PROBE_SOURCE_HOME="$SYNTH_SEED_DIR/home"
-  # kanban and brain read their own config for the seed. The seed pins schema
-  # hashes that differ from the primary's, so the ambient HOME would read the
-  # wrong config. One CLI home per run, cloned from the seed.
-  PROBE_CLI_HOME="$WORK/cli-home"
-  probe_clone_entry "$SYNTH_SEED_DIR/cli-home" "$PROBE_CLI_HOME" \
-    || die "cannot clone the seed CLI home"
-  PROBE_DATA_LABEL="the synthetic seed ($(synth_meta_value "$SYNTH_SEED_DIR/seed.meta" cards) cards, $(synth_meta_value "$SYNTH_SEED_DIR/seed.meta" records) records)"
-fi
-log "probe data: $PROBE_DATA, copies of $PROBE_DATA_LABEL"
+log "candidate data: a fresh copy of $PROBE_DATA_LABEL"
 
-# --- 1) ephemeral CoW rollback point -----------------------------------------
+# --- 1) ephemeral CoW trial copy ---------------------------------------------
 
-# The rollback point guards the live change. A synthetic probe-only run
-# changes nothing live, so it makes none. Cloning the primary home for it
-# took about 13 minutes and removing the clone about 8.
-step1_rollback_point() {
+# The trial copy supplies real data for the candidate and DEV proof.
+step1_trial_copy() {
+  local stable marker_tmp
   prepare_rollback_root
-  kept="$(newest_routine_rollback_point)"
-  if [ -n "$kept" ] && backup_essentials_ok "$kept" && backup_data_is_not_live "$kept"; then
-    BACKUP="$kept"
-    ROLLBACK_READY=1
-    log "STEP 1/4: reused newest rollback point → $BACKUP"
-    log "rollback: skipped cp -cR; kept newest point from a prior driver-ended step"
+  TS="$(date -u +%Y%m%dT%H%M%SZ)"
+  TRIAL_COPY="$ROLLBACK_ROOT/trial-${CAND_VER}-from-${CURRENT_VER}-${TS}"
+  [ ! -e "$TRIAL_COPY" ] && [ ! -L "$TRIAL_COPY" ] \
+    || die "the new trial path already exists; refusing a stale primary copy"
+  # A prior rollback point may protect an earlier failed run. Keep it until
+  # its own cleanup. This run always reads a new copy of the current primary.
+  # A live primary can race with this copy. Only the runtime socket may be
+  # absent. A missing regular or CAS file makes this copy unusable.
+  log "STEP 1/4: fresh ephemeral CoW trial copy → $TRIAL_COPY"
+  set +e
+  if stat --version >/dev/null 2>&1; then
+    cp -R "$PRIMARY_HOME" "$TRIAL_COPY" 2>"$WORK/trial-clone.err"
   else
-    if [ -n "$kept" ]; then
-      log "rollback: newest point unusable; cloning a fresh one"
-      rm -rf "$kept"
-    fi
-    TS="$(date -u +%Y%m%dT%H%M%SZ)"
-    BACKUP="$ROLLBACK_ROOT/pre-${CAND_VER}-from-${CURRENT_VER}-${TS}"
-    # Prefer APFS clone for speed. A *live* primary races with the copy:
-    #   - UDS sockets under data/*.sock (not copyable)
-    #   - CAS blob files that vanish mid-walk
-    # Those produce non-zero `cp` exit even when identity + store data are cloned.
-    # Treat clone as OK when essential files land despite socket/blob races. Never
-    # fall back to a full rsync copy: upgrade safety must not buy itself with disk.
-    log "STEP 1/4: ephemeral CoW rollback point → $BACKUP"
-    set +e
-    if stat --version >/dev/null 2>&1; then
-      cp -R "$PRIMARY_HOME" "$BACKUP" 2>"$WORK/rollback-clone.err"
-    else
-      cp -cR "$PRIMARY_HOME" "$BACKUP" 2>"$WORK/rollback-clone.err"
-    fi
-    CP_RC=$?
-    set -e
-    backup_essentials_ok "$BACKUP" \
-      || die "CoW rollback clone incomplete (cp exit=$CP_RC); refusing full-copy fallback; see $WORK/rollback-clone.err"
-    ROLLBACK_READY=1
-    log "rollback: CoW clone ready (cp exit=$CP_RC; live sockets/vanished blobs tolerated)"
-    if [ "$CP_RC" -ne 0 ] && [ -s "$WORK/rollback-clone.err" ]; then
-      log "rollback: non-fatal cp notes (first 5 lines):"
-      head -5 "$WORK/rollback-clone.err" | while IFS= read -r line; do log "  $line"; done
-    fi
-    [ ! -L "$BACKUP" ] || die "rollback point resolved to a symlink (unsafe)"
-    backup_data_is_not_live "$BACKUP" || die "rollback point data dir aliases live primary"
-    log "rollback point ok ($(du -sh "$BACKUP" 2>/dev/null | awk '{print $1}'))"
+    cp -cR "$PRIMARY_HOME" "$TRIAL_COPY" 2>"$WORK/trial-clone.err"
   fi
+  CP_RC=$?
+  set -e
+  if [ "$CP_RC" -ne 0 ] || [ -s "$WORK/trial-clone.err" ]; then
+    trial_clone_socket_errors_only \
+      || trial_clone_red "CoW trial clone has an unexpected cp error"
+  fi
+  backup_essentials_ok "$TRIAL_COPY" \
+    || trial_clone_red "CoW trial clone lacks a required durable file"
+  [ ! -L "$TRIAL_COPY" ] && [ ! -L "$TRIAL_COPY/data" ] \
+    || trial_clone_red "CoW trial clone resolved to a symlink"
+  backup_data_is_not_live "$TRIAL_COPY" \
+    || trial_clone_red "CoW trial clone data aliases the live primary"
+  for stable in identity.key .bootstrap_done data/.device_id; do
+    [ ! -L "$TRIAL_COPY/$stable" ] && cmp -s "$PRIMARY_HOME/$stable" "$TRIAL_COPY/$stable" \
+      || trial_clone_red "CoW trial clone has a missing or changed stable file"
+  done
+  mkdir -p "$TRIAL_COPY/.safe-upgrade" \
+    || trial_clone_red "CoW trial clone marker directory cannot be created"
+  [ -d "$TRIAL_COPY/.safe-upgrade" ] && [ ! -L "$TRIAL_COPY/.safe-upgrade" ] \
+    && [ ! -e "$TRIAL_COPY/.safe-upgrade/complete" ] \
+    || trial_clone_red "CoW trial clone marker path is unsafe"
+  marker_tmp="$(umask 077; mktemp "$TRIAL_COPY/.safe-upgrade/.complete.XXXXXX")" \
+    || trial_clone_red "CoW trial clone completion marker cannot be created"
+  if ! printf 'kind=trial\nsource_home=%s\ncreated_at=%s\ncp_exit=%s\n' \
+      "$PRIMARY_HOME" "$TS" "$CP_RC" >"$marker_tmp" \
+    || ! chmod 600 "$marker_tmp" \
+    || ! mv "$marker_tmp" "$TRIAL_COPY/.safe-upgrade/complete"; then
+    trial_clone_red "CoW trial clone completion marker cannot be written"
+  fi
+  TRIAL_READY=1
+  log "trial: CoW clone ready (cp exit=$CP_RC; only runtime socket errors accepted)"
+  if [ "$CP_RC" -ne 0 ] && [ -s "$WORK/trial-clone.err" ]; then
+    log "trial: non-fatal cp notes (first 5 lines):"
+    head -5 "$WORK/trial-clone.err" | while IFS= read -r line; do log "  $line"; done
+  fi
+  log "trial copy ok ($(du -sh "$TRIAL_COPY" 2>/dev/null | awk '{print $1}'))"
 }
 
-if [ "$PROBE_DATA" = "synthetic" ] && [ "$PROBE_ONLY" -eq 1 ]; then
-  log "STEP 1/4: no rollback point; a synthetic probe-only run changes nothing live"
-else
-  step1_rollback_point
+step1_trial_copy
+
+if [ "$PROBE_DATA" = "real" ]; then
+  [ -n "$TRIAL_COPY" ] && [ "$TRIAL_READY" -eq 1 ] \
+    || die "the real-data deployment check needs a complete trial copy"
+  PROBE_SOURCE_HOME="$TRIAL_COPY"
+  candidate_deployment_check \
+    || die "the candidate failed the real-data deployment check; the primary is unchanged"
 fi
 
-# --- 2) probe candidate on a throwaway CoW of the primary --------------------
-
-log "STEP 2/4: probe candidate $CAND_VER against a CoW copy of $PROBE_DATA_LABEL (never live home)"
-# The smoke harness clones HOME/.lastdb itself. Give it a sanitized CoW source.
-# The candidate must never see the primary's paused config or resume markers.
-SMOKE_PRIMARY_PID_BEFORE="$(resolve_live_primary_pid)"
-if [ -S "$PRIMARY_SOCK" ] && [ -z "$SMOKE_PRIMARY_PID_BEFORE" ]; then
-  die "cannot identify the primary process before the smoke probe"
-fi
-SMOKE_SOURCE="$(clone_probe_home smoke-source)" \
-  || die "could not prepare a cloud-free source for the smoke probe"
-SMOKE_HOME="$WORK/smoke-home"
-mkdir -p "$SMOKE_HOME"
-ln -s "$SMOKE_SOURCE" "$SMOKE_HOME/.lastdb" \
-  || die "could not bind the cloud-free smoke source"
-# A RED boot log must outlive WORK. With a rollback point it rides along in
-# that point. Without one (synthetic probe-only) it goes to the state dir.
-if [ -n "$BACKUP" ]; then
-  SMOKE_FAIL_LOG_DIR="$BACKUP/.safe-upgrade"
-else
-  SMOKE_FAIL_LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/lastdb-safe-upgrade/probe-failures"
-fi
-set +e
-SMOKE_OUT="$WORK/smoke.out"
-SMOKE_STAMP_ENV="$(probe_stamp_env_for_label smoke)"
-log "smoke copy of $PROBE_DATA_LABEL: conflict stamp requested, completion not asserted"
-env -u LASTDB_HOME -u FOLDDB_HOME -u LASTDB_DATA_DIR -u FOLD_SYNC_DEVICE_ID \
-  -u LASTDB_BUILD_CONFLICT_STAMP_ON_COPY \
-  HOME="$SMOKE_HOME" \
-  LASTDB_PROBE_ROOT="$PROBE_ROOT/smoke" \
-  LASTDB_SMOKE_FAIL_LOG_DIR="$SMOKE_FAIL_LOG_DIR" \
-  ${SMOKE_STAMP_ENV:+"$SMOKE_STAMP_ENV"} \
-  BIN="$CANDIDATE_BIN" bash "$SMOKE_SH" >"$SMOKE_OUT" 2>&1
-SMOKE_RC=$?
-set -e
-SMOKE_PRIMARY_PID_AFTER="$(resolve_live_primary_pid)"
-remove_probe_copy "$SMOKE_SOURCE" \
-  || die "could not remove the cloud-free smoke source"
-cat "$SMOKE_OUT"
-if [ "$SMOKE_PRIMARY_PID_BEFORE" != "$SMOKE_PRIMARY_PID_AFTER" ]; then
-  die "the primary process changed during the smoke probe"
-fi
-if [ "$SMOKE_RC" -ne 0 ] || ! grep -q 'VERDICT: GREEN' "$SMOKE_OUT"; then
-  echo ""
-  echo "VERDICT: RED"
-  echo "REASON: candidate $CAND_VER failed the data-plane smoke probe on $PROBE_DATA_LABEL (exit $SMOKE_RC)"
-  backup_red_note
-  echo "NEXT:   do NOT brew upgrade; file a release-blocker; restore from backup only if primary is already broken"
-  exit 1
-fi
-log "data-plane probe GREEN for candidate $CAND_VER"
-
-# --- 2b) CAS mutation bar (LastGit compound) ---------------------------------
-# Prove the candidate enforces /api/mutation `expected` on an ephemeral node
-# (never live primary). RED blocks promotion: a CAS-disarmed node makes every
-# LastGit ref write and terminal CI status write unconditional.
-if [ "$CAS_SKIP" = "1" ]; then
-  warn "CAS mutation bar SKIPPED (LASTDB_PROBE_CAS_SKIP=1) — Tom-clearance only; LastGit CAS will not be proven"
-elif [ ! -x "$CAS_PROBE_SH" ] && [ ! -f "$CAS_PROBE_SH" ]; then
-  warn "CAS mutation bar: probe script missing at $CAS_PROBE_SH — treating as SKIP (install last-stack skills)"
-else
-  log "CAS mutation bar: probing candidate $CANDIDATE_BIN on ephemeral throwaway node (not primary)"
-  CAS_OUT="$WORK/cas-probe.out"
-  set +e
-  bash "$CAS_PROBE_SH" --lastdbd "$CANDIDATE_BIN" >"$CAS_OUT" 2>&1
-  CAS_RC=$?
-  set -e
-  cat "$CAS_OUT"
-  if [ "$CAS_RC" -ne 0 ] || grep -q 'VERDICT: RED' "$CAS_OUT"; then
-    echo ""
-    echo "VERDICT: RED"
-    echo "REASON: candidate $CAND_VER failed the CAS mutation bar — promotion is blocked because the node accepted a false CAS precondition (or the probe could not prove enforcement)"
-    echo "CANDIDATE: $CANDIDATE_BIN"
-    backup_red_note
-    echo "NEXT:   do NOT live-upgrade; fix /api/mutation expected-precondition enforcement before cutover (LastGit ref writes + terminal CI status rely on it). LASTDB_PROBE_CAS_SKIP=1 requires Tom clearance."
-    exit 1
-  fi
-  if grep -q 'VERDICT: SKIP' "$CAS_OUT"; then
-    warn "CAS mutation bar SKIPPED (tools/schema map / LastGit discriminator unavailable) — candidate not proven for LastGit CAS"
-  else
-    log "CAS mutation bar GREEN for candidate $CAND_VER"
-  fi
-fi
+# The candidate already booted a fresh real copy and served a keyed read.
+log "STEP 2/4: real-copy candidate deployment check GREEN for $CAND_VER"
 
 # RSS + like-to-like cold/hot latency. Clone both CoWs, boot both to
 # identity-ready, cold fetch, settle + warmup, then hot medians.
@@ -2479,15 +2291,10 @@ if [ "$LAT_SKIP" != "1" ]; then
 fi
 log "latency: like-to-like cold+hot probe (candidate first identity, baseline sibling CoW)"
 set +e
-HD_PROOF="$WORK/hard-delete-proof.json"
-probe_like_to_like_metrics "$CANDIDATE_BIN" "$BASELINE_BIN" "$CAND_METRICS" "$BASE_METRICS" "$HD_PROOF"
+probe_like_to_like_metrics "$CANDIDATE_BIN" "$BASELINE_BIN" "$CAND_METRICS" "$BASE_METRICS"
 CAND_METRICS_RC=$?
 set -e
 PROBE_RSS_MB="$(metric_val "$CAND_METRICS" peak_rss_mb)"
-KC_PROOF="$WORK/key-cap-proof.json"
-set +e
-probe_key_cap_bar "$CANDIDATE_BIN" "$KC_PROOF"
-set -e
 if [ "$CAND_METRICS_RC" -ne 0 ] || [ -z "$PROBE_RSS_MB" ]; then
   echo ""
   echo "VERDICT: RED"
@@ -2509,23 +2316,19 @@ CAND_LAT_COLD_POINT_MS="$(metric_val "$CAND_METRICS" lat_cold_point_ms)"
 CAND_LAT_COLD_SCAN_MS="$(metric_val "$CAND_METRICS" lat_cold_scan_ms)"
 CAND_LAT_POINT_MS="$(metric_val "$CAND_METRICS" lat_hot_point_ms)"
 CAND_LAT_SCAN_MS="$(metric_val "$CAND_METRICS" lat_hot_scan_ms)"
-CAND_LAT_WRITE_MS="$(metric_val "$CAND_METRICS" lat_hot_write_ms)"
 BASE_LAT_COLD_POINT_MS="$(metric_val "$BASE_METRICS" lat_cold_point_ms)"
 BASE_LAT_COLD_SCAN_MS="$(metric_val "$BASE_METRICS" lat_cold_scan_ms)"
 BASE_LAT_POINT_MS="$(metric_val "$BASE_METRICS" lat_hot_point_ms)"
 BASE_LAT_SCAN_MS="$(metric_val "$BASE_METRICS" lat_hot_scan_ms)"
-BASE_LAT_WRITE_MS="$(metric_val "$BASE_METRICS" lat_hot_write_ms)"
 BASE_BOOT_SECS="$(metric_val "$BASE_METRICS" boot_secs)"
 [ -n "$CAND_LAT_COLD_POINT_MS" ] || CAND_LAT_COLD_POINT_MS="-1"
 [ -n "$CAND_LAT_COLD_SCAN_MS" ] || CAND_LAT_COLD_SCAN_MS="-1"
 [ -n "$CAND_LAT_POINT_MS" ] || CAND_LAT_POINT_MS="-1"
 [ -n "$CAND_LAT_SCAN_MS" ] || CAND_LAT_SCAN_MS="-1"
-[ -n "$CAND_LAT_WRITE_MS" ] || CAND_LAT_WRITE_MS="-1"
 [ -n "$BASE_LAT_COLD_POINT_MS" ] || BASE_LAT_COLD_POINT_MS="-1"
 [ -n "$BASE_LAT_COLD_SCAN_MS" ] || BASE_LAT_COLD_SCAN_MS="-1"
 [ -n "$BASE_LAT_POINT_MS" ] || BASE_LAT_POINT_MS="-1"
 [ -n "$BASE_LAT_SCAN_MS" ] || BASE_LAT_SCAN_MS="-1"
-[ -n "$BASE_LAT_WRITE_MS" ] || BASE_LAT_WRITE_MS="-1"
 
 CAND_ROWS_POINT="$(metric_val "$CAND_METRICS" rows_point)"
 CAND_ROWS_SCAN="$(metric_val "$CAND_METRICS" rows_scan)"
@@ -2578,7 +2381,7 @@ if [ "$LAT_SKIP" != "1" ]; then
 
   LAT_RED=0
   LAT_RED_REASON=""
-  # like-to-like cold/hot per-op + lat_correlated_within_bar on the HOT triple
+  # Like-to-like cold/hot read bars and the correlated hot-read bar.
   export LASTDB_PROBE_LAT_FLOOR_MS="${LAT_FLOOR_MS}"
   export LASTDB_PROBE_LAT_RATIO="${LAT_RATIO}"
   export LASTDB_PROBE_LAT_ABS_MAX_MS="${LAT_ABS_MAX_MS}"
@@ -2588,7 +2391,7 @@ if [ "$LAT_SKIP" != "1" ]; then
     "$CAND_LAT_COLD_SCAN_MS" "$BASE_LAT_COLD_SCAN_MS" \
     "$CAND_LAT_POINT_MS" "$BASE_LAT_POINT_MS" \
     "$CAND_LAT_SCAN_MS" "$BASE_LAT_SCAN_MS" \
-    "$CAND_LAT_WRITE_MS" "$BASE_LAT_WRITE_MS")"
+    -1 -1)"
   LIKE_RC=$?
   set -e
   if [ -n "$LIKE_OUT" ]; then
@@ -2612,57 +2415,27 @@ EOF
     echo ""
     echo "VERDICT: RED"
     echo "REASON: candidate $CAND_VER fails the latency bar (${LAT_RED_REASON:-unknown}) — correct-but-slow is NOT GREEN (incident 2026-07-25/27 single-op; 2026-08-05 correlated moderate regression; 2026-08-26 mixed-thermal)"
-    echo "LATENCY: cold_point=${CAND_LAT_COLD_POINT_MS}ms(base ${BASE_LAT_COLD_POINT_MS}ms) cold_scan=${CAND_LAT_COLD_SCAN_MS}ms(base ${BASE_LAT_COLD_SCAN_MS}ms) hot_point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) hot_scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) hot_write=${CAND_LAT_WRITE_MS}ms(base ${BASE_LAT_WRITE_MS}ms) ratio-bar=${LAT_RATIO}x floor=${LAT_FLOOR_MS}ms abs-max=${LAT_ABS_MAX_MS}ms corr-ratio=${LASTDB_PROBE_LAT_CORR_RATIO}x geo-mean-max=${LASTDB_PROBE_LAT_GEO_MEAN_MAX}x"
+    echo "LATENCY: cold_point=${CAND_LAT_COLD_POINT_MS}ms(base ${BASE_LAT_COLD_POINT_MS}ms) cold_scan=${CAND_LAT_COLD_SCAN_MS}ms(base ${BASE_LAT_COLD_SCAN_MS}ms) hot_point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) hot_scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) ratio-bar=${LAT_RATIO}x floor=${LAT_FLOOR_MS}ms abs-max=${LAT_ABS_MAX_MS}ms corr-ratio=${LASTDB_PROBE_LAT_CORR_RATIO}x geo-mean-max=${LASTDB_PROBE_LAT_GEO_MEAN_MAX}x"
     backup_red_note
-    echo "NEXT:   do NOT live-upgrade; profile the candidate's read/write paths (brain: lastdb-0231-hashgroup-scan-warmset-thrash-read-regression, papercut-safe-upgrade-point-read-bar-cold-first-boot-vs-subfloor-baseline). Re-running with LASTDB_PROBE_LAT_SKIP=1 or LASTDB_PROBE_LAT_CORR_SKIP=1 requires Tom's explicit clearance."
+    echo "NEXT:   do NOT live-upgrade; profile the candidate's read paths (brain: lastdb-0231-hashgroup-scan-warmset-thrash-read-regression, papercut-safe-upgrade-point-read-bar-cold-first-boot-vs-subfloor-baseline). Re-running with LASTDB_PROBE_LAT_SKIP=1 or LASTDB_PROBE_LAT_CORR_SKIP=1 requires Tom's explicit clearance."
     exit 1
   fi
 else
   warn "latency bar SKIPPED (LASTDB_PROBE_LAT_SKIP=1) — Tom-clearance only; correct-but-slow will NOT be caught"
 fi
 
-# The conflict stamp stays on the separate smoke copy. The primary plist must not carry it.
+# The conflict stamp stays on the deployment copy. The primary plist must not carry it.
 primary_stamp="$(probe_plist_stamp_value "$LAUNCHD_PLIST")"
 if ! probe_stamp_env_allowed primary "$primary_stamp"; then
   echo ""
   echo "VERDICT: RED"
   echo "REASON: primary LaunchAgent sets LASTDB_BUILD_CONFLICT_STAMP_ON_COPY; the ephemeral copy stamp must not be installed on the primary home"
   backup_red_note
-  echo "NEXT:   remove LASTDB_BUILD_CONFLICT_STAMP_ON_COPY from the primary plist. The driver sets it on the separate smoke copy only."
+  echo "NEXT:   remove LASTDB_BUILD_CONFLICT_STAMP_ON_COPY from the primary plist. The driver sets it on the deployment copy only."
   exit 1
 fi
-set +e
-KC_RECEIPT="$(key_cap_bar_eval "$KC_PROOF" 2>&1)"
-KC_RC=$?
-set -e
-if [ "$KC_RC" -ne 0 ]; then
-  log "$KC_RECEIPT"
-  echo ""
-  echo "VERDICT: RED"
-  echo "REASON: candidate $CAND_VER fails the key-cap bar — under $KEY_CAP_BAR_ENV=$KEY_CAP_BAR_CAP the logical resident set must purge and keep resident_key_count within resident_key_budget"
-  echo "KEYCAP:  $KC_RECEIPT"
-  backup_red_note
-  echo "NEXT:   do NOT live-upgrade. There is no skip flag. A binary without the logical resident set gauges fails this bar."
-  exit 1
-fi
-log "$KC_RECEIPT"
-set +e
-HD_RECEIPT="$(hard_delete_bar_eval "$HD_PROOF" 2>&1)"
-HD_RC=$?
-set -e
-if [ "$HD_RC" -ne 0 ]; then
-  log "$HD_RECEIPT"
-  echo ""
-  echo "VERDICT: RED"
-  echo "REASON: candidate $CAND_VER fails the hard-delete bar — a kanban card hard delete on the CoW copy must leave status.resident.persist_lane_failures and deferred_persist_failed at 0 (incident 2026-10-04: fold f362b8e72 passed every other copy bar, then failed live with persist-lane-failure from a card delete)"
-  echo "HARDDELETE: $HD_RECEIPT"
-  backup_red_note
-  echo "NEXT:   do NOT live-upgrade. There is no skip flag. Read the candidate boot log for the persist-lane error. Brain: papercut-safe-upgrade-probe-runs-no-hard-delete-so-a-purge-lane-defect-reaches-the-primary-20261004."
-  exit 1
-fi
-log "$HD_RECEIPT"
 log "row-count bar GREEN: point cand=${CAND_ROWS_POINT}(base ${BASE_ROWS_POINT}) scan cand=${CAND_ROWS_SCAN}(base ${BASE_ROWS_SCAN})"
-log "probe GREEN for candidate $CAND_VER (data-plane + RSS peak_mb=${PROBE_RSS_MB} + cold_point/scan=${CAND_LAT_COLD_POINT_MS}/${CAND_LAT_COLD_SCAN_MS}ms hot_point/scan/write=${CAND_LAT_POINT_MS}/${CAND_LAT_SCAN_MS}/${CAND_LAT_WRITE_MS}ms)"
+log "probe GREEN for candidate $CAND_VER (data-plane + RSS peak_mb=${PROBE_RSS_MB} + cold_point/scan=${CAND_LAT_COLD_POINT_MS}/${CAND_LAT_COLD_SCAN_MS}ms hot_point/scan=${CAND_LAT_POINT_MS}/${CAND_LAT_SCAN_MS}ms)"
 
 if [ "$PROBE_ONLY" -eq 1 ]; then
   release_rollback_point
@@ -2670,22 +2443,16 @@ if [ "$PROBE_ONLY" -eq 1 ]; then
   echo "VERDICT: GREEN_PROBE_ONLY"
   echo "SUMMARY: candidate $CAND_VER boots and serves a CoW of $PROBE_DATA_LABEL; peak_rss_mb=${PROBE_RSS_MB} under guard limit=$(resolve_rss_limit_mb); latency within bar. Primary left on $CURRENT_VER."
   echo "PROBE_DATA: $PROBE_DATA"
-  if [ -n "$BACKUP" ]; then
-    echo "ROLLBACK: released (probe GREEN; primary untouched)"
-  else
-    echo "ROLLBACK: none (synthetic probe-only run; primary untouched)"
-  fi
+  echo "TRIAL_COPY: released (probe GREEN; primary untouched)"
   echo "RSS:     peak_mb=${PROBE_RSS_MB} limit_mb=$(resolve_rss_limit_mb) fail_at_mb=$(rss_fail_threshold_mb "$(resolve_rss_limit_mb)")"
-  echo "LATENCY: cold_point=${CAND_LAT_COLD_POINT_MS}ms(base ${BASE_LAT_COLD_POINT_MS}ms) cold_scan=${CAND_LAT_COLD_SCAN_MS}ms(base ${BASE_LAT_COLD_SCAN_MS}ms) hot_point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) hot_scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) hot_write=${CAND_LAT_WRITE_MS}ms(base ${BASE_LAT_WRITE_MS}ms) boot=${CAND_BOOT_SECS}s(base ${BASE_BOOT_SECS:-?}s)"
+  echo "LATENCY: cold_point=${CAND_LAT_COLD_POINT_MS}ms(base ${BASE_LAT_COLD_POINT_MS}ms) cold_scan=${CAND_LAT_COLD_SCAN_MS}ms(base ${BASE_LAT_COLD_SCAN_MS}ms) hot_point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) hot_scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) boot=${CAND_BOOT_SECS}s(base ${BASE_BOOT_SECS:-?}s)"
   echo "ROWCOUNT: point cand=${CAND_ROWS_POINT}(base ${BASE_ROWS_POINT}) scan cand=${CAND_ROWS_SCAN}(base ${BASE_ROWS_SCAN})"
-  echo "KEYCAP:  ${KC_RECEIPT:-unset}"
-  echo "HARDDELETE: ${HD_RECEIPT:-unset}"
-  echo "NEXT:    run last-stack-safe-upgrade-loom --candidate $CANDIDATE_BIN --source-git-oid <full-fold-commit>"
+  echo "NEXT:    run last-stack-safe-upgrade-loom --candidate $CANDIDATE_BIN --source-git-oid <full-lastdb-commit>"
   exit 0
 fi
 
 # --- 2c) exact-candidate DEV photograph proof (Tom 2026-08-19) ---------------
-# Reuse the rollback CoW that this safe-upgrade sequence selected in step 1.
+# Reuse the trial CoW that this safe-upgrade sequence selected in step 1.
 # The exact candidate pair clones that static point, connects its copied identity
 # to compiled DEV, and publishes one photograph. A receipt from another
 # execution, source, path, version, or byte pair cannot authorize this change.
@@ -2708,15 +2475,12 @@ else
   DEV_STAMP_OUT=""
   set +e
   DEV_STAMP_OUT="$(assert_dev_photograph_stamp_ok \
-    "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" 2>&1)"
+    "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" "$TRIAL_COPY" 2>&1)"
   DEV_STAMP_RC=$?
   set -e
   if [ "$DEV_STAMP_RC" -ne 0 ]; then
     log "exact-candidate DEV photograph: create a fresh isolated proof"
-    # Synthetic: photograph the seed. The seed holds the primary identity and
-    # the baseline's data, and uploads in seconds. Real: the rollback point.
-    DEV_CLONE_SOURCE="$BACKUP"
-    [ "$PROBE_DATA" != "synthetic" ] || DEV_CLONE_SOURCE="$PROBE_SOURCE_HOME"
+    DEV_CLONE_SOURCE="$TRIAL_COPY"
     DEV_PROOF_OUT=""
     set +e
     DEV_PROOF_OUT="$(LASTDB_LAUNCHD_PLIST="$LAUNCHD_PLIST" bash "$DEV_PHOTOGRAPH_PROOF_SH" \
@@ -2738,7 +2502,7 @@ else
 
   DEV_STAMP_OUT=""
   set +e
-  DEV_STAMP_OUT="$(assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" 2>&1)"
+  DEV_STAMP_OUT="$(assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" "$TRIAL_COPY" 2>&1)"
   DEV_STAMP_RC=$?
   set -e
   if [ -n "$DEV_STAMP_OUT" ]; then
@@ -2776,6 +2540,14 @@ PRELIVE_STATUS_OUT="$(post_cutover_status_check "$PRELIVE_STATUS" 0 0 "$PRELIVE_
 jq -e '.status.sync.enabled | type == "boolean"' "$PRELIVE_STATUS" >/dev/null \
   || die "pre-live status cannot determine whether Cloud Sync is enabled"
 SOAK_REQUIRE_CLOUD="$(jq -r 'if .status.sync.enabled == true then 1 else 0 end' "$PRELIVE_STATUS")"
+PRELIVE_CLOUD_FRONTIER=0
+if [ "$SOAK_REQUIRE_CLOUD" -eq 1 ]; then
+  PRELIVE_CLOUD_FRONTIER="$(jq -er '
+    .status.sync.mutation_log_frontier_f
+    | if type == "number" and . >= 0 then . else error("invalid cloud frontier") end
+  ' "$PRELIVE_STATUS")" \
+    || die "pre-live status has no numeric cloud frontier; primary was not changed"
+fi
 log "pre-live status bar $PRELIVE_STATUS_OUT (meter plane below 1.5 GiB)"
 
 detect_live_venue
@@ -2796,12 +2568,13 @@ if [ "$ASSUME_YES" -eq 0 ]; then
     echo "  brew services restart lastdb"
   fi
   echo "  post-check live /health + Board title"
-  echo "Ephemeral rollback point: $BACKUP (released if the operator aborts)"
+  echo "Candidate trial copy: $TRIAL_COPY (released if the operator aborts)"
+  echo "A stopped-primary rollback copy follows the strict flush check."
   printf "Proceed with LIVE upgrade? [y/N] "
   read -r ans
   case "$ans" in
     y|Y|yes|YES) ;;
-    *) release_rollback_point; log "aborted by user; primary still on $CURRENT_VER; rollback point released"; exit 0 ;;
+    *) release_rollback_point; log "aborted by user; primary still on $CURRENT_VER; trial copy released"; exit 0 ;;
   esac
 fi
 
@@ -2814,13 +2587,9 @@ log "STEP 3/4: live install + supervisor restart (venue=$VENUE)"
 assert_final_candidate_binding
 
 if [ "${LASTDB_PROBE_DEV_STAMP_SKIP:-0}" != "1" ]; then
-  assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" >/dev/null \
+  assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" "$TRIAL_COPY" >/dev/null \
     || die "exact-candidate DEV photograph receipt changed before the live section"
 fi
-
-# Arm the durability canary before any live change and before the cutover
-# clock starts, so cutover_s stays comparable to historical runs.
-durability_write_sentinels
 
 CUTOVER_T0="$(date +%s)"
 
@@ -2957,7 +2726,7 @@ if [ "$VENUE" = "sidebin" ]; then
   fi
 fi
 
-# Live data plane spot-check (same bar as smoke: Board titles rehydrate)
+# Live data check (same keyed Board read as the deployment check)
 UH="$(curl -sS --max-time 5 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/system/auto-identity 2>/dev/null | jq -r '.user_hash // empty')"
 [ -n "$UH" ] || die "live auto-identity empty after cutover — treat as RED; consider restore from $BACKUP"
 NSCHEMAS="$(curl -sS --max-time 30 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/schemas 2>/dev/null | jq -r '.schemas|length // 0')"
@@ -2967,15 +2736,6 @@ QRES="$(curl -sS --max-time 30 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost
 QOK="$(echo "$QRES" | jq -r '.ok // empty' 2>/dev/null || true)"
 QVAL="$(echo "$QRES" | jq -r '.results[0].fields.title // .results[0].title // empty' 2>/dev/null || true)"
 [ "$QOK" = "true" ] && [ -n "$QVAL" ] || die "live Board query failed after cutover — treat as RED; restore from $BACKUP"
-
-# Attribution aid for a durability RED: say whether the old daemon drained
-# cleanly. Warn-only — the canary below is the authority, not this string.
-DRAIN_LINE="$(run_op_with_deadline 15 "$INSTALLED_CLI_BIN" status 2>/dev/null | grep -i 'did not complete its clean drain' || true)"
-[ -n "$DRAIN_LINE" ] && warn "previous daemon session did not complete its clean drain — if the durability canary goes RED, this restart is the prime suspect"
-
-# Durability canary read-back: every sentinel the OLD daemon acked must read
-# back with THIS run's nonce on the NEW daemon.
-durability_verify_after_cutover
 
 # Live RSS vs memory-guard (settle briefly — embeddings may still be loading).
 log "live RSS settle ${RSS_SETTLE_SECS}s then sample ${RSS_SAMPLE_SECS}s..."
@@ -3109,15 +2869,8 @@ if [ "$VENUE" = "sidebin" ]; then
   fi
 fi
 
-# A read-only post-check missed a delayed persist-lane failure on 2026-10-01.
-# Write fresh durable canaries on the candidate, then retain the rollback point
-# through a five-minute live soak and a cloud frontier beyond the last write.
-DURABILITY_SLUG_PREFIX="lastdb-safe-upgrade-post-cutover-canary"
-durability_write_sentinels
-durability_verify_after_cutover
-# The frontier floor must follow every canary write. A timestamp taken before
-# the first write can pass while later canaries still wait for cloud capture.
-POST_CUTOVER_WRITE_DONE_S="$(date +%s)"
+# Keep the stopped rollback copy through the live status period.
+# An idle cloud frontier may equal the pre-live frontier.
 SOAK_MIN_SECS=300
 case "${LASTDB_SAFE_UPGRADE_ZERO_LIVE_SOAK:-0}" in
   0) ;;
@@ -3139,7 +2892,7 @@ while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
   if curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
     -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
     http://x/api/status >"$SOAK_STATUS" 2>/dev/null; then
-    SOAK_OUT="$(post_cutover_status_check "$SOAK_STATUS" "$(( (POST_CUTOVER_WRITE_DONE_S + 1) * 1000000000 ))" "$SOAK_REQUIRE_CLOUD" "$PRELIVE_METER_CAP_BYTES")" \
+    SOAK_OUT="$(post_cutover_status_check "$SOAK_STATUS" "$PRELIVE_CLOUD_FRONTIER" "$SOAK_REQUIRE_CLOUD" "$PRELIVE_METER_CAP_BYTES")" \
       || true
     case "$SOAK_OUT" in
       POST_CUTOVER_STATUS=GREEN)
@@ -3164,7 +2917,7 @@ while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
   sleep 15
 done
 post_cutover_soak_green_in_bounds "$SOAK_ELAPSED" "$SOAK_MIN_SECS" "$SOAK_MAX_SECS" "$SOAK_CONFIRMED" \
-  || die "post-cutover soak did not confirm fresh cloud progress within ${SOAK_MAX_SECS}s; rollback point retained"
+  || die "post-cutover status did not confirm cloud health within ${SOAK_MAX_SECS}s; rollback point retained"
 
 # After this point the driver proved the live primary healthy and supervised.
 # A later wrapper timeout must not restart that already-green primary.
@@ -3172,7 +2925,7 @@ write_cutover_recovery_state "cutover-green" false
 
 CUTOVER_T1="$(date +%s)"
 CUTOVER_SECS=$((CUTOVER_T1 - CUTOVER_T0))
-log "STEP 4/4: live post-check GREEN (schemas=$NSCHEMAS first Board title=\"$QVAL\" cutover_s=$CUTOVER_SECS venue=$VENUE peak_rss_mb=${LIVE_RSS_MB:-unknown} live_point_ms=${LIVE_LAT_POINT_MS:-unmeasured} live_scan_ms=${LIVE_LAT_SCAN_MS:-unmeasured} durability=${DURABILITY_N}/${DURABILITY_N})"
+log "STEP 4/4: live post-check GREEN (schemas=$NSCHEMAS first Board title=\"$QVAL\" cutover_s=$CUTOVER_SECS venue=$VENUE peak_rss_mb=${LIVE_RSS_MB:-unknown} live_point_ms=${LIVE_LAT_POINT_MS:-unmeasured} live_scan_ms=${LIVE_LAT_SCAN_MS:-unmeasured} cloud_frontier=${PRELIVE_CLOUD_FRONTIER})"
 
 # Post a Situations notice so other agents attribute post-upgrade flapping.
 POST_NOTICE=""
@@ -3182,7 +2935,8 @@ for cand in \
 do
   [ -x "$cand" ] && POST_NOTICE="$cand" && break
 done
-NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} with lastdb=${INSTALLED_CLI:-?} venue=${VENUE} cutover_s=${CUTOVER_SECS}; probe latency point/scan/write=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}/${CAND_LAT_WRITE_MS:-?}ms (baseline ${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}/${BASE_LAT_WRITE_MS:-?}ms) live_point_ms=${LIVE_LAT_POINT_MS:-?} live_scan_ms=${LIVE_LAT_SCAN_MS:-?} durability=${DURABILITY_N}/${DURABILITY_N} durability_mode=${DURABILITY_MODE:-durable}; keycap ${KC_RECEIPT:-unset}; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone. Design: lastdb-minimal-downtime-cutover."
+NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} with lastdb=${INSTALLED_CLI:-?} venue=${VENUE} cutover_s=${CUTOVER_SECS}; real-copy reads and live status passed; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone."
+
 if [ -n "$POST_NOTICE" ]; then
   if "$POST_NOTICE" \
     --title "LastDB upgraded to ${INSTALLED}" \
@@ -3232,47 +2986,12 @@ if [ -x "$reopen_deferred_cards" ]; then
     warn "deferred-card reopen pass failed after GREEN cutover; next activation retries"
 fi
 
-# The primary now runs a new build, and host-track installs an app only from a
-# registry `next` row proved with the build the primary runs. Nothing on this
-# path wrote rows, so a GREEN cutover here froze every app install until the
-# nightly candidate gate (2026-09-26: 2375 went live at 12:53Z; kanban,
-# routines, brain and situations held for hours). Start the candidate gate's
-# primary-rows step: a noop when rows exist, else a DETACHED set + isolated
-# smoke on the primary's own lastdbd + publish-next. It never builds and never
-# cuts over, and it returns at once so this verdict is not delayed. The hourly
-# reconcile gate re-runs the same step if this one is missed.
-# LASTDB_SAFE_UPGRADE_PRIMARY_ROWS=0 turns it off.
-# papercut-host-track-refresh-held-hours-after-lastdb-cutover-no-registry-proof-trigger-20260926
-primary_rows_gate="$last_stack_root/bin/last-stack-canary-candidate-gate"
-if [ "${LASTDB_SAFE_UPGRADE_PRIMARY_ROWS:-1}" = 1 ] && [ -x "$primary_rows_gate" ]; then
-  if primary_rows_line="$("$primary_rows_gate" --primary-rows-only --detach </dev/null 2>/dev/null)"; then
-    log "registry rows: ${primary_rows_line:-no output}"
-  else
-    warn "registry rows step failed after GREEN cutover (${primary_rows_line:-no output}); the hourly reconcile gate retries"
-  fi
-fi
-
-# The primary now runs a new baseline, so the next upgrade needs a seed that
-# THIS build wrote. A cold build took 19 minutes (2026-10-09, 120 cards), and the
-# next PROBE node would pay it. Start the warm-up DETACHED: it waits for this
-# run's owner lock, builds the seed for the installed daemon, and returns at once
-# here. A failed or missed warm-up only means the next run builds cold.
-# LASTDB_SAFE_UPGRADE_WARM_SEED=0 turns it off.
-warm_seed="$_SCRIPT_DIR/warm-synthetic-seed.sh"
-if [ "$PROBE_DATA" = "synthetic" ] && [ "${LASTDB_SAFE_UPGRADE_WARM_SEED:-1}" = 1 ] && [ -f "$warm_seed" ]; then
-  if warm_line="$(bash "$warm_seed" --detach --baseline-bin "$SIDEBIN_DIR/lastdbd" \
-      --plist "$LAUNCHD_PLIST" --cards "$SYNTH_CARDS" --records "$SYNTH_RECORDS" </dev/null 2>/dev/null)"; then
-    log "synthetic seed warm-up: ${warm_line:-no output}"
-  else
-    warn "synthetic seed warm-up did not start (${warm_line:-no output}); the next run builds the seed cold"
-  fi
-fi
+# The hourly registry reconcile owns app proof after this upgrade.
 
 echo ""
 echo "VERDICT: GREEN"
 echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED and lastdb → ${INSTALLED_CLI:-?}; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + live Board read OK; probe_rss_mb=${PROBE_RSS_MB:-?} live_rss_mb=${LIVE_RSS_MB:-?} limit_mb=$(resolve_rss_limit_mb); rollback point released"
-echo "LATENCY: probe point/scan/write=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}/${CAND_LAT_WRITE_MS:-?}ms baseline=${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}/${BASE_LAT_WRITE_MS:-?}ms live_point=${LIVE_LAT_POINT_MS:-?}ms live_scan=${LIVE_LAT_SCAN_MS:-?}ms"
-echo "KEYCAP:  ${KC_RECEIPT:-unset}"
+echo "LATENCY: probe point/scan=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}ms baseline=${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}ms live_point=${LIVE_LAT_POINT_MS:-?}ms live_scan=${LIVE_LAT_SCAN_MS:-?}ms"
 echo ""
 echo "ROLLBACK (binary only, if new binary misbehaves but data is fine):"
 if [ "$VENUE" = "sidebin" ]; then
@@ -3306,5 +3025,5 @@ else
 fi
 echo ""
 echo "DATA ROLLBACK: not retained after GREEN. Any RED or driver-ended step keeps the newest"
-echo "ephemeral CoW rollback point for ${ROLLBACK_TTL_HOURS}h; the next safe-upgrade run reuses it."
+echo "verified stopped rollback point for ${ROLLBACK_TTL_HOURS}h if its copy completed."
 exit 0

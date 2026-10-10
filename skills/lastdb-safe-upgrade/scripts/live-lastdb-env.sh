@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Shared live LASTDB_* env-mirror for CoW probes.
-# Sourced by safe-upgrade-lastdb.sh and write-path-cow-probe.sh.
+# Sourced by safe-upgrade-lastdb.sh.
 # Never invent a second env-mirror.
 #
 # LIVE_LASTDB_ENV_PAIRS: KEY=VAL per line from the live LaunchAgent plist.

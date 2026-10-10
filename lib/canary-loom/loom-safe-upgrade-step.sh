@@ -232,13 +232,16 @@ def make_cutover_recovery_state(env):
     )
     state_path = Path(raw_path)
     initial = {
-        "state_version": 1,
+        "state_version": 3,
         "loom_execution_id": exec_id,
         "stage": "wrapper-started",
         "effect_started": False,
         "venue": "",
         "primary_home": "",
         "primary_socket": "",
+        "old_pid": "",
+        "old_start_ts": "",
+        "old_ps_lstart": "",
         "sidebin_dir": "",
         "launchd_label": "",
         "launchd_plist": "",
@@ -296,9 +299,55 @@ def run_driver_bounded(argv, node, env, recovery_argv=None):
     )
     recovery_budget = 0
     if recovery_argv is not None:
-        recovery_budget = positive_env_seconds(
-            "LOOM_SAFE_UPGRADE_RECOVERY_TIMEOUT_SECS", 180
+        old_exit_wait = positive_env_seconds(
+            "LASTDB_CUTOVER_RECOVERY_OLD_EXIT_WAIT_SECS", 330
         )
+        if not 300 <= old_exit_wait <= 360:
+            raise RuntimeError(
+                "safe-upgrade old-primary exit wait must be 300..360 seconds"
+            )
+        bootout_wait = positive_env_seconds(
+            "LASTDB_LAUNCHD_BOOTOUT_WAIT_SECS", 180
+        )
+        health_wait = positive_env_seconds(
+            "LASTDB_CUTOVER_RECOVERY_HEALTH_WAIT_SECS", 45
+        )
+        retry_delays = (
+            os.environ.get("LASTDB_LAUNCHD_BOOTSTRAP_RETRY_DELAYS")
+            or "2 5 15 30 30 30"
+        ).split()
+        if not retry_delays or any(
+            re.fullmatch(r"[0-9]+", delay) is None for delay in retry_delays
+        ):
+            raise RuntimeError(
+                "safe-upgrade bootstrap retry delays must be whole seconds"
+            )
+        recovery_term_grace = positive_env_seconds(
+            "LOOM_SAFE_UPGRADE_RECOVERY_TERM_GRACE_SECS", 5
+        )
+        recovery_kill_drain = positive_env_seconds(
+            "LOOM_SAFE_UPGRADE_RECOVERY_KILL_DRAIN_SECS", 5
+        )
+        # Cover both stop and reload waits, the socket check, binary staging,
+        # and the wrapper's own TERM/KILL reserve. The branch sum is cautious:
+        # a pre-swap recovery normally has no bootout wait after old exit.
+        minimum_recovery_budget = (
+            360
+            + bootout_wait
+            + sum(int(delay) for delay in retry_delays)
+            + max(45, health_wait)
+            + 180
+            + recovery_term_grace
+            + recovery_kill_drain
+        )
+        recovery_budget = positive_env_seconds(
+            "LOOM_SAFE_UPGRADE_RECOVERY_TIMEOUT_SECS",
+            max(900, minimum_recovery_budget),
+        )
+        if recovery_budget < minimum_recovery_budget:
+            raise RuntimeError(
+                "safe-upgrade recovery reserve is shorter than its stop, reload, health, staging, and TERM/KILL budget"
+            )
     driver_budget = (
         node_budget - cleanup_grace - recovery_budget - outer_headroom
     )
@@ -762,8 +811,8 @@ if step == "PROBE":
         sys.stderr.write(signal_note + "\n")
         write_evidence_file("probe", text, p.returncode)
         raise SystemExit(p.returncode)
-    # The driver cats sub-probe output (smoke prints its own "VERDICT: GREEN"),
-    # so a substring match false-greens a red probe: rc=1 runs reached CUTOVER
+    # The driver can print more than one verdict, so a substring match
+    # false-greens a red probe: rc=1 runs reached CUTOVER
     # on lx-20260830T203912.259-78723-1. Only the driver's FINAL verdict line
     # plus rc==0 is green.
     verdicts = [ln.strip() for ln in text.splitlines() if ln.strip().startswith("VERDICT:")]

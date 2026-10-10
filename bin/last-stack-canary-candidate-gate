@@ -50,7 +50,7 @@
 # `--primary-rows-only` runs step 0 alone. It costs one identity read, one
 # channel read per app and one `lastdb app resolve` per app when nothing moved. `--detach` adds: when rows are
 # missing, start the worker in its own session and return at once. The
-# lastdb-safe-upgrade GREEN tail and the hourly reconcile gate call it that way.
+# hourly reconcile gate calls it that way.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
@@ -414,10 +414,9 @@ read_primary_build() {
 # one app's row stands for the build's whole set; a new app with no row is the
 # apps-only pass's job (it compares every app's pin).
 #
-# One lock covers step 0 and the whole full gate. The full gate cuts the
-# primary over at step 5, and that safe-upgrade's GREEN tail starts a detached
-# `--primary-rows-only`; the lock makes that spawn a noop while this gate still
-# owns the build and is about to publish its own rows at step 6.
+# One lock covers step 0 and the full gate. The full gate cuts the
+# primary over at step 5 and publishes its own rows at step 6. The hourly
+# reconcile gate uses step 0 when another path moved the primary.
 
 lock_owned=0
 lock_holder=-
@@ -685,9 +684,8 @@ primary_rows_step() {
     child_dir="$primary_rows_log_dir/$ts-$primary"
     log="$child_dir.log"
     mkdir -p "$child_dir"
-    # Its own session: the caller (a routine gate with a 15-minute budget, or
-    # the safe-upgrade tail) returns now, and its process-group teardown must
-    # not take the smoke with it.
+    # Its own session: the hourly caller returns now. Its process-group
+    # teardown must not take the worker with it.
     ROUTINES_RUN_DIR="$child_dir" nohup perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or die "exec: $!\n"' \
       "$self_path" --primary-rows-only </dev/null >"$log" 2>&1 &
     child=$!

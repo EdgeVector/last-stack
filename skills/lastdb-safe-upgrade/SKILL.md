@@ -1,35 +1,13 @@
 ---
 name: lastdb-safe-upgrade
 description: |
-  REQUIRED path for ANY primary LastDB Mini version change. Safely upgrade
-  Tom's primary lastdbd so the live brain is never the first place a bad binary
-  fails. ALWAYS: (1) one ephemeral CoW rollback point outside $HOME before any live
-  change, (2) boot the NEW binary only against an ephemeral/CoW copy (never live
-  home first). The probe data is a SYNTHETIC seed that the installed daemon
-  wrote, not a clone of the multi-GB primary (`--data real` clones the primary),
-  (3) require GREEN reads of that data AND RSS under the memory-guard AND the latency bar (real
-  workloads timed vs the current binary — correct-but-slow is RED) AND the
-  key-cap bar (under LASTDB_RESIDENT_KEY_CAP=100 the logical resident set
-  keeps its key count within budget and purges; eviction is measured in keys,
-  so there is no byte footprint bar) AND the
-  CAS mutation bar (candidate enforces `/api/mutation` `expected` — false
-  precondition → 409; LastGit ref/CI CAS depends on it), AND a GREEN
-  **DEV photograph stamp** for the exact Loom source, daemon bytes, and CLI
-  bytes (a new ephemeral/CoW copy uploads the photograph to DEV and CAS-flips
-  backup/latest; never use the production backup home or live `~/.lastdb`), (4) only
-  then an exact sidebin+launchd live install + post-check + Situations notice.
-  The driver rejects brew before a live mutation because brew can install
-  unphotographed bytes. The **durability
-  canary** bracketing the restart (sentinels must return a durable receipt
-  before cutover, or arm `queued+readback` when the old daemon rejects the
-  durable field with HTTP 400; post-cutover nonce read-back is still
-  mandatory — a stale nonce is RED; no skip flag). Use when Tom says "upgrade
-  lastdb", "brew upgrade lastdb", "safe upgrade", "update my brain/database
-  binary", "can I upgrade to 0.22.x", "don't brick my data", "new bottle/release",
-  or whenever an agent would otherwise brew-upgrade or point a candidate lastdbd
-  at ~/.lastdb. Standing rule: probe an ephemeral copy first, never live ~/.lastdb.
-  Distinct from lastdb-smoke-test (probe-only, no upgrade). Design:
-  fold/docs/designs/lastdb-minimal-downtime-cutover.md
+  Required path for a primary LastDB Mini version change. The driver boots
+  the exact candidate on a fresh copy of the real primary. It requires keyed
+  reads, read latency, memory and persist status checks, and a source-free
+  restore of an exact DEV snapshot before a live cutover. It then requires a
+  strict stopped flush receipt, a byte-checked rollback copy, supervised live
+  health, and a cloud frontier check. The driver writes no synthetic probe
+  records. It does not run tests.
 ---
 
 # lastdb-safe-upgrade — never brick the primary; never take it down first
@@ -40,9 +18,9 @@ Tom does **not** experience primary-brain downtime as the first feedback that a
 release is broken — fail on the ephemeral copy; keep live on last known-good until
 GREEN. The candidate must pass on an ephemeral copy before the primary changes.
 
-**Probe data (Tom, 2026-10-09):** the ephemeral copies are clones of a small
-synthetic seed by default, not of the multi-GB primary. See
-[Probe data: synthetic by default](#probe-data-synthetic-by-default-tom-2026-10-09).
+**Candidate data:** each run makes a fresh CoW trial copy of the current
+primary. The candidate boots a separate copy of that trial copy. See
+[Candidate data: current primary copy](#candidate-data-current-primary-copy).
 
 This skill and its Loom `lastdb-safe-upgrade` graph are the **only** allowed
 path for a live binary change on this machine. The shell driver remains the
@@ -176,7 +154,7 @@ only sidebin:
 | **brew** | `brew services` + Cellar formula | Refused before a live mutation; move the primary to sidebin first |
 
 The script **detects venue** from the LaunchAgent, the formula, and sidebin. It
-refuses a brew live cutover before the durability canary or a service stop.
+refuses a brew live cutover before a service stop.
 
 Design: `fold/docs/designs/lastdb-minimal-downtime-cutover.md`.
 
@@ -209,110 +187,53 @@ The cutover must stop the old worker, start the new worker, run the full
 health checks, and then issue `lastdb-proxy set-target`. The proxy returns a
 bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
 
-## Probe data: synthetic by default (Tom, 2026-10-09)
+## Candidate data: current primary copy
 
-The probes no longer clone Tom's primary home. The primary is multi-GB with
-hundreds of thousands of files. One clone took minutes. Two booted daemons on
-the clones pushed the laptop into swap. The DEV photograph then uploaded a
-snapshot of that data. The probes now run on a small **seed**.
+The driver accepts `--data real` or `LASTDB_SAFE_UPGRADE_DATA=real`.
+It rejects all other values. It does not build or use a synthetic seed.
 
-| | Synthetic (default) | `--data real` |
-|--|--|--|
-| Probe copies are clones of | the seed | the primary home (minus Search `done/`) |
-| Rollback point | before a live change only | before every run (as before) |
-| DEV photograph clones | the seed | the rollback point |
-| `kanban` and `brain` read | the seed's own config (`HOME=<run>/cli-home`) | the real `~/.fkanban`, `~/.brain` |
+Each run creates a fresh CoW trial copy from the current primary home.
+The driver refuses an existing target path. It keeps an older retained point
+until that point receives its own safe cleanup.
+The driver accepts a nonzero copy exit only for the two known runtime sockets.
+It rejects an error for a regular file or a CAS file. It checks the copied
+identity, bootstrap marker, and device ID before it writes a completion marker.
+An incomplete copy cannot serve as candidate data. The copy error stays in
+an owner-only, bounded file under the rollback root.
 
-Select the mode with `--data synthetic|real` or `LASTDB_SAFE_UPGRADE_DATA`.
-An unknown value exits 2. Decision:
-`decision-2026-10-09-safe-upgrade-probes-run-on-synthetic-data`. Design:
-`design-lastdb-safe-upgrade-synthetic-probe-data`.
+The candidate boots on a separate copy of this fresh trial copy.
+The candidate never boots on the live primary home. The driver checks:
 
-How the seed is made (`scripts/build-synthetic-home.sh`):
+- The candidate loads schemas and serves the keyed `Board` title.
+- The candidate serves a read of `BoardCards` under the default board and todo column.
+- The candidate memory size stays below the memory-guard limit.
+- The live primary process stays the same during the candidate check.
 
-- **The baseline daemon writes it.** The baseline is the binary the primary
-  runs. The candidate must read what the installed daemon wrote, so a seed
-  that the candidate wrote would test nothing.
-- **Same flags as the primary.** The baseline boots with the `LASTDB_*` keys of
-  the primary LaunchAgent. Some flags set the on-disk layout.
-- **Tom's identity.** The builder copies `identity.key` (mode 600, never
-  printed) and the bootstrap marker. It reads nothing else from the primary.
-  The DEV photograph therefore registers the same identity as before.
-- **Current app schema setup.** `kanban init` and `brain init --yes` register the
-  schemas, so the seed needs the network (schema service). It adds one
-  milestone, `LASTDB_SYNTHETIC_CARDS` cards (default 120) in todo, backlog and
-  done, and `LASTDB_SYNTHETIC_RECORDS` brain records (default 20). All writes
-  go in one at a time.
-- **Judged after a clean reboot.** The builder stops the baseline, boots it
-  again, and checks the card counts on the second boot. Then it stops it again.
-  `.complete` is the last file written.
-- **Cached by key** under `${TMPDIR or /tmp}/lastdb-safe-upgrade-synthetic-<uid>/<key>/`.
-  The key covers the baseline bytes, the identity, the live flags, the kanban
-  and brain versions, the sizes, and the generator version. A new baseline
-  (any upgrade) builds a new seed once. Older seeds are reclaimed. Never edit
-  a seed by hand; delete it and let the driver rebuild it.
-- **Different schema hashes.** The seed pins the schema hashes that today's
-  apps register. The primary pins older hashes. The CLIs must not read the
-  real config on a seed copy, so each run clones `cli-home` from the seed and
-  every probe call sets `HOME` to it.
+The `BoardCards` result must contain at least one card. The `Board` title
+check also requires real data.
 
-A failed build is **RED** with `synthetic probe data could not be prepared`, and
-it keeps bounded evidence under
-`~/.local/state/last-stack/lastdb-safe-upgrade/synthetic-build-failures/`.
+The DEV proof also clones the same trial copy. It publishes one snapshot
+with the exact candidate pair. The candidate CLI restores that manifest into
+a new home that contains no local database data. The proof requires a complete
+Cloud Off restore report before it writes the receipt.
 
-Cost, measured 2026-10-09 on a loaded host (A/A probe-only on 0.23.3-2708): the
-**cold** seed build took 1156 s, of which 1055 s were the 120 card writes (8.8 s
-each; every write waits for a durable persist, and parallel writers gain
-nothing). With the seed warm, every probe bar together took 447 s, of which
-about 330 s are the fixed waits (settle 45 s, key-cap 120 s, hard-delete 151 s,
-RSS 15 s). Every upgrade changes the baseline, so every upgrade needs a new
-seed. To keep the cold build off the critical path, the driver starts
-`scripts/warm-synthetic-seed.sh --detach` after a **GREEN live cutover**. The
-warm-up waits for the owner lock, builds the seed for the newly installed
-daemon, and logs to
-`~/.local/state/last-stack/lastdb-safe-upgrade/seed-warm/`. A failed or missed
-warm-up changes nothing live; the next run builds cold. Turn it off with
-`LASTDB_SAFE_UPGRADE_WARM_SEED=0`. Run it by hand, with the driver's
-`--baseline-bin` and `--plist` values, when the baseline changed some other way.
-
-What the synthetic probe proves:
-
-- The candidate boots on data that the installed daemon wrote, and the identity
-  decrypts.
-- Schemas load, the `Board` title reads, and the row counts match the baseline.
-- The key-cap purge, the hard-delete lane, the CAS precondition, peak RSS, and
-  the latency pairs behave, at seed scale.
-- The exact pair completes the DEV photograph and the manual snapshot CAS.
-
-What it does **not** prove. These meet real data for the first time on the live
-cutover, which keeps the rollback point, the durability canary, the live
-post-check, and the soak:
-
-- History in the real home: older schema pins and re-key leftovers, unreadable
-  schema state rows, and years of layouts.
-- Behaviour that grows with data size: warm-set thrash, flush-lock waits, and
-  scan cost. At seed scale most latency pairs sit under the noise floor, so the
-  bar catches gross regressions only.
-- A crash-consistent clone of a running node. The seed is a clean stop. The
-  live cutover also stops the old daemon cleanly.
-
-Use `--data real` when the candidate changes the on-disk format, the storage
-layout, the flush, lock, or durability paths, the warm set, purge, or meter, or
-the key layout.
+A copy of a live primary can race with files that change during the copy.
+The candidate boot and keyed reads check the copy before the live change.
+The source-free DEV restore checks the cloud backup before the live change.
+The live trial copy has no fixed write frontier. The rollback point comes from
+the stopped primary after a clean flush receipt. The copy gate checks its paths
+and bytes before the candidate replaces the old binary.
 
 ## Hard rules (never skip)
 
 1. **Never** run a candidate `lastdbd` with `--data-dir` pointing at the **live**
-   `~/.lastdb` until a probe against a **copy** (of the synthetic seed, or of the
-   primary with `--data real`) is GREEN.
-2. **Always** create exactly one ephemeral CoW rollback point under the system
-   temp directory before any live change. A synthetic probe-only run changes
-   nothing live, so it makes none; with `--data real` every run makes one.
-   Release it on GREEN (including GREEN probe-only or operator
-   abort); on RED retain it for the printed TTL, owned by the next safe-upgrade
-   run, which reclaims it before creating another. A separate cleanup-only
-   helper can release one named RED point after it proves the primary never
-   restarted or changed build. Never write rollback copies under `$HOME`.
+   `~/.lastdb` until the candidate passes on a fresh copy of the primary.
+2. **Always** create a fresh CoW trial copy under the system temp directory
+   before the candidate check. This rule also applies to a probe-only run.
+   Do not call this trial copy a rollback point. For a live cutover, strictly
+   stop and flush the old primary. Publish a stopped rollback copy only after
+   its path and byte check passes. Keep that point on RED. Never write a
+   rollback copy under `$HOME`.
 3. **Never** restart/upgrade on a RED probe.
 3b. **A read that answers fast with ZERO rows is RED, not GREEN.** The
    **row-count bar** counts the rows the Board point-read and the `kanban list
@@ -326,14 +247,11 @@ the key layout.
 4. **Never** kill the primary unattended outside this skill's live step; if live
    post-check fails after upgrade, **stop and restore** (binary bak and/or data
    retained rollback point) — do not improvise.
-5. Probe bar = smoke bar: identity decrypts, `/api/schemas` > 0, `Board` query
-   returns real **title values** (counts alone are not proof). On the seed the
-   title is "Default board". The driver sets
-   `LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1` on this separate candidate copy.
-   The smoke bar does not assert stamp completion. The primary stays free of
-   this copy-only startup work.
-6. **RSS bar (memory-guard):** after data-plane GREEN, boot candidate again on a
-   CoW copy, settle (~45s), sample peak RSS. **RED** if peak RSS ≥
+5. **Real-copy deployment check:** the candidate loads schemas, serves a keyed
+   `Board` title, and serves a keyed `BoardCards` list on its own copy.
+   The title and list must contain real data. The primary process must not change.
+6. **RSS bar (memory-guard):** settle (~45s) and sample candidate memory size
+   on the copy. **RED** if peak RSS ≥
    `LASTDBD_RSS_LIMIT_MB` minus headroom (default 10%). Limit is read from
    env, then the memory-guard LaunchAgent plist, then the primary lastdbd
    LaunchAgent plist, else 16384. Before a sidebin kickstart, the script stamps
@@ -348,8 +266,7 @@ the key layout.
    same operation after it has already finished, and only when the sample
    opens no file. A sample that opens a file is `nothot` and the pair is
    dropped. The hot read is one HashRangeKeys batch of the keys that the
-   column list returned. The first batch is not hot. The hot write is a
-   repeat of one put. The first write is not hot. The driver measures six
+   column list returned. The first batch is not hot. The driver measures six
    candidate and baseline samples in adjacent pairs. It alternates which
    daemon runs first and records each sample in the probe log. Compare
    **like with like only**: cold vs cold, hot vs hot. A mixed pair (cold
@@ -362,7 +279,7 @@ the key layout.
    point 549 ms vs 168 ms is 2.2× floored, GREEN) — or exceeds
    `LASTDB_PROBE_LAT_ABS_MAX_MS` (20 s) **when no baseline is measurable**,
    or is unmeasurable on the candidate while the baseline measured.
-   **Correlated / aggregate term (2026-08-05) uses the HOT triple only:**
+   **Correlated / aggregate term (2026-08-05) uses the two hot reads:**
    RED when (a) **all** measurable hot ops regress at ≥
    `LASTDB_PROBE_LAT_CORR_RATIO` (default **1.4×**), or (b) the **geometric
    mean** of hot cand/base ratios exceeds `LASTDB_PROBE_LAT_GEO_MEAN_MAX`
@@ -376,44 +293,10 @@ the key layout.
    candidate's own hot probe numbers (`LASTDB_LIVE_LAT_ENFORCE=1` makes
    either RED). The bar also checks correlated hot-operation regressions and
    avoids a cold sub-floor baseline as a raw ratio denominator.
-7c. **Key-cap bar (the logical resident set must purge).** The cap is a
-   count of fetched records (`RESIDENT_KEY_CAP = 10000`), not bytes. The
-   driver boots the candidate on its own CoW copy with
-   `LASTDB_RESIDENT_KEY_CAP=100` (`KEY_CAP_BAR_CAP`), drives point reads
-   and a scan for 120 seconds (`KEY_CAP_BAR_SECS`), and samples
-   `/api/status`. Every sample must report `resident.resident_key_budget`
-   equal to the cap, `resident_key_count` at or under it, and
-   `resident_purged_keys` must rise above 0. Absent gauges are RED. There
-   is no skip, so a binary without the logical resident set fails.
-   There is no byte footprint bar. Eviction is measured in keys, and a GiB
-   line does not measure it (Tom, 2026-10-04). The RSS bar against the
-   memory-guard limit stays: it is the crash limit, not an eviction rule.
-   The key-cap copy and the timed latency copies stay free of conflict-stamp
-   startup work. Helpers: `scripts/key-cap-bar-checks.sh`,
-   `scripts/probe-copy-guards.sh`.
-   Receipt line: `KEYCAP:`.
-7d. **Hard-delete bar (the purge lane must not fail).** On the candidate's
-   latency copy, after every timed read, the driver writes a scratch kanban
-   card (`lastdb-safe-upgrade-hard-delete-probe-<pid>`, column `backlog`) and
-   hard-deletes it with `kanban rm`. The gate gives `kanban rm` 180 s.
-   The `kanban add` and `kanban show` calls each keep a 90 s limit.
-   The CLI reaches the copy through
-   `FOLDDB_SOCKET_PATH=<copy>/data/folddb.sock`. The driver then samples
-   `/api/status` every 10 s for at most 150 s
-   (`LASTDB_PROBE_HARD_DELETE_SECS`). The window covers the keep_small
-   persist interval (30 s) and one keep_small compaction probe (120 s). It
-   ends early (GREEN path) after 40 s when the keep_small
-   `last_compacted_at_unix_s` stamp passes the delete, and early (RED path)
-   on the first failure. Every sample must report
-   `status.resident.persist_lane_failures == 0` and
-   `status.resident.deferred_persist_failed == 0`. A failed write, a failed
-   delete, a card still readable after the delete, or an absent field is
-   RED. There is no skip. Incident 2026-10-04: fold f362b8e72 passed every
-   other copy bar, then failed live with `persist-lane-failure` from a card
-   delete ("hard-erase meter intent changed before commit"). Helper:
-   `scripts/hard-delete-bar-checks.sh`. The driver logs each step and its
-   result with time and output size. It does not log CLI text. Receipt line:
-   `HARDDELETE:`.
+7c. **Candidate persist status:** the candidate serves `/api/status` on
+   the real copy. The driver requires both persist failure gauges to exist
+   and equal zero. This check reads status. It does not write a scratch card.
+   The memory guard and live status checks remain required.
 8. **Candidate-class bar (no debug / dirty / oversized):** before backup or
    probe, refuse candidates that look like a Cargo **debug** build
    (`…/target/debug/…`), a **-dirty** version stamp (uncommitted tree at
@@ -428,16 +311,9 @@ the key layout.
    `LASTDB_CANDIDATE_SIZE_RATIO` (default 1.5). Brain:
    `incident-20260801-debug-worktree-lastdbd-primary-cutover-latency`. Promote
    from `origin/main`, never from a feature branch.
-9. **CAS mutation bar (LastGit compound):** after data-plane GREEN, run
-   `scripts/cas-mutation-probe.sh --lastdbd <candidate>` against an
-   **ephemeral throwaway node** of the candidate only (never live primary).
-   A node that ignores a false `expected` precondition and applies the write
-   is **RED** — promotion is blocked with an actionable failure that names the
-   candidate binary. The self-contained product diagnostic uses the
-   true→200 / false→409 / refused-did-not-land sequence. It does not delegate
-   to a repository test script. Skipping
-   (`LASTDB_PROBE_CAS_SKIP=1`) requires Tom clearance. Not a routine health
-   check and not a live-primary mutation path.
+9. **No synthetic mutation check:** the safe upgrade uses the current
+   primary data and read-only candidate checks. It does not create false
+   CAS writes or scratch records.
 10. **Binary-pair bar (lastdb + lastdbd):** before backup/probe, require a
     sibling `lastdb` CLI next to the candidate `lastdbd` and require both
     binaries to report the same version. Sidebin live install copies both
@@ -445,43 +321,15 @@ the key layout.
     installed live CLI/daemon pair is skewed.
 11. Do not claim “primary stopped” unless this script actually stopped the
    supervisor for that venue.
-12. **Durability canary (acked writes survive the restart):** immediately
-    before any live change, the driver upserts
-    `lastdb-safe-upgrade-durability-canary-1..N` (default N=4) through the
-    `brain put --durable --json` path on the **live primary**, each carrying a
-    run-unique nonce. Every write must return `durability: durable`, then the
-    driver reads the exact nonce back. **Exception — queued+readback:** if
-    `--durable` returns HTTP 400 (old daemon predates the durable-receipt
-    API and `deny_unknown_fields` rejects the `durability` field), a queued
-    put of the same sentinel that succeeds **and** a read-back of this run's
-    nonce on the old daemon arms the canary in declared `queued+readback`
-    mode (logged with the old build string and recorded on the Situations
-    notice). A queued, missing, malformed, or failed receipt that is **not**
-    HTTP 400 is still RED before any live change. After the cutover it
-    re-reads each nonce on the new daemon. A sentinel that reads back with the PREVIOUS
-    run's nonce is **RED**: the old daemon acknowledged a write the new daemon
-    does not have. On 2026-08-18, two read-back-confirmed loom terminal-status
-    writes vanished
-    across a restart whose shutdown "did not complete its clean drain").
-    Before the first daemon stop, the driver also writes
-    `restart-intent.json` with the prior session PID and `cause: upgrade`.
-    It removes the marker if no start request succeeds. A successful start
-    leaves the marker for the new daemon's durable boot-ledger append.
-    A slow old daemon is not a durability verdict. The arm retries the same
-    upsert up to `LASTDB_DURABILITY_ARM_ATTEMPTS` (default 6) times with the
-    `LASTDB_DURABILITY_ARM_BACKOFF_S` backoff (default `5 15 30 60 60`). It
-    polls the pre-cutover read-back for `LASTDB_DURABILITY_ARM_READ_WAIT_S`
-    (default 300s) with a `LASTDB_DURABILITY_ARM_READ_OP_S` (default 90s)
-    per-read limit. The proof does not change.
-    Unreadable sentinels after `LASTDB_DURABILITY_READ_WAIT_S` (default 120s)
-    are also RED — durability UNPROVEN. Rolling back the binary does not
-    recover lost writes; a RED here means audit recent writes across apps
-    before trusting the store. **There is deliberately no skip flag.**
-    Tunables: `LASTDB_DURABILITY_CANARY_N`, `LASTDB_DURABILITY_READ_WAIT_S`.
+12. **Stopped flush and rollback:** before the old daemon stops, the driver
+    writes `restart-intent.json` for the exact old session. The daemon must
+    stop without a forced kill and write its exact flush receipt. The driver
+    checks that receipt and the clean session. It copies the stopped primary
+    and checks every path and byte before it marks the rollback copy ready.
+    The driver does not write a canary record.
 13. **Exact-candidate DEV photograph (required before live cutover — Tom
-    2026-08-19):** the CUTOVER pass clones the synthetic seed (with `--data
-    real`: the rollback point that step 1 selects in the same safe-upgrade
-    sequence). It does not clone live `~/.lastdb` again. The versioned execution-key digest covers the source
+    2026-08-19):** the CUTOVER pass clones the fresh trial copy from step 1.
+    It does not clone live `~/.lastdb` again. The versioned execution-key digest covers the source
     OID, canonical paths, binary hashes, and binary versions. The child graph
     checks the tuple before PROBE and CUTOVER.
 
@@ -494,9 +342,8 @@ the key layout.
     `LASTDB_HOME`, `FOLDDB_HOME`, and `FOLD_SYNC_DEVICE_ID` for connect, daemon
     start, and snapshot.
 
-    The main smoke test receives a sanitized CoW source through a temporary
-    HOME. The driver checks the real primary process before and after this
-    test because the smoke script sees the temporary HOME.
+    The candidate deployment check reads a separate copy of the same trial
+    copy. It checks the real primary process before and after the read.
 
     The proof reads `lastdb-restore-probe-invite-dev-20260720` from
     LastSecrets. It pipes the value directly to the paired CLI through stdin.
@@ -522,19 +369,36 @@ the key layout.
     (`LASTDB_DEV_PHOTOGRAPH_SNAPSHOT_TIMEOUT_SECS`).
 
     The Loom step starts each safe-upgrade driver in its own process group. It
-    reserves 45 seconds for owned cleanup, 180 seconds for CUTOVER recovery,
+    reserves 45 seconds for owned cleanup, at least 900 seconds for CUTOVER recovery,
     and 15 seconds for the outer Loom deadline. It forwards external signals
     to the group and always reaps an abnormal driver tree. On a CUTOVER stop,
-    a separate process group reads the private recovery state. If a live swap
-    began, it restores the exact saved pair and reloads the LaunchAgent. It
+    a separate process group reads the private recovery state. It waits up to
+    330 seconds by default for the exact old process to exit. The allowed
+    maximum is 360 seconds. It does not kill or bootout
+    that process during its flush drain. A loaded job with no PID receives a
+    plain kickstart. An unloaded old job restarts with the saved pair. A failed
+    live swap restores that pair before the reload. Recovery
     requires socket health and the supervised listener PID before it returns.
     A failed recovery retains the mode-600 state for exact manual recovery.
+    The 900-second default covers the 360-second old-process wait, a
+    180-second bootout wait, 112 seconds of default bootstrap retry delays,
+    45 seconds of socket health, 180 seconds for binary checks, and 10 seconds
+    for the wrapper's TERM/KILL reserve. These parts total 887 seconds. The
+    wrapper increases the default when custom wait or grace values need more
+    time. It refuses an explicit reserve below that sum before cutover starts.
 
-    The owner-only v2 receipt belongs to one Loom execution and expires after
+    The exact CLI then restores this DEV manifest into a new home with no local
+    database data. The restore must report `replay_tail`, exact manifest and
+    database hashes, verified source scope, remote read-only access, and Cloud
+    Off. The target must hold the paused cloud config and resume-required marker.
+
+    The owner-only v3 receipt belongs to one Loom execution and expires after
     one hour. It records the exact source, pair paths, pair hashes, pair
-    versions, DEV URL, CoW path, primary path, snapshot report, snapshot user
-    hash, cloud DB hash, manifest object key, exact manifest-cache path, and
-    isolation facts.
+    versions, DEV URL, CoW path, primary path, fresh trial copy path, snapshot report, snapshot user
+    hash, cloud DB hash, manifest object key, exact manifest-cache path,
+    source-free restore proof, and isolation facts. The proof retains a bounded
+    owner-only restore report with a digest in the receipt. The gate reads that
+    report again before it accepts the receipt.
     The gate rejects missing, duplicate, or unknown fields. It also
     rejects a legacy receipt, a stale time, a future time, another candidate,
     a production URL, or an overlapping home. Skip
@@ -588,13 +452,11 @@ the key layout.
       before it dies. An unloaded primary is a total factory outage, not a log
       line.
 
-15b. **Graceful pre-stop under a short loaded exit timeout.** Only a job
-    reload loads the stamped `ExitTimeOut` (150 s), and the reload is the stop.
-    So when the LOADED job still has a shorter window, the driver stops the old
-    daemon first: it moves the program path aside so KeepAlive cannot respawn,
-    sends `launchctl kill SIGTERM`, waits up to `PRIMARY_EXIT_TIMEOUT_SECS`
-    (`LASTDB_PRIMARY_GRACEFUL_STOP_WAIT_SECS`), SIGKILLs only after that wait,
-    boots the job out with no process, and puts the program back. The reload
+15b. **Strict old-primary stop.** The driver moves the old program path aside
+    so KeepAlive cannot respawn. It sends `launchctl kill SIGTERM` and waits up
+    to 300 seconds (`LASTDB_PRIMARY_GRACEFUL_STOP_WAIT_SECS`). A timeout fails
+    the cutover without a forced kill. The driver requires a matching flush
+    receipt and clean session before it copies the stopped home. The reload
     then bootstraps the new definition. Log key: `LASTDB_LAUNCHD_PRESTOP`.
     Brain: `papercut-lastdbd-primary-launchagent-exit-timeout-5s-sigkills-shutdown-drain-20260924`.
 
@@ -628,12 +490,12 @@ PROBE and CUTOVER.
 ```bash
 last-stack-safe-upgrade-loom \
   --candidate /path/to/release/lastdbd \
-  --source-git-oid <full-fold-commit>
+  --source-git-oid <full-lastdb-commit>
 ```
 
 For the one-client rescue, Tom approved the explicit `--zero-live-soak` option.
 Add it to this command only for that cutover. The option removes the 300-second
-minimum after the live canary write and read-back. The driver still requires a
+minimum after the live cutover. The driver still requires a
 fresh GREEN status sample and keeps the rollback point until that check passes.
 The option uses a separate Loom execution key. The default remains 300 seconds.
 
@@ -654,7 +516,7 @@ artifact whose bytes differ from the photographed pair.
 The nightly path uses the parent graph:
 
 ```bash
-last-stack-canary-loom --start --oid <full-fold-main-commit>
+last-stack-canary-loom --start --oid <full-lastdb-main-commit>
 ```
 
 The parent graph builds the candidate and calls `lastdb-safe-upgrade` as a Loom
@@ -685,26 +547,27 @@ done
 [ -n "$skill_root" ] || { echo "lastdb-safe-upgrade skill not installed; run ~/.last-stack/setup --host auto" >&2; exit 1; }
 driver="$skill_root/scripts/safe-upgrade-lastdb.sh"
 
-# Probe only (no live install)
-bash "$driver" --probe-only
+# Check a fresh primary copy. Do not install on the primary.
+bash "$driver" --probe-only --data real
 
 # Explicit candidate probe.
 # MUST be a release build with sibling /path/to/release/lastdb beside it —
 # never …/target/debug/lastdbd or a -dirty stamp.
-bash "$driver" --candidate /path/to/release/lastdbd --probe-only
+bash "$driver" --candidate /path/to/release/lastdbd --probe-only --data real
 
 # Bottle version probe only
-bash "$driver" --version 0.22.8 --probe-only
+bash "$driver" --version 0.22.8 --probe-only --data real
 
 ```
 
 `--check-dev-stamp` is an internal diagnostic. It fails without the complete
-Loom tuple and execution ID. Do not use a copied receipt as a manual approval.
+Loom tuple, execution ID, and `LASTDB_SAFE_UPGRADE_EXPECTED_CLONE_SOURCE` path.
+Do not use a copied receipt as a manual approval.
 
 Or, after last-stack is installed:
 
 ```bash
-bash ~/.last-stack/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh --probe-only
+bash ~/.last-stack/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh --probe-only --data real
 ```
 
 The script:
@@ -713,24 +576,23 @@ The script:
 |------|------|
 | Preflight | Primary home exists, identity.key present, live `/health` ok (if socket up) |
 | Resolve candidate | `brew update` / `--version` tarball / `--candidate` |
-| **1. Rollback point** | Before a live change (a synthetic `--probe-only` run makes none): `cp -cR` (APFS only; no full-copy fallback) → `${TMPDIR}/lastdb-safe-upgrade-rollback-<uid>/pre-<new>-from-<old>-<ts>/`; reclaim the prior retained point first |
+| **1. Trial copy** | Every run makes a fresh CoW copy of the current primary under `${TMPDIR}/lastdb-safe-upgrade-rollback-<uid>/trial-<new>-from-<old>-<ts>/`. It rejects regular-file copy errors. The trial copy is not a rollback point. |
 | **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before multi-GB backup) |
-| **0b. Probe data** | Synthetic: ensure the seed for this baseline (cache hit builds nothing; the post-cutover warm-up usually built it), then clone its CLI home. Real: the primary home is the clone source |
-| **2. Probe** | `BIN=<candidate>` CoW smoke harness on the probe data (never live home) + **CAS mutation bar** (ephemeral candidate node: false `expected` → 409) + **RSS settle/sample** vs memory-guard limit + **latency bar**: cold Board point-read and cold column list, then hot point-read, one HashRangeKeys batch, and a repeat `brain put` (like-to-like vs baseline CoW; a sample that opens a file is not hot); geo-mean on the hot triple only + **row-count bar**: candidate must not return 0 rows where the baseline returns rows (no skip flag) + **key-cap bar**: candidate on its own CoW with `LASTDB_RESIDENT_KEY_CAP=100`; count within budget, purge ran; no skip + **hard-delete bar**: scratch card `kanban rm` on the candidate copy, then `persist_lane_failures` and `deferred_persist_failed` stay 0 for a bounded window; no skip |
+| **0b. Candidate data** | Require `--data real`; candidate copies come from the fresh trial copy. |
+| **2. Candidate check** | Boot the exact candidate on a real copy. Require schemas, the keyed Board title, a keyed BoardCards response, stable primary PID, and memory size below the guard. The driver checks candidate persist status, read latency, and record counts on real copies. |
 | Detect venue | sidebin vs brew |
-| **2c. DEV photograph proof** | After all normal bars pass, the exact pair clones the seed (`--data real`: the static rollback point from step 1). It scrubs production state, connects the copied identity to compiled DEV, and runs the manual snapshot CAS. The fresh v2 receipt must match this Loom execution. |
+| **2c. DEV photograph proof** | The exact pair clones the trial copy, scrubs production state, connects the copied identity to DEV, and publishes a snapshot. The exact CLI restores that manifest from DEV into a source-free home. The fresh v3 receipt must match this Loom execution, this run's trial copy, and the retained restore report. |
 | **2d. Meter restart bar** | Read live status before restart. Refuse a `keep_small` plane above 1.5 GiB or a failed persist lane. The 2 GiB cold-group cap can prevent both new and old binaries from booting. |
-| **3. Live** | Refuse brew. For sidebin, arm the **durability canary** (N run-unique sentinels returned `durable` + read back on the old daemon, **or** `queued+readback` after HTTP 400 on `--durable` plus a queued put and matching nonce read-back; before any live change), arm the boot-ledger restart intent, verify both `.new` hashes before either rename, verify both installed hashes before reload, then reload the LaunchAgent job definition. A post-rename hash failure restores the saved pair before exit. |
-| **4. Post-check** | Exact installed pair hashes, live `/health`, schemas > 0, Board title, **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **durability canary read-back** (stale nonce → RED, no skip flag), **live peak RSS** vs guard, **live point-read + batch-read latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency + durability in notice |
-| **4a. Live soak** | Write and read four new durable canaries on the candidate. Keep the rollback point for at least five minutes by default. `--zero-live-soak` removes only that minimum. At least one fresh GREEN status sample remains required. Check persist failures, write access, and meter size on each status sample. If Cloud Sync was on before cutover, require its confirmed frontier beyond the canary time. A failed or stale bar is RED. |
-| **4b. Release** | After GREEN, delete the rollback point and its empty root. GREEN probe-only and operator abort release it too. |
-| RED | Exit 1, retain the one rollback point, print its path, TTL, and cleanup owner; primary untouched if class/probe failed |
+| **3. Live** | Refuse brew. For sidebin, write the boot-ledger restart intent. Stage and check both candidate files. Stop the old daemon without a forced kill. Require its exact flush receipt and clean session. Copy the stopped primary. Require an exact path and byte check before the rollback point becomes ready. Then replace the saved binary pair and reload the LaunchAgent job. |
+| **4. Post-check** | Exact installed pair hashes, live `/health`, schemas > 0, Board title, **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **live peak RSS** vs guard, **live point-read + batch-read latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency in notice |
+| **4a. Live soak** | Keep the rollback point for at least five minutes by default. `--zero-live-soak` removes only that minimum. At least one fresh GREEN status sample remains required. Check persist failures, write access, and meter size on each status sample. If Cloud Sync was on before cutover, require the cloud frontier to stay at or beyond its pre-live value. A failed or stale bar is RED. |
+| **4b. Release** | After GREEN, delete the stopped rollback point and the trial copy. A GREEN probe-only run and an operator abort delete the trial copy. |
+| RED | Exit 1. Keep the stopped rollback point if one passed its gate. Keep the trial and incomplete copies until the primary recovers. An incomplete copy has no rollback status. A class or probe failure leaves the primary unchanged. |
 
 ### What a probe copy leaves out (`--data real`)
 
-A copy of the synthetic seed has no Search receipts to leave out. With
-`--data real`, every probe copy leaves out one path: `apps/search/inbox/done`. The copies are
-smoke, candidate, baseline, key cap, and write path. The path holds the Search
+Every disposable candidate copy leaves out one path: `apps/search/inbox/done`.
+The current driver uses copies for deployment and latency checks. The path holds the Search
 app's processed batches (217,761 files on 2026-10-08). The daemon only writes
 the Search inbox. It never reads `done/`, and a probe never runs the Search app.
 The papercut measured about 13 minutes for one clone and about 8 minutes for
@@ -739,7 +601,43 @@ seconds and its removal took 34 seconds. An earlier run of an equal filter took
 263 and 207 seconds, so expect a wide range. I did not time a full clone in
 those runs.
 
-The rollback point, the DEV photograph copy, and the stopped-home backup copy
+The stopped copy uses the existing 30 GiB free-space floor before the stop
+and after the copy. The physical disk drop cannot exceed 22 GiB. The copy
+has a 900-second limit. The full-home comparison has a 600-second limit.
+The floor and disk cap match `stopped-home-copy.sh`. The longer copy limit
+allows the measured 13-minute unfiltered clone plus two minutes. The
+comparison reads content across the full home. Its 10-minute limit is a
+bounded allowance for that work. A limit failure returns RED and starts
+old-primary recovery. No rollback point is published in that case.
+The stopped path can use 120 seconds for its data-path check, 900 seconds for
+the copy, and 600 seconds for the comparison. The primary remains unavailable
+during that work and the subsequent reload.
+
+### Release a retained trial or incomplete stopped copy
+
+A RED run keeps its trial and `.incomplete` copies until primary recovery.
+A new run refuses another trial while either copy remains in the rollback
+root. This rule prevents repeated RED runs from adding more copies.
+Use `scripts/cleanup-retained-upgrade-copy.sh` after the primary is healthy.
+The helper requires a supervised socket listener and an exact current session.
+It checks one direct child of the rollback root. The default does not delete.
+`--execute` removes that one copy with a 600-second limit. A timeout can
+leave a partial copy. Run the same command again after the primary check.
+
+```bash
+export LASTDB_ROLLBACK_ROOT=/path/to/lastdb-safe-upgrade-rollback-UID
+helper="$HOME/.last-stack/skills/lastdb-safe-upgrade/scripts/cleanup-retained-upgrade-copy.sh"
+bash "$helper" --copy "$LASTDB_ROLLBACK_ROOT/trial-CANDIDATE-from-CURRENT-YYYYMMDDTHHMMSSZ" \
+  --expect-primary-pid PID --expect-primary-start-ts START_TS \
+  --launchd-label LABEL
+# After READY, repeat the command with --execute.
+```
+
+Use the exact `.incomplete` path for a stopped copy. Read the current PID and
+start time from the primary session file. This helper refuses published
+rollback points. Keep a published point until its recovery need ends.
+
+The trial copy, the DEV photograph copy, and the stopped rollback copy
 keep `done/`. `search bootstrap` replays it, so a copy that can restore the
 primary must hold it. Helper: `probe_clone_home_without_search_receipts` in
 `scripts/probe-copy-guards.sh`. Brain:
@@ -747,8 +645,9 @@ primary must hold it. Helper: `probe_clone_home_without_search_receipts` in
 
 ### Release one retained RED point without a new probe
 
-Use `scripts/cleanup-retained-rollback.sh` only when the failed run ended
-before a live cutover. The helper checks the exact point name and retention
+Use `scripts/cleanup-retained-rollback.sh` only for an older point from the
+former live-copy flow, when that run ended before a live cutover. The helper
+checks the exact point name and retention
 marker, the host owner lock, the primary process start time and build, the
 installed daemon build, and active probe processes. It fails closed if the
 primary status over the Unix socket is unavailable. The default does not
@@ -764,7 +663,7 @@ bash "$helper" --point "$point" --expect-primary-pid PID \
 # After the check reports READY, run the same command with --execute.
 ```
 
-Use the PID and `retained_at` from the failed probe record. Check the current
+Use the PID and `retained_at` from that older record. Check the current
 primary with `lastdb status` first. Do not use this helper after any live
 cutover attempt or when the rollback point may be needed for recovery. A
 release can free less physical disk than `du` reports because APFS clones can
@@ -782,13 +681,11 @@ Always print:
 
 - Current version → candidate version  
 - Venue (sidebin / brew)  
-- Probe data: `PROBE_DATA:` (synthetic or real) and, for synthetic, the seed key and card count
-- Rollback path and whether it was released or retained (TTL + cleanup owner), or `none` for a synthetic probe-only run
+- Candidate data: `PROBE_DATA: real`, copied from the current primary
+- Rollback path and whether it was released or retained (TTL + cleanup owner)
 - Probe GREEN/RED (+ first Board title if green)  
 - **Probe peak RSS MiB vs memory-guard limit / fail_at**  
-- **Latency: cold point/column-list and hot point/batch/write, candidate vs baseline (ms) + boot seconds.** The hot batch uses the receipt key `lat_hot_scan_ms`. A `nothot` pair is dropped.
-- **Key-cap receipt:** `KEYCAP:` with `cap=100`, the sample count, `max_count` at or under the cap, and `purged_keys` above 0.
-- **Hard-delete receipt:** `HARDDELETE:` with the scratch slug, the sample count, `waited_s`, and `persist_lane_failures=0 deferred_persist_failed=0`.
+- **Latency: cold Board/column reads and hot Board/batch reads, candidate vs baseline (ms) + boot seconds.** The hot batch uses the receipt key `lat_hot_scan_ms`. A `nothot` pair is dropped.
 - Whether live upgrade ran + cutover seconds + live peak RSS + live point-read ms  
 - Rollback commands (script prints them)
 
@@ -799,13 +696,7 @@ After a GREEN **live** upgrade the script posts a Situations **notice** so other
 agents can attribute socket blips to the upgrade instead of opening a false
 incident.
 
-Then it starts `last-stack-canary-candidate-gate --primary-rows-only --detach`.
-Host-track installs an app only from a registry `next` row proved with the
-build the primary runs, and a cutover on this path wrote no rows. The step is
-a noop when rows exist. Otherwise it proves the app set against the new build
-in an isolated smoke on the primary's own `lastdbd` and publishes the rows.
-It never builds and never cuts over. The hourly reconcile gate re-runs it if
-this call is missed. `LASTDB_SAFE_UPGRADE_PRIMARY_ROWS=0` turns it off.
+This driver does not create host-track registry rows. App installs may wait for the separate registry process.
 
 ## Reading results
 
@@ -814,7 +705,8 @@ this call is missed. `LASTDB_SAFE_UPGRADE_PRIMARY_ROWS=0` turns it off.
 | `VERDICT: GREEN` | Probe + live cutover + live post-check passed | Done |
 | `VERDICT: GREEN_PROBE_ONLY` | Probe passed; primary still on old version | Start `last-stack-safe-upgrade-loom` with the candidate and source commit if Tom wants the upgrade |
 | `VERDICT: ALREADY_CURRENT` | Already on candidate/stable | Nothing to do |
-| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (per-op 3×, absolute ceiling, **or correlated** all-ops / geo-mean regression), **or** the **row-count bar** failed (a real read returned 0 rows where the baseline returned rows), **or** the **key-cap bar** failed (budget not the requested cap, count above budget, or no purge), **or** the **hard-delete bar** failed (a card hard delete on the copy raised a persist-lane or deferred-persist failure, or the write or delete did not happen), **or** the exact-candidate DEV proof failed, **or** its v2 receipt is stale or mismatched, **or** the **durability canary** lacks an exact durable receipt before cutover, **or** its post-cutover read is stale, **or** the primary LaunchAgent does not own the live process, **or** a meter, persist-lane, supervision, or cloud-frontier bar failed | **Do not upgrade**. File a release blocker. Use the retained rollback point only when recovery needs it. The next safe-upgrade run reclaims it. A durability RED after cutover means you must audit recent writes. A binary rollback cannot recover lost writes. |
+| `VERDICT: RED` | A candidate, DEV restore, stopped flush, rollback copy, live health, or cloud check failed. | Stop the upgrade. Keep a valid rollback copy when recovery needs it. |
+
 
 ## Rollback
 
@@ -867,17 +759,6 @@ kanban list   # must show real cards
 
 ## Related skills / harnesses
 
-- **`lastdb-smoke-test`** — probe-only CoW canary (no persistent backup, no live install).
-  Safe-upgrade **calls** its harness for step 2.
-- **Write-path CoW probe (Table 5 / T0 ack):** `scripts/write-path-cow-probe.sh`
-  clones the live home with `cp -cR` into `${TMPDIR}` (never `--data-dir ~/.lastdb`),
-  reuses `live_lastdb_env_pairs()`, strips prod `cloud_sync.json`, and classifies
-  a warm BoardCards mutation. Incumbent-shaped samples (seconds-scale ack,
-  persist/T2 on the request, Purge in the batch) are **RED**. Table 5 GREEN is
-  persist spawn-only, `sync_capture` encode-only, `purge_barrier` ≈ 0, warm
-  p50 < 50 ms / p95 < 100 ms. This probe does not replace safe-upgrade; it is
-  the extra write-path bar. `LASTDB_RESIDENT_MAX_DEFERRED_BYTES` on the live
-  plist stays 0 until full GREEN plus Tom.
 - **`brain-doctor`** — if primary is already wedged **before** upgrade; fix health first.
 - Design: **`lastdb-minimal-downtime-cutover`** (venue + optional proxy phase).
 
@@ -891,9 +772,7 @@ kanban list   # must show real cards
   safety lock. Wait for the first owner to exit. The lock covers rollback
   cleanup, the real-data probe, and the live cutover.
 - Point candidate `--data-dir` at live `~/.lastdb` "just to see".
-- Edit a seed by hand, or read the real `~/.fkanban` or `~/.brain` config on a seed
-  copy. The seed pins other schema hashes. Delete the seed and let the driver
-  rebuild it.
+- Reuse a prior rollback copy as the current primary copy.
 - Set `LASTDB_BUILD_CONFLICT_STAMP_ON_COPY` on the primary LaunchAgent, or copy the ephemeral copy's conflict stamp onto the primary home.
 - Read a probe's fast, empty query result as a pass. Count the rows.
 - Upload a CoW/ephemeral photograph into the primary's **production** backup
@@ -932,4 +811,4 @@ multi-second→60s until bak rollback (candidate-class bar + live scan post-chec
 `incident-20260801-debug-worktree-lastdbd-primary-cutover-latency`.
 2026-08-05 canary `0.23.3-canary.20260801` passed per-op 3× while slower on
 every axis (1.6–2.4×) — a 4-day git rollback promoted as a semver "upgrade";
-correlated latency term + canary ancestry/soak-write gates close the hole.
+The correlated latency term and source ancestry checks address the read regression and source error.
