@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build LastDB Mini from fold `main` tip (GitHub) and stage it for canary dogfood.
+# Build LastDB Mini from public LastDB `main` tip (GitHub) and stage it for canary dogfood.
 #
 # Completes the auto-release loop:
 #   build-main (this) → dogfood cutover → 24h soak → brew promote
@@ -26,7 +26,7 @@ usage() {
 Usage:
   last-stack-canary-build-main [--dry-run] [--force] [--skip-build] [--json]
 
-Build fold main tip (Forge origin) and stage binaries for lastdb-canary-dogfood.
+Build public LastDB main tip (GitHub origin) and stage binaries for lastdb-canary-dogfood.
 
 Options:
   --dry-run      Resolve main tip + report; do not build or write stages
@@ -36,9 +36,9 @@ Options:
   -h, --help     Show help
 
 Env:
-  LAST_STACK_CANARY_FOLD_MIRROR     bare/clone of fold (default ~/.cache/edgevector-git/fold.git)
+  LAST_STACK_CANARY_FOLD_MIRROR     bare/clone of LastDB (default ~/.cache/edgevector-git/lastdb.git)
   LAST_STACK_CANARY_BUILDS_DIR      stage root (default ~/.local/state/last-stack/canary-builds)
-  LAST_STACK_CANARY_BUILD_WORKDIR   checkout for cargo (default …/canary-build/fold-worktree)
+  LAST_STACK_CANARY_BUILD_WORKDIR   checkout for cargo (default …/canary-build/lastdb-worktree)
   LAST_STACK_CANARY_FETCH_MAIN      1 (default) fetch origin main before resolve
   LAST_STACK_CANARY_CARGO_CMD       full cargo command override
   LAST_STACK_CANARY_BUILD_BIN_DIR   with --skip-build: dir with all three binaries
@@ -110,9 +110,9 @@ done
 RESTORE_SCRIPT_REL="scripts/run-lastdb-restore-probe.sh"
 
 HOME_DIR="${HOME:-$(eval echo ~)}"
-FOLD_MIRROR="${LAST_STACK_CANARY_FOLD_MIRROR:-$HOME_DIR/.cache/edgevector-git/fold.git}"
+FOLD_MIRROR="${LAST_STACK_CANARY_FOLD_MIRROR:-$HOME_DIR/.cache/edgevector-git/lastdb.git}"
 BUILDS_DIR="${LAST_STACK_CANARY_BUILDS_DIR:-$HOME_DIR/.local/state/last-stack/canary-builds}"
-WORKDIR="${LAST_STACK_CANARY_BUILD_WORKDIR:-$HOME_DIR/.local/state/last-stack/canary-build/fold-worktree}"
+WORKDIR="${LAST_STACK_CANARY_BUILD_WORKDIR:-$HOME_DIR/.local/state/last-stack/canary-build/lastdb-worktree}"
 FETCH_MAIN="${LAST_STACK_CANARY_FETCH_MAIN:-1}"
 KEEP="${LAST_STACK_CANARY_BUILD_KEEP:-5}"
 TARGET="${LAST_STACK_CANARY_TARGET:-aarch64-apple-darwin}"
@@ -126,11 +126,11 @@ case ":$PATH:" in
   *) export PATH="$HOME_DIR/.cargo/bin:$PATH" ;;
 esac
 
-[ -d "$FOLD_MIRROR" ] || die "fold mirror not found: $FOLD_MIRROR (clone/fetch EdgeVector/fold from GitHub first: cd ~/code/edgevector/fold && ./bin/wt fetch)"
+[ -d "$FOLD_MIRROR" ] || die "LastDB mirror not found: $FOLD_MIRROR (clone/fetch EdgeVector/lastdb from GitHub first: cd ~/code/edgevector/lastdb && ./bin/wt fetch)"
 
-# EdgeVector/fold is canonical on GitHub since 2026-09-29 (brain
-# decision-2026-09-29-fold-venue-back-to-github); the mirror's origin is
-# GitHub. Plain git reads it through the gh credential helper. Do NOT use the
+# EdgeVector/lastdb is the public product repo since 2026-10-09.
+# The mirror's origin is GitHub. Plain git uses the gh credential helper.
+# Do NOT use the
 # Forgejo token wrapper here: it would send the Forgejo token to GitHub.
 # Fetch into refs/remotes/origin/main: a registered worktree can pin
 # refs/heads/main and freeze it (the fetch then fails).
@@ -154,7 +154,7 @@ resolve_main_oid() {
       return 0
     fi
   done
-  die "could not resolve fold main tip in $FOLD_MIRROR"
+  die "could not resolve LastDB main tip in $FOLD_MIRROR"
 }
 
 # The probe script must carry the corrupt-restore proof and the RED-path report
@@ -267,7 +267,7 @@ ensure_worktree() {
     # Prefer mirror as remote if worktree came from it
     if ! run_bounded "$STEP_TIMEOUT" git -C "$WORKDIR" cat-file -e "${oid}^{commit}" 2>/dev/null; then
       run_bounded "$STEP_TIMEOUT" git -C "$WORKDIR" fetch "$FOLD_MIRROR" "$oid" 2>/dev/null || \
-        run_bounded "$STEP_TIMEOUT" git -C "$FOLD_MIRROR" fetch origin refs/heads/main:refs/heads/main 2>/dev/null || true
+        run_bounded "$STEP_TIMEOUT" git -C "$FOLD_MIRROR" fetch origin +refs/heads/main:refs/remotes/origin/main 2>/dev/null || true
     fi
     if ! run_bounded "$STEP_TIMEOUT" git -C "$WORKDIR" checkout --detach "$oid" 2>/dev/null; then
       # recreate
@@ -310,7 +310,7 @@ PY
 
 main_oid="$(resolve_main_oid)"
 stage_dir="$BUILDS_DIR/$main_oid"
-log "fold main tip ${main_oid:0:12} (full=$main_oid)"
+log "LastDB main tip ${main_oid:0:12} (full=$main_oid)"
 
 if [ "$force" -eq 0 ] && stage_is_current "$stage_dir" "$main_oid"; then
   ver="$("$stage_dir/lastdbd" --version 2>/dev/null | awk '{print $NF}' || echo unknown)"
@@ -382,7 +382,7 @@ write_simple_manifest "$tmp_stage/manifest.json" "$main_oid" "$lastdb_ver" "$las
 package_sh=""
 for candidate in \
   "$WORKDIR/scripts/release/package-lastdb-bundle.sh" \
-  "$HOME_DIR/code/edgevector/fold/scripts/release/package-lastdb-bundle.sh"
+  "$HOME_DIR/code/edgevector/lastdb/scripts/release/package-lastdb-bundle.sh"
 do
   if [ -f "$candidate" ]; then
     package_sh="$candidate"

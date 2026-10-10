@@ -65,12 +65,12 @@ stale copy here would silently regress the procedure.
   `lastdbd` with `last-stack-canary-resolve-lastdbd --json --allow-newest --allow-current --allow-daemon-only`
   (exact smoke-staged SHA, then `canary-builds/<oid>`, then newest stage, then
   `~/.lastdb/current/lastdbd`). If status is `need_build`, stamp
-  `noop reason=no-staged-lastdbd` and stop — `lastdb-canary-candidate-set` (which builds fold main first) is the
+  `noop reason=no-staged-lastdbd` and stop — `lastdb-canary-candidate-set` (which builds LastDB main first) is the
   180-minute builder. A cold compile will eat the whole smoke timebox.
 - Touch `~/.lastdb` or `~/.folddb` directly, or kill/restart the primary
   LastDB brain. This test always runs against a throwaway COW copy on an isolated
   port — see the SOP's Hard rules for the exact recipe.
-- Build in the shared `~/code/edgevector/fold` checkout in place — it's
+- Build in the shared `~/code/edgevector/lastdb` checkout in place — it's
   frequently behind `origin/main`. Never `git reset`/`checkout` the shared
   checkout.
 - Trust a fresh binary mtime as proof the build is good — a `cargo build`

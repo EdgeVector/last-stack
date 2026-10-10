@@ -126,7 +126,7 @@ silent-kill failure this design removes.
    - **Docs lag** (public llms.txt wrong) → card on `EdgeVector/fold_db_website`
    - **Installer** → `EdgeVector/last-stack`
    - **App init** → `EdgeVector/brain` / `fkanban` / `situations`
-   - **Daemon/socket** → `EdgeVector/fold` or homebrew-lastdb as appropriate
+   - **Daemon/socket** → `EdgeVector/lastdb` or homebrew-lastdb as appropriate
    - **Incomplete canary** (no VERDICT / background killed) → `EdgeVector/last-stack`
      (routine harness / prompt discipline), not product install, unless product
      steps also failed

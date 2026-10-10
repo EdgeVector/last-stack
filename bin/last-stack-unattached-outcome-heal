@@ -86,7 +86,7 @@ is_live_ms_state() {
 # complete/abandoned defaults are ignored so we do not attach to a finished outcome.
 default_ms_for_repo() {
   case "$1" in
-    EdgeVector/fold) printf '%s\n' "ms-lastdb-read-path-and-write-gate-hygiene" ;;
+    EdgeVector/lastdb) printf '%s\n' "ms-lastdb-read-path-and-write-gate-hygiene" ;;
     EdgeVector/last-stack) printf '%s\n' "ms-host-track-ops-hygiene-wave2" ;;
     EdgeVector/lastgit) printf '%s\n' "ms-lastgit-agent-ops-hygiene-aug2026" ;;
     EdgeVector/fkanban) printf '%s\n' "ms-fkanban-milestone-proof-integrity" ;;

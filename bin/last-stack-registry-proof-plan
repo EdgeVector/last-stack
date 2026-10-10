@@ -2,8 +2,7 @@
 """Decide, with no lastdb binary and no secret, what the registry proof should do.
 
 The scheduled `registry-proof` workflow runs this on a cheap ubuntu runner. It
-answers three questions from files, so each one has a fixture test
-(tests/last-stack-registry-proof-plan.sh):
+answers these questions from explicit files:
 
   select-build   Which lastdb build does the proof target?
                  The override target in config/registry/proof-builds.json when

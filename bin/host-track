@@ -369,7 +369,7 @@ git_dirty() {
 # `freshness=hard_broken` for a healthy install. The publish lane was never the
 # problem. Measured 2026-09-07:
 #
-#   git ls-remote http://localhost:3300/EdgeVector/fold.git refs/heads/main
+#   git ls-remote https://github.com/EdgeVector/lastdb.git refs/heads/main
 #     -> fatal: could not read Username for 'http://localhost:3300'
 #   same ref with the token as an extraHeader
 #     -> 120627d8889c074ffe31e7ee4d11e6606f788b22
@@ -945,7 +945,7 @@ github_main_tip() {
 # The registry is the ONLY correct source for this. Three of the seventeen
 # registered apps do not share a name with their repo -- kanban is
 # EdgeVector/fkanban, state-machine is EdgeVector/state-machine-app, and both
-# lastdb and lastdbd are EdgeVector/fold -- so deriving the repo from the app
+# lastdbd is EdgeVector/lastdb -- so deriving the repo from the app
 # name would ask the policy store about a repo that does not exist and get an
 # unconditional OK. Both venue spellings appear in the wild: the forge URL form
 # every app uses today, and the retired `lastdb:///<slug>` form.

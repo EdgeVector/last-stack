@@ -35,8 +35,9 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$_self_src")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 
 if [ -z "$OID" ]; then
-  OID="$(git -C "${HOME}/.cache/edgevector-git/fold.git" rev-parse refs/heads/main 2>/dev/null || true)"
-  [ -n "$OID" ] || { echo "last-stack-canary-loom-rehearse: no --oid given and fold main is unresolvable" >&2; exit 2; }
+  OID="$(git -C "${LAST_STACK_CANARY_FOLD_MIRROR:-$HOME/.cache/edgevector-git/lastdb.git}" rev-parse --verify refs/remotes/origin/main 2>/dev/null || \
+    git -C "${LAST_STACK_CANARY_FOLD_MIRROR:-$HOME/.cache/edgevector-git/lastdb.git}" rev-parse --verify refs/heads/main 2>/dev/null || true)"
+  [ -n "$OID" ] || { echo "last-stack-canary-loom-rehearse: no --oid given and LastDB main is unresolvable" >&2; exit 2; }
 fi
 
 key="canary-rehearse-$(date -u +%Y%m%dT%H%M%SZ)"

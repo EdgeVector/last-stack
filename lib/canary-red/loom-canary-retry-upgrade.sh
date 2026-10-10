@@ -124,7 +124,7 @@ try:
             "--action",
             "lastdb-safe-upgrade",
             "--repo",
-            "EdgeVector/fold",
+            "EdgeVector/lastdb",
         ],
         capture_output=True,
         text=True,

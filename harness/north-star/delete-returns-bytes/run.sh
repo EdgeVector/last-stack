@@ -21,7 +21,7 @@ MODE="$(ns_mode)"
 notes=()
 append() { notes+=("$1"); }
 
-FOLD="$(ns_repo_path fold)"
+FOLD="$(ns_repo_path lastdb)"
 
 require_fold_tree() {
   if [ ! -d "$FOLD/fold_db/crates/core/src" ]; then

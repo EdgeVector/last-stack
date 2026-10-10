@@ -209,7 +209,7 @@ def main(argv: list[str]) -> int:
     git_dir = Path(
         args.git_dir
         or os.environ.get("LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR", "").strip()
-        or Path.home() / ".cache" / "edgevector-git" / "fold.git"
+        or Path.home() / ".cache" / "edgevector-git" / "lastdb.git"
     ).expanduser()
     candidate_commit = resolve_commit(git_dir, candidate_oid)
     current_commit = resolve_commit(git_dir, current_oid)
@@ -221,7 +221,7 @@ def main(argv: list[str]) -> int:
         }
     )
     if not candidate_commit or not current_commit:
-        return emit(False, "unknown", "source commit cannot be resolved in the Fold mirror", **common)
+        return emit(False, "unknown", "source commit cannot be resolved in the LastDB mirror", **common)
     if candidate_commit == current_commit:
         return emit(True, "current", "candidate source equals the live source", **common)
 

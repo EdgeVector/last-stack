@@ -256,7 +256,7 @@ A card that's meant to be implemented should carry, in its `--body`:
    Kind: pr
    ```
 
-   Field meanings — `Repo`: `owner/name` (e.g. `EdgeVector/fold`) or an
+   Field meanings — `Repo`: `owner/name` (e.g. `EdgeVector/lastdb`) or an
    absolute local Git checkout path; `Base`: base branch; `Branch`: optional,
    defaults to `kanban/<slug>`; `Kind`: `pr | tracker | validation | meta`
    for new cards (`registry` only for legacy registry-record cards).
@@ -269,7 +269,7 @@ A card that's meant to be implemented should carry, in its `--body`:
    > **⚠️ Keep each header value a single clean token on its own line.**
    > `kanban-pickup` resolves `Repo:` **literally** — it does NOT strip
    > trailing `# comments`, parentheticals, or prose. A dirty value
-   > (`Repo: EdgeVector/fold  # defaulted`, `Repo: fold (also touches exemem-infra)`,
+   > (`Repo: EdgeVector/lastdb  # defaulted`, `Repo: lastdb (also touches exemem-infra)`,
    > `Repo: last-stack`, `Repo: none`, or `Base:`/`Branch:` mashed onto the
    > `Repo:` line) is treated as **unresolvable** and the card is force-blocked
    > into `review`/`needs_human` — the #1 cause of stranded cards. So:

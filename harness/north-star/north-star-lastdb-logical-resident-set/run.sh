@@ -2,8 +2,8 @@
 # north-star-slug: north-star-lastdb-logical-resident-set
 # Terminal proof for North Star "LastDB Memory Keeps Keys".
 #
-# Offline reads EdgeVector/fold origin/main from the bare mirror
-# ~/.cache/edgevector-git/fold.git. It does not fetch. It does not open a
+# Offline reads EdgeVector/lastdb origin/main from the bare mirror
+# ~/.cache/edgevector-git/lastdb.git. It does not fetch. It does not open a
 # LastDB home. It names each absent piece:
 #   fold_db/scripts/logical-resident-set-copy-proof.sh
 #   fold_db/crates/core/src/resident/range.rs
@@ -34,7 +34,7 @@ ROOT="$(cd "$(dirname "$0")/../../.." && pwd -P)"
 
 SLUG=north-star-lastdb-logical-resident-set
 MODE="$(ns_mode)"
-MIRROR="${LOGICAL_RESIDENT_SET_FOLD_MIRROR:-$HOME/.cache/edgevector-git/fold.git}"
+MIRROR="${LOGICAL_RESIDENT_SET_FOLD_MIRROR:-$HOME/.cache/edgevector-git/lastdb.git}"
 PIECE_SCRIPT="fold_db/scripts/logical-resident-set-copy-proof.sh"
 PIECE_RANGE="fold_db/crates/core/src/resident/range.rs"
 PIECE_SET="fold_db/crates/core/src/resident/logical_set.rs"

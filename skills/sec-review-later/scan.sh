@@ -14,7 +14,7 @@
 # lives in this skill dir as .reviewed-through (a sha). Nothing here writes to the repo.
 set -euo pipefail
 
-REPO="${FOLD_REPO:-$HOME/code/edgevector/fold}"
+REPO="${FOLD_REPO:-$HOME/code/edgevector/lastdb}"
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CKPT="$SKILL_DIR/.reviewed-through"
 

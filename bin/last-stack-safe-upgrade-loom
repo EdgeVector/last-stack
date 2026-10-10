@@ -155,7 +155,7 @@ if [ "$STAND_IN" -eq 0 ] && [ -z "$SOURCE_OID" ]; then
   SOURCE_OID="$(printf '%s\n' "$candidate_version" | sed -n 's/.*-g\([0-9a-fA-F][0-9a-fA-F]*\).*/\1/p')"
 fi
 
-fold_git="${LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR:-$HOME/.cache/edgevector-git/fold.git}"
+fold_git="${LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR:-$HOME/.cache/edgevector-git/lastdb.git}"
 if [ "$STAND_IN" -eq 0 ]; then
   case "$SOURCE_OID" in
     ''|*[!0-9a-fA-F]*) die "candidate source Git OID is required" ;;
@@ -163,7 +163,7 @@ if [ "$STAND_IN" -eq 0 ]; then
   [ "${#SOURCE_OID}" -ge 7 ] && [ "${#SOURCE_OID}" -le 40 ] \
     || die "candidate source Git OID must contain 7 to 40 hexadecimal characters"
   if [ "${#SOURCE_OID}" -lt 40 ]; then
-    [ -d "$fold_git" ] || die "Fold mirror is required to resolve short source OID $SOURCE_OID"
+    [ -d "$fold_git" ] || die "LastDB mirror is required to resolve short source OID $SOURCE_OID"
     SOURCE_OID="$(git -C "$fold_git" rev-parse --verify "${SOURCE_OID}^{commit}" 2>/dev/null || true)"
   fi
   printf '%s\n' "$SOURCE_OID" | grep -Eq '^[0-9a-fA-F]{40}$' \
