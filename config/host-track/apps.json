@@ -104,10 +104,6 @@
           "target": "$HOME/.local/bin/last-stack-prose-citation-check"
         },
         {
-          "source": "bin/last-stack-mutation-probe",
-          "target": "$HOME/.local/bin/last-stack-mutation-probe"
-        },
-        {
           "source": "bin/last-stack-vocab",
           "target": "$HOME/.local/bin/last-stack-vocab"
         },
@@ -362,6 +358,11 @@
         {
           "source": "bin/last-stack-safe-upgrade-cli",
           "target": "$HOME/.local/bin/last-stack-safe-upgrade-cli"
+        }
+      ],
+      "retired_links": [
+        {
+          "target": "$HOME/.local/bin/last-stack-mutation-probe"
         }
       ],
       "notes": "Gate of record is GitHub EdgeVector/last-stack since 2026-09-30 (brain decision-2026-09-29-retire-lastgit-all-repos-to-github, sop-github-artifact-app-migration). The push-to-main `publish` job of ci-required.yml calls the same-repo reusable workflow host-track-artifact.yml and uploads ht-artifact-<sha>; `host-track refresh last-stack` runs last-stack-github-artifact-pull, which checks the ci-required check run, the digests and the provenance, then promotes the stable channel in artifact_root. The LastGit artifact-release watcher is retired; lastdb:///last-stack is disabled and the Forgejo copy is archived. Host Track installs the stable channel with the existing soak policy. Runtime is an immutable artifact. ~/.last-stack/{bin,skills,...} → artifacts/current. PATH links Class A, pickup bootstrap, and closeout tools to live artifact paths. Never develop in the install; use a worktree.",
