@@ -185,7 +185,8 @@ PR merged into <base>.
 EOF
 <board-cli> add <slug> --board <board> --title "<title>" --column todo \
   --tags devops,ci < "$body_file"
-# No cleanup step: the Codex exec guard rejects file deletion. $TMPDIR is the run scratch dir.
+# After this use, clean up owned scratch through the supported exact-path cleanup.
+# Keep any proof receipt still required for review or recovery; do not bypass the exec guard.
 ```
 
 Before filing, search the board and Brain for existing work covering the same

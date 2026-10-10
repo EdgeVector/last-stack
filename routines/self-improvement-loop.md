@@ -81,7 +81,8 @@ Window: the LAST 24 HOURS of sessions. If that yields little signal (fewer than
       --records-output "$scratch/recent.jsonl" \
       >"$scratch/summary.json"
     rg -i "<pattern>" "$scratch/recent.jsonl" || true
-    # No cleanup step: the Codex exec guard rejects file deletion. $TMPDIR is the run scratch dir.
+    # After this use, clean up owned scratch through the supported exact-path cleanup.
+    # Keep any proof receipt still required for review or recovery; do not bypass the exec guard.
   fi
   ```
   If the installed `onecontext` skill recommends Aline commands but the binary

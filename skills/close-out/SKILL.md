@@ -341,7 +341,8 @@ tags: [closeout]
 <what was not done, and why it is safe to leave>
 EOF
 brain put closeout-<YYYYMMDD>-<short-kebab> --type reference < "$body_file"
-# No cleanup step: the Codex exec guard rejects file deletion. $TMPDIR is the run scratch dir.
+# After this use, clean up owned scratch through the supported exact-path cleanup.
+# Keep any proof receipt still required for review or recovery; do not bypass the exec guard.
 ```
 
 A `reference` status is `active`, `parked`, `broken` or `archived`. `done`
@@ -425,7 +426,8 @@ tags: [decisions]
 <what was chosen, why, what it unblocks — literal `backticks`/$(examples) safe>
 EOF
 brain put decision-<date>-<short-kebab> --type decision < "$body_file"
-# No cleanup step: the Codex exec guard rejects file deletion. $TMPDIR is the run scratch dir.
+# After this use, clean up owned scratch through the supported exact-path cleanup.
+# Keep any proof receipt still required for review or recovery; do not bypass the exec guard.
 ```
 
 **For a milestone / why-note that is NOT a decision** (a settled fact,
@@ -444,7 +446,8 @@ tags: [<...>]
 <body with literal `backticks` and $(examples)>
 EOF
 brain put <slug> --type project < "$body_file"
-# No cleanup step: the Codex exec guard rejects file deletion. $TMPDIR is the run scratch dir.
+# After this use, clean up owned scratch through the supported exact-path cleanup.
+# Keep any proof receipt still required for review or recovery; do not bypass the exec guard.
 ```
 
 ## 6. Update superseded brain records and stale kanban cards

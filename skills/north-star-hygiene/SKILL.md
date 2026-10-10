@@ -147,7 +147,8 @@ Card field `north_star: __NORTH_STAR_SLUG__` is canonical — do not invent a se
 EOF
 perl -0pi -e 's/__NORTH_STAR_SLUG__/$ENV{NORTH_STAR_SLUG}/g' "$body_file"
 brain put "$slug" --type project <"$body_file"
-# No cleanup step: the Codex exec guard rejects file deletion. $TMPDIR is the run scratch dir.
+# After this use, clean up owned scratch through the supported exact-path cleanup.
+# Keep any proof receipt still required for review or recovery; do not bypass the exec guard.
 brain get "$slug" --type project | head -20   # confirm
 ```
 
