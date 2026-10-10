@@ -64,9 +64,18 @@ Helpers that remove the hand-written parse:
   `kanban show <slug> --json | last-stack-json-get .body` (also `.tags`,
   `.column`). `kanban show` gives one object; `kanban list` gives
   `{cards: [...]}`; do not mix the two shapes in one `jq` call.
-- The Codex exec guard (inside the Codex app) rejects any `rm -f` / `rm -rf`.
-  Put scratch files in `mktemp` paths under `$TMPDIR` and do not clean up; the
-  run-dir prune removes them. That rejection is known too: do not file it.
+- **Always clean up owned temporary data (Tom, 2026-10-10).** Put scratch files
+  in a fresh `mktemp` path under `$TMPDIR`. After the work, stop each owned
+  ephemeral node and delete its owned scratch files and temporary copies.
+  First preserve the proof receipts required for review or recovery.
+  Keep a copy while a required proof or recovery still needs it.
+  Never delete primary data, another agent's data, or a copy with a live owner.
+  Check the exact path, realpath, owner, and node state before cleanup.
+  Use the supported cleanup command for that copy when one exists.
+  The Codex exec guard rejects `rm -f` / `rm -rf`; do not bypass it.
+  If the supported exact-path cleanup requires approval, prepare it for review.
+  Report a refused cleanup and retain the path until an authorized cleanup succeeds.
+  A guard rejection alone is known behavior; do not file it as a papercut.
 - In Claude Code, `grep` is ugrep (shell snapshot function). A bounded-context
   regex such as `'.\{0,200\}word'` fails with "exceeds complexity limits" and
   looks like no match. Use `/usr/bin/grep` or `rg -o '.{0,200}word'`.

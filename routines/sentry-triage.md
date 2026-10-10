@@ -98,7 +98,8 @@ for line in text.splitlines():
 PY
 )"
 done
-# No cleanup step: the Codex exec guard rejects file deletion. $TMPDIR is the run scratch dir.
+# After this use, clean up owned scratch through the supported exact-path cleanup.
+# Keep any proof receipt still required for review or recovery; do not bypass the exec guard.
 ```
 
 Valid `statsPeriod` values are only ``, `24h`, and `14d`.

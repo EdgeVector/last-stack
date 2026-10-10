@@ -344,7 +344,8 @@ stands up, `todo` is freshly stocked and the pipeline takes over.
       Rationale: <one line, in Tom's framing>
       EOF
       brain put "$slug" --type decision < "$body_file"
-      # No cleanup step: the Codex exec guard rejects file deletion. $TMPDIR is the run scratch dir.
+      # After this use, clean up owned scratch through the supported exact-path cleanup.
+      # Keep any proof receipt still required for review or recovery; do not bypass the exec guard.
       ```
       This is the permanent memory — "remember all the decisions." Each decision
       is its own record (discover via `brain search`/`ask` + `brain get`; never
