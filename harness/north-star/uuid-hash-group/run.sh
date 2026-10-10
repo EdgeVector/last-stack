@@ -12,7 +12,6 @@ MODE="$(ns_mode)"
 FOLD_ROOT="$(ns_repo_path lastdb)"
 COW_PROOF="${UUID_HASH_GROUP_COW_PROOF_FILE:-$HOME/.local/state/last-stack/runtime/north-star-proofs/${SLUG}-cow.md}"
 PRIMARY_HOME="${UUID_HASH_GROUP_PRIMARY_HOME:-$HOME/.lastdb}"
-TARGET_DIR="${UUID_HASH_GROUP_CARGO_TARGET_DIR:-$HOME/.cache/last-stack/north-star-proof-target}"
 
 fail() {
   ns_write_report "$SLUG" FAIL "$1" || exit 1
@@ -47,17 +46,6 @@ require_text "$FOLD_ROOT/vendor/laststore/src/options.rs" \
   'hash_group_warm_bytes: DEFAULT_HASH_GROUP_WARM_BYTES' 'the default warm set is bounded'
 require_text "$FOLD_ROOT/vendor/laststore/src/options.rs" \
   'DEFAULT_HASH_GROUP_WARM_MAX_HANDLES: usize = 64' 'the default append descriptor set is bounded'
-require_text "$FOLD_ROOT/fold_db/crates/core/src/fold_db_core/factory/local.rs" \
-  'adapter_open_creates_uuid_hash_group_home' 'the Fold factory has a new-home behavior proof'
-require_text "$FOLD_ROOT/fold_db/crates/core/src/fold_db_core/factory/local.rs" \
-  'adapter_open_serves_legacy_journal_records' 'the Fold factory preserves legacy journal reads'
-require_text "$FOLD_ROOT/vendor/laststore/tests/warm_set_handle_cap.rs" \
-  'the_descriptor_gauge_tracks_closes_as_well_as_opens' 'warm-set descriptor metrics are observable'
-require_text "$FOLD_ROOT/vendor/laststore/tests/plain_seg_backup_addressing.rs" \
-  'every_enumerated_plain_chunk_verifies_on_hash_group_home' 'group files have stable backup addresses'
-require_text "$FOLD_ROOT/vendor/laststore/tests/fault_injection.rs" \
-  'hash_group_sealed_chunk_corruption_quarantines_and_install_chunk_restores' 'a group chunk restores as-is'
-
 # Preserve the immutable real-data bar. It records the source fingerprint,
 # 11M-document parity, a successful reopen, and no promotion of the CoW copy.
 [ "$(sed -n '1p' "$COW_PROOF")" = PASS ] || fail "CoW proof verdict is not PASS: $COW_PROOF"
@@ -72,11 +60,10 @@ for evidence in \
 done
 
 sync_before="$(sync_config_state)"
-test_evidence="source contracts and immutable CoW evidence"
+source_evidence="source contracts and immutable CoW evidence"
 sync_evidence="primary sync configuration was not inspected in offline mode"
 
 if [ "$MODE" = live ]; then
-  ns_require_cmd cargo || fail "cargo is required for the live behavior proof"
   ns_require_cmd brain || fail "brain is required to verify the current sync authority"
   ns_require_cmd lastdb || fail "lastdb is required to read current primary status"
 
@@ -92,26 +79,13 @@ if [ "$MODE" = live ]; then
   printf '%s\n' "$policy" | grep -Eiq 'cloud_sync\.json restored|re-enabled' || \
     fail "cloud-sync checkpoint does not record the later re-enable"
 
-  mkdir -p "$TARGET_DIR"
-  (
-    cd "$FOLD_ROOT"
-    CARGO_TARGET_DIR="$TARGET_DIR" cargo test -p laststore \
-      --test hash_group new_home_defaults_to_hash_group_and_places_by_uuid -- --exact
-    CARGO_TARGET_DIR="$TARGET_DIR" cargo test -p fold_db --lib adapter_open_ -- --nocapture
-    CARGO_TARGET_DIR="$TARGET_DIR" cargo test -p laststore --test warm_set_handle_cap
-    CARGO_TARGET_DIR="$TARGET_DIR" cargo test -p laststore \
-      --test plain_seg_backup_addressing
-    CARGO_TARGET_DIR="$TARGET_DIR" cargo test -p laststore --test fault_injection \
-      hash_group_sealed_chunk_corruption_quarantines_and_install_chunk_restores -- --exact
-  )
-
   sync_line="$(lastdb status | grep '^Sync:' | head -n 1)"
   [ -n "$sync_line" ] || fail "primary status did not expose a Sync line"
   sync_after="$(sync_config_state)"
   [ "$sync_before" = "$sync_after" ] || \
     fail "the live proof changed the primary cloud-sync configuration"
 
-  test_evidence="five focused behavior bars passed against Fold main"
+  source_evidence="source contracts and the immutable real-data copy evidence remained available"
   sync_evidence="the Tom-authorized sync configuration remained byte-identical; status exposed: $sync_line"
 fi
 
@@ -123,11 +97,9 @@ Fold source: $FOLD_ROOT
 CoW evidence: $COW_PROOF
 
 - New homes use deterministic UUID hash-group placement.
-- Existing journal homes reopen and serve their recorded values.
 - The warm set has a 256 MiB byte budget, a 64-descriptor cap, and observable gauges.
-- Hash-group chunk enumeration and as-is restore behavior are proven on throwaway fixtures.
 - The immutable real-data CoW proof preserves 11,472,142 documents and never promotes its destination.
-- $test_evidence.
+- $source_evidence.
 - $sync_evidence.
 
 The harness never opens, starts, stops, or writes the primary LastDB home.

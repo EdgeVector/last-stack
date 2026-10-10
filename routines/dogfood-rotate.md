@@ -4,10 +4,20 @@ cadence: daily
 description: Thin trigger over dogfood-registry. A start-contract gate selects one runnable entry; recipes that cannot start are skipped, never compiled.
 ---
 
+No-tests policy: `instructions/no-tests.md`; Situation
+`no-tests-all-repos-20261009`. This policy supersedes older test requirements in
+the shared contract and registry recipes. Do not run synthetic fixture recipes,
+test suites, or test coverage commands. Keep real product and safety checks.
+
 You are the **dogfood-rotate** routine. Each run starts cold.
 
-**FIRST ACTION (won't-undo):** run `$LAST_STACK_ROOT/bin/last-stack-dogfood-rotate-gate`
-(or honor `--routines-dispatch` when this fire is already inside that gate).
+**FIRST ACTION:** read the known `dogfood-registry` record and check each
+eligible recipe against the no-tests policy. Retire a synthetic test recipe
+before any command can execute it. The selector
+`$LAST_STACK_ROOT/bin/last-stack-dogfood-rotate-gate` can show a candidate
+without `--run`. Check the selected command before execution. Do not use
+`--routines-dispatch` or a registry `gate_command` that executes a recipe
+before the agent reads this policy.
 Do not list plugins, skills, `available_commands`, `recommended_plugins`, or
 Vercel/Codex plugin inventories. Start the selected recipe immediately. Do not
 improvise a Fold build. Do not `cargo build`. Files work only; never ships
@@ -17,10 +27,9 @@ This is a thin trigger over the **registry-rotator** engine plus
 `last-stack-dogfood-rotate-gate`. Project recipes live in Brain
 `dogfood-registry`, not in this prompt.
 
-**Zero-LLM dispatch:** scheduled fires MUST set registry
-`gate_command = "$LAST_STACK_ROOT/bin/last-stack-dogfood-rotate-gate --routines-dispatch"`
-so routinesd starts the recipe (or honest `no-runnable-entry`) without booting
-Codex/Grok. That is the class skip for plugin/skill preamble.
+The scheduled routine must use the agent prompt. Remove the old direct
+recipe `gate_command` from its STATE registry record. Keep its schedule,
+model, effort, timeout, and active or paused state.
 
 **Shared contract:** fetch `brain get sop-routine-shared-contract --type sop`
 at run start and honor it — heartbeat LAST always, primary-brain guardrail,
@@ -80,6 +89,10 @@ The gate reads `dogfood-registry` and **skips** every entry that cannot start:
   and invoke the live consumer through `last-stack-secret-env-run`; do not run a credential-free subset
 - entries that are not yet due (`last_run` younger than cadence)
 
+The gate does not classify test recipes. Keep those entries `status: retired`,
+`eligible: false`, and `auto-rotation: false` in the registry. Do not pass a
+test command to `--run` or `--routines-dispatch`.
+
 If `RESULT … detail=no-runnable-entry`, heartbeat
 
 `dogfood-rotate <ISO-ts> noop feature=- result=no-runnable-entry cards=0`
@@ -87,7 +100,10 @@ If `RESULT … detail=no-runnable-entry`, heartbeat
 then close-out (heartbeat may serve as the report) and stop. That is success
 of the gate, not an error.
 
-If `SELECTED feature=<slug> … command=<cmd>`, run **exactly that command**
+If `SELECTED feature=<slug> … command=<cmd>`, first confirm that the command
+uses real product operations and no synthetic test or fixture suite. If it
+requires tests, retire the recipe and report `noop retired-test-recipe`.
+Otherwise, run **exactly that command**
 under the printed `timeout_sec` (or `last-stack-dogfood-rotate-gate --run`
 / `--routines-dispatch` when the command is a last-stack helper / self-contained
 script). Never append `cargo build`. Never open a fold worktree to compile. If

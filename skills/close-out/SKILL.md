@@ -125,22 +125,23 @@ If GraphQL returns a 502, use
 A red or missing `ci-required` check blocks; do not use `--admin` unless a
 human explicitly clears that bypass.
 
-## 3. Produce the proof — at the tier the change demands
+## 3. Produce the relevant non-test proof
 
-Nothing lands unproven, and "proven" is checked by something other than you (an
-agent ran it / CI, not a human eyeballing). Match the proof to blast radius:
+No-tests policy: `instructions/no-tests.md`; Situation
+`no-tests-all-repos-20261009`. Do not add, restore, run, or require tests,
+fixture suites, test mutation probes, or test coverage.
 
-- **No behavior change** (refactor/rename/docs) → existing tests green; state why
-  it's behavior-preserving. Done.
-- **Logic with a testable unit** → a unit/integration test of the new behavior
-  **plus a negative case**.
-- **User-visible or stateful** (passwords, auth, settings, data writes, sync, UI)
-  → run the feature's `test/acceptance/<feature>.sh` against the **real app on a
-  throwaway data dir** (`mktemp -d`, `FOLDDB_DISABLE_KEYCHAIN=1`; never `~/.lastdb` or `~/.folddb`
-  or the primary brain/keyring). It must cross a **process boundary** (restart /
-  re-open) between the write and the read, and include a **negative case**. No
-  script yet? Write one with a throwaway data directory, a process restart, and
-  a negative case.
+Match the proof to the change:
+
+- **No behavior change** (refactor/rename/docs): review the source and state why
+  the behavior stays the same. Keep relevant format, lint, and build checks.
+- **Logic change**: use the documented non-test product command or app action.
+  Record its output and the result that the user requires.
+- **User-visible or stateful change** (passwords, auth, settings, data writes,
+  sync, UI): verify the user action through the real app on an isolated copy.
+  Keep the primary brain, keyring, and live user data separate.
+  Use the existing product operations and safety controls. Do not create a
+  test script or fixture harness.
 
 Anchor the proof to the **user story, not the diff** — that is what catches
 half-built features ("set" shipped without "unlock", incident 2026-06-30). Record

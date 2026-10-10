@@ -17,17 +17,7 @@ if [ ! -f "$audit" ]; then
 fi
 
 notes="audit-storage-metering.sh present"
-# Offline: unit/invariant tests for billable keys if cargo available
 if [ "$MODE" = offline ]; then
-  if command -v cargo >/dev/null 2>&1 && [ -f "$REPO/Cargo.toml" ]; then
-    set +e
-    # Prefer a narrow test name if present; otherwise skip cargo to keep harness fast
-    out="$(cd "$REPO" && cargo test -p fold_db -- billable 2>&1 | tail -40)"
-    rc=$?
-    set -e
-    notes="$(printf '%s\ncargo test billable (best-effort) rc=%s\n```\n%s\n```\n' "$notes" "$rc" "$out")"
-    # Don't fail offline if no billable tests matched
-  fi
   # Static contract: script requires API key and is off hot path
   if ! grep -q 'NOT on the sync hot path' "$audit"; then
     ns_write_report "$SLUG" FAIL "audit script missing hot-path safety comment" || exit 1

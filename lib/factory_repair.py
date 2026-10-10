@@ -39,7 +39,19 @@ COUNT_CARD = 'factory-canonical-active-counts-20261008'
 COUNT_PAPERCUT = 'papercut-loom-active-summary-counts-terminal-duplicate-memberships-20261008'
 AUTHORITY = 'decision-2026-10-08-factory-repair-slot-and-bounded-proof'
 DECISION_POLICY_PATH = Path(__file__).resolve().parents[1] / 'config/factory-reviewed-decision.json'
-DECISION_POLICY_SHA = 'a06114ee93dda0abe23bf1703938ee529db0a6d47623e2376df8bc415ecb0a94'
+DECISION_POLICY_SHA = '86c4d4e284e197cd974819bc0fed4b298d6c5bb5866fb48dd6fc9530ed61253e'
+# This exact old component is saved evidence, never active dispatch authority.
+HISTORICAL_LOOM_COMPONENT_POLICY_SHA = 'a06114ee93dda0abe23bf1703938ee529db0a6d47623e2376df8bc415ecb0a94'
+HISTORICAL_LOOM_COMPONENT_AUTHORITY = {
+    "app": "loom",
+    "contract_sha256": "e9e1eacecd19d0ba4481ad7369947bd08d55621c0242dd9b584fdaed23061c80",
+    "current": "~/.host-track/apps/loom/current",
+    "manifest_file_sha256": "b9a0f25fbae94c1db47825e164a37821c3664dc7770b08a70305f0c8341adfe0",
+    "manifest_path": "~/.lastgit/artifacts/manifests/4585de0a57748446e4ea3856c265266a69bfc33c607f509c328daccdc2e3e4de.json",
+    "manifest_sha256": "4585de0a57748446e4ea3856c265266a69bfc33c607f509c328daccdc2e3e4de",
+    "root": "~/.host-track/apps/loom/versions/4585de0a57748446e4ea3856c265266a69bfc33c607f509c328daccdc2e3e4de",
+    "source_oid": "1e43a580fcc954fefa5586eed3919cd5d6070735"
+}
 CREATE_POLICY_SHA = 'bc8da6322450572647c2f396a2c52fa981dc5a78ca12945ea84683117848a517'
 ARRAYS = ('tags', 'deps', 'surfaces')
 SCALARS = ('slug', 'title', 'body', 'board', 'column', 'position', 'assignee',
@@ -59,10 +71,10 @@ FEATURES = {'exact_card_selector': '--only-card', 'canonical_resume_fence': True
                 'native_route': 'owner-uid-mode0600-uds-hash-range-keys', 'no_card_write': True,
                 'claim_authority': 'supplied-raw23-snapshot-sha-before-decision-read',
                 'policy_file': 'release/factory-reviewed-decision.json'}}
-COUNT_PREDECESSOR_SOURCE = '9ef47d6a7d98a7edf1c9cac78ed25b8429528143'
-COUNT_PREDECESSOR_CONTRACT_SHA = 'dd36d5771909bc89a3a19a2296f5310877965f59e13591955e679a8bc4ca3500'
-COUNT_DISPATCH_CONTRACT_SHA = 'e9e1eacecd19d0ba4481ad7369947bd08d55621c0242dd9b584fdaed23061c80'
-# Tom's accepted test deletion is a Count source predecessor, not a dispatch upgrade.
+COUNT_PREDECESSOR_SOURCE = '1c4f6af5a296c6b4ff78bcec2cd5f85dc416f8c5'
+COUNT_PREDECESSOR_CONTRACT_SHA = 'bef392a30569c1db2925ae36e1aaf36281128cfa4384db5c87a2377dda716877'
+COUNT_DISPATCH_CONTRACT_SHA = 'bef392a30569c1db2925ae36e1aaf36281128cfa4384db5c87a2377dda716877'
+# The Count predecessor is the exact accepted no-tests dispatch release.
 COUNT_PREDECESSOR_CONTRACT_JSON = '''{
   "budget_recovery_source_sha256": "0f1840ca33218a0f50974c568464ea11c99a4727fa09d103b2ddda7bbf99126f",
   "cli_source_sha256": "e59d186806bed160f7ff47d84a4f6ad44e0b8a3622f252b0ea18d122951268f4",
@@ -94,7 +106,7 @@ COUNT_PREDECESSOR_CONTRACT_JSON = '''{
   },
   "files": {
     "definitions/land-card.json": "800726e0da4aca6b33b5d3110b66b3a89a13790f12c00bae83fcd89b4bd272b5",
-    "release/factory-reviewed-decision.json": "a06114ee93dda0abe23bf1703938ee529db0a6d47623e2376df8bc415ecb0a94",
+    "release/factory-reviewed-decision.json": "86c4d4e284e197cd974819bc0fed4b298d6c5bb5866fb48dd6fc9530ed61253e",
     "scripts/build-artifact.sh": "c953204b5eddbc619d4af22a572ae7df8bb9849492aff31b722f6535d0a56d32",
     "scripts/lastdb-candidate-freshness.py": "6bbaac7b36a0657815ddf849988d60e5b96ca409df49b3e7888d5319596fe18e",
     "scripts/loom-agent-lib.sh": "e1e8b4b187a5c38cf566c36c2d830dfcd133ed8f19ce2222f28ddc0715612fb8",
@@ -112,9 +124,9 @@ COUNT_PREDECESSOR_CONTRACT_JSON = '''{
     "scripts/loom-card-close.sh": "449e16005a0f82dabc2292f026b9173fdb54210d1dfe31d4b98ee13a2f7865c7",
     "scripts/loom-card-park.sh": "9471d700f85bf29c4087ba31d0912d9d688ddf79f99cf514b32b87885313b886",
     "scripts/loom-card-resume.sh": "d8eeb5822e8cb82099f893fa1fd687dd0f293f9a7e25a19f9cb4c087956a8161",
-    "scripts/loom-card-review-lib.sh": "190cb91ca6c96e909aea2863f9116067fc710b2eab37e8164414c8bcc3267e3f",
-    "scripts/loom-card-review.sh": "09e606fb4ff23f98dcd16350f441e2f5479e887f7cec3578cac2c3251344fd68",
-    "scripts/loom-card-revise.sh": "16b1349557eb825fa8b7236869ec692b4066dc7edc5ab9b561c72462b3095ee7",
+    "scripts/loom-card-review-lib.sh": "1288c663da1fe95ef1489c890dfecd3a3ea2e3ecba5c20bc9916af8313bd35a2",
+    "scripts/loom-card-review.sh": "ac574eba11eff21f91c4f9bb7e70e9fff6bcb63f4c111b755661687e7512833d",
+    "scripts/loom-card-revise.sh": "0af9b4cd7e65d70310ecee61bae371e1616a120cfb0ebd42b956fa2c5e6d116e",
     "scripts/loom-card-wait-ci.sh": "679ca9521f6aeffaabd76b10be77a3356eff6f1aa053ceb8843eaec0e78ca504",
     "scripts/loom-check-merged.sh": "760649b1128c6a193202963ebcc7af9c1bcf310239505b736a48c65de51cecbb",
     "scripts/loom-check-pr.sh": "0d0b8745f713b73076d3d0266a851d148e70f9b334905bdf85eded2d47f7e779",
@@ -132,7 +144,7 @@ COUNT_PREDECESSOR_CONTRACT_JSON = '''{
     "scripts/loom-factory-kickoff.sh": "c2ac251466affb5b28743979f4f598646b17b6ecfc9eed65d362847583475c80",
     "scripts/loom-factory-lib.sh": "a60dfdac7354c0a96c3419a8933820723b0a2c19bcb31ecc58eea6969d3716ac",
     "scripts/loom-gate-open.sh": "0698929bcc3c7c0b2f642d6ac2cfeb11813720025f98a20f4fbd1600955d7484",
-    "scripts/loom-implement.sh": "65cbc1fdfe41f09958d6f6d2de5440304eeaff9483907446a7806c54b4b342f6",
+    "scripts/loom-implement.sh": "00de8ff045267ea303f08f293f74113fa5199154be73aea8290be065d52e67ee",
     "scripts/loom-land-card-kickoff.sh": "50cdcd47f86a8aab49f1e573074fde81f8df96f09dce38ec7e8596a0e3d5708b",
     "scripts/loom-land-cr-normalize.sh": "a3f70a0fcb07abe5c3f8106ca682c98b57fd53a5d1184aafdda9e19cb890d928",
     "scripts/loom-live-release-receipt-step.sh": "9fd02e579ebfb38e5148c81b28d990fbbcfb7983888412dc9da69118cac6a106",
@@ -704,17 +716,26 @@ def verify_fk(authority, current=True, require_claim_chain=False):
     return root / 'dist/kanban'
 
 
-def verify_loom(authority, current=True):
+def _verify_loom_contract(authority, current, decision_policy_sha):
     root = verify_artifact(authority, current)
     path = root / 'release/factory-dispatch-contract.json'; contract = read_json(path)
     require(file_sha(path) == authority['contract_sha256'] and contract.get('features') == FEATURES and contract.get('definition_version') == '5' and
             isinstance(contract.get('cli_source_sha256'), str) and HEX.fullmatch(contract['cli_source_sha256']) and
-            contract.get('files', {}).get('release/factory-reviewed-decision.json') == DECISION_POLICY_SHA, 'loom-contract-identity')
+            contract.get('files', {}).get('release/factory-reviewed-decision.json') == decision_policy_sha, 'loom-contract-identity')
     for rel, expected in contract.get('files', {}).items():
         require(file_sha(relative_file(root, rel)) == expected, 'loom-contract-file: ' + rel)
     build = read_json(root / 'release/factory-dispatch-build.json')
     require(build.get('contract_sha256') == authority['contract_sha256'] and build.get('runner_sha256') == file_sha(root / 'dist/loom'), 'loom-runner-binding')
     return root
+
+def verify_loom(authority, current=True):
+    return _verify_loom_contract(authority, current, DECISION_POLICY_SHA)
+
+
+def verify_historical_loom_component(authority):
+    require(authority == HISTORICAL_LOOM_COMPONENT_AUTHORITY, 'bootstrap-loom-historical-authority')
+    return _verify_loom_contract(authority, False, HISTORICAL_LOOM_COMPONENT_POLICY_SHA)
+
 
 def verify_creation_contract(root, config, binary):
     authority = config.get('creation_authority', {})

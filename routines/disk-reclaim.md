@@ -349,10 +349,6 @@ inspection is unavailable. Do not set them in a scheduled run: without process
 proof the sweep cannot see a live build, and stripping then deletes build
 outputs from under it.
 
-Both guards are proven by `tests/last-stack-worktree-reclaim.sh` and
-`tests/last-stack-disk-reclaim-stripped-path.sh`, which run in the required
-`.lastgit/ci.sh` gate rather than only under `LAST_STACK_CI_FULL=1`.
-
 ## Output
 Report: GB reclaimed, worktrees pruned (and which were kept and why), final free
 space, and anything left for a human.

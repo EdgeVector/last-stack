@@ -251,9 +251,7 @@ install_claude_hooks() {
   # it was not in the list. Same silent-enumeration shape host-track's
   # apps.json documents for routines' dist/probes links.
   # The registration calls below are still a literal enumeration by design —
-  # each hook needs its own event, matcher and notice text — so
-  # tests/last-stack-setup-installs-every-repo-hook.sh fails the gate when a
-  # repo hook is copied here and never registered.
+  # each hook needs its own event, matcher and notice text.
   for hook_src in "$HOOKS_SRC"/*.sh; do
     [ -f "$hook_src" ] || continue
     hook="$(basename "$hook_src")"
@@ -411,6 +409,9 @@ RS_START='<!-- last-stack:routine-shell:start (managed by last-stack setup; edit
 RS_END='<!-- last-stack:routine-shell:end -->'
 MP_START='<!-- last-stack:mutation-probe:start (managed by last-stack setup; edits inside are overwritten) -->'
 MP_END='<!-- last-stack:mutation-probe:end -->'
+NT_START='<!-- last-stack:no-tests:start (managed by last-stack setup; edits inside are overwritten) -->'
+NT_LEGACY_START='<!-- last-stack:no-tests:start -->'
+NT_END='<!-- last-stack:no-tests:end -->'
 LB_START='<!-- last-stack:lastdb-batching:start (managed by last-stack setup; edits inside are overwritten) -->'
 LB_END='<!-- last-stack:lastdb-batching:end -->'
 
@@ -449,6 +450,24 @@ append_managed_md_block() {
   } >> "$file"
 }
 
+prepend_managed_md_block() {
+  # Put the overriding rule before unmanaged instructions and older blocks.
+  local file="$1"
+  local src="$2"
+  local start="$3"
+  local end="$4"
+  [ -f "$src" ] || return 0
+  local tmp
+  tmp="$(mktemp)"
+  {
+    printf '%s\n' "$start"
+    cat "$src"
+    printf '%s\n\n' "$end"
+    cat "$file"
+  } > "$tmp"
+  mv "$tmp" "$file"
+}
+
 upsert_harness_instruction_blocks() {
   # Strip the managed blocks, then append in a stable order so re-runs are byte-identical.
   local file="$1"
@@ -465,7 +484,10 @@ upsert_harness_instruction_blocks() {
   strip_managed_md_block "$file" "$BA_START" "$BA_END"
   strip_managed_md_block "$file" "$JC_START" "$JC_END"
   strip_managed_md_block "$file" "$RS_START" "$RS_END"
+  # Retire the mandatory test/probe rule from older installs.
   strip_managed_md_block "$file" "$MP_START" "$MP_END"
+  strip_managed_md_block "$file" "$NT_START" "$NT_END"
+  strip_managed_md_block "$file" "$NT_LEGACY_START" "$NT_END"
   strip_managed_md_block "$file" "$LB_START" "$LB_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/brain-kanban.md" "$BK_START" "$BK_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/asd-ste100.md" "$STE_START" "$STE_END"
@@ -478,9 +500,9 @@ upsert_harness_instruction_blocks() {
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/bin-authoring.md" "$BA_START" "$BA_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/safe-json-capture.md" "$JC_START" "$JC_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/routine-shell.md" "$RS_START" "$RS_END"
-  append_managed_md_block "$file" "$SOURCE_ROOT/instructions/mutation-probe.md" "$MP_START" "$MP_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/lastdb-batching.md" "$LB_START" "$LB_END"
-  echo "  ${label} instructions: brain-kanban + asd-ste100 + user-vocabulary + no-home-root-scan + bin-authoring + safe-json-capture + routine-shell + mutation-probe + lastdb-batching -> $file"
+  prepend_managed_md_block "$file" "$SOURCE_ROOT/instructions/no-tests.md" "$NT_START" "$NT_END"
+  echo "  ${label} instructions: no-tests + brain-kanban + asd-ste100 + user-vocabulary + no-home-root-scan + bin-authoring + safe-json-capture + routine-shell + lastdb-batching -> $file"
 }
 
 # ── Codex routine shell: zsh -lc -> bash ─────────────────────────────────────
@@ -801,7 +823,7 @@ EOF
 
 install_host_track_refresh_agent() {
   [ "$(uname -s)" = "Darwin" ] || return 0
-  local plist label="com.edgevector.host-track-refresh"
+  local plist disabled_reply disabled_state label="com.edgevector.host-track-refresh"
   plist="$(host_track_launchd_plist_path)"
   write_host_track_refresh_agent_plist "$plist"
   echo "  host-track refresh agent: $plist"
@@ -814,6 +836,40 @@ install_host_track_refresh_agent() {
     echo "  host-track refresh agent: launchctl not found; plist written only" >&2
     return 0
   }
+
+  if ! disabled_reply="$(launchctl print-disabled "gui/$(id -u)")"; then
+    echo "  host-track refresh agent: disabled overrides unavailable; load skipped" >&2
+    return 0
+  fi
+  if ! disabled_state="$(printf '%s\n' "$disabled_reply" | awk -v label="$label" '
+    {
+      sub(/^[[:space:]]+/, "")
+      sub(/[[:space:]]+$/, "")
+      if ($0 == "") next
+      if ($0 == "disabled services = {" && !opened && !closed) { opened=1; next }
+      if ($0 == "}" && opened && !closed) { closed=1; next }
+      if (!opened || closed || $0 !~ /^"[^"]+"[[:space:]]*=>[[:space:]]*(enabled|disabled)$/) {
+        invalid=1; next
+      }
+      key=$0
+      sub(/^"/, "", key)
+      sub(/"[[:space:]]*=>.*$/, "", key)
+      value=$0
+      sub(/^.*=>[[:space:]]*/, "", value)
+      if (key == label) { count++; state=value }
+    }
+    END {
+      if (invalid || !opened || !closed || count > 1) exit 1
+      print count == 0 ? "absent" : state
+    }
+  ')"; then
+    echo "  host-track refresh agent: disabled overrides malformed; load skipped" >&2
+    return 0
+  fi
+  if [ "$disabled_state" = "disabled" ]; then
+    echo "  host-track refresh agent: deliberate disabled override preserved; load skipped"
+    return 0
+  fi
 
   launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
   if launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1; then
@@ -1018,7 +1074,7 @@ fi
 # last-stack-lastdb-canary-candidate-set-routine) shipped on 2026-09-03 and was
 # never called here, so no host ever registered it, nothing built a canary stage for fold main, and
 # lastdb-local-smoke-test fell back to a stale binary with sha_drift=true on
-# every run. tests/last-stack-setup-seeds-every-routine.sh holds this shape.
+# every run. Keep the directory-driven registration below.
 for routine_seeder in "$SOURCE_ROOT"/bin/last-stack-*-routine; do
   [ -x "$routine_seeder" ] || continue
   seeder_name="$(basename "$routine_seeder")"

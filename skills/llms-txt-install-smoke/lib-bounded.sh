@@ -18,8 +18,7 @@
 # call gets the floor bound and fails fast, so the script always reaches its
 # footer and prints a real VERDICT: RED instead of dying mute.
 #
-# Sourced by run.sh; exercised directly by
-# tests/llms-txt-install-smoke-bounded.sh.
+# Sourced by run.sh.
 
 # Resolve a coreutils-style timeout binary once. Empty when the host has
 # neither (stock macOS), which selects the pure-bash watchdog below.

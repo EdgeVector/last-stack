@@ -9,23 +9,8 @@
 #   fold_db/crates/core/src/resident/range.rs
 #   fold_db/crates/core/src/resident/logical_set.rs
 #
-# Live runs that copy proof against a private CoW clone. The clone uses the
-# same cp -cR method as lastdb-dev (bin/last-stack-lastdb-dev,
-# clone_from_primary). The target is never ~/.lastdb, ~/.folddb, or the
-# shared ~/.lastdb-dev home.
-#
-# LOGICAL_RESIDENT_SET_FOLD_MIRROR overrides the mirror for fixture tests.
-# LOGICAL_RESIDENT_SET_FOLD_REF overrides the ref. An empty override keeps
-# the origin/main lookup.
-# LOGICAL_RESIDENT_SET_COPY_HOME supplies an existing copy in live mode.
-# The harness still refuses a home under ~/.lastdb or ~/.folddb.
-#
-# Live mode extracts the WHOLE Fold tree at the resolved commit, not only
-# the copy proof script: the script runs `cargo test -p fold_db` from its
-# own repo root, so a lone script fails with "could not find Cargo.toml"
-# and the proof can never pass. CARGO_TARGET_DIR defaults to a directory
-# inside the scratch dir so the build is removed with it; set
-# LOGICAL_RESIDENT_SET_CARGO_TARGET_DIR to reuse a build across runs.
+# The old delegated test suite is retired by no-tests-all-repos-20261009.
+# This harness checks source only and cannot produce a live PASS.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd -P)"
@@ -38,7 +23,7 @@ MIRROR="${LOGICAL_RESIDENT_SET_FOLD_MIRROR:-$HOME/.cache/edgevector-git/lastdb.g
 PIECE_SCRIPT="fold_db/scripts/logical-resident-set-copy-proof.sh"
 PIECE_RANGE="fold_db/crates/core/src/resident/range.rs"
 PIECE_SET="fold_db/crates/core/src/resident/logical_set.rs"
-PIECES=("$PIECE_SCRIPT" "$PIECE_RANGE" "$PIECE_SET")
+PIECES=("$PIECE_RANGE" "$PIECE_SET")
 REQUESTED_REF="${LOGICAL_RESIDENT_SET_FOLD_REF:-origin/main}"
 RESOLVED=""
 TMP=""
@@ -144,7 +129,6 @@ source_body() {
     printf 'Resolved: %s\n' "${RESOLVED:-absent}"
     printf 'Oid: %s\n' "$oid"
     printf 'Mode: %s\n' "$MODE"
-    printf 'Copy proof: %s --home <copy-path>\n' "$PIECE_SCRIPT"
     printf '\nAbsent pieces:\n'
     print_block "$absent_text"
     printf '\nPresent pieces:\n'
@@ -198,100 +182,6 @@ mirror_readable() {
   fold_git rev-parse --git-dir >/dev/null 2>&1
 }
 
-cow_clone() {
-  local src dest src_id dest_id
-  src="${LASTDB_DEV_PRIMARY_HOME:-$HOME/.lastdb}"
-  [ -d "$src" ] || finish FAIL "The primary home is absent."
-  dest="$TMP/cow-home"
-  case "$dest" in
-    "$TMP"/*) ;;
-    *) finish FAIL "The CoW target is outside the scratch directory." ;;
-  esac
-  refuse_home "$dest"
-  if [ "$(uname -s)" = Darwin ]; then
-    cp -cR "$src" "$dest" 2>"$TMP/clone.err" || true
-  else
-    cp -a "$src" "$dest" 2>"$TMP/clone.err" || true
-  fi
-  [ -d "$dest/data" ] || finish FAIL "The CoW clone is incomplete."
-  [ ! -L "$dest" ] || finish FAIL "The CoW clone is a symlink."
-  refuse_home "$dest"
-  src_id="$(python3 -c 'import os, sys; s=os.stat(sys.argv[1]); print("%s:%s" % (s.st_dev, s.st_ino))' "$src")"
-  dest_id="$(python3 -c 'import os, sys; s=os.stat(sys.argv[1]); print("%s:%s" % (s.st_dev, s.st_ino))' "$dest")"
-  [ "$src_id" != "$dest_id" ] || finish FAIL "The CoW clone aliases the primary home."
-  rm -f "$dest/data/folddb.sock" "$dest/data/folddb-full.sock" "$dest/data.app-sock" \
-    "$dest/cloud_sync.json" "$dest/current-session.json" 2>/dev/null || true
-  rm -f "$dest"/cloud_sync.json* 2>/dev/null || true
-  COPY_PATH="$dest"
-}
-
-run_copy_proof() {
-  local copy="$1" script child_report child_rc child_line verdict note body
-  refuse_home "$copy"
-  [ -d "$copy" ] || finish FAIL "The copy home is absent."
-  [ ! -L "$copy" ] || finish FAIL "The harness refuses a symlink home."
-  script="$TMP/fold/$PIECE_SCRIPT"
-  mkdir -p "$TMP/fold"
-  if ! fold_git archive "$RESOLVED" | tar -x -C "$TMP/fold"; then
-    finish FAIL "The harness could not extract the Fold tree."
-  fi
-  [ -f "$script" ] || finish FAIL "The copy proof script did not extract."
-  [ -f "$TMP/fold/Cargo.toml" ] || finish FAIL "The extracted Fold tree has no Cargo.toml."
-  child_report="$TMP/child-report.md"
-  set +e
-  CARGO_TARGET_DIR="${LOGICAL_RESIDENT_SET_CARGO_TARGET_DIR:-$TMP/target}" \
-    bash "$script" --home "$copy" --report "$child_report" >"$TMP/child.out" 2>"$TMP/child.err"
-  child_rc=$?
-  set -e
-  child_line=""
-  if [ -f "$child_report" ]; then
-    child_line="$(sed -n '1p' "$child_report" | tr -d '\r')"
-  fi
-  if [ -z "$child_line" ] && [ -s "$TMP/child.out" ]; then
-    child_line="$(sed -n '1p' "$TMP/child.out" | tr -d '\r')"
-  fi
-  note=""
-  case "$child_line" in
-    PASS)
-      if [ "$child_rc" -ne 0 ]; then
-        verdict=FAIL
-        note="The copy proof printed PASS and exited ${child_rc}."
-      else
-        verdict=PASS
-      fi
-      ;;
-    FAIL)
-      verdict=FAIL
-      ;;
-    *)
-      verdict=FAIL
-      note="The copy proof did not print PASS or FAIL."
-      ;;
-  esac
-  body="$(
-    {
-      printf 'The copy proof returned %s.\n' "$verdict"
-      printf 'Copy home: %s\n' "$copy"
-      printf 'Child exit: %s\n' "$child_rc"
-      printf 'Child first line: %s\n' "${child_line:-empty}"
-      printf 'Mirror: %s\n' "$MIRROR"
-      printf 'Ref: %s\n' "$REQUESTED_REF"
-      printf 'Resolved: %s\n' "$RESOLVED"
-      printf 'Oid: %s\n' "$OID"
-      printf 'Mode: live\n'
-      printf 'Copy proof: %s --home <copy-path>\n' "$PIECE_SCRIPT"
-      if [ -n "$note" ]; then
-        printf '%s\n' "$note"
-      fi
-      if [ -f "$child_report" ]; then
-        printf '\nChild report:\n'
-        sed -n '1,40p' "$child_report"
-      fi
-    }
-  )"
-  finish "$verdict" "$body"
-}
-
 ns_require_cmd git || finish FAIL "The harness needs git."
 ns_require_cmd python3 || finish FAIL "The harness needs python3."
 
@@ -317,14 +207,4 @@ if [ -n "$ABSENT_TEXT" ]; then
   finish FAIL "$(source_body "The bare mirror does not hold every Fold piece." "$OID" "$ABSENT_TEXT" "$PRESENT_TEXT")"
 fi
 
-if [ "$MODE" = offline ]; then
-  finish PASS-OFFLINE "$(source_body "The bare mirror holds the three Fold pieces." "$OID" "" "$PRESENT_TEXT")"
-fi
-
-if [ -n "${LOGICAL_RESIDENT_SET_COPY_HOME:-}" ]; then
-  refuse_home "$LOGICAL_RESIDENT_SET_COPY_HOME"
-  run_copy_proof "$LOGICAL_RESIDENT_SET_COPY_HOME"
-fi
-
-cow_clone
-run_copy_proof "$COPY_PATH"
+finish PASS-OFFLINE "$(source_body "The bare mirror holds the LastDB source pieces. The old test suite is retired; no live result is claimed." "$OID" "" "$PRESENT_TEXT")"

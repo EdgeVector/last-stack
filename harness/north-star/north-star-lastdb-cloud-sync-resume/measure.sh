@@ -274,7 +274,7 @@ echo "Generated evidence: $EVIDENCE_JSON"
 echo "Generated log: $RUN_LOG"
 
 echo "Validating evidence against the source contract..."
-if python3 "$CHECK_SCRIPT" "${CLOUD_SYNC_RESUME_SOURCE_DIR:-tests/fixtures/north-star-lastdb-cloud-sync-resume}" "$EVIDENCE_JSON" "$RUN_LOG"; then
+if python3 "$CHECK_SCRIPT" "${CLOUD_SYNC_RESUME_SOURCE_DIR:-$(ns_repo_path lastdb)}" "$EVIDENCE_JSON" "$RUN_LOG"; then
   echo "Measurement complete: the real ephemeral probe reached PASS."
   exit 0
 fi

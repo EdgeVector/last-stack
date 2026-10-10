@@ -15,7 +15,7 @@ if [ ! -f "$REPO/scripts/dogfood_one_loop.sh" ] || [ ! -f "$REPO/scripts/dogfood
 fi
 
 notes="dogfood_one_loop.sh + .py present"
-# Offline: compile-check modules + run capstone test file as plain python if it has main, else unittest
+# Offline checks product module imports.
 ns_require_cmd python3
 set +e
 import_out="$(cd "$REPO" && python3 - <<'PY'
@@ -46,19 +46,6 @@ notes="$(printf '%s\nimport check rc=%s\n```\n%s\n```\n' "$notes" "$import_rc" "
 if [ "$import_rc" -ne 0 ]; then
   ns_write_report "$SLUG" FAIL "$notes" || exit 1
   exit 1
-fi
-
-# Prefer unittest-style discovery for capstone tests without pytest
-if [ -f "$REPO/tests/test_friend_graph_capstone.py" ]; then
-  set +e
-  ut_out="$(cd "$REPO" && python3 -m unittest tests.test_friend_graph_capstone -q 2>&1)"
-  ut_rc=$?
-  set -e
-  notes="$(printf '%s\nunittest friend_graph_capstone rc=%s\n```\n%s\n```\n' "$notes" "$ut_rc" "$ut_out")"
-  if [ "$ut_rc" -ne 0 ]; then
-    ns_write_report "$SLUG" FAIL "$notes" || exit 1
-    exit 1
-  fi
 fi
 
 if [ "$MODE" = live ]; then

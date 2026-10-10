@@ -197,19 +197,6 @@ def main(argv: list[str] | None = None) -> int:
         help="JSON case file (default: stdin)",
     )
     parser.add_argument(
-        "--expect",
-        metavar="VERDICT",
-        help="If set, exit 1 unless every claim has this verdict "
-        "(flag|skip|no_flag). For multi-claim files, all must match.",
-    )
-    parser.add_argument(
-        "--expect-id",
-        action="append",
-        default=[],
-        metavar="ID:VERDICT",
-        help="Per-claim expectation, e.g. a:flag (repeatable)",
-    )
-    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Print human summary lines to stderr",
@@ -236,38 +223,6 @@ def main(argv: list[str] | None = None) -> int:
                 + (f" priority={r['priority']}" if r.get("priority") else ""),
                 file=sys.stderr,
             )
-
-    expect_map: dict[str, str] = {}
-    for item in args.expect_id:
-        if ":" not in item:
-            print(f"error: bad --expect-id {item!r}, want ID:VERDICT", file=sys.stderr)
-            return 2
-        cid, verd = item.split(":", 1)
-        expect_map[cid.strip()] = verd.strip().lower()
-
-    if args.expect:
-        want = args.expect.strip().lower()
-        for r in results:
-            if r["verdict"] != want:
-                print(
-                    f"error: claim {r.get('id')!r} verdict={r['verdict']} want={want}",
-                    file=sys.stderr,
-                )
-                return 1
-
-    if expect_map:
-        by_id = {str(r.get("id")): r for r in results}
-        for cid, want in expect_map.items():
-            r = by_id.get(cid)
-            if r is None:
-                print(f"error: missing claim id {cid!r}", file=sys.stderr)
-                return 1
-            if r["verdict"] != want:
-                print(
-                    f"error: claim {cid!r} verdict={r['verdict']} want={want}",
-                    file=sys.stderr,
-                )
-                return 1
 
     return 0
 

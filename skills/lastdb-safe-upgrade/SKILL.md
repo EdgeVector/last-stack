@@ -232,8 +232,8 @@ The candidate never boots on the live primary home. The driver checks:
 - The candidate memory size stays below the memory-guard limit.
 - The live primary process stays the same during the candidate check.
 
-The `BoardCards` result can contain zero cards. The check requires a valid
-response. The `Board` title check requires real data.
+The `BoardCards` result must contain at least one card. The `Board` title
+check also requires real data.
 
 The DEV proof also clones the same trial copy. It publishes one snapshot
 with the exact candidate pair. The candidate CLI restores that manifest into
@@ -373,9 +373,9 @@ and bytes before the candidate replaces the old binary.
    **ephemeral throwaway node** of the candidate only (never live primary).
    A node that ignores a false `expected` precondition and applies the write
    is **RED** — promotion is blocked with an actionable failure that names the
-   candidate binary. Reuses LastGit's `test/cas-expected-node-enforced.sh`
-   when present; otherwise a self-contained discriminator with the same
-   true→200 / false→409 / refused-did-not-land sequence. Skipping
+   candidate binary. The self-contained product diagnostic uses the
+   true→200 / false→409 / refused-did-not-land sequence. It does not delegate
+   to a repository test script. Skipping
    (`LASTDB_PROBE_CAS_SKIP=1`) requires Tom clearance. Not a routine health
    check and not a live-primary mutation path.
 10. **Binary-pair bar (lastdb + lastdbd):** before backup/probe, require a

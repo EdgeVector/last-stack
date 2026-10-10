@@ -35,7 +35,4 @@ class Loom < Formula
     EOS
   end
 
-  test do
-    assert_match version.to_s, shell_output("#{bin}/loom --version")
-  end
 end

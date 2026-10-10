@@ -76,11 +76,6 @@ one. Don't double-fix — if you already fixed the PR, trash the redundant task.
 
 ## Concurrency & resource discipline
 
-- **fold: no fixed <=2 build/test cap.** The stale `cargo test --all-targets`
-  deadlock rule was lifted after the split/nextest harness and worktree
-  concurrency proof. Scope task tests to the touched crate where possible, but
-  do not throttle the whole fold fleet solely because two agents are already
-  testing.
 - Watch fold disk/load pressure before launching many Rust builds. Modern
   kanban worktrees should use their own `target/`; Last Stack scheduled shells
   bypass a host-global sccache wrapper by default because a pinned cache can
@@ -117,12 +112,12 @@ exercise path you captured in Phase 1:
   spinning an ephemeral LastDB dev node (`folddb-dev` command) and verifying via `/v1/snapshot`.
 - **CLI:** run the command on a real input, check stdout/exit.
 - **Web/UI:** use the `browse` / `verify` skills to drive the page and observe.
-- **Library:** exercise the public API in a tiny throwaway harness, not just unit
-  tests.
+- **Library:** use an existing app command that calls the public API. Do not
+  add a fixture harness or tests.
 
 Prefer the **`verify`** skill (run app, observe behavior, confirm intent) or
-**`run`** skill (launch/drive the app) over hand-rolling. Tests passing is an
-intermediate event; the app doing the thing is the gate.
+**`run`** skill (launch/drive the app). The observable app result is the gate.
+Do not add or run tests. Remove stale test and test coverage requirements.
 
 ## Hierarchical driver ownership
 

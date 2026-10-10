@@ -111,12 +111,10 @@ ROOT="$(cd "$ROOT" && pwd -P)"
 [ -n "$BASELINE_PATH" ] || BASELINE_PATH="$ROOT/config/bin-authoring-baseline.tsv"
 [ -n "$ARGV_TOKEN_BASELINE_PATH" ] || ARGV_TOKEN_BASELINE_PATH="$ROOT/config/forge-token-argv-baseline.tsv"
 
-# Never lint: this linter, its test, and test fixtures that carry deliberate
-# bad examples.
+# Never lint this linter: its rule definitions contain deliberate bad examples.
 skip_path() {
   case "$1" in
-    bin/last-stack-lint-bin-authoring|tests/last-stack-lint-bin-authoring.sh) return 0 ;;
-    tests/fixtures/*) return 0 ;;
+    bin/last-stack-lint-bin-authoring) return 0 ;;
   esac
   return 1
 }

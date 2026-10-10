@@ -1,5 +1,9 @@
 # The Last Stack — routines
 
+The no-tests policy in [`../instructions/no-tests.md`](../instructions/no-tests.md)
+supersedes older test requirements in prompts, shared contracts, and cards.
+Do not add, run, repair, or restore tests. Keep non-test gates and product proof.
+
 The **skills** (`../skills/`) are the agent *playbook*: how an agent files a
 task, drives one card to a merged PR, waits on a PR robustly, closes out
 finished work. They describe *modes* (`WORK`, `RECONCILE`) and reference a
@@ -33,8 +37,7 @@ Brain = intent · Board = queue · Pickup = only code shipper · Watch = only cl
 *every agent, every run*: file a Brain papercut for any friction you hit, and
 never a board card. The rule lives in `instructions/brain-kanban.md` (injected
 into every harness's global instructions by `setup`) and in
-`sop-routine-shared-contract` §5; `tests/last-stack-papercut-filing-contract.sh`
-gates both. Write to the user in ASD-STE100; that rule lives in
+`sop-routine-shared-contract` §5. Write to the user in ASD-STE100; that rule lives in
 `instructions/asd-ste100.md` and setup injects it the same way. The approved
 words live in the user file `~/.local/state/last-stack/vocabulary.md`.
 Setup injects that block next. Add a word with `last-stack-vocab add`.
@@ -55,7 +58,7 @@ Operator tools: `last-stack-ship-preflight` (walk-away check),
 
 These are **templates**, not drop-in config. Every one carries `<PLACEHOLDERS>`
 you fill in for your own workspace (paths, repo list, the CLI you use for your
-brain/board, your build/test commands). Read a routine top-to-bottom and adapt it
+brain/board, your non-test build and lint commands). Read a routine top-to-bottom and adapt it
 before you schedule it. Nothing here is tied to a specific product — these are
 generalized from a working agent fleet, with all workspace-specific details
 stripped out.
@@ -171,9 +174,9 @@ ls ~/.routines/registry/last-stack-fkanban-validate*.toml
 | [`lastdb-canary-candidate-set`](lastdb-canary-candidate-set.md) | nightly | Build Forge fold main, fix one commit per app, smoke the set in isolation on the candidate lastdbd, cut the primary over on GREEN, write the proved pairs to registry `next`. Replaces build-main + dogfood. |
 | [`self-improvement-loop`](self-improvement-loop.md) | daily | Mine recent agent sessions for recurring friction; upgrade the agent's OWN skills / routines / permission allowlist / docs. The flagship self-fixing loop. |
 | [`revenant-watch`](revenant-watch.md) | daily | **Revenant Watch** (session-miner profile): flag agents reanimating settled-dead product truth; Brain-only `revenant-*` + ledger; open-work exemption. Not a new peer engine. |
-| [`revenant-watch-weekly-review`](revenant-watch-weekly-review.md) | weekly (Thu) | Steward Revenant Watch: run health, signal/noise, fixture bar, small fixes, report Tom. |
-| [`papercut-reconciler`](papercut-reconciler.md) | every 6h | The ONLY papercut→card path: harvests session papercuts into Brain, audits the never-again prevention registry, clusters patterns, and files pattern-level cards with compound-regression requirements where applicable (does not ship fixes itself). Agents file papercuts to Brain only, never to the board. |
-| [`devops-continuous-improvement`](devops-continuous-improvement.md) | daily | Inspect CI, merge flow, deployment, testing, and release gates; ship one small DevOps fix or file precise follow-up cards. |
+| [`revenant-watch-weekly-review`](revenant-watch-weekly-review.md) | weekly (Thu) | Steward Revenant Watch: run health, signal/noise, product source checks, small fixes, report Tom. |
+| [`papercut-reconciler`](papercut-reconciler.md) | every 6h | The ONLY papercut→card path: harvests session papercuts into Brain, audits the prevention registry, clusters patterns, and files pattern-level cards with non-test product proof requirements (does not ship fixes itself). Agents file papercuts to Brain only, never to the board. |
+| [`devops-continuous-improvement`](devops-continuous-improvement.md) | daily | Inspect CI, merge flow, deployment, and release gates; ship one small DevOps fix or file precise follow-up cards. |
 | [`worktree-cleanup`](worktree-cleanup.md) | daily (off-hours) | Prune stale worktrees/branches; bring repos to latest default branch. |
 | [`disk-reclaim`](disk-reclaim.md) | hourly | Reclaim disk, prune merged/clean worktrees, sweep orphan processes. |
 | [`self-upgrade`](self-upgrade.md) | every 1–2 hours (Codex) + launchd every 30m | Clean-only fast-forward of the install checkout + `./setup` so other routines do not stall on `LAST_STACK_ROUTINE_STALE`. Prefer the zero-LLM LaunchAgent (`last-stack-self-upgrade-install`); Codex routine registry entry defaults to paused (dirty-repair only if resumed). |
@@ -534,7 +537,7 @@ with columns and any notes store; the routine logic (promote ready work, fan out
 one worker per card, reconcile merged PRs, keep the brain honest) is what
 matters. Wherever a template says `bun run src/cli.ts <cmd>` or `brain <cmd>`,
 substitute your tool's command. Wherever it says `<WORKSPACE>` /
-`<owner>/<repo>` / `<DEFAULT_BRANCH>` / `<BUILD+TEST commands>`, fill in yours.
+`<owner>/<repo>` / `<DEFAULT_BRANCH>` / `<BUILD+LINT commands>`, fill in yours.
 
 ## Upstreaming Routine Improvements
 

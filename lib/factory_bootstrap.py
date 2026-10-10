@@ -6,7 +6,7 @@ import shutil
 import uuid
 from pathlib import Path
 from factory_repair import (Refusal, require, version1, HEX, OID, sha, value_sha, read_json, read_bytes,
-    file_sha, atomic_json, validate_snapshot, public_card_batch, verify_fk, verify_loom, json_call, bounded_call, strict_json, validate_claim_stage_one, validate_claim_success)
+    file_sha, atomic_json, validate_snapshot, public_card_batch, verify_fk, verify_historical_loom_component, json_call, bounded_call, strict_json, validate_claim_stage_one, validate_claim_success)
 
 BOOTSTRAP_KEYS = {'factory-scoped-dispatch-20261008', 'factory-guarded-closeout-20261008'}
 RECOVERY_POLICY = {
@@ -361,7 +361,7 @@ def verify_component(entry):
         stops = value.get('stop_checks'); require(isinstance(stops, list) and len(stops) == 2 and
             all(s.get('argv_verified') is True and type(s.get('pid')) is int and s['pid'] > 0 and s.get('signal') in ('SIGKILL', 'SIGTERM') for s in stops), 'bootstrap-fkanban-synthetic-stop')
     elif proof['kind'] == 'loom-reviewed-decision-component-v1':
-        root = verify_loom(entry['artifact_authority'])
+        root = verify_historical_loom_component(entry['artifact_authority'])
         require(version1(value.get('version')) and value.get('kind') == proof['kind'] and value.get('result') == 'positive' and
                 value.get('source_unchanged') is True and value.get('primary_effects') is False and value.get('compiled_contract_verified') is True and
                 value.get('producer_sha256') == proof['producer_sha256'] and type(value.get('definition_version')) is int and value['definition_version'] == 5 and

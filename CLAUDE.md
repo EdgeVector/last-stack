@@ -17,6 +17,8 @@
   `bin/last-stack-secret-env-run --env NAME --ref lastsecrets://SLUG -- CMD`;
   the caller then holds a locator, not a value.
 
-- **This repo has no tests (deleted 2026-10-09, Tom).** The gate `.lastgit/ci.sh`
-  runs `bash -n` and the global lint passes only. Do not add a `tests/` dir or a
-  CI step that runs tests.
+- **No tests in any EdgeVector repo (Tom, 2026-10-09).** Read
+  `instructions/no-tests.md`. Do not write, restore, or run tests. Remove test
+  and test coverage requirements when you find them. Keep syntax, format,
+  lint, build, security, and real operational checks.
+  Situation: `no-tests-all-repos-20261009`.

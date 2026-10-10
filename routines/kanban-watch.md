@@ -4,6 +4,11 @@ cadence: every 10–20 min
 description: Reconcile the board — advance merged PRs to `done`, re-arm/un-stick stranded in-flight PRs, and detect+unstick a merge-queue head deadlocked for over an hour (investigate root cause before dequeuing). When the sweep is quiet, optionally FILE a card for the pickup pipeline. Never authors/ships new feature code itself.
 ---
 
+No-tests policy: `instructions/no-tests.md`; Situation
+`no-tests-all-repos-20261009`. Remove stale test and test coverage requirements
+from any card or instruction you use. Keep non-test product proof and gates.
+
+
 ## NO REVIEW COLUMN (Tom 2026-07-16 — won't-undo)
 
 There is **no `review` column**. Board columns are only:
@@ -82,7 +87,6 @@ envelope). Do not invent trailers when `DRIVEN_BY` is unset.
 - **Board JSON is an envelope.** `kanban list --json` / `kanban search --json`
   print `{cards, total, truncated}`. Iterate `.cards[]`, never `.[]` or
   `(.cards // .[])` (papercut-kanban-watch-list-json-envelope-20260923).
-  `tests/last-stack-prompt-kanban-json-envelope.sh` fails CI on the array form.
 - **HEAVY work IS capped at ONE bounded unit per wake**: a worktree CI-fix, a
   conflict rebase, OR (on a quiet sweep) filing one card. Pick the highest-value
   one, do it, then exit.
@@ -480,7 +484,7 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
 ```
 
 1. Look at the **position-1 (head) entry only** — a mid-queue `UNMERGEABLE`
-   entry is normal (its cascading test commit hasn't been evaluated yet); the
+   entry is normal (its temporary merge commit has not completed CI yet); the
    HEAD is the one that must resolve for anyone to merge.
 2. Compute its age: `now - enqueuedAt`. If `state` is `AWAITING_CHECKS` or
    `UNMERGEABLE` **and age > 60 minutes**, treat it as a genuine deadlock, not
@@ -500,7 +504,7 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
      self-inflicted (the fix can't run until it's the head) and unsticking the
      head is the correct, safe move.
    - If the cause isn't a clear CI/workflow config gap (e.g. it looks like a
-     real, reproducible test failure or a product conflict), do NOT auto-unstick
+     real non-test check failure or a product conflict), do NOT auto-unstick
      — comment on the head PR with findings and leave it; that's a real signal,
      not a false stall.
 4. **Safe unstick (does not bypass any required check — only reorders):**
@@ -640,8 +644,12 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
         `statusCheckRollup` has no PENDING / IN_PROGRESS / QUEUED entry.
       - **CI red** (a required check failed/cancelled, not just BEHIND) → READ the
         failing job first and split on the failure KIND:
-        - **Flaky infra** — cancelled / runner shutdown / timeout, tests actually
-          passing → just `gh run rerun <run-id> --failed` and confirm auto-merge
+        - **Retired test or test coverage requirement** → remove the command
+          and requirement from CI, linters, and the card in a worktree. Do not
+          repair or rerun tests. Keep required non-test checks. This is HEAVY
+          work under the existing one-per-wake limit.
+        - **Flaky infra** — cancelled / runner shutdown / timeout, without a
+          non-test check failure → `gh run rerun <run-id> --failed` and confirm auto-merge
           is armed. This is a CHEAP, UNCAPPED advance — do it for EVERY such PR.
           A flaky-cancelled required check is the #1 reason a green-able PR rots.
           On GitHub a cancelled run reads `cancelled` in `gh -R <repo> pr checks
@@ -662,21 +670,22 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
           --is-ancestor <base-tip> <pr-head>` fails against the fetched
           mirror), update the branch FIRST (the guarded update-branch above /
           rebase — never while a run is in flight), let CI
-          re-run, and classify the failure only on the new head. A test the
+          re-run, and classify the failure only on the new head. A non-test check the
           base already fixed is not a branch defect; re-dispatching a builder
           to fix it again wastes a build attempt and re-arms the surface fence
           (papercut-kanban-watch-red-ci-retry-never-checks-base-staleness).
         - **Unrelated-lane flake** — CHEAP. Before you write "real failure",
-          compare the failing test's crate/package path with the PR file list
+          compare the failing non-test check's crate/package path with the PR file list
           (`gh api repos/<owner>/<repo>/pulls/<n>/files`; the same path on the Forgejo API). When no
           changed path is inside that crate/package AND the base is green on
-          the same lane, write `WATCH: unrelated-lane flake <test> — rerun`
+          the same lane, write `WATCH: unrelated-lane flake <check> — rerun`
           and rerun the failed job. Do not re-dispatch the card, and do not
-          call it a real failure. File or append the de-flake card for the
-          test (papercut-kanban-watch-calls-unrelated-core-flake-real-failure-20260921).
+          call it a real failure. File or append a Brain papercut for the
+          repeated runner or non-test check failure.
         - **Real failing check** (mechanical formatter/linter OR a genuine
-          test/logic failure) → enter the worktree (create it if absent), read
-          logs, fix, re-run the card's VERIFY, push. HEAVY — one/wake. If the
+          product failure) → enter the worktree (create it if absent), read
+          logs, fix, remove test requirements from the card's VERIFY, run its
+          remaining non-test checks, push. HEAVY — one/wake. If the
           heavy budget is spent OR it needs more than a mechanical fix, do NOT
           park it rotting — **RE-DISPATCH** the card (add `PR:` + `RESUME:` +
           bump `Build attempt:`, then `move <slug> todo` so the next pickup puts
