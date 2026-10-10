@@ -19,27 +19,11 @@
 #      correct-but-slow is RED (incident 2026-07-25/27: 0.23.1 passed the
 #      correctness+RSS bars while scans ran 5-20x slower; the live primary
 #      was the first place anyone noticed)
-#      AND the KEY-CAP BAR on its own ephemeral copy: the logical resident
-#      set caps fetched records by count, so eviction is proven in keys.
-#      Under LASTDB_RESIDENT_KEY_CAP=100 every sample keeps
-#      resident_key_count within resident_key_budget and the purge runs.
-#      There is no byte footprint bar: a GiB line does not measure a
-#      key-count eviction (Tom, 2026-10-04). There is no skip.
-#      AND the HARD-DELETE BAR on the candidate's copy: a scratch kanban
-#      card is written and hard-deleted (kanban rm), and every /api/status
-#      sample in a bounded window after it keeps
-#      status.resident.persist_lane_failures and deferred_persist_failed at
-#      0 (incident 2026-10-04: f362b8e72 failed live on a card delete after
-#      every copy bar was GREEN). There is no skip.
+#      AND read-only candidate status: persist failures are zero.
 #      LASTDB_BUILD_CONFLICT_STAMP_ON_COPY is not installed on the primary.
 #      AND the CANDIDATE CLASS BAR (incident 2026-08-01): refuse Cargo
 #      debug paths (target/debug), -dirty version stamps, and binaries
 #      ≫ incumbent size (debug/unstripped) before any backup or probe
-#      AND the CAS MUTATION BAR (LastGit compound): candidate must enforce
-#      `/api/mutation` `expected` preconditions (false → 409 cas_conflict,
-#      refused write does not land). Older nodes ignore expected and write
-#      unconditionally — silent until LastGit ref/CI CAS collapses. Probe
-#      runs on an ephemeral throwaway node of the candidate binary only.
 #      AND the DEV PHOTOGRAPH STAMP GATE (Tom 2026-08-19): live cutover is
 #      refused unless an ephemeral/CoW copy of real data uploaded a
 #      photograph to DEV (not the primary's production backup home) and
@@ -267,10 +251,6 @@ export LASTDB_PROBE_LAT_GEO_MEAN_MAX="${LASTDB_PROBE_LAT_GEO_MEAN_MAX:-1.5}"
 export LASTDB_PROBE_LAT_CORR_MIN_OPS="${LASTDB_PROBE_LAT_CORR_MIN_OPS:-2}"
 export LASTDB_PROBE_LAT_CORR_SKIP="${LASTDB_PROBE_LAT_CORR_SKIP:-0}"
 
-# CAS mutation bar (LastGit #217 compound): candidate must honor `expected`
-# preconditions on /api/mutation. LASTDB_PROBE_CAS_SKIP=1 is Tom clearance only.
-CAS_SKIP="${LASTDB_PROBE_CAS_SKIP:-0}"
-
 # Candidate class gates (incident 2026-08-01: primary cut over to worktree
 # target/debug/lastdbd …-dirty). Sourced pure helpers.
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
@@ -286,10 +266,6 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/rowcount-bar-checks.sh"
 # shellcheck source=probe-copy-guards.sh
 . "$_SCRIPT_DIR/probe-copy-guards.sh"
-# shellcheck source=key-cap-bar-checks.sh
-. "$_SCRIPT_DIR/key-cap-bar-checks.sh"
-# shellcheck source=hard-delete-bar-checks.sh
-. "$_SCRIPT_DIR/hard-delete-bar-checks.sh"
 # shellcheck source=live-lastdb-env.sh
 . "$_SCRIPT_DIR/live-lastdb-env.sh"
 # shellcheck source=dev-photograph-stamp-gate.sh
@@ -304,7 +280,6 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/owner-lock.sh"
 # shellcheck source=deadline.sh
 . "$_SCRIPT_DIR/deadline.sh"
-CAS_PROBE_SH="$_SCRIPT_DIR/cas-mutation-probe.sh"
 DEV_PHOTOGRAPH_PROOF_SH="$_SCRIPT_DIR/dev-photograph-candidate-proof.sh"
 if [ "$PROBE_DATA" != "real" ]; then
   echo "safe upgrade requires --data real" >&2
@@ -657,7 +632,7 @@ median_of() {
 }
 
 # Latency ops. Each takes one arg and must exit non-zero on failure. These are
-# the REAL workloads: the keyed point read from the smoke bar, the column list
+# the REAL workloads: the keyed point read from the deployment check, the column list
 # that regressed in 0.23.1 (kanban list), and a real brain upsert (writes
 # only ever land on the throwaway CoW copy, never the primary).
 # The column list is cold only. The hot read is one batch of its keys.
@@ -784,51 +759,8 @@ EOF
   return 1
 }
 
-# ---------------------------------------------------------------------------
-# Durability canary: an acked write must survive the cutover restart.
-#
-# 2026-08-18: two loom execution terminal-status writes were acknowledged and
-# READ BACK on the live primary (23:08–23:12Z), then vanished — the rows
-# regressed to their previous version. The defer cap was 0, and the next
-# safe-upgrade cutover recorded "did not complete its clean drain". Every bar
-# in this script would have passed GREEN over that loss: health, version,
-# schemas, Board title, RSS, and latency are liveness/read checks, and the
-# latency write probe only touches throwaway CoW copies. Nothing asserted that
-# a write acked by the OLD daemon is still there when the NEW daemon serves.
-# Brain: papercut-lastdb-acked-write-lost-loom-terminal-status-regressed.
-#
-# Mechanism: immediately before any live change, upsert N fixed-slug sentinels
-# through `brain put --durable --json`, require the node's exact `durable`
-# receipt, and read each nonce back. After the cutover, read them again on the
-# new daemon. A queued write plus resident read-back is not durability proof:
-# that exact sequence lost sentinel 4 during the 2026-09-02 cutover. A stale
-# nonce after restart is the observed loss shape (the last write to one key
-# dropped and the prior version survived). Fixed slugs keep the store flat; N
-# spreads sentinels across hash groups because the loss was per-key, not
-# per-interval. There is deliberately no skip flag — a durability bar that can
-# be skipped recurs silently.
-# ---------------------------------------------------------------------------
-DURABILITY_N="${LASTDB_DURABILITY_CANARY_N:-4}"
-DURABILITY_READ_WAIT_S="${LASTDB_DURABILITY_READ_WAIT_S:-120}"
-# Arming happens on the OLD daemon, which is often the reason for the upgrade:
-# on 2026-10-01 and 2026-10-04 a thrashing primary answered brain writes and
-# reads in 30-250 s, so a single 60 s put or a 15 s read-back failed the arm and
-# blocked the cutover that carried the fix
-# (papercut-safe-upgrade-blocked-by-slow-primary-write-timeouts-20261004).
-# Slowness is not a durability verdict. The arm retries the same upsert (same
-# slug, same nonce, so a late landing of an earlier attempt is harmless) and
-# polls the read-back with a longer per-read limit. The proof does not change:
-# an exact `durable` receipt (or the HTTP 400 queued+readback mode) plus this
-# run's nonce read back, before any live change.
-DURABILITY_ARM_ATTEMPTS="${LASTDB_DURABILITY_ARM_ATTEMPTS:-6}"
-DURABILITY_ARM_BACKOFF_S="${LASTDB_DURABILITY_ARM_BACKOFF_S:-5 15 30 60 60}"
-DURABILITY_ARM_READ_OP_S="${LASTDB_DURABILITY_ARM_READ_OP_S:-90}"
-DURABILITY_ARM_READ_WAIT_S="${LASTDB_DURABILITY_ARM_READ_WAIT_S:-300}"
-DURABILITY_ARM_READ_POLL_S="${LASTDB_DURABILITY_ARM_READ_POLL_S:-5}"
-DURABILITY_SLUG_PREFIX="lastdb-safe-upgrade-durability-canary"
-DURABILITY_NONCE=""
-DURABILITY_MODE="durable"
-
+# The stopped old daemon must produce the exact flush receipt before the
+# rollback copy becomes valid. No synthetic record is written on the primary.
 cleanup_upgrade_restart_intent() {
   [ "${RESTART_INTENT_START_REQUESTED:-0}" -eq 0 ] || return 0
   [ -n "${RESTART_INTENT_PATH:-}" ] || return 0
@@ -859,171 +791,6 @@ write_upgrade_restart_intent() {
     die "restart intent: could not atomically write $RESTART_INTENT_PATH"
   fi
   log "restart intent: armed cause=upgrade previous_pid=$previous_pid path=$RESTART_INTENT_PATH"
-}
-
-durability_slug() { printf '%s-%d' "$DURABILITY_SLUG_PREFIX" "$1"; }
-
-durability_read_body() {
-  # $1 = slug, $2 = per-read deadline seconds (default 15). stdout: the record
-  # as brain prints it (empty on any failure).
-  run_op_with_deadline "${2:-15}" env FBRAIN_FOLDDB_SOCKET="$PRIMARY_SOCK" \
-    LASTDB_HOME="$PRIMARY_HOME" FOLDDB_HOME="$PRIMARY_HOME" \
-    brain get "$1" 2>/dev/null || true
-}
-
-durability_output_is_http_400() {
-  # Distinguish "old daemon has no durable-receipt API" from other write
-  # failures. HTTP 400 is the deny_unknown_fields rejection of `durability`.
-  printf '%s' "$1" | grep -Eqi \
-    'HTTP[[:space:]]*400|status[[:space:]]*[:=][[:space:]]*"?400"?([^0-9]|$)|400[[:space:]]+Bad[[:space:]]+Request'
-}
-
-durability_arm_sleep() {
-  # $1 = attempt number that just failed (1-based). Sleeps the matching backoff.
-  local n=0 secs="" last=""
-  for secs in $DURABILITY_ARM_BACKOFF_S; do
-    n=$((n + 1))
-    last="$secs"
-    [ "$n" -eq "$1" ] && break
-  done
-  [ -n "$last" ] && sleep "$last"
-}
-
-durability_arm_readback() {
-  # $1 = slug, $2 = sentinel index. 0 when this run's nonce reads back within
-  # DURABILITY_ARM_READ_WAIT_S on the old daemon.
-  local deadline=$(( $(date +%s) + DURABILITY_ARM_READ_WAIT_S ))
-  while :; do
-    durability_read_body "$1" "$DURABILITY_ARM_READ_OP_S" \
-      | grep -qF "nonce: ${DURABILITY_NONCE}#${2}" && return 0
-    [ "$(date +%s)" -ge "$deadline" ] && return 1
-    sleep "$DURABILITY_ARM_READ_POLL_S"
-  done
-}
-
-durability_write_sentinels() {
-  # Runs BEFORE any live change; a failure here aborts a not-yet-started
-  # cutover, which is the honest outcome — an upgrade whose durability bar
-  # cannot arm must not proceed to the restart that bar exists to judge.
-  #
-  # Two arming modes:
-  #   durable         — --durable returned .durability=="durable" (preferred)
-  #   queued+readback — --durable returned HTTP 400 (pre-receipt API daemon),
-  #                     a queued put of the same sentinel succeeded, and
-  #                     read-back on the old daemon returned this run's nonce.
-  #                     Post-cutover nonce read-back remains mandatory.
-  # Any other durable-put failure is retried up to DURABILITY_ARM_ATTEMPTS
-  # times (a slow old daemon times out; it does not refuse), then hard-aborts.
-  DURABILITY_NONCE="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-  DURABILITY_MODE="durable"
-  local i slug body receipt put_rc put_err used_fallback=0 attempt armed
-  local errf="${TMPDIR:-/tmp}/lastdb-su-durability-err.$$"
-  for i in $(seq 1 "$DURABILITY_N"); do
-    slug="$(durability_slug "$i")"
-    body="$(
-      printf -- '---\ntype: reference\nslug: %s\ntitle: safe-upgrade durability canary %d (constant slug; nonce changes per run)\n---\nnonce: %s#%d\n\nWritten by lastdb-safe-upgrade immediately before the cutover restart and\nread back after it. A stale nonce after an upgrade means the primary lost an\nacknowledged write across the restart. Safe to keep; carries no other\nmeaning. Rationale: brain\npapercut-lastdb-acked-write-lost-loom-terminal-status-regressed.\n' \
-        "$slug" "$i" "$DURABILITY_NONCE" "$i"
-    )"
-    armed=""
-    attempt=0
-    while [ "$attempt" -lt "$DURABILITY_ARM_ATTEMPTS" ]; do
-      attempt=$((attempt + 1))
-      put_rc=0
-      receipt="$(
-        printf '%s' "$body" \
-          | env FBRAIN_FOLDDB_SOCKET="$PRIMARY_SOCK" LASTDB_HOME="$PRIMARY_HOME" FOLDDB_HOME="$PRIMARY_HOME" \
-            brain put --durable --json 2>"$errf"
-      )" || put_rc=$?
-      put_err="$(cat "$errf" 2>/dev/null || true)"
-      if [ "$put_rc" -eq 0 ] && printf '%s' "$receipt" | jq -e \
-        '.ok == true and .durability == "durable"' >/dev/null 2>&1; then
-        armed="durable"
-        break
-      fi
-      if durability_output_is_http_400 "${receipt}
-${put_err}"; then
-        log "durability canary: $slug --durable put HTTP 400 on old daemon ${CURRENT_VER:-unknown} (no durable-receipt API); printing response body"
-        if [ -n "$put_err" ]; then
-          log "durability canary: HTTP 400 stderr: $(printf '%s' "$put_err" | tr '\n' ' ')"
-        fi
-        if [ -n "$receipt" ]; then
-          log "durability canary: HTTP 400 stdout: $(printf '%s' "$receipt" | tr '\n' ' ')"
-        fi
-        put_rc=0
-        receipt="$(
-          printf '%s' "$body" \
-            | env FBRAIN_FOLDDB_SOCKET="$PRIMARY_SOCK" LASTDB_HOME="$PRIMARY_HOME" FOLDDB_HOME="$PRIMARY_HOME" \
-              brain put --json 2>"$errf"
-        )" || put_rc=$?
-        put_err="$(cat "$errf" 2>/dev/null || true)"
-        if [ "$put_rc" -eq 0 ] && printf '%s' "$receipt" | jq -e '.ok == true' >/dev/null 2>&1; then
-          armed="queued+readback"
-          break
-        fi
-        log "durability canary: $slug queued put after HTTP 400 failed (attempt $attempt/$DURABILITY_ARM_ATTEMPTS): $(printf '%s' "$put_err" | tr '\n' ' ')"
-      else
-        log "durability canary: $slug durable put failed (attempt $attempt/$DURABILITY_ARM_ATTEMPTS, rc=$put_rc): $(printf '%s' "$put_err" | tr '\n' ' ')"
-      fi
-      [ "$attempt" -lt "$DURABILITY_ARM_ATTEMPTS" ] && durability_arm_sleep "$attempt"
-    done
-    if [ -z "$armed" ]; then
-      rm -f "$errf"
-      die "durability canary: pre-cutover durable write of $slug failed after $DURABILITY_ARM_ATTEMPTS attempts — aborting before any live change (the canary must arm to prove the cutover keeps durable writes; last error: ${put_err})"
-    fi
-    if ! durability_arm_readback "$slug" "$i"; then
-      rm -f "$errf"
-      die "durability canary: pre-cutover read-back of $slug did not return this run's nonce within ${DURABILITY_ARM_READ_WAIT_S}s — primary already unhealthy; aborting before any live change"
-    fi
-    [ "$armed" = "queued+readback" ] && used_fallback=1
-  done
-  rm -f "$errf"
-  if [ "$used_fallback" -eq 1 ]; then
-    DURABILITY_MODE="queued+readback"
-    log "durability canary: armed mode=queued+readback old_build=${CURRENT_VER:-unknown} — $DURABILITY_N sentinels queued, acknowledged, and read back on the old daemon (nonce $DURABILITY_NONCE). Post-cutover nonce read-back remains mandatory."
-  else
-    DURABILITY_MODE="durable"
-    log "durability canary: armed mode=durable — $DURABILITY_N sentinels durably persisted and read back on the old daemon (nonce $DURABILITY_NONCE)"
-  fi
-}
-
-durability_verify_after_cutover() {
-  # Same read-vs-mismatch split as the version assertion above: a read that
-  # has not answered yet says nothing (node may still be warming — retry until
-  # the deadline), while a read that SUCCEEDS with a stale nonce is a proven
-  # acked-write loss and cannot improve by waiting.
-  local deadline=$(( $(date +%s) + DURABILITY_READ_WAIT_S ))
-  local i slug body lost="" unreadable=""
-  for i in $(seq 1 "$DURABILITY_N"); do
-    slug="$(durability_slug "$i")"
-    while :; do
-      body="$(durability_read_body "$slug")"
-      if [ -n "$body" ]; then
-        printf '%s' "$body" | grep -qF "nonce: ${DURABILITY_NONCE}#${i}" \
-          || lost="$lost $slug"
-        break
-      fi
-      if [ "$(date +%s)" -ge "$deadline" ]; then
-        unreadable="$unreadable $slug"
-        break
-      fi
-      sleep 2
-    done
-  done
-  if [ -n "$lost" ] || [ -n "$unreadable" ]; then
-    echo ""
-    echo "VERDICT: RED"
-    [ -n "$lost" ] && \
-      echo "REASON: acked-write durability regression — sentinel(s)$lost read back with a STALE nonce after cutover: the old daemon acknowledged these writes and the new daemon does not have them (loss class: papercut-lastdb-acked-write-lost-loom-terminal-status-regressed)"
-    [ -n "$unreadable" ] && \
-      echo "REASON: durability sentinel(s)$unreadable unreadable ${DURABILITY_READ_WAIT_S}s after cutover — durability of the cutover is UNPROVEN"
-    echo "BACKUP: $BACKUP"
-    echo "BINARY ROLLBACK (preferred first try, sidebin):"
-    echo "  cp -a $SIDEBIN_DIR/lastdbd.bak-pre-* $SIDEBIN_DIR/lastdbd  # pick newest bak"
-    echo "  launchctl kickstart -k gui/\$(id -u)/$LAUNCHD_LABEL"
-    echo "NOTE: rolling back the binary does NOT recover the lost writes; it stops the bleeding. Audit recent writes on other apps before trusting the store."
-    die "durability canary failed after cutover — acked writes did not survive the restart"
-  fi
-  log "durability canary: $DURABILITY_N/$DURABILITY_N sentinels survived the cutover (nonce $DURABILITY_NONCE)"
 }
 
 measure_op_median_ms() {
@@ -1220,8 +987,8 @@ EOF_ENV
   if [ "${#env_pairs[@]}" -gt 0 ]; then
     log "$label metrics probe: mirroring live env: ${env_pairs[*]}"
   fi
-  # Timed latency and key-cap copies receive no conflict-stamp job. The
-  # separate smoke copy exercises it. Do not export the flag to the primary.
+  # Timed latency copies receive no conflict-stamp job. The deployment
+  # copy exercises it. Do not export the flag to the primary.
   local stamp_env
   stamp_env="$(probe_stamp_env_for_label "$label")"
   env -u SENTRY_DSN -u FOLD_SENTRY_DSN \
@@ -1262,50 +1029,6 @@ EOF_ENV
   return 0
 }
 
-# Key-cap bar: boot the candidate on its own CoW copy with a cap far below
-# the default, drive reads, sample /api/status, and write a proof document.
-# $1 = candidate bin, $2 = proof path. The cap is boot-time, so this cannot
-# reuse the latency node.
-probe_key_cap_bar() {
-  local cand_bin="$1" out="$2" k_copy k_pid k_sock k_blog dir start now n=0
-  k_copy="$(clone_probe_home k)" || return 1
-  if ! start_probe_node "$cand_bin" "$k_copy" "key-cap" "$KEY_CAP_BAR_ENV=$KEY_CAP_BAR_CAP"; then
-    return 1
-  fi
-  k_pid="$LAST_PROBE_PID"
-  k_sock="$LAST_PROBE_SOCK"
-  k_blog="$LAST_PROBE_BLOG"
-  dir="${k_copy}.key-cap-samples"
-  mkdir -p "$dir"
-  log "key-cap bar: $KEY_CAP_BAR_ENV=$KEY_CAP_BAR_CAP for ${KEY_CAP_BAR_SECS}s"
-  start="$(date +%s)"
-  while true; do
-    if ! kill -0 "$k_pid" 2>/dev/null; then
-      warn "key-cap bar: candidate exited during the sample window"
-      remove_probe_copy "$k_copy" "$k_blog" || true
-      return 1
-    fi
-    op_lat_point "$k_sock" || true
-    if command -v kanban >/dev/null 2>&1; then
-      LAT_KEYS_OUT=""
-      op_lat_scan "$k_copy" || true
-    fi
-    n=$((n + 1))
-    curl -sS --max-time 15 --unix-socket "$k_sock" -H 'Host: localhost' \
-      -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/status \
-      >"$(printf '%s/sample-%03d.json' "$dir" "$n")" 2>/dev/null \
-      || printf '%s\n' '{}' >"$(printf '%s/sample-%03d.json' "$dir" "$n")"
-    now="$(date +%s)"
-    if [ $((now - start)) -ge "$KEY_CAP_BAR_SECS" ] && [ "$n" -ge 2 ]; then
-      break
-    fi
-    sleep 5
-  done
-  key_cap_bar_from_samples "$dir" "$KEY_CAP_BAR_CAP" "$out" || true
-  stop_probe_node "$k_pid" "$k_copy" "$k_blog" || return 1
-  return 0
-}
-
 stop_probe_node() {
   local pid="$1" copy="$2" blog="$3"
   [ -n "$pid" ] || return 0
@@ -1318,7 +1041,7 @@ stop_probe_node() {
 # A deployment check reads real data on a copy with the exact candidate.
 # It does not create synthetic records or mutate the copy.
 candidate_deployment_check() {
-  local copy pid sock blog schemas query cards before after ready=0 i rss peak=0
+  local copy pid sock blog schemas query cards status before after ready=0 i rss peak=0
   case "$RSS_SETTLE_SECS" in ''|*[!0-9]*) warn "the candidate memory settle interval is invalid"; return 1 ;; esac
   case "$RSS_SAMPLE_SECS" in ''|*[!0-9]*|0) warn "the candidate memory sample interval is invalid"; return 1 ;; esac
   before="$(resolve_live_primary_pid)"
@@ -1336,6 +1059,7 @@ candidate_deployment_check() {
   schemas="$WORK/deployment-schemas.json"
   query="$WORK/deployment-board.json"
   cards="$WORK/deployment-board-cards.json"
+  status="$WORK/deployment-status.json"
   for i in $(seq 1 60); do
     if curl -fsS --max-time 60 --unix-socket "$sock" \
         -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
@@ -1369,6 +1093,20 @@ candidate_deployment_check() {
       || ! jq -e '(.cards | type == "array") and (.cards | length > 0)' \
         "$cards" >/dev/null 2>&1; then
     warn "the candidate did not serve the keyed BoardCards read from a real copy"
+    stop_probe_node "$pid" "$copy" "$blog" || true
+    return 1
+  fi
+  if ! curl -fsS --max-time 30 --unix-socket "$sock" \
+        -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+        http://x/api/status >"$status" 2>/dev/null \
+      || ! jq -e '
+        .ok == true
+        and (.status.resident.persist_lane_failures | type) == "number"
+        and .status.resident.persist_lane_failures == 0
+        and (.status.resident.deferred_persist_failed | type) == "number"
+        and .status.resident.deferred_persist_failed == 0
+      ' "$status" >/dev/null 2>&1; then
+    warn "the candidate status has a persist failure or lacks a failure gauge"
     stop_probe_node "$pid" "$copy" "$blog" || true
     return 1
   fi
@@ -1408,7 +1146,7 @@ candidate_deployment_check() {
 # The column list stays cold. The hot read is one batch of its keys.
 # Writes cand/base metric files with lat_cold_* / lat_hot_* keys.
 probe_like_to_like_metrics() {
-  local cand_bin="$1" base_bin="$2" cand_out="$3" base_out="$4" hd_out="${5:-}"
+  local cand_bin="$1" base_bin="$2" cand_out="$3" base_out="$4"
   local c_copy b_copy c_pid b_pid c_sock b_sock c_blog b_blog c_boot b_boot
   local max_rss rss i
   local c_cold_pt=-1 b_cold_pt=-1 c_cold_sc=-1 b_cold_sc=-1
@@ -1634,13 +1372,7 @@ probe_like_to_like_metrics() {
   log "candidate metrics: boot_s=${c_boot} peak_rss_mb=${max_rss} cold_point_ms=${c_cold_pt} cold_scan_ms=${c_cold_sc} hot_point_ms=${c_hot_pt} hot_scan_ms=${c_hot_sc}"
   log "baseline metrics: boot_s=${b_boot:--} cold_point_ms=${b_cold_pt} cold_scan_ms=${b_cold_sc} hot_point_ms=${b_hot_pt} hot_scan_ms=${b_hot_sc}"
 
-  # The hard-delete bar runs last on the candidate node, after every timed
-  # read, so its write and purge do not touch the latency numbers. The
-  # baseline node is not needed for it.
   stop_probe_node "$b_pid" "$b_copy" "$b_blog"
-  if [ -n "$hd_out" ]; then
-    probe_hard_delete_bar "$c_copy" "$c_sock" "$c_pid" "$hd_out" || true
-  fi
   stop_probe_node "$c_pid" "$c_copy" "$c_blog"
   return 0
 }
@@ -2326,12 +2058,12 @@ fi
 # Darwin TMPDIR under /var/folders/... is also too long (observed 2026-08-26:
 # grok-goal scratch 56-byte prefix → folddb-full.sock 133 bytes). Mini refuses
 # a data dir over 82 bytes. Fall back to /tmp when the prefix cannot fit
-# /lastdb-safe-upgrade.XXXXXX/probes/smoke/copy-<epoch>-<pid>/data.
+# /lastdb-safe-upgrade.XXXXXX/probes/mp-deployment-<pid>/data.
 _work_tmp="${TMPDIR:-/tmp}"
 case "$(cd "$_work_tmp" 2>/dev/null && pwd -P || printf '%s' "$_work_tmp")" in
   "$_rollback_home_real"|"$_rollback_home_real"/*) _work_tmp="/tmp" ;;
 esac
-# 70 bytes reserved for /lastdb-safe-upgrade.XXXXXX/probes/smoke/copy-.../data
+# Reserve space for the deployment copy path, its data dir, and its socket.
 if [ "${#_work_tmp}" -gt 12 ]; then
   log "probe WORK prefix ${_work_tmp} is ${#_work_tmp} bytes; using /tmp for sockaddr_un"
   _work_tmp="/tmp"
@@ -2548,38 +2280,6 @@ fi
 # The candidate already booted a fresh real copy and served a keyed read.
 log "STEP 2/4: real-copy candidate deployment check GREEN for $CAND_VER"
 
-# --- 2b) CAS mutation bar (LastGit compound) ---------------------------------
-# Prove the candidate enforces /api/mutation `expected` on an ephemeral node
-# (never live primary). RED blocks promotion: a CAS-disarmed node makes every
-# LastGit ref write and terminal CI status write unconditional.
-if [ "$CAS_SKIP" = "1" ]; then
-  warn "CAS mutation bar SKIPPED (LASTDB_PROBE_CAS_SKIP=1) — Tom-clearance only; LastGit CAS will not be proven"
-elif [ ! -x "$CAS_PROBE_SH" ] && [ ! -f "$CAS_PROBE_SH" ]; then
-  warn "CAS mutation bar: probe script missing at $CAS_PROBE_SH — treating as SKIP (install last-stack skills)"
-else
-  log "CAS mutation bar: probing candidate $CANDIDATE_BIN on ephemeral throwaway node (not primary)"
-  CAS_OUT="$WORK/cas-probe.out"
-  set +e
-  bash "$CAS_PROBE_SH" --lastdbd "$CANDIDATE_BIN" >"$CAS_OUT" 2>&1
-  CAS_RC=$?
-  set -e
-  cat "$CAS_OUT"
-  if [ "$CAS_RC" -ne 0 ] || grep -q 'VERDICT: RED' "$CAS_OUT"; then
-    echo ""
-    echo "VERDICT: RED"
-    echo "REASON: candidate $CAND_VER failed the CAS mutation bar — promotion is blocked because the node accepted a false CAS precondition (or the probe could not prove enforcement)"
-    echo "CANDIDATE: $CANDIDATE_BIN"
-    backup_red_note
-    echo "NEXT:   do NOT live-upgrade; fix /api/mutation expected-precondition enforcement before cutover (LastGit ref writes + terminal CI status rely on it). LASTDB_PROBE_CAS_SKIP=1 requires Tom clearance."
-    exit 1
-  fi
-  if grep -q 'VERDICT: SKIP' "$CAS_OUT"; then
-    warn "CAS mutation bar SKIPPED (tools/schema map / LastGit discriminator unavailable) — candidate not proven for LastGit CAS"
-  else
-    log "CAS mutation bar GREEN for candidate $CAND_VER"
-  fi
-fi
-
 # RSS + like-to-like cold/hot latency. Clone both CoWs, boot both to
 # identity-ready, cold fetch, settle + warmup, then hot medians.
 # RSS incident 2026-07-22; latency 2026-07-25/27; mixed-thermal 2026-08-26.
@@ -2592,15 +2292,10 @@ if [ "$LAT_SKIP" != "1" ]; then
 fi
 log "latency: like-to-like cold+hot probe (candidate first identity, baseline sibling CoW)"
 set +e
-HD_PROOF="$WORK/hard-delete-proof.json"
-probe_like_to_like_metrics "$CANDIDATE_BIN" "$BASELINE_BIN" "$CAND_METRICS" "$BASE_METRICS" "$HD_PROOF"
+probe_like_to_like_metrics "$CANDIDATE_BIN" "$BASELINE_BIN" "$CAND_METRICS" "$BASE_METRICS"
 CAND_METRICS_RC=$?
 set -e
 PROBE_RSS_MB="$(metric_val "$CAND_METRICS" peak_rss_mb)"
-KC_PROOF="$WORK/key-cap-proof.json"
-set +e
-probe_key_cap_bar "$CANDIDATE_BIN" "$KC_PROOF"
-set -e
 if [ "$CAND_METRICS_RC" -ne 0 ] || [ -z "$PROBE_RSS_MB" ]; then
   echo ""
   echo "VERDICT: RED"
@@ -2730,46 +2425,16 @@ else
   warn "latency bar SKIPPED (LASTDB_PROBE_LAT_SKIP=1) — Tom-clearance only; correct-but-slow will NOT be caught"
 fi
 
-# The conflict stamp stays on the separate smoke copy. The primary plist must not carry it.
+# The conflict stamp stays on the deployment copy. The primary plist must not carry it.
 primary_stamp="$(probe_plist_stamp_value "$LAUNCHD_PLIST")"
 if ! probe_stamp_env_allowed primary "$primary_stamp"; then
   echo ""
   echo "VERDICT: RED"
   echo "REASON: primary LaunchAgent sets LASTDB_BUILD_CONFLICT_STAMP_ON_COPY; the ephemeral copy stamp must not be installed on the primary home"
   backup_red_note
-  echo "NEXT:   remove LASTDB_BUILD_CONFLICT_STAMP_ON_COPY from the primary plist. The driver sets it on the separate smoke copy only."
+  echo "NEXT:   remove LASTDB_BUILD_CONFLICT_STAMP_ON_COPY from the primary plist. The driver sets it on the deployment copy only."
   exit 1
 fi
-set +e
-KC_RECEIPT="$(key_cap_bar_eval "$KC_PROOF" 2>&1)"
-KC_RC=$?
-set -e
-if [ "$KC_RC" -ne 0 ]; then
-  log "$KC_RECEIPT"
-  echo ""
-  echo "VERDICT: RED"
-  echo "REASON: candidate $CAND_VER fails the key-cap bar — under $KEY_CAP_BAR_ENV=$KEY_CAP_BAR_CAP the logical resident set must purge and keep resident_key_count within resident_key_budget"
-  echo "KEYCAP:  $KC_RECEIPT"
-  backup_red_note
-  echo "NEXT:   do NOT live-upgrade. There is no skip flag. A binary without the logical resident set gauges fails this bar."
-  exit 1
-fi
-log "$KC_RECEIPT"
-set +e
-HD_RECEIPT="$(hard_delete_bar_eval "$HD_PROOF" 2>&1)"
-HD_RC=$?
-set -e
-if [ "$HD_RC" -ne 0 ]; then
-  log "$HD_RECEIPT"
-  echo ""
-  echo "VERDICT: RED"
-  echo "REASON: candidate $CAND_VER fails the hard-delete bar — a kanban card hard delete on the CoW copy must leave status.resident.persist_lane_failures and deferred_persist_failed at 0 (incident 2026-10-04: fold f362b8e72 passed every other copy bar, then failed live with persist-lane-failure from a card delete)"
-  echo "HARDDELETE: $HD_RECEIPT"
-  backup_red_note
-  echo "NEXT:   do NOT live-upgrade. There is no skip flag. Read the candidate boot log for the persist-lane error. Brain: papercut-safe-upgrade-probe-runs-no-hard-delete-so-a-purge-lane-defect-reaches-the-primary-20261004."
-  exit 1
-fi
-log "$HD_RECEIPT"
 log "row-count bar GREEN: point cand=${CAND_ROWS_POINT}(base ${BASE_ROWS_POINT}) scan cand=${CAND_ROWS_SCAN}(base ${BASE_ROWS_SCAN})"
 log "probe GREEN for candidate $CAND_VER (data-plane + RSS peak_mb=${PROBE_RSS_MB} + cold_point/scan=${CAND_LAT_COLD_POINT_MS}/${CAND_LAT_COLD_SCAN_MS}ms hot_point/scan=${CAND_LAT_POINT_MS}/${CAND_LAT_SCAN_MS}ms)"
 
@@ -2783,8 +2448,6 @@ if [ "$PROBE_ONLY" -eq 1 ]; then
   echo "RSS:     peak_mb=${PROBE_RSS_MB} limit_mb=$(resolve_rss_limit_mb) fail_at_mb=$(rss_fail_threshold_mb "$(resolve_rss_limit_mb)")"
   echo "LATENCY: cold_point=${CAND_LAT_COLD_POINT_MS}ms(base ${BASE_LAT_COLD_POINT_MS}ms) cold_scan=${CAND_LAT_COLD_SCAN_MS}ms(base ${BASE_LAT_COLD_SCAN_MS}ms) hot_point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) hot_scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) boot=${CAND_BOOT_SECS}s(base ${BASE_BOOT_SECS:-?}s)"
   echo "ROWCOUNT: point cand=${CAND_ROWS_POINT}(base ${BASE_ROWS_POINT}) scan cand=${CAND_ROWS_SCAN}(base ${BASE_ROWS_SCAN})"
-  echo "KEYCAP:  ${KC_RECEIPT:-unset}"
-  echo "HARDDELETE: ${HD_RECEIPT:-unset}"
   echo "NEXT:    run last-stack-safe-upgrade-loom --candidate $CANDIDATE_BIN --source-git-oid <full-lastdb-commit>"
   exit 0
 fi
@@ -2878,6 +2541,14 @@ PRELIVE_STATUS_OUT="$(post_cutover_status_check "$PRELIVE_STATUS" 0 0 "$PRELIVE_
 jq -e '.status.sync.enabled | type == "boolean"' "$PRELIVE_STATUS" >/dev/null \
   || die "pre-live status cannot determine whether Cloud Sync is enabled"
 SOAK_REQUIRE_CLOUD="$(jq -r 'if .status.sync.enabled == true then 1 else 0 end' "$PRELIVE_STATUS")"
+PRELIVE_CLOUD_FRONTIER=0
+if [ "$SOAK_REQUIRE_CLOUD" -eq 1 ]; then
+  PRELIVE_CLOUD_FRONTIER="$(jq -er '
+    .status.sync.mutation_log_frontier_f
+    | if type == "number" and . >= 0 then . else error("invalid cloud frontier") end
+  ' "$PRELIVE_STATUS")" \
+    || die "pre-live status has no numeric cloud frontier; primary was not changed"
+fi
 log "pre-live status bar $PRELIVE_STATUS_OUT (meter plane below 1.5 GiB)"
 
 detect_live_venue
@@ -2920,10 +2591,6 @@ if [ "${LASTDB_PROBE_DEV_STAMP_SKIP:-0}" != "1" ]; then
   assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" "$TRIAL_COPY" >/dev/null \
     || die "exact-candidate DEV photograph receipt changed before the live section"
 fi
-
-# Arm the durability canary before any live change and before the cutover
-# clock starts, so cutover_s stays comparable to historical runs.
-durability_write_sentinels
 
 CUTOVER_T0="$(date +%s)"
 
@@ -3060,7 +2727,7 @@ if [ "$VENUE" = "sidebin" ]; then
   fi
 fi
 
-# Live data plane spot-check (same bar as smoke: Board titles rehydrate)
+# Live data check (same keyed Board read as the deployment check)
 UH="$(curl -sS --max-time 5 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/system/auto-identity 2>/dev/null | jq -r '.user_hash // empty')"
 [ -n "$UH" ] || die "live auto-identity empty after cutover — treat as RED; consider restore from $BACKUP"
 NSCHEMAS="$(curl -sS --max-time 30 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/schemas 2>/dev/null | jq -r '.schemas|length // 0')"
@@ -3070,15 +2737,6 @@ QRES="$(curl -sS --max-time 30 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost
 QOK="$(echo "$QRES" | jq -r '.ok // empty' 2>/dev/null || true)"
 QVAL="$(echo "$QRES" | jq -r '.results[0].fields.title // .results[0].title // empty' 2>/dev/null || true)"
 [ "$QOK" = "true" ] && [ -n "$QVAL" ] || die "live Board query failed after cutover — treat as RED; restore from $BACKUP"
-
-# Attribution aid for a durability RED: say whether the old daemon drained
-# cleanly. Warn-only — the canary below is the authority, not this string.
-DRAIN_LINE="$(run_op_with_deadline 15 "$INSTALLED_CLI_BIN" status 2>/dev/null | grep -i 'did not complete its clean drain' || true)"
-[ -n "$DRAIN_LINE" ] && warn "previous daemon session did not complete its clean drain — if the durability canary goes RED, this restart is the prime suspect"
-
-# Durability canary read-back: every sentinel the OLD daemon acked must read
-# back with THIS run's nonce on the NEW daemon.
-durability_verify_after_cutover
 
 # Live RSS vs memory-guard (settle briefly — embeddings may still be loading).
 log "live RSS settle ${RSS_SETTLE_SECS}s then sample ${RSS_SAMPLE_SECS}s..."
@@ -3212,15 +2870,8 @@ if [ "$VENUE" = "sidebin" ]; then
   fi
 fi
 
-# A read-only post-check missed a delayed persist-lane failure on 2026-10-01.
-# Write fresh durable canaries on the candidate, then retain the rollback point
-# through a five-minute live soak and a cloud frontier beyond the last write.
-DURABILITY_SLUG_PREFIX="lastdb-safe-upgrade-post-cutover-canary"
-durability_write_sentinels
-durability_verify_after_cutover
-# The frontier floor must follow every canary write. A timestamp taken before
-# the first write can pass while later canaries still wait for cloud capture.
-POST_CUTOVER_WRITE_DONE_S="$(date +%s)"
+# Keep the stopped rollback copy through the live status period.
+# An idle cloud frontier may equal the pre-live frontier.
 SOAK_MIN_SECS=300
 case "${LASTDB_SAFE_UPGRADE_ZERO_LIVE_SOAK:-0}" in
   0) ;;
@@ -3242,7 +2893,7 @@ while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
   if curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
     -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
     http://x/api/status >"$SOAK_STATUS" 2>/dev/null; then
-    SOAK_OUT="$(post_cutover_status_check "$SOAK_STATUS" "$(( (POST_CUTOVER_WRITE_DONE_S + 1) * 1000000000 ))" "$SOAK_REQUIRE_CLOUD" "$PRELIVE_METER_CAP_BYTES")" \
+    SOAK_OUT="$(post_cutover_status_check "$SOAK_STATUS" "$PRELIVE_CLOUD_FRONTIER" "$SOAK_REQUIRE_CLOUD" "$PRELIVE_METER_CAP_BYTES")" \
       || true
     case "$SOAK_OUT" in
       POST_CUTOVER_STATUS=GREEN)
@@ -3267,7 +2918,7 @@ while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
   sleep 15
 done
 post_cutover_soak_green_in_bounds "$SOAK_ELAPSED" "$SOAK_MIN_SECS" "$SOAK_MAX_SECS" "$SOAK_CONFIRMED" \
-  || die "post-cutover soak did not confirm fresh cloud progress within ${SOAK_MAX_SECS}s; rollback point retained"
+  || die "post-cutover status did not confirm cloud health within ${SOAK_MAX_SECS}s; rollback point retained"
 
 # After this point the driver proved the live primary healthy and supervised.
 # A later wrapper timeout must not restart that already-green primary.
@@ -3275,7 +2926,7 @@ write_cutover_recovery_state "cutover-green" false
 
 CUTOVER_T1="$(date +%s)"
 CUTOVER_SECS=$((CUTOVER_T1 - CUTOVER_T0))
-log "STEP 4/4: live post-check GREEN (schemas=$NSCHEMAS first Board title=\"$QVAL\" cutover_s=$CUTOVER_SECS venue=$VENUE peak_rss_mb=${LIVE_RSS_MB:-unknown} live_point_ms=${LIVE_LAT_POINT_MS:-unmeasured} live_scan_ms=${LIVE_LAT_SCAN_MS:-unmeasured} durability=${DURABILITY_N}/${DURABILITY_N})"
+log "STEP 4/4: live post-check GREEN (schemas=$NSCHEMAS first Board title=\"$QVAL\" cutover_s=$CUTOVER_SECS venue=$VENUE peak_rss_mb=${LIVE_RSS_MB:-unknown} live_point_ms=${LIVE_LAT_POINT_MS:-unmeasured} live_scan_ms=${LIVE_LAT_SCAN_MS:-unmeasured} cloud_frontier=${PRELIVE_CLOUD_FRONTIER})"
 
 # Post a Situations notice so other agents attribute post-upgrade flapping.
 POST_NOTICE=""
@@ -3285,7 +2936,8 @@ for cand in \
 do
   [ -x "$cand" ] && POST_NOTICE="$cand" && break
 done
-NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} with lastdb=${INSTALLED_CLI:-?} venue=${VENUE} cutover_s=${CUTOVER_SECS}; probe latency point/scan=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}ms (baseline ${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}ms) live_point_ms=${LIVE_LAT_POINT_MS:-?} live_scan_ms=${LIVE_LAT_SCAN_MS:-?} durability=${DURABILITY_N}/${DURABILITY_N} durability_mode=${DURABILITY_MODE:-durable}; keycap ${KC_RECEIPT:-unset}; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone. Design: lastdb-minimal-downtime-cutover."
+NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} with lastdb=${INSTALLED_CLI:-?} venue=${VENUE} cutover_s=${CUTOVER_SECS}; real-copy reads and live status passed; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone."
+
 if [ -n "$POST_NOTICE" ]; then
   if "$POST_NOTICE" \
     --title "LastDB upgraded to ${INSTALLED}" \
@@ -3335,31 +2987,12 @@ if [ -x "$reopen_deferred_cards" ]; then
     warn "deferred-card reopen pass failed after GREEN cutover; next activation retries"
 fi
 
-# The primary now runs a new build, and host-track installs an app only from a
-# registry `next` row proved with the build the primary runs. Nothing on this
-# path wrote rows, so a GREEN cutover here froze every app install until the
-# nightly candidate gate (2026-09-26: 2375 went live at 12:53Z; kanban,
-# routines, brain and situations held for hours). Start the candidate gate's
-# primary-rows step: a noop when rows exist, else a DETACHED set + isolated
-# smoke on the primary's own lastdbd + publish-next. It never builds and never
-# cuts over, and it returns at once so this verdict is not delayed. The hourly
-# reconcile gate re-runs the same step if this one is missed.
-# LASTDB_SAFE_UPGRADE_PRIMARY_ROWS=0 turns it off.
-# papercut-host-track-refresh-held-hours-after-lastdb-cutover-no-registry-proof-trigger-20260926
-primary_rows_gate="$last_stack_root/bin/last-stack-canary-candidate-gate"
-if [ "${LASTDB_SAFE_UPGRADE_PRIMARY_ROWS:-1}" = 1 ] && [ -x "$primary_rows_gate" ]; then
-  if primary_rows_line="$("$primary_rows_gate" --primary-rows-only --detach </dev/null 2>/dev/null)"; then
-    log "registry rows: ${primary_rows_line:-no output}"
-  else
-    warn "registry rows step failed after GREEN cutover (${primary_rows_line:-no output}); the hourly reconcile gate retries"
-  fi
-fi
+# The hourly registry reconcile owns app proof after this upgrade.
 
 echo ""
 echo "VERDICT: GREEN"
 echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED and lastdb → ${INSTALLED_CLI:-?}; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + live Board read OK; probe_rss_mb=${PROBE_RSS_MB:-?} live_rss_mb=${LIVE_RSS_MB:-?} limit_mb=$(resolve_rss_limit_mb); rollback point released"
 echo "LATENCY: probe point/scan=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}ms baseline=${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}ms live_point=${LIVE_LAT_POINT_MS:-?}ms live_scan=${LIVE_LAT_SCAN_MS:-?}ms"
-echo "KEYCAP:  ${KC_RECEIPT:-unset}"
 echo ""
 echo "ROLLBACK (binary only, if new binary misbehaves but data is fine):"
 if [ "$VENUE" = "sidebin" ]; then

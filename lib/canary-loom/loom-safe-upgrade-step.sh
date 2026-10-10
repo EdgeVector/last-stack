@@ -811,8 +811,8 @@ if step == "PROBE":
         sys.stderr.write(signal_note + "\n")
         write_evidence_file("probe", text, p.returncode)
         raise SystemExit(p.returncode)
-    # The driver cats sub-probe output (smoke prints its own "VERDICT: GREEN"),
-    # so a substring match false-greens a red probe: rc=1 runs reached CUTOVER
+    # The driver can print more than one verdict, so a substring match
+    # false-greens a red probe: rc=1 runs reached CUTOVER
     # on lx-20260830T203912.259-78723-1. Only the driver's FINAL verdict line
     # plus rc==0 is green.
     verdicts = [ln.strip() for ln in text.splitlines() if ln.strip().startswith("VERDICT:")]

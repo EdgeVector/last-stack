@@ -34,8 +34,8 @@ Step 0 comes first and never stops the gate:
    moves; a RED files or appends a brain papercut with the smoke output.
    Nothing moved costs one head read and one `lastdb app resolve` per app
    (about 2 s). `--primary-rows-only` runs it
-   alone; `--detach` returns at once. lastdb-safe-upgrade and the hourly
-   reconcile gate call it that way.
+   alone; `--detach` returns at once. The hourly reconcile gate calls it
+   that way. A standalone safe upgrade does not start it.
 1. **build** — `last-stack-canary-build-main` stages Forge fold `main` under
    `canary-builds/<oid>/` (`already_staged` is fine).
 2. **resolve** — the candidate build, the primary build, the cutover-hold

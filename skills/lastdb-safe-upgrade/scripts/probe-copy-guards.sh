@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Probe-copy guards for lastdb-safe-upgrade.
-# Sourced by safe-upgrade-lastdb.sh and unit tests. No side effects at source.
+# Sourced by safe-upgrade-lastdb.sh. No side effects at source.
 #
 # A probe node runs on an APFS clone of the primary home. These helpers keep
 # that clone, and the conflict-stamp flag it may carry, away from the primary.
@@ -24,13 +24,13 @@ probe_stamp_env_allowed() {
   esac
 }
 
-# The separate real-data smoke copy exercises the copy-only stamp builder.
-# Timed latency copies and the key-cap copy receive no stamp work. An older
-# baseline can ignore this flag without bias. The primary never receives it.
+# The real-data deployment copy exercises the copy-only stamp builder.
+# Timed candidate and baseline copies receive no stamp work. The primary
+# never receives this flag.
 # $1 is the label.
 probe_stamp_env_for_label() {
   case "${1:-}" in
-    smoke) printf '%s\n' 'LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1' ;;
+    deployment) printf '%s\n' 'LASTDB_BUILD_CONFLICT_STAMP_ON_COPY=1' ;;
     *) printf '\n' ;;
   esac
 }

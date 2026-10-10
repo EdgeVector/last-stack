@@ -19,10 +19,9 @@ esac
 export LAST_STACK_CANARY_V2_EXECUTE_ACTIONS=1
 export LAST_STACK_CANARY_V2_PROMOTE_CMD="${LAST_STACK_CANARY_V2_PROMOTE_CMD:-$ROOT/bin/last-stack-canary-promote-material}"
 
-# The hourly backstop for registry rows. Every path that moves the primary
-# should prove `next` rows for its build (the candidate gate does; the
-# lastdb-safe-upgrade GREEN tail starts the same step), and this tick heals a
-# missed call within the hour. It is one identity read and one resolve when the
+# The hourly backstop for registry rows. The full candidate gate writes
+# rows after its own cutover. A standalone safe upgrade does not start the
+# primary-rows step, so this tick handles absent rows within the hour. It is one identity read and one resolve when the
 # rows exist. When they are missing it starts a detached worker and returns, so
 # this gate's 15-minute budget and its stdout verdict are untouched: the
 # PRIMARY_ROWS line goes to stderr. It also feeds this gate: promote-material

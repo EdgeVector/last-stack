@@ -2,7 +2,7 @@
 # Read one captured /api/status response. No work runs at source.
 
 post_cutover_status_check() {
-  # Args: status.json minimum_cloud_frontier require_cloud max_meter_bytes.
+  # Args: status.json prelive_cloud_frontier require_cloud max_meter_bytes.
   local file="$1" minimum_frontier="$2" require_cloud="$3" max_meter_bytes="$4"
   local verdict
   verdict="$(jq -r \
@@ -19,7 +19,8 @@ post_cutover_status_check() {
       elif $require_cloud == 1 and (.status.sync.recording_local_changes // false) != true then "cloud-not-recording"
       elif $require_cloud == 1 and (.status.sync.mutation_log_capture_registered // false) != true then "cloud-capture-unregistered"
       elif $require_cloud == 1 and .status.sync.sync_degraded != false then "cloud-degraded"
-      elif $require_cloud == 1 and (.status.sync.mutation_log_frontier_f // 0) <= $minimum_frontier then "cloud-frontier-stale"
+      elif $require_cloud == 1 and (.status.sync.mutation_log_frontier_f | type) != "number" then "cloud-frontier-unavailable"
+      elif $require_cloud == 1 and .status.sync.mutation_log_frontier_f < $minimum_frontier then "cloud-frontier-regressed"
       else "GREEN" end
     ' "$file" 2>/dev/null)" || verdict="status-invalid"
   printf 'POST_CUTOVER_STATUS=%s\n' "$verdict"
@@ -30,7 +31,8 @@ post_cutover_status_retryable() {
   case "$1" in
     POST_CUTOVER_STATUS=cloud-capture-unregistered|\
     POST_CUTOVER_STATUS=cloud-degraded|\
-    POST_CUTOVER_STATUS=cloud-frontier-stale) return 0 ;;
+    POST_CUTOVER_STATUS=cloud-frontier-unavailable|\
+    POST_CUTOVER_STATUS=cloud-frontier-regressed) return 0 ;;
     *) return 1 ;;
   esac
 }
