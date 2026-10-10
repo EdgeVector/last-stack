@@ -24,10 +24,11 @@ requested key, including a missing result. Keep membership, leases, execution
 state, the Ledger format, and the primary Mini build.
 
 ## VALIDATION
-Fixtures cover duplicates, stale terminal memberships, malformed/missing
-canonical records, foreign/duplicate reply keys, and accepted-write state.
-Run targeted RED probes for the new guards. The fixed factory proof compares
-the official installed status result with bounded exact canonical reads.
+Use the repository's non-test build and lint checks.
+After normal installation, compare the official status result with bounded
+exact canonical reads. Keep the source, current-byte, claim, receipt, and
+deployment checks. Do not write, run, restore, or require tests, fixtures,
+or mutation probes.
 
 Papercut: papercut-loom-active-summary-counts-terminal-duplicate-memberships-20261008
 Keep-open: papercut-loom-execution-status-backlog-sweep-pending-20260928

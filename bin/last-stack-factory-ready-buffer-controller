@@ -3,8 +3,8 @@ set -eu
 
 BOARD_CLI="${LAST_STACK_READY_BUFFER_BOARD_CLI:-kanban}"
 ROUTINES_CLI="${LAST_STACK_READY_BUFFER_ROUTINES_CLI:-routines}"
-DRIVER_ID="${LAST_STACK_READY_BUFFER_DRIVER_ID:-last-stack-milestone-driver}"
-NS_DRIVER_ID="${LAST_STACK_READY_BUFFER_NS_DRIVER_ID:-last-stack-north-star-driver}"
+DRIVER_ID="last-stack-milestone-driver"
+NS_DRIVER_ID="last-stack-north-star-driver"
 THRESHOLD="${LAST_STACK_READY_BUFFER_THRESHOLD:-3}"
 COOLDOWN_S="${LAST_STACK_READY_BUFFER_COOLDOWN_S:-1800}"
 NOW_EPOCH="${LAST_STACK_READY_BUFFER_NOW_EPOCH:-$(date +%s)}"
@@ -18,6 +18,43 @@ LOCK_HELD=0
 LOCK_RECLAIMED=0
 STATE_TMP=""
 NS_DRIVER=""
+PAUSE_DETAIL=""
+
+general_driver_pause_clear() {
+  if ! routine_status_json="$("$ROUTINES_CLI" status --json)"; then
+    PAUSE_DETAIL=routine-status-unavailable
+    return 1
+  fi
+  if ! PAUSE_DETAIL="$(printf '%s\n' "$routine_status_json" | jq -er '
+    ["last-stack-feature-prove", "last-stack-fkanban-pickup",
+     "last-stack-fkanban-pickup-w2", "last-stack-fkanban-pickup-w3",
+     "last-stack-fkanban-pickup-w4", "last-stack-fkanban-pickup-w5",
+     "last-stack-fkanban-pickup-w6", "last-stack-fkanban-validate",
+     "last-stack-fkanban-validate-w2", "last-stack-fkanban-validate-w3",
+     "last-stack-fkanban-validate-w4", "last-stack-fkanban-validate-w5",
+     "last-stack-fkanban-validate-w6", "last-stack-fkanban-watch",
+     "last-stack-milestone-driver", "last-stack-north-star-driver"] as $required
+    | if type != "object" or (.rows | type) != "array"
+         or (.errors | type) != "array" or (.errors | length) != 0
+         or .situationsOk != true
+         or (all(.rows[]; type == "object" and (.id | type) == "string") | not)
+      then "routine-status-invalid"
+      else [.rows[] | select(.id as $id | $required | index($id))] as $selected
+        | if ($selected | length) != ($required | length)
+             or ($selected | map(.id) | unique | length) != ($required | length)
+             or (all($selected[]; (.status == "active" or .status == "paused")
+                        and (.running | type) == "boolean") | not)
+          then "routine-status-invalid"
+          elif any($selected[]; .status == "paused") then "wider-factory-paused"
+          else "clear"
+          end
+      end
+  ')"; then
+    PAUSE_DETAIL=routine-status-invalid
+    return 1
+  fi
+  [ "$PAUSE_DETAIL" = "clear" ]
+}
 
 usage() {
   cat <<'EOF'
@@ -26,6 +63,9 @@ Usage: last-stack-factory-ready-buffer-controller [--dry-run] [--json]
 Read `kanban pickup ready --json`. Run the milestone driver once when the
 pickup-ready count is below three. A successful run starts a 30-minute
 cooldown and gives the driver a one-card safety cap.
+
+Both general drivers require a complete active status for the fourteen
+wider factory workers and the two fixed drivers before each manual call.
 
 After the milestone driver runs, also give the North Star driver an early
 chance so a low ready buffer does not wait for its daily backstop. The
@@ -177,17 +217,21 @@ if [ "$last_run" -gt 0 ] && [ "$elapsed" -ge 0 ] && [ "$elapsed" -lt "$COOLDOWN_
   exit 0
 fi
 
+if ! general_driver_pause_clear; then
+  if [ "$PAUSE_DETAIL" = "wider-factory-paused" ]; then
+    emit ok none "$PAUSE_DETAIL" "$ready"
+    exit 0
+  fi
+  emit error none "$PAUSE_DETAIL" "$ready"
+  exit 1
+fi
+
 if ! MILESTONE_DRIVER_SAFETY_CAP=1 \
   MILESTONE_DRIVER_TRIGGER=ready-buffer-controller \
   "$ROUTINES_CLI" run "$DRIVER_ID" --quiet; then
   emit error run driver-failed "$ready"
   exit 1
 fi
-
-STATE_TMP="$STATE_FILE.tmp.$$"
-printf '%s\n' "$NOW_EPOCH" > "$STATE_TMP"
-mv "$STATE_TMP" "$STATE_FILE"
-STATE_TMP=""
 
 # The retired idle ladder ran the North Star driver as rung 3. Without that
 # step a low ready buffer waited for the daily backstop: on 2026-09-25 the
@@ -197,6 +241,21 @@ STATE_TMP=""
 # now), so just give the North Star driver an early chance directly; its own
 # creation-inventory gate and cadence noop cleanly when nothing needs a new
 # milestone.
+if ! general_driver_pause_clear; then
+  NS_DRIVER=held
+  if [ "$PAUSE_DETAIL" = "wider-factory-paused" ]; then
+    emit ok run "$PAUSE_DETAIL" "$ready"
+    exit 0
+  fi
+  emit error run "$PAUSE_DETAIL" "$ready"
+  exit 1
+fi
+
+STATE_TMP="$STATE_FILE.tmp.$$"
+printf '%s\n' "$NOW_EPOCH" > "$STATE_TMP"
+mv "$STATE_TMP" "$STATE_FILE"
+STATE_TMP=""
+
 if NORTH_STAR_DRIVER_TRIGGER=ready-buffer-controller \
   "$ROUTINES_CLI" run "$NS_DRIVER_ID" --quiet; then
   NS_DRIVER=ran

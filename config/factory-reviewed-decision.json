@@ -4,7 +4,7 @@
   "repo": "EdgeVector/loom",
   "base": "main",
   "authority_slug": "decision-2026-10-08-factory-repair-slot-and-bounded-proof",
-  "brief_sha256": "a0bb3af8e773325e9a2e0e08e926a48efc1d89c73fa1e584396091242978d8bb",
+  "brief_sha256": "a2fe1bfbae4a318ef63342e79fd5402eb0d8615cd0955e989efd66388cb7a806",
   "schema_hash": "61b22ab49a359c1af27692757a080c4708018e36190c9a51df4806392f925d7c",
   "decision": {
     "body": "\nDecision: Tom approved loom design rev 2 for LastDB primary memory footprint management via hot/cold eviction and shedding. The design keeps phys_footprint under 12 GiB and returns no 503 for memory pressure.\n\nUnblocks: loom execution lx-20260903T163258.920-80226-1 (memory guard + LRU eviction on primary). Drives the durability canary toward cutover.\n\nRationale: Measured on 0.23.3-1435 over 20 minutes. Design includes self-metrics, LRU eviction above a 10 GiB soft line, shedding via /api/admin/shed, and the guard script in EdgeVector/last-stack. Feature proof harness: scripts/feature-proof/lastdb-footprint-under-guard/run.sh. Hard constraints honored: no scan, no Mini restart, no hash_field rewrite, no allocator change.",
