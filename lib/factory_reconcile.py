@@ -68,7 +68,7 @@ def classify(keys, known, bucket):
 
 
 KNOWN_PROGRESS_SHA = '0d42b3ab999d1adcd9945464b66ce6f151a8e5ab94c7925432cbfc85368dfb2e'
-KNOWN_PROGRESS_TARGET_CONFIG_SHA = '92ef3b0c25a1d805de65bfff5e7fc73990e3df2bdaaf71dc72b4b95eee470d25'
+KNOWN_PROGRESS_TARGET_CONFIG_SHA = '557b6f9c81826a7a5d4570dcd5b63722e10feb1041fa47244cd9e0a1a21940b0'
 
 def lifecycle_progress_cursor(raw, config_sha, reviewed_count):
     """Keep the exact no-effect cursor across this one writer config change."""
