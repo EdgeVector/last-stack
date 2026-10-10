@@ -39,8 +39,8 @@ The launcher derives one immutable execution key from a SHA-256 digest of the
 source OID, canonical pair paths, binary hashes, and binary versions.
 It refuses live use when source ancestry cannot be identified.
 
---zero-live-soak removes only the five-minute minimum after the live canary
-write and read-back. A fresh GREEN status sample remains required. The option
+--zero-live-soak removes only the five-minute minimum after the live cutover.
+A fresh GREEN status sample remains required. The option
 uses a separate Loom execution key and has no effect on the copy probe.
 
 --retry N (N >= 2) runs attempt N of the SAME candidate pair under the key

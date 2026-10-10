@@ -632,9 +632,8 @@ median_of() {
 }
 
 # Latency ops. Each takes one arg and must exit non-zero on failure. These are
-# the REAL workloads: the keyed point read from the deployment check, the column list
-# that regressed in 0.23.1 (kanban list), and a real brain upsert (writes
-# only ever land on the throwaway CoW copy, never the primary).
+# the keyed point read from the deployment check and the column list
+# that regressed in 0.23.1 (kanban list). These operations do not write.
 # The column list is cold only. The hot read is one batch of its keys.
 op_lat_point() {
   # $1 = socket path
