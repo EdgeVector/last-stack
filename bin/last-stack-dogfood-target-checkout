@@ -225,7 +225,7 @@ is_fold_remote_url() {
   local url="$1"
 
   case "$url" in
-    */EdgeVector/fold|*/EdgeVector/fold.git|*github.com:EdgeVector/fold|*github.com:EdgeVector/fold.git)
+    */EdgeVector/lastdb|*/EdgeVector/lastdb.git|*github.com:EdgeVector/lastdb|*github.com:EdgeVector/lastdb.git)
       return 0
       ;;
   esac

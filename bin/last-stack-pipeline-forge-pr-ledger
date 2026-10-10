@@ -281,7 +281,7 @@ class ForgeError(RuntimeError):
 DEFAULT_GITHUB_REPOS_FILE = HERE.parent / "config" / "merge-demand-github-repos"
 # Used only when config/merge-demand-github-repos is unreadable. The file is the source.
 GITHUB_FALLBACK_REPOS = [
-    "EdgeVector/fold",
+    "EdgeVector/lastdb",
     "EdgeVector/last-stack",
     "EdgeVector/fkanban",
     "EdgeVector/routines",

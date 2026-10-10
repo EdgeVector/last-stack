@@ -63,7 +63,7 @@ cost rather than per-call with `lastdb ops` (Top by total time).
 
 ## On findings
 
-File or update **one** deduped `Kind: pr` card on `EdgeVector/fold` (or the repo
+File or update **one** deduped `Kind: pr` card on `EdgeVector/lastdb` (or the repo
 that owns the offending client) per distinct `client + schema`. Search the board
 first — this runs weekly and the same offender will recur until it is fixed.
 

@@ -37,7 +37,7 @@ if not live:
     payload = {
         "heal_status": "stand-in",
         "diagnosis": "LOOM_LIVE unset; no host mutation",
-        "repo": "EdgeVector/fold",
+        "repo": "EdgeVector/lastdb",
         "pr_url": "",
         "merge_sha": "",
         "attempt": attempt,

@@ -140,9 +140,9 @@ resolve_fold() {
 fold_src="${FOLD_CHECKOUT:-}"
 if [ -z "$fold_src" ]; then
   for guess in \
-    "${LAST_STACK_FOLD_PORTAL:-$HOME/code/edgevector/fold}" \
-    "$HOME/.kanban/dogfood-targets/fold" \
-    "$HOME/.kanban/dogfood-targets/localhost-3300-EdgeVector-fold"
+    "${LAST_STACK_FOLD_PORTAL:-$HOME/code/edgevector/lastdb}" \
+    "$HOME/.kanban/dogfood-targets/lastdb" \
+    "$HOME/.kanban/dogfood-targets/github.com-EdgeVector-lastdb"
   do
     if [ -e "$guess" ]; then
       fold_src="$guess"

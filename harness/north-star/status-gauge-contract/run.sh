@@ -13,7 +13,7 @@ ROOT="$(cd "$(dirname "$0")/../../.." && pwd -P)"
 
 SLUG=north-star-lastdb-status-gauge-contract
 MODE="$(ns_mode)"
-FOLD="$(ns_repo_path fold)"
+FOLD="$(ns_repo_path lastdb)"
 
 notes=()
 ok=0

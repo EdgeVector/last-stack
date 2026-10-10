@@ -13,6 +13,9 @@ ns_repo_path() {
   local env_name candidate cache tmp
   env_name="$(printf '%s_REPO' "$slug" | tr '[:lower:]-' '[:upper:]_')"
   candidate="${!env_name:-}"
+  if [ "$slug" = lastdb ] && [ -z "$candidate" ]; then
+    candidate="${FOLD_REPO:-}"
+  fi
   if [ -n "$candidate" ]; then
     printf '%s\n' "$candidate"
     return 0
@@ -181,6 +184,6 @@ ns_fold_drift_report() {
   fi
   printf 'fold-source-drift: %s oid=%s source=FAIL rules=%s\n' \
     "$what" "$oid" "$(ns_fold_report_failures "$report")"
-  printf 'fold-source-drift: this is a REPORT about EdgeVector/fold, not a last-stack failure. Fix fold or move harness/north-star/fold-source.pin deliberately.\n'
+  printf 'fold-source-drift: this is a REPORT about EdgeVector/lastdb, not a last-stack failure. Fix LastDB or move harness/north-star/fold-source.pin deliberately.\n'
   return 0
 }

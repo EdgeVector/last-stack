@@ -1897,7 +1897,7 @@ def running_source_oid() -> str:
 def fold_mirror() -> Path | None:
     override = os.environ.get("LAST_STACK_CANARY_FOLD_MIRROR")
     candidates = [Path(override)] if override else []
-    candidates.append(Path.home() / ".cache/edgevector-git/fold.git")
+    candidates.append(Path.home() / ".cache/edgevector-git/lastdb.git")
     for candidate in candidates:
         if candidate.is_dir():
             return candidate

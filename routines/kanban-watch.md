@@ -410,7 +410,7 @@ strand. Repair them so nothing drops:
   it keeps title/body/tags/column as-is and just re-runs the auto-derivation
   chokepoint). That deterministically either:
   - stamps the unambiguous repo from the card's subsystem tag, OR
-  - stamps the DEFAULT repo (`EdgeVector/fold`) with a `# defaulted` marker when
+  - stamps the DEFAULT repo (`EdgeVector/lastdb`) with a `# defaulted` marker when
     the card carries no subsystem signal at all, OR
   - sets `block_status=needs_human` with a `Repo ambiguous: …` reason when the
     tags map to TWO+ repos (a real conflict it refuses to guess) — now LOUD in

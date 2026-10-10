@@ -9,7 +9,7 @@
 #           `next` holds for that build. Nothing moved, or this exact head set
 #           was already proved: stop here (the cheap no-op path).
 #   proof   macOS arm64. Builds the exact lastdb oid inside this public repo
-#           (the org GH_PAT only checks out the private fold repo), asserts the
+#           (the org GH_PAT only reads declared pre-cutover builds from archived fold), asserts the
 #           build string, runs the isolated install smoke, and uploads ONE
 #           proof bundle: verdicts, candidate set with shas, oids, versions,
 #           timings. Never a binary, never a cache of a build directory.
@@ -26,10 +26,10 @@
 # dispatch with none of them plans like the schedule; `force` skips the "head
 # moved" and "already proved" holds.
 #
-# Secrets: only the existing org secret GH_PAT. The plan job uses it only to
-# resolve the short oid of the build to a full fold oid when a proof will run;
-# the proof job passes it to actions/checkout and one presence probe. It is
-# never echoed and never reaches the build or the smoke.
+# Public source reads use github.token. The existing org GH_PAT is required
+# only for a declared pre-cutover 0.23.3 build from archived fold. Neither token
+# reaches the build or the smoke. Legacy fold_oid input/output names remain
+# compatible with the proof bundle and the Mac proof consumer.
 name: registry-proof
 
 on:
@@ -43,7 +43,7 @@ on:
         default: ""
         type: string
       fold_oid:
-        description: "Build lastdb/lastdbd from EdgeVector/fold at this full 40-hex oid (private; needs GH_PAT). Empty = plan from the registry."
+        description: "Build lastdb/lastdbd from EdgeVector/lastdb at this full 40-hex oid. Empty = plan from the registry."
         required: false
         default: ""
         type: string
@@ -53,7 +53,7 @@ on:
         default: ""
         type: string
       probe_only:
-        description: "Only run the preflight probes (brew prefix, GH_PAT presence, fold access). No build, no smoke."
+        description: "Only run the preflight probes (brew prefix and exact source commit access). No build, no smoke."
         required: false
         default: false
         type: boolean
@@ -88,6 +88,7 @@ jobs:
       mode: ${{ steps.out.outputs.mode }}
       reason: ${{ steps.out.outputs.reason }}
       fold_oid: ${{ steps.out.outputs.fold_oid }}
+      source_repository: ${{ steps.out.outputs.source_repository }}
       lastdb_build: ${{ steps.out.outputs.lastdb_build }}
       lastdb_release: ${{ steps.out.outputs.lastdb_release }}
       probe_only: ${{ steps.out.outputs.probe_only }}
@@ -203,15 +204,33 @@ jobs:
           echo "PLAN_REASON=$reason" >> "$GITHUB_ENV"
           echo "$reason"
 
-      - name: Resolve the fold oid of the target build (only when a proof will run)
-        if: ${{ env.PLAN_MODE == 'auto' && env.PLAN_RUN == 'true' && env.PLAN_FOLD_OID == '' }}
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
+      # New builds use the public repo. The registry can still pin a build from
+      # before the squashed export; its exact oid exists only in archived fold.
+      # Keep that declared historical source until the pins advance. Never
+      # substitute a public commit for an old build's oid.
+      - name: Select the exact source repository
         run: |
           set -euo pipefail
-          [ -n "$GH_PAT" ] || { echo "::error::GH_PAT is not available; cannot resolve the fold oid"; exit 1; }
+          source_repository=EdgeVector/lastdb
+          case "$PLAN_BUILD" in
+            0.23.3-*) source_repository=EdgeVector/fold ;;
+          esac
+          echo "PLAN_SOURCE_REPOSITORY=$source_repository" >> "$GITHUB_ENV"
+          echo "source_repository=$source_repository"
+
+      - name: Resolve the source oid of the target build (only when a proof will run)
+        if: ${{ env.PLAN_MODE == 'auto' && env.PLAN_RUN == 'true' && env.PLAN_FOLD_OID == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LEGACY_GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          set -euo pipefail
+          if [ "$PLAN_SOURCE_REPOSITORY" = EdgeVector/fold ]; then
+            [ -n "$LEGACY_GH_PAT" ] || { echo "::error::GH_PAT is required only for the declared pre-cutover build $PLAN_BUILD"; exit 1; }
+            export GH_TOKEN="$LEGACY_GH_PAT"
+          fi
           abbrev="${PLAN_BUILD##*-g}"
-          oid="$(GH_TOKEN="$GH_PAT" gh api "repos/EdgeVector/fold/commits/$abbrev" --jq .sha)"
+          oid="$(gh api "repos/$PLAN_SOURCE_REPOSITORY/commits/$abbrev" --jq .sha)"
           case "$oid" in
             "$abbrev"*) ;;
             *) echo "::error::fold commit $abbrev resolved to an unexpected oid"; exit 1 ;;
@@ -229,6 +248,7 @@ jobs:
             echo "mode=$PLAN_MODE"
             echo "reason=$PLAN_REASON"
             echo "fold_oid=$PLAN_FOLD_OID"
+            echo "source_repository=$PLAN_SOURCE_REPOSITORY"
             echo "lastdb_build=$PLAN_BUILD"
             echo "lastdb_release=$PLAN_RELEASE"
             echo "probe_only=$PLAN_PROBE"
@@ -341,47 +361,40 @@ jobs:
           cat "$BUNDLE/brew-probe.txt"
           exit "$rc"
 
-      - name: Preflight (GH_PAT presence, fold access)
+      - name: Preflight (exact source commit access)
         env:
-          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ github.token }}
+          LEGACY_GH_PAT: ${{ secrets.GH_PAT }}
+          SOURCE_REPOSITORY: ${{ needs.plan.outputs.source_repository }}
           FOLD_OID: ${{ needs.plan.outputs.fold_oid }}
-          PROBE_ONLY: ${{ needs.plan.outputs.probe_only }}
         run: |
-          set -u
-          # Presence only. The value is never printed, and GH_TOKEN below is the
-          # same masked value, used by gh for one read-only API call.
-          if [ -n "$GH_PAT" ]; then pat=present; else pat=absent; fi
+          set -euo pipefail
+          if [ "$SOURCE_REPOSITORY" = EdgeVector/fold ] && [ -n "$FOLD_OID" ]; then
+            [ -n "$LEGACY_GH_PAT" ] || { echo "::error::GH_PAT is required for the declared pre-cutover source"; exit 1; }
+            export GH_TOKEN="$LEGACY_GH_PAT"
+          fi
           {
-            echo "gh_pat=$pat"
-            if [ "$pat" = present ] && [ -n "$FOLD_OID" ]; then
-              private="$(GH_TOKEN="$GH_PAT" gh api repos/EdgeVector/fold --jq .private 2>&1 | head -c 200)"
-              echo "fold_private=$private"
-              found="$(GH_TOKEN="$GH_PAT" gh api "repos/EdgeVector/fold/commits/$FOLD_OID" --jq .sha 2>&1 | head -c 200)"
-              echo "fold_commit_visible=$([ "$found" = "$FOLD_OID" ] && echo yes || echo "no: $found")"
+            echo "source_repository=$SOURCE_REPOSITORY"
+            if [ -n "$FOLD_OID" ]; then
+              found="$(gh api "repos/$SOURCE_REPOSITORY/commits/$FOLD_OID" --jq .sha)"
+              [ "$found" = "$FOLD_OID" ] || { echo "::error::source commit differs from the requested oid" >&2; exit 1; }
+              echo "fold_commit_visible=yes"
             fi
-          } > "$BUNDLE/preflight.txt" 2>&1
+          } > "$BUNDLE/preflight.txt"
           cat "$BUNDLE/preflight.txt"
-          if [ -n "$FOLD_OID" ] && [ "$pat" != present ]; then
-            echo "::error::GH_PAT is not available to this workflow; cannot check out private fold"
-            exit 1
-          fi
-          if [ -n "$FOLD_OID" ] && [ "${PROBE_ONLY:-false}" != true ] && ! grep -q '^fold_commit_visible=yes' "$BUNDLE/preflight.txt"; then
-            echo "::error::fold commit $FOLD_OID is not on GitHub fold (a Forgejo-only oid cannot be built in CI)"
-            exit 1
-          fi
 
-      - name: Check out fold at the oid (private source)
+      - name: Check out the exact source oid
         if: ${{ needs.plan.outputs.fold_oid != '' && needs.plan.outputs.probe_only != 'true' }}
         uses: actions/checkout@v4
         with:
-          repository: EdgeVector/fold
+          repository: ${{ needs.plan.outputs.source_repository }}
           ref: ${{ needs.plan.outputs.fold_oid }}
-          token: ${{ secrets.GH_PAT }}
+          token: ${{ needs.plan.outputs.source_repository == 'EdgeVector/fold' && secrets.GH_PAT || github.token }}
           path: fold-src
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Build lastdb and lastdbd from fold (no cache, no upload)
+      - name: Build lastdb and lastdbd from the exact source (no cache, no upload)
         if: ${{ needs.plan.outputs.fold_oid != '' && needs.plan.outputs.probe_only != 'true' }}
         env:
           FOLD_OID: ${{ needs.plan.outputs.fold_oid }}

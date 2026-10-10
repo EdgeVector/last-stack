@@ -105,13 +105,13 @@ case "$id" in
     for cand in \
       "${LASTDB_TELEMETRY_REGEN:-}" \
       "$HOME/.routines/scripts/telemetry-dashboard-regen.sh" \
-      "$HOME/code/edgevector/fold/scripts/lastdbd/telemetry-dashboard-regen.sh"
+      "$HOME/code/edgevector/lastdb/scripts/lastdbd/telemetry-dashboard-regen.sh"
     do
       [ -n "$cand" ] && [ -f "$cand" ] && wrap="$cand" && break
     done
-    if [ -z "$wrap" ] && [ -d "$HOME/.cache/edgevector-git/fold.git" ]; then
-      git --git-dir="$HOME/.cache/edgevector-git/fold.git" show \
-        HEAD:scripts/lastdbd/telemetry-dashboard-regen.sh \
+    if [ -z "$wrap" ] && [ -d "$HOME/.cache/edgevector-git/lastdb.git" ]; then
+      git --git-dir="$HOME/.cache/edgevector-git/lastdb.git" show \
+        refs/remotes/origin/main:scripts/lastdbd/telemetry-dashboard-regen.sh \
         >"$HOME/.routines/scripts/telemetry-dashboard-regen.sh" 2>/dev/null || true
       chmod +x "$HOME/.routines/scripts/telemetry-dashboard-regen.sh" 2>/dev/null || true
       [ -s "$HOME/.routines/scripts/telemetry-dashboard-regen.sh" ] && \

@@ -245,7 +245,7 @@ def github_prerelease_allowed() -> bool:
 def fold_mirror() -> Path | None:
     override = os.environ.get("LAST_STACK_CANARY_FOLD_MIRROR")
     candidates = [Path(override)] if override else []
-    candidates.append(HOME / ".cache/edgevector-git/fold.git")
+    candidates.append(HOME / ".cache/edgevector-git/lastdb.git")
     for candidate in candidates:
         if candidate is not None and candidate.is_dir():
             return candidate
@@ -253,9 +253,9 @@ def fold_mirror() -> Path | None:
 
 
 def maybe_fetch_fold_main(mirror: Path) -> None:
-    """Best-effort refresh of fold main from GitHub (origin). Never fatal.
+    """Best-effort refresh of LastDB main from GitHub (origin). Never fatal.
 
-    EdgeVector/fold is canonical on GitHub since 2026-09-29. Plain git reads it
+    EdgeVector/lastdb is the public product repo since 2026-10-09. Plain git reads it
     through the gh credential helper; the Forgejo token wrapper must not be
     used (it would send the Forgejo token to GitHub). Fetch into
     refs/remotes/origin/main: a worktree can pin refs/heads/main and freeze it.
@@ -266,7 +266,7 @@ def maybe_fetch_fold_main(mirror: Path) -> None:
 
 
 def fold_main_oid() -> str:
-    """Full OID of fold main tip from the local fold mirror (or override)."""
+    """Full OID of LastDB main tip from the local LastDB mirror (or override)."""
     override = os.environ.get("LAST_STACK_CANARY_MAIN_OID", "").strip()
     if override:
         return override
@@ -559,22 +559,22 @@ def resolve_forge_main_candidate() -> Candidate | None:
 
     # Worktrees / checkouts (never the empty portal). Prefer fkanban worktrees.
     # Skip host scans when CI/tests inject LAST_STACK_CANARY_BUILDS_DIR — that is
-    # the hermetic isolation signal. Globbing ~/.fkanban/worktrees/fold-*/target/**
+    # the hermetic isolation signal. Globbing ~/.fkanban/worktrees/lastdb-*/target/**
     # on a busy machine can hang for minutes and reds every last-stack CR.
     home = HOME
     hermetic_builds = bool(os.environ.get("LAST_STACK_CANARY_BUILDS_DIR"))
     if not hermetic_builds:
         paths.extend(
             [
-                str(home / "code/edgevector/fold/target/release/lastdbd"),
-                str(home / "code/edgevector/fold/lastdb_node/target/release/lastdbd"),
-                str(home / "code/edgevector/fold/fold_db/target/release/lastdbd"),
+                str(home / "code/edgevector/lastdb/target/release/lastdbd"),
+                str(home / "code/edgevector/lastdb/lastdb_node/target/release/lastdbd"),
+                str(home / "code/edgevector/lastdb/fold_db/target/release/lastdbd"),
             ]
         )
         wt_root = home / ".fkanban" / "worktrees"
         if wt_root.is_dir():
-            # Narrow glob: only direct fold-* children, not a recursive target walk.
-            for child in sorted(wt_root.glob("fold-*"), reverse=True)[:40]:
+            # Narrow glob: only direct lastdb-* children, not a recursive target walk.
+            for child in sorted(wt_root.glob("lastdb-*"), reverse=True)[:40]:
                 for rel in ("target/release/lastdbd", "lastdb_node/target/release/lastdbd"):
                     p = child / rel
                     if p.is_file():

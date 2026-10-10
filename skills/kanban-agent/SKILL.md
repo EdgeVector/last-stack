@@ -190,7 +190,7 @@ the repo/ref and command, ending in `0 hits`, for example:
 
 ```
 ## OUTCOME
-- fold@abc1234: `last-stack-legacy-residue-probe EdgeVector/fold 'old_flag|old_fn'` -> 0 hits
+- lastdb@abc1234: `last-stack-legacy-residue-probe EdgeVector/lastdb 'old_flag|old_fn'` -> 0 hits
 ```
 
 `last-stack-card-closeout` enforces both the recorded proof and a fresh probe,
