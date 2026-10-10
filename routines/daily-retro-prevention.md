@@ -1,7 +1,11 @@
 ---
 name: daily-retro-prevention
-description: Daily 24h retro: find the biggest things that bit us (incidents, failed runs, wedges, reverts, recurring agent errors), rank them, and put PREVENTION in place — brain SOPs, kanban cards for code/guardrail changes, routine-prompt fixes. Files/writes only; never ships code, never touches the primary folddb_server brain.
+description: "Daily 24h retro: find the biggest things that bit us (incidents, failed runs, wedges, reverts, recurring agent errors), rank them, and put PREVENTION in place — brain SOPs, kanban cards for code/guardrail changes, routine-prompt fixes. Files/writes only; never ships code, never touches the primary folddb_server brain."
 ---
+
+No-tests policy: `instructions/no-tests.md`; Situation
+`no-tests-all-repos-20261009`. This policy supersedes older test requirements in
+shared contracts, prompts, and cards. Keep non-test checks and product proof.
 
 You are the daily-retro-prevention routine for the EdgeVector workspace (~/code/edgevector). Your job each run: answer two questions for the last 24 hours, then act on the answers.
 
@@ -16,7 +20,7 @@ Guardrails: per the shared contract, plus:
 
 ## Step 1 — Gather the last 24h of pain (each source = separate turn)
 - brain: `brain ask "incident outage wedge failure <today's date>"` and list recently modified `reference`/`concept` records tagged incident/papercut. Read anything new.
-- kanban board: cards created in the last 24h, and cards that became blocked in the last 24h — especially tags incident, papercut, flaky-test, friction, release-blocker, sentry. There is **no `blocked` column**: the columns are `backlog | todo | doing | done`, and `kanban list --column blocked` fails with `"blocked" is not a valid kanban column`. A card is blocked by its `block_status` field (`needs_human` / `deferred`, set with `block_reason`) or by unfinished dependencies (`blocked` / `blockedBy`). Read each real column with `kanban list --column <backlog|todo|doing> --json` and filter those fields yourself.
+- kanban board: cards created in the last 24h, and cards that became blocked in the last 24h — especially tags incident, papercut, friction, release-blocker, sentry. There is **no `blocked` column**: the columns are `backlog | todo | doing | done`, and `kanban list --column blocked` fails with `"blocked" is not a valid kanban column`. A card is blocked by its `block_status` field (`needs_human` / `deferred`, set with `block_reason`) or by unfinished dependencies (`blocked` / `blockedBy`). Read each real column with `kanban list --column <backlog|todo|doing> --json` and filter those fields yourself.
 - Agent sessions: scan `~/.claude/projects/*/*.jsonl` files modified in the last 24h for is_error tool_results ONLY (structured errors — do NOT raw-grep transcript prose for keywords; that self-contaminates). Look for repeated identical errors across sessions — repetition = a bite.
 - GitHub (fold + other active EdgeVector repos): failed/red CI runs on main, reverted PRs, PRs that churned >3 pushes to go green, force-closed PRs. Use `gh run list` / `gh pr list` with `|| true`.
 - Scheduled-routine outcomes: check `~/.claude/scheduled-tasks/*/` for runs in the last 24h that errored or produced escalations/release-blocker flags (canary-health RED, sentry-triage cards, db-perf-guard regressions).
@@ -28,9 +32,9 @@ Distill to the TOP 3–5 bites by real cost: hours lost, agents blocked, data/re
 ## Step 3 — Prevention, one action per bite
 For each ranked bite, decide the cheapest durable prevention and EXECUTE it this run:
 - Process/knowledge fix → write a brain `sop` (or update the existing one — search first, supersede rather than duplicate). Use `body_path` for large bodies (inline body JSON-parse-fails on big/multiline content).
-- Code/tooling fix → file a kanban card to `todo` per contract §3, deduped per contract §4 (dedupe by REPRODUCTION on latest main, not by card existence — done ≠ fixed). Body must include repro, evidence links, and the e2e validation the fix must run before the card can close.
+- Code/tooling fix → file a kanban card to `todo` per contract §3, deduped per contract §4 (dedupe by REPRODUCTION on latest main, not by card existence — done ≠ fixed). Body must include repro, evidence links, and the non-test syntax, lint, build, or live product checks for the fix.
 - Routine/guardrail fix (a scheduled task's own prompt caused the bite) → file a card describing the exact prompt change; do not edit other routines' SKILL.md yourself.
-- Flaky test bite → per standing rule, file a de-flake card tagged flaky-test+friction; rerun-to-unblock is never the prevention.
+- Test command or test coverage requirement → remove it from the affected card, prompt, linter, or CI. Do not repair, restore, or rerun the test. Keep non-test checks.
 If you file a card you expect the pickup fleet to build, leave it in `todo`; never claim it yourself.
 
 ## Step 4 — Record + report
@@ -40,13 +44,15 @@ If you file a card you expect the pickup fleet to build, leave it in `todo`; nev
 
 ## Heartbeat (LAST action — always)
 
-Emit both of these as plain text (not only stream-json), so the dashboard
+Emit the heartbeat as plain text, then the result trailer, so the dashboard
 classifies the run correctly:
 
 ```
-daily-retro-prevention <ISO-UTC> ok bites=<n> cards=<n> sops=<n>
-ROUTINE_RESULT outcome=ok detail=bites=<n> cards=<n>
+daily-retro-prevention <ISO-UTC> <ok|noop|error> bites=<n> cards=<n> sops=<n>
 ```
+
+Print the `ROUTINE_RESULT` token, then `outcome=<ok|noop|error>` and
+`detail=bites=<n> cards=<n>` on that line.
 
 Use `noop` only on a genuine quiet day with no filings. Use `error` only if the
 run itself failed (could not read board/brain, etc.) — not because you

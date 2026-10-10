@@ -251,9 +251,7 @@ install_claude_hooks() {
   # it was not in the list. Same silent-enumeration shape host-track's
   # apps.json documents for routines' dist/probes links.
   # The registration calls below are still a literal enumeration by design —
-  # each hook needs its own event, matcher and notice text — so
-  # tests/last-stack-setup-installs-every-repo-hook.sh fails the gate when a
-  # repo hook is copied here and never registered.
+  # each hook needs its own event, matcher and notice text.
   for hook_src in "$HOOKS_SRC"/*.sh; do
     [ -f "$hook_src" ] || continue
     hook="$(basename "$hook_src")"
@@ -1076,7 +1074,7 @@ fi
 # last-stack-lastdb-canary-candidate-set-routine) shipped on 2026-09-03 and was
 # never called here, so no host ever registered it, nothing built a canary stage for fold main, and
 # lastdb-local-smoke-test fell back to a stale binary with sha_drift=true on
-# every run. tests/last-stack-setup-seeds-every-routine.sh holds this shape.
+# every run. Keep the directory-driven registration below.
 for routine_seeder in "$SOURCE_ROOT"/bin/last-stack-*-routine; do
   [ -x "$routine_seeder" ] || continue
   seeder_name="$(basename "$routine_seeder")"

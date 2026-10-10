@@ -29,6 +29,11 @@ allowed-tools:
   - TaskList
 ---
 
+No-tests policy: `instructions/no-tests.md`; Situation
+`no-tests-all-repos-20261009`. Remove stale test and test coverage requirements
+from any card or instruction you use. Keep non-test product proof and gates.
+
+
 # /ship-feature — the loom factory drives it: design → gate → ship → review
 
 The user hands you a feature and wants confidence it **works**. They do **not**

@@ -285,7 +285,7 @@ Deterministic classify helper (after extracting claims + topics + open work):
 
 ```bash
 bin/last-stack-revenant-classify /path/to/case.json --verbose
-# fixtures + terminal proof: harness/north-star/revenant-watch/run.sh
+# source proof: harness/north-star/revenant-watch/run.sh
 ```
 
 Survey scope: **all harnesses** session-miner already reaches (Claude/Codex/

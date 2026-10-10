@@ -81,41 +81,6 @@ if [ -n "$EVIDENCE" ]; then
   [ -f "$EVIDENCE" ] || finish FAIL "The evidence file is absent."
 fi
 
-bun_line="Bun pack-file contract: skipped"
-case "${LASTGIT_PACK_BLOBS_B2_RUN_BUN:-auto}" in
-  0|false|no) ;;
-  1|true|yes|auto)
-    if [ "${LASTGIT_PACK_BLOBS_B2_RUN_BUN:-auto}" = auto ] &&
-      { [ ! -f "$REPO/test/pack-file-blob.test.ts" ] ||
-        [ ! -d "$REPO/node_modules" ] ||
-        ! command -v bun >/dev/null 2>&1; }; then
-      :
-    else
-      [ -f "$REPO/test/pack-file-blob.test.ts" ] || finish FAIL "The pack-file contract test is absent."
-      [ -d "$REPO/node_modules" ] || finish FAIL "The pack-file contract test needs node_modules."
-      command -v bun >/dev/null 2>&1 || finish FAIL "The pack-file contract test needs bun."
-      mkdir -p "$TMP/cas"
-      set +e
-      (
-        cd "$REPO" || exit 97
-        env -u LASTGIT_SOCKET -u LASTDB_HOME -u FOLDDB_HOME -u LASTDB_SOCKET \
-          LASTGIT_PACK_CAS_DIR="$TMP/cas" \
-          bun test test/pack-file-blob.test.ts
-      ) >"$TMP/bun.out" 2>&1
-      bun_rc=$?
-      set -e
-      if [ "$bun_rc" -eq 0 ]; then
-        bun_line="Bun pack-file contract: hold"
-      else
-        bun_line="Bun pack-file contract: broken"
-      fi
-    fi
-    ;;
-  *)
-    finish FAIL "LASTGIT_PACK_BLOBS_B2_RUN_BUN is invalid."
-    ;;
-esac
-
 set +e
 BODY="$(python3 "$CHECK" \
   "$REPO/src/pack-blob-pointer.ts" \
@@ -134,14 +99,11 @@ $(cat "$TMP/check.err")"
 fi
 BODY="${BODY}
 
-${bun_line}
+Source and recorded evidence only. This run did not check the live product.
 LastGit repo: ${REPO}"
 
-if [ "$RC" -ne 0 ] || [ "$bun_line" = "Bun pack-file contract: broken" ]; then
+if [ "$RC" -ne 0 ]; then
   finish FAIL "$BODY"
 fi
 
-if [ "$MODE" = live ]; then
-  finish PASS "$BODY"
-fi
 finish PASS-OFFLINE "$BODY"

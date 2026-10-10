@@ -53,7 +53,6 @@ exclude_args=(
   --glob '!**/target/**'
   --glob '!config/machine-leak-baseline.tsv'
   --glob '!bin/last-stack-lint-machine-leaks'
-  --glob '!tests/last-stack-lint-machine-leaks.sh'
   --glob '!.portal-worktree'
 )
 
@@ -99,7 +98,7 @@ scan_pattern() {
           content="${rest#*:}"
           # skip intentional placeholder docs that only mention the pattern in ban lists
           case "$path" in
-            config/machine-leak-baseline.tsv|bin/last-stack-lint-machine-leaks|tests/last-stack-lint-machine-leaks.sh) continue ;;
+            config/machine-leak-baseline.tsv|bin/last-stack-lint-machine-leaks) continue ;;
           esac
           # normalize content for baseline (collapse whitespace)
           norm="$(printf '%s' "$content" | tr -s '[:space:]' ' ' | cut -c1-200)"

@@ -9,24 +9,17 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import io
 import json
 import os
 import re
 import subprocess
 import sys
-import tarfile
-import tempfile
 from pathlib import Path
 from typing import Any
 
 
 SLUG = "north-star-feature-delivery-effective-flow"
 MILESTONE = "feature-delivery-effective-flow-v1"
-PROBE_BOARD = "feature-delivery-effective-flow-proof"
-PROBE_MILESTONE = "feature-delivery-effective-flow-proof-v1"
-PROBE_CARD = "feature-delivery-effective-flow-proof-probe"
-PROBE_WORKER = "feature-delivery-effective-flow-proof"
 BOARD_MILESTONE_MISMATCH = "does not match milestone"
 SOAK_SECONDS = 24 * 60 * 60
 WARM_CACHE_LIMIT_BYTES = 4294967296
@@ -260,211 +253,6 @@ def installed_root(app: str) -> Path:
     raise ProofError(f"unknown installed app: {app}")
 
 
-def probe_card_body() -> str:
-    return (
-        "Kind: pr\n"
-        "Repo: EdgeVector/last-stack\n"
-        "Base: main\n\n"
-        "## GOAL\n\nProve the installed feature delivery card path.\n\n"
-        "## END STATE\n\nThe proof card reaches done with coherent state.\n"
-    )
-
-
-def probe_card_add_argv() -> list[str]:
-    return [
-        "kanban",
-        "add",
-        PROBE_CARD,
-        "--board",
-        PROBE_BOARD,
-        "--column",
-        "todo",
-        "--title",
-        "Feature delivery proof probe",
-        "--kind",
-        "pr",
-        "--repo",
-        "EdgeVector/last-stack",
-        "--base",
-        "main",
-        "--north-star",
-        SLUG,
-        "--milestone",
-        PROBE_MILESTONE,
-        "--surfaces",
-        "proof-fixture",
-        "--body",
-        probe_card_body(),
-        "--force",
-        "--json",
-    ]
-
-
-def ensure_probe_board() -> None:
-    run(
-        [
-            "kanban",
-            "board",
-            "create",
-            PROBE_BOARD,
-            "--title",
-            "Feature delivery proof",
-            "--body",
-            "A fixed board for the feature-delivery terminal proof.",
-            "--json",
-        ]
-    )
-
-
-def ensure_probe_milestone() -> None:
-    shown = run(
-        ["kanban", "milestone", "show", PROBE_MILESTONE, "--json"],
-        allowed=(0, 1),
-    )
-    if shown.returncode == 0:
-        data = parse_json(shown.stdout, "kanban milestone show")
-        board = data.get("board")
-        if board != PROBE_BOARD:
-            raise ProofError(
-                f"probe milestone {PROBE_MILESTONE} belongs to board {board!r}, "
-                f"not {PROBE_BOARD}"
-            )
-        return
-    run(
-        [
-            "kanban",
-            "milestone",
-            "add",
-            PROBE_MILESTONE,
-            "--board",
-            PROBE_BOARD,
-            "--title",
-            "Feature delivery proof fixture",
-            "--body",
-            "Isolated proof fixture for the feature-delivery harness.\n"
-            "Not a ship outcome. Do not file Kind:pr cards for this milestone.\n",
-            "--state",
-            "planned",
-            "--north-star",
-            SLUG,
-            "--proof-status",
-            "not_required",
-            "--json",
-        ]
-    )
-
-
-def claim_probe_card() -> dict[str, Any]:
-    """Claim the proof-board probe without touching default/todo.
-
-    Pickup classifies non-default boards as parked/non-work, so
-    `pickup claim --board <proof>` returns no-eligible. A CAS move with
-    --from todo --worker is the claim on this isolated board.
-    """
-    moved = run(
-        [
-            "kanban",
-            "move",
-            PROBE_CARD,
-            "doing",
-            "--from",
-            "todo",
-            "--worker",
-            PROBE_WORKER,
-            "--json",
-        ],
-        allowed=(0, 1),
-    )
-    if moved.returncode != 0:
-        moved = run(
-            [
-                "kanban",
-                "move",
-                PROBE_CARD,
-                "doing",
-                "--worker",
-                PROBE_WORKER,
-                "--force",
-                "--json",
-            ]
-        )
-    claimed = parse_json(moved.stdout, "kanban move doing")
-    if claimed.get("ok") is False:
-        raise ProofError(f"proof-board claim did not enter doing: {claimed!r}")
-    return claimed
-
-
-def probe_card_truth_and_flow() -> dict[str, Any]:
-    ensure_probe_board()
-    ensure_probe_milestone()
-    run(probe_card_add_argv())
-    claimed = claim_probe_card()
-    shown: dict[str, Any] = {}
-    assignee: Any = ""
-    probe_error: ProofError | None = None
-    try:
-        shown = parse_json(run(["kanban", "show", PROBE_CARD, "--json"]).stdout, "kanban show")
-        assignee = shown.get("assignee", shown.get("assigned_to", shown.get("worker", "")))
-        if shown.get("column") != "doing":
-            raise ProofError(f"immediate show returned column={shown.get('column')!r}")
-        if assignee != PROBE_WORKER:
-            raise ProofError(f"immediate show returned worker={assignee!r}")
-        if shown.get("board") != PROBE_BOARD:
-            raise ProofError(f"show returned board={shown.get('board')!r}")
-        if shown.get("milestone") != PROBE_MILESTONE:
-            raise ProofError(f"show returned milestone={shown.get('milestone')!r}")
-    except ProofError as exc:
-        probe_error = exc
-    # Do not leave the reusable proof card in doing after a failed assertion.
-    # A cleanup error is terminal only when no earlier assertion explains it.
-    try:
-        run(["kanban", "move", PROBE_CARD, "done", "--force", "--json"])
-    except ProofError as exc:
-        if probe_error is None:
-            probe_error = exc
-    if probe_error is not None:
-        raise probe_error
-    try:
-        flow = parse_json(
-            run(["kanban", "flow", PROBE_MILESTONE, "--json"]).stdout,
-            "kanban flow",
-        )
-    except ProofError as exc:
-        if "schema is not bound" in str(exc):
-            return {
-                "claim_result": claimed.get("result", claimed.get("status", claimed.get("column", "doing"))),
-                "card_column": shown.get("column"),
-                "worker": assignee,
-                "board": shown.get("board"),
-                "milestone": shown.get("milestone"),
-                "flow_stage": "schema-unbound",
-                "flow_events": [],
-                "oldest_wait": None,
-            }
-        raise
-    cards = flow.get("cards")
-    if not isinstance(cards, list):
-        raise ProofError("flow report has no cards array")
-    card = next((item for item in cards if item.get("card_slug") == PROBE_CARD), None)
-    if not isinstance(card, dict):
-        raise ProofError("flow report does not contain the proof card")
-    events = [item.get("event") for item in card.get("events", []) if isinstance(item, dict)]
-    if card.get("stage") != "done" or "claim" not in events or "done" not in events:
-        raise ProofError(f"flow events are incomplete: stage={card.get('stage')!r} events={events!r}")
-    if "oldest_wait" not in flow:
-        raise ProofError("flow report has no oldest_wait field")
-    return {
-        "claim_result": claimed.get("result", claimed.get("status", claimed.get("column", "doing"))),
-        "card_column": shown.get("column"),
-        "worker": assignee,
-        "board": shown.get("board"),
-        "milestone": shown.get("milestone"),
-        "flow_stage": card.get("stage"),
-        "flow_events": events,
-        "oldest_wait": flow.get("oldest_wait"),
-    }
-
-
 def proof_command(root: Path, name: str) -> Path:
     path = root / "bin" / name
     if not path.is_file():
@@ -473,11 +261,7 @@ def proof_command(root: Path, name: str) -> Path:
 
 
 def probe_admission() -> dict[str, Any]:
-    # decision-2026-09-27-portfolio-admission-allow-all: the gate admits
-    # every North Star by default now. Prove both halves live — a
-    # spotlighted (Primary/Secondary/Backfill) slug is admitted, an
-    # explicitly Paused slug is refused, and an arbitrary unlisted slug is
-    # ALSO admitted (the default, not a fixed allowlist of 1-2).
+    # Read the actual policy. Do not create synthetic cases or write test cards.
     command = proof_command(installed_root("last-stack"), "last-stack-feature-portfolio-admission")
     policy = parse_json(
         run([str(command), "--json"], timeout=90).stdout,
@@ -498,210 +282,10 @@ def probe_admission() -> dict[str, Any]:
     ):
         raise ProofError(f"admission policy returned invalid paused_outcomes: {paused_list!r}")
 
-    taken = set(admitted) | set(paused_list)
-    unlisted = "north-star-feature-delivery-proof-unlisted"
-    while unlisted in taken:
-        unlisted += "-control"
-    cases = [(slug, 0, "admitted") for slug in admitted]
-    cases += [(slug, 2, "paused") for slug in paused_list]
-    cases.append((unlisted, 0, "admitted"))
-    results = []
-    for slug, rc, verdict in cases:
-        cp = run([str(command), "--north-star", slug, "--json"], allowed=(rc,), timeout=90)
-        result = parse_json(cp.stdout, f"admission {slug}")
-        if result.get("verdict") != verdict:
-            raise ProofError(f"admission {slug} returned {result.get('verdict')!r}")
-        results.append({"north_star": slug, "verdict": verdict, "exit": rc})
     return {
         "policy_version": policy.get("policy_version"),
         "admitted_outcomes": admitted,
         "paused_outcomes": paused_list,
-        "cases": results,
-    }
-
-
-def probe_satisfaction() -> dict[str, Any]:
-    command = proof_command(installed_root("last-stack"), "last-stack-milestone-slice-satisfaction")
-    repo = cache_path("last-stack")
-    main_oid = git("last-stack", "rev-parse", "main^{commit}")
-    with tempfile.TemporaryDirectory(prefix="feature-satisfaction-proof.") as raw:
-        tmp = Path(raw)
-        proposal = {
-            "milestone": MILESTONE,
-            "candidate": "proof-current-main-does-not-refile",
-            "repo": "EdgeVector/last-stack",
-            "clauses": [
-                {
-                    "id": "already-shipped",
-                    "text": "The current-main satisfaction gate exists.",
-                    "verdict": "satisfied",
-                    "evidence": [
-                        {
-                            "source": "repo_main",
-                            "path": "bin/last-stack-milestone-slice-satisfaction",
-                            "contains": 'verdict = "already-satisfied"',
-                        }
-                    ],
-                }
-            ],
-        }
-        (tmp / "proposal.json").write_text(json.dumps(proposal) + "\n")
-        (tmp / "reviews.json").write_text("[]\n")
-        (tmp / "closeouts.json").write_text("[]\n")
-        (tmp / "memory.md").write_text("No prior driver claim.\n")
-        cp = run(
-            [
-                str(command),
-                "--proposal",
-                str(tmp / "proposal.json"),
-                "--repo-path",
-                str(repo),
-                "--base-ref",
-                "main",
-                "--expected-main-oid",
-                main_oid,
-                "--merged-reviews",
-                str(tmp / "reviews.json"),
-                "--closeouts",
-                str(tmp / "closeouts.json"),
-                "--driver-memory",
-                str(tmp / "memory.md"),
-                "--json",
-            ],
-            allowed=(2,),
-        )
-        result = parse_json(cp.stdout, "current-main satisfaction")
-    if result.get("verdict") != "already-satisfied" or result.get("remaining_clauses") != []:
-        raise ProofError(f"current-main satisfaction returned {result.get('verdict')!r}")
-    return {"main_oid": main_oid, "verdict": result.get("verdict"), "remaining_clauses": []}
-
-
-def extract_source(repo: str, oid: str, destination: Path) -> None:
-    try:
-        cp = subprocess.run(
-            ["git", f"--git-dir={cache_path(repo)}", "archive", oid],
-            capture_output=True,
-            timeout=90,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise ProofError(f"cannot archive {repo} at {oid}: {exc}") from exc
-    if cp.returncode != 0:
-        detail = cp.stderr.decode(errors="replace").strip().splitlines()
-        raise ProofError(
-            f"cannot archive {repo} at {oid}: {detail[0] if detail else 'git archive failed'}"
-        )
-    with tarfile.open(fileobj=io.BytesIO(cp.stdout), mode="r:") as archive:
-        try:
-            archive.extractall(destination, filter="data")
-        except TypeError:
-            # Python before 3.12 has no extraction filter. This archive comes
-            # from the trusted local repository object named above.
-            archive.extractall(destination)
-
-
-def probe_closeout(installed_head: str) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="feature-closeout-proof.") as raw:
-        source = Path(raw)
-        extract_source("last-stack", installed_head, source)
-        test = source / "tests/last-stack-card-closeout.sh"
-        cp = run(["bash", str(test)], timeout=120)
-    if "ok last-stack-card-closeout" not in cp.stdout:
-        raise ProofError("the exact installed-source closeout test returned no pass marker")
-    return {
-        "installed_source": installed_head,
-        "fixture": "positive PROOF; same-signal reopen refusal; new-signal close",
-        "result": "ok last-stack-card-closeout",
-    }
-
-
-def write_executable(path: Path, text: str) -> None:
-    path.write_text(text)
-    path.chmod(0o755)
-
-
-def probe_provider_fallback() -> dict[str, Any]:
-    command = proof_command(installed_root("routines"), "routines")
-    with tempfile.TemporaryDirectory(prefix="feature-provider-proof.") as raw:
-        home = Path(raw)
-        (home / "registry").mkdir(parents=True)
-        (home / "harness-outage").mkdir(parents=True)
-        (home / "registry/demo.toml").write_text(
-            'harness = "grok"\n'
-            'model = "grok-4.6"\n'
-            'rrule = "FREQ=HOURLY"\n'
-            'prompt = "health"\n'
-            'timeout_min = 0.5\n'
-        )
-        # routines drops a fence whose lastSeenAt is older than its TTL
-        # (isHarnessOutaged), so a fixed date un-fences Codex once it ages
-        # out and the chain stops on the Codex leg. Stamp the fence now.
-        (home / "harness-outage/codex.json").write_text(
-            json.dumps(
-                {
-                    "kind": "usage-limit",
-                    "lastSeenAt": now(),
-                    "situationSlug": "feature-provider-proof",
-                    "expiresAt": after(24),
-                }
-            )
-            + "\n"
-        )
-        codex_marker = home / "codex-called"
-        grok = home / "grok-bin"
-        codex = home / "codex-bin"
-        claude = home / "claude-bin"
-        noop = home / "noop-bin"
-        write_executable(
-            grok,
-            "#!/bin/sh\n"
-            "printf '%s\\n' 'API error (status 402 Payment Required): "
-            "usage balance exhausted' >&2\n"
-            "exit 1\n",
-        )
-        write_executable(codex, f"#!/bin/sh\nprintf called >>'{codex_marker}'\nexit 1\n")
-        write_executable(
-            claude,
-            "#!/bin/sh\nprintf '%s\\n' 'demo 2026-08-31T00:00:00Z ok GREEN findings=0'\nexit 0\n",
-        )
-        write_executable(noop, "#!/bin/sh\nexit 0\n")
-        env = os.environ.copy()
-        env.update(
-            {
-                "ROUTINES_HOME": str(home),
-                "ROUTINES_ALLOW_HARNESS_BIN_OVERRIDES": "1",
-                "ROUTINES_FALLBACK_CHAIN": "codex:gpt-5.6-terra,claude:sonnet,grok:grok-4.5",
-                "ROUTINES_FALLBACK_MAX_CONCURRENT": "1",
-                "ROUTINES_FALLBACK_JITTER_MS": "0",
-                "ROUTINES_GROK_BIN": str(grok),
-                "ROUTINES_CODEX_BIN": str(codex),
-                "ROUTINES_CLAUDE_BIN": str(claude),
-                "ROUTINES_FSITUATIONS_BIN": str(noop),
-                "ROUTINES_SITUATIONS_CLI": str(noop),
-                "ROUTINES_FBRAIN_BIN": str(noop),
-                "ROUTINES_RA_BIN": str(noop),
-                "ROUTINES_HEARTBEATS_FILE": str(home / "heartbeats.log"),
-            }
-        )
-        run([str(command), "run", "demo", "--quiet"], env=env, timeout=90)
-        meta_files = sorted((home / "runs/demo").glob("*/meta.json"))
-        if not meta_files:
-            meta_files = sorted(home.glob("runs/**/meta.json"))  # walk-ok: a fixture home this proof created
-        if not meta_files:
-            raise ProofError("the provider probe wrote no run metadata")
-        meta = parse_json(meta_files[-1].read_text(), "provider probe metadata")
-        attempts = meta.get("fallbackAttempts")
-        if not isinstance(attempts, list):
-            raise ProofError("provider probe has no fallbackAttempts array")
-        harnesses = [str(item.get("harness")) for item in attempts if isinstance(item, dict)]
-        if meta.get("harness") != "claude" or harnesses[:2] != ["grok", "claude"]:
-            raise ProofError(f"provider chain stopped early: winner={meta.get('harness')!r} legs={harnesses!r}")
-        if codex_marker.exists():
-            raise ProofError("the provider chain called the fenced Codex route")
-    return {
-        "primary": "grok",
-        "fenced_first_fallback": "codex",
-        "winner": "claude",
-        "attempts": harnesses,
     }
 
 
@@ -903,59 +487,23 @@ def collect_live() -> dict[str, Any]:
     collected_at = now()
     heads, lastdb_meta = installed_heads()
     components = component_evidence(heads)
-    fkanban_ready = all_present(
-        components,
-        "fkanban",
-        (
-            "durable milestone on add",
-            "immediate claim and show coherence",
-            "bounded board move write",
-            "keyed feature flow ledger",
-        ),
-    )
     last_stack_ready = all_present(
-        components,
-        "last-stack",
-        (
-            "two-outcome feature admission",
-            "current-main slice satisfaction",
-            "monotonic card closeout",
-        ),
+        components, "last-stack", ("two-outcome feature admission",)
     )
-    routines_ready = all_present(components, "routines", ("all-route provider fallback",))
     fold_ready = all_present(components, "fold", ("full-heap warm-cache accounting",))
-    probes: dict[str, Any] = {}
-    if fkanban_ready:
-        card_probe = timed_probe("installed F-Kanban card truth and keyed flow", probe_card_truth_and_flow)
-        probes["card_truth"] = card_probe
-        probes["board_write"] = {**card_probe, "name": "bounded board write via installed F-Kanban"}
-        probes["flow_ledger"] = {**card_probe, "name": "installed keyed feature flow ledger"}
-    else:
-        reason = "the active F-Kanban artifact lacks one or more required source commits"
-        probes["card_truth"] = skipped_probe("installed F-Kanban card truth", reason)
-        probes["board_write"] = skipped_probe("bounded board write", reason)
-        probes["flow_ledger"] = skipped_probe("keyed feature flow ledger", reason)
+    reason = (
+        "No operational evidence is supplied for this clause. "
+        "Synthetic fixtures and test suites are retired by no-tests-all-repos-20261009."
+    )
+    probes = {
+        name: skipped_probe(name.replace("_", " "), reason)
+        for name in ("card_truth", "board_write", "flow_ledger", "satisfaction", "closeout", "provider_fallback")
+    }
     if last_stack_ready:
-        probes["admission"] = timed_probe("installed two-outcome admission", probe_admission)
-        probes["satisfaction"] = timed_probe("current-main duplicate prevention", probe_satisfaction)
-        probes["closeout"] = timed_probe(
-            "monotonic exact-source closeout",
-            lambda: probe_closeout(heads["last-stack"]),
-        )
+        probes["admission"] = timed_probe("installed admission policy", probe_admission)
     else:
-        reason = "the active Last Stack artifact lacks one or more required source commits"
-        probes["admission"] = skipped_probe("installed two-outcome admission", reason)
-        probes["satisfaction"] = skipped_probe("current-main duplicate prevention", reason)
-        probes["closeout"] = skipped_probe("monotonic closeout", reason)
-    if routines_ready:
-        probes["provider_fallback"] = timed_probe(
-            "installed provider fallback with two unavailable routes",
-            probe_provider_fallback,
-        )
-    else:
-        probes["provider_fallback"] = skipped_probe(
-            "installed provider fallback",
-            "the active Routines artifact lacks the required source commit",
+        probes["admission"] = skipped_probe(
+            "installed admission policy", "the active artifact lacks the required source commit"
         )
     soak = collect_lastdb_soak(lastdb_meta, fold_ready)
     return {
@@ -1174,7 +722,7 @@ def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--live", action="store_true")
     mode.add_argument("--offline", action="store_true")
-    parser.add_argument("--fixture", type=Path, help="evaluate a captured snapshot")
+    parser.add_argument("--evidence", type=Path, help="evaluate a captured operational snapshot")
     parser.add_argument("--report", type=Path)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -1191,8 +739,8 @@ def main(argv: list[str] | None = None) -> int:
     ) / f"{SLUG}.md"
 
     try:
-        if args.fixture:
-            snapshot = parse_json(args.fixture.read_text(), str(args.fixture))
+        if args.evidence:
+            snapshot = parse_json(args.evidence.read_text(), str(args.evidence))
         elif offline:
             snapshot = offline_snapshot(root)
         else:

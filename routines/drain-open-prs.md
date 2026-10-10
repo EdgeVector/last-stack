@@ -4,6 +4,10 @@ cadence: daily
 description: Drive the count of open PRs across ALL your repos toward zero every day — for each PR, classify relevance, then merge (rebasing/fixing mechanical CI) or close (stale/superseded/irrelevant) with a comment. Skips PRs with a live worktree and human-gated prod-cutover PRs.
 ---
 
+No-tests policy: `instructions/no-tests.md`; Situation
+`no-tests-all-repos-20261009`. This policy supersedes older test requirements in
+shared contracts, prompts, and cards. Keep non-test checks and product proof.
+
 You are the daily open-PR drainer for `<WORKSPACE>`. Goal: drive the count of
 open PRs across ALL your repos toward ZERO every day. For each open PR, decide
 whether it's still wanted, then take it to a terminal state: MERGE it
@@ -136,20 +140,18 @@ continue — do not fail the whole run.
    (`gh run view <run-id> --log-failed -R <repo>`). Do not stop at umbrella
    checks like `ci-required`; inspect the underlying failed job(s). Branch on the
    failure KIND:
+   - **Retired test or test coverage requirement** → remove the command and
+     requirement from CI, linters, and the PR brief in a worktree. Do not repair
+     or rerun tests. Keep the remaining required non-test checks.
    - **Infra flake** — cancelled / runner shutdown / timeout / lost-runner, with
-     tests actually passing. NOT a code failure and the #1 reason a green-able PR
+     no non-test check failure. NOT a code failure and the #1 reason a green-able PR
      sits stuck for hours. Action: `gh run rerun <run-id> --failed -R <repo>`
      (or push an empty commit from a worktree if the run is too old to re-run),
      confirm auto-merge is still on, move on. NEVER leave a flaky-cancelled check
      sitting — re-running it IS the action.
    - **Mechanical** (formatter/linter/version-consistency) → fix in a worktree as
      in (5), push, re-assert merge.
-   - **Deterministic broken test with a clear branch-local cause** → reproduce or
-     identify the exact failing test from logs, inspect the PR diff, fix the test
-     or code in a fresh worktree, run the narrowest reliable local verifier for
-     that failure, push with lease, then re-assert merge. This is in scope for
-     the drainer; do not flag it merely because it is a test failure.
-   - **Real logic/test failure needing product judgment** → don't guess; comment
+   - **Real product failure needing product judgment** → don't guess; comment
      flagging the specific failure and leave it for a human.
 7. **Pending** (CI running, or waiting on a human you can't satisfy) → leave for
    the next daily run.

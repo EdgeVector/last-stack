@@ -66,8 +66,4 @@ class Lastseek < Formula
     EOS
   end
 
-  test do
-    assert_match version.to_s, shell_output("#{bin}/lastseek --version")
-    assert_predicate pkgshare/"models/bge-small-en-v1.5/model.onnx", :exist?
-  end
 end

@@ -1,12 +1,16 @@
 ---
 name: devops-continuous-improvement
 cadence: daily
-description: Inspect CI, merge flow, deployment, testing, and release gates; make one bounded DevOps improvement or file precise cards for follow-up.
+description: Inspect CI, merge flow, deployment, and release gates; make one bounded DevOps improvement or file precise cards for follow-up.
 ---
+
+No-tests policy: `instructions/no-tests.md`; Situation
+`no-tests-all-repos-20261009`. This policy supersedes older test requirements in
+shared contracts, prompts, and cards. Keep non-test checks and product proof.
 
 You are the daily DevOps continuous-improvement routine for `<WORKSPACE>`.
 Run one bounded pass, then exit. Your job is to keep CI, merge queues,
-deployment workflows, test signal, and release gates healthy across the repos
+deployment workflows, non-test checks, and release gates healthy across the repos
 listed below.
 
 ## Automation memory
@@ -69,13 +73,15 @@ For each repo in scope, gather only enough signal to find the highest-value
 DevOps improvement for this run:
 
 - Open PRs, draft PRs, requested changes, and branches stuck behind base.
-- Required GitHub Actions checks, recent failed/cancelled runs, flaky tests,
+- Required GitHub Actions checks, recent failed/cancelled runs, runner failures,
   merge-queue stalls, and missing `merge_group` triggers.
 - Branch protection and auto-merge behavior where it affects routine landing.
-- Deployment workflows, release-publish workflows, rollback gates, and smoke
-  tests.
-- Test commands that developers and agents actually run locally; note gaps
+- Deployment workflows, release-publish workflows, rollback gates, and live
+  product checks.
+- Syntax, lint, and build commands that developers and agents run locally; note gaps
   between local verification and required CI.
+- Remove test commands and test coverage requirements when found. Do not add,
+  run, restore, or repair tests. Keep all required non-test checks.
 
 Use repo-qualified GitHub commands:
 ```bash
@@ -104,7 +110,7 @@ Pick exactly one primary action for the run:
 
 - **Ship one small DevOps fix** when the issue is mechanical, low-risk, and has
   a clear verifier. Examples: missing workflow trigger, stale prompt guidance,
-  test command mismatch, CI-only lint failure, or an automation runbook drift.
+  stale test requirement, CI-only lint failure, or an automation runbook drift.
 - **File or update board cards** when the fix is product code, ambiguous, too
   large, requires a human deploy/cutover, or touches security/release policy
   beyond a narrow documentation correction.

@@ -119,7 +119,6 @@ check_default_board_scope() {
         ! -path '*/.git/*' \
         ! -path '*/logs/*' \
         ! -path '*/run/*' \
-        ! -path '*/tests/*' \
         ! -name memory.md \
         ! -name last-stack-lint-prompts \
         -print0
@@ -157,7 +156,6 @@ check_aline_search_guards() {
         ! -path '*/.git/*' \
         ! -path '*/logs/*' \
         ! -path '*/run/*' \
-        ! -path '*/tests/*' \
         ! -name memory.md \
         ! -name last-stack-lint-prompts \
         -print0
@@ -239,7 +237,6 @@ collect_access_lint_files() {
       ! -path '*/.git/*' \
       ! -path '*/logs/*' \
       ! -path '*/run/*' \
-      ! -path '*/tests/*' \
       ! -name memory.md \
       ! -name last-stack-lint-prompts \
       -print0 2>/dev/null
@@ -512,7 +509,6 @@ check_admin_ui_repo_targets() {
         ! -path '*/.git/*' \
         ! -path '*/logs/*' \
         ! -path '*/run/*' \
-        ! -path '*/tests/*' \
         ! -name memory.md \
         ! -name last-stack-lint-prompts \
         -print0
@@ -817,7 +813,7 @@ check_bare_lastdb_cli_without_prelude() {
   # A fenced shell block in a routines/ prompt that runs a bare `lastdb status`
   # / `lastdb ops` must source last-stack-shell-prelude in the SAME block (or
   # name the binary by path). LINT_PROMPTS_FORCE_ROUTINE_FILE=<path> treats one
-  # extra file as a routine prompt (tests). Every agent tool call is a fresh shell: a prelude sourced in the
+  # extra file as a routine prompt. Every agent tool call is a fresh shell: a prelude sourced in the
   # preflight block does not carry over, and the routine PATH then resolves
   # /opt/homebrew/bin/lastdb (0.23.3-canary.20260801, still wants
   # `mk_legacy_hits`) ahead of ~/.local/bin/lastdb (current). That shadow
@@ -1011,7 +1007,7 @@ for path in "$@"; do
 
   feature_frontier_search_matches="$(search_prompt_pattern 'fkanban[[:space:]]+search[^\n]*(feature-owner|feature-ship|STATUS[[:space:]]+driving|STATUS[[:space:]]+proving)' "$path")"
   feature_frontier_search_matches="$(printf '%s\n' "$feature_frontier_search_matches" \
-    | grep -v -Ei 'Do not|Never|do not|never|unsupported|expected .*fail|/tests/last-stack-lint-prompts\.sh:' || true)"
+    | grep -v -Ei 'Do not|Never|do not|never|unsupported|expected .*fail' || true)"
   if [ -n "$feature_frontier_search_matches" ]; then
     printf '%s\n' "$feature_frontier_search_matches"
     echo "unscoped fkanban feature-frontier search found under $path (use column-scoped list previews plus keyed show)" >&2
@@ -1020,7 +1016,7 @@ for path in "$@"; do
 
   repo_local_worktree_matches="$(search_prompt_pattern 'worktree[[:space:]]+add[^\n]*\.worktrees|WORKTREES_DIR:-[^}\n]*\.worktrees' "$path")"
   repo_local_worktree_matches="$(printf '%s\n' "$repo_local_worktree_matches" \
-    | grep -v -Ei 'Do not|Never|do not|never|unsupported|expected .*fail|bad-|/tests/last-stack-lint-prompts\.sh:' || true)"
+    | grep -v -Ei 'Do not|Never|do not|never|unsupported|expected .*fail|bad-' || true)"
   if [ -n "$repo_local_worktree_matches" ]; then
     printf '%s\n' "$repo_local_worktree_matches"
     echo "repo-local .worktrees creation guidance found under $path (use ~/.fkanban/worktrees)" >&2
@@ -1030,7 +1026,7 @@ for path in "$@"; do
   broad_board_reads="$(search_prompt_pattern '(^|[^[:alnum:]_-])(kanban|<board CLI>)[[:space:]]+list.*(--wide|--full-body|--all)' "$path")"
   broad_board_reads="$(printf '%s\n' "$broad_board_reads" \
     | grep -v -Ei 'Do not|Never|do not|never|avoid|unsupported|no such flag|has no|not use|must not|instead|accepts|valid|syntax' \
-    | grep -v -E '/tests/last-stack-lint-prompts.sh' || true)"
+    || true)"
   if [ -n "$broad_board_reads" ]; then
     printf '%s\n' "$broad_board_reads"
     echo "broad kanban list usage found under $path (use capped/column previews plus show for selected cards)" >&2
@@ -1040,7 +1036,7 @@ for path in "$@"; do
   routine_doctor_checks="$(search_prompt_pattern '(^|[^[:alnum:]_-])(brain|kanban|<brain-cli>|<board CLI>)[[:space:]]+(doctor|init)([^[:alnum:]_-]|$)' "$path")"
   routine_doctor_checks="$(printf '%s\n' "$routine_doctor_checks" \
     | grep -v -Ei 'Do not|Do \*\*not|Never|do not|never|avoid|unsupported|expected|setup|bootstrap|fresh machine|user asks|diagnostics|brain-doctor|kanban-setup|not run|without running|not use|must not|no `?brain doctor|no `?kanban doctor|raw TCP|defaults|hint:' \
-    | grep -v -E '/skills/(kanban-setup|kanban|brain-doctor|llms-txt-install-smoke)/|/tests/|/bin/|/README.md|/routines/README.md|/routines/llms-txt-install-smoke\.md' || true)"
+    | grep -v -E '/skills/(kanban-setup|kanban|brain-doctor|llms-txt-install-smoke)/|/bin/|/README.md|/routines/README.md|/routines/llms-txt-install-smoke\.md' || true)"
   if [ -n "$routine_doctor_checks" ]; then
     printf '%s\n' "$routine_doctor_checks"
     echo "routine prompt uses doctor/init as a health check under $path (use a socket-backed narrow read and busy-node backoff)" >&2
@@ -1147,7 +1143,7 @@ for path in "$@"; do
 
   live_routine_result_examples="$(search_prompt_pattern 'ROUTINE_RESULT[[:space:]]+outcome=(ok|noop|error)([[:space:]]|$)' "$path")"
   live_routine_result_examples="$(printf '%s\n' "$live_routine_result_examples" \
-    | grep -v -E 'Do not|Never|do not|never|unsupported|bad-|expected .*fail|literal live-looking|/tests/last-stack-lint-prompts\.sh:' || true)"
+    | grep -v -E 'Do not|Never|do not|never|unsupported|bad-|expected .*fail|literal live-looking' || true)"
   if [ -n "$live_routine_result_examples" ]; then
     printf '%s\n' "$live_routine_result_examples"
     echo "live-looking ROUTINE_RESULT example found under $path; use bracketed placeholders such as outcome=<ok|noop|error> in prompts so routinesd cannot parse prompt text as a result" >&2

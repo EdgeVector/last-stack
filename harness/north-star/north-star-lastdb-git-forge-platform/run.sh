@@ -15,7 +15,6 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/lastdb-git-forge-proof.XXXXXX")"
 HANDLERS_REL=exemem_service/lambdas/storage_service/src/handlers.rs
 REQUEST_REL=exemem_service/lambdas/storage_service/src/main.rs
 AUTH_REL=fold_db/crates/core/src/sync/auth/ops/guaranteed_write.rs
-AUTH_TESTS_REL=fold_db/crates/core/src/sync/auth/tests.rs
 
 cleanup() {
   rm -rf "$TMP"
@@ -103,8 +102,7 @@ refuse_primary "$SOURCE_ROOT"
 HANDLERS="$SOURCE_ROOT/$HANDLERS_REL"
 REQUEST="$SOURCE_ROOT/$REQUEST_REL"
 AUTH="$SOURCE_ROOT/$AUTH_REL"
-AUTH_TESTS="$SOURCE_ROOT/$AUTH_TESTS_REL"
-for file in "$HANDLERS" "$REQUEST" "$AUTH" "$AUTH_TESTS"; do
+for file in "$HANDLERS" "$REQUEST" "$AUTH"; do
   refuse_primary "$file"
   [ -f "$file" ] || finish FAIL "The Fold source is absent: ${file#"$SOURCE_ROOT"/}."
 done
@@ -160,18 +158,6 @@ require_order_after "$HANDLERS" \
 require_text "$HANDLERS" 'stored.pointer.blob_ids == candidate.blob_ids' \
   "retry identity including the blob set"
 
-# Keep the proof tied to the real product tests that exercise the request
-# shape and duplicate refusal. These names are stable contract anchors.
-require_text "$HANDLERS" \
-  'fn guaranteed_write_rejects_duplicate_blob_ids_before_cloud_access()' \
-  "the duplicate refusal unit test"
-require_text "$HANDLERS" \
-  'fn guaranteed_write_is_scoped_and_rejects_unsafe_key_parts()' \
-  "the scoped key unit test"
-require_text "$AUTH_TESTS" \
-  'async fn two_ephemeral_nodes_share_one_org_guaranteed_write_slot()' \
-  "the two-node guaranteed-write test"
-
 source_label="source=${SOURCE_ROOT}"
 if source_oid="$(git -C "$SOURCE_ROOT" rev-parse --verify HEAD 2>/dev/null)"; then
   source_label="${source_label} oid=${source_oid}"
@@ -202,7 +188,6 @@ The offline proof checks the merged product contract:
 - the storage service validates count, duplicates, safe scoped keys, and blob presence;
 - every blob receives a storage HEAD check before the pointer read or CAS write;
 - a missing blob returns a validation error and a retry compares the blob set;
-- the Fold source contains the scoped-key, duplicate-refusal, and two-node tests.
 
 No LastDB home, socket, cloud service, or shared infrastructure was opened.
 EOF

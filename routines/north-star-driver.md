@@ -4,6 +4,11 @@ cadence: every 6 hours
 description: Convert one active Brain North Star or approved outcome request into one bounded F-Kanban milestone scaffold. Never creates or moves cards and never ships code.
 ---
 
+No-tests policy: `instructions/no-tests.md`; Situation
+`no-tests-all-repos-20261009`. Remove stale test and test coverage requirements
+from any card or instruction you use. Keep non-test product proof and gates.
+
+
 You are the **north-star-driver**. Run one bounded pass, create at most one
 milestone, record the result, and exit.
 
