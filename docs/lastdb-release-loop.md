@@ -54,15 +54,15 @@ pauses their live registry entries.
    safe-upgrade probe, DEV photograph, and primary cutover; unchanged).
 6. **rows** — `last-stack-registry-publish-next --candidate-set … --proof …`
    adds one compat row per app to `registry/next.json` on the tap repo, writes
-   `registry/proofs/<proof_run>.json`, signs with
-   `~/.lastdb/registry-index-signing.key` through `lastdb app index sign`, and
+   `registry/proofs/<proof_run>.json`, signs with the existing
+   `LASTDB_REGISTRY_SIGNING_KEY_LASTSECRETS=lastsecrets://<existing-key-slug>`
+   key. LastSecrets sends the key directly to `lastdb app index sign` through stdin, and
    opens an auto-merging GitHub PR on `EdgeVector/homebrew-lastdb`
    (`gh pr merge --squash --auto`; branch protection requires `ci-required`
    and blocks a direct push to `main`). Since 2026-09-30 GitHub is the tap's
    gate of record, and `lastdb app resolve` reads it. The LastGit and Forgejo
    copies are frozen: a row merged there never reaches a reader.
-   `LAST_STACK_REGISTRY_TAP_VENUE=lastgit|forgejo` keep the frozen paths for
-   tests only. The brew formula bump goes through the same PR path
+   Publication refuses the retired LastGit and Forgejo venues. The brew formula bump goes through the same PR path
    (`last-stack-brew-app-publish`, and fold's promote script with
    `--formula-venue github`).
 
@@ -78,9 +78,9 @@ build and the `next` rows proved with it, then runs:
 last-stack-release-publish --lastdb-version <build> --if-needed
 ```
 
-That command does two things together: fold's
+That command does two things together: LastDB's
 `forge-promote-homebrew-stable.sh --publish` (bottle to the public CDN, formula
-PR on the Forgejo tap) and `last-stack-registry-index promote` (the `next` rows
+PR on the GitHub tap) and `last-stack-registry-index promote` (the `next` rows
 for that build → `registry/stable.json`, sources rewritten to the public GitHub
 mirrors from `config/registry/apps.json`, every commit fetched from its public
 source first, signed, second auto-merging PR). `--if-needed` refuses a build
@@ -92,8 +92,42 @@ notify. Since 2026-09-21 a green quiet window is the stable decision
 `LAST_STACK_RELEASE_AUTO_PUBLISH=0` returns the action to material-only.
 `--dry-run` by hand shows both halves without writing anything public.
 
-The GitHub token for the bottle upload comes from `GH_TOKEN`, then `gh auth
-token`, then `lastsecrets://github-token` (unattended, locked keychain).
+Stable publication requires two independent clean registered portal DEV worktrees.
+Create them from the `homebrew-lastdb` portal with `bin/wt start`.
+Set `LAST_STACK_FORMULA_TAP_DIR` and `LAST_STACK_REGISTRY_TAP_DIR` to those roots.
+Each root must be under `~/.fkanban/worktrees` and at accepted GitHub main.
+The publisher checks the portal marker, portal cache, and reciprocal Git registration.
+It refuses a scratch linked worktree and keeps the caller's files.
+
+Set `LASTDB_REGISTRY_SIGNING_KEY_LASTSECRETS` to the existing key locator.
+The native signer reads the key from stdin at the point of use.
+The publisher does not write a key file or change the public trust identity.
+Normal `gh` authentication serves the GitHub commands.
+The publisher does not retrieve a GitHub token into a receipt or log.
+
+Before either public change, the publisher verifies the selected signed rows,
+the current hosted install/startup proof, exact app and Mini OIDs, and source reachability.
+The one-hour quiet verdict remains a separate required gate.
+Source checks and help output do not prove an actual signature or publication.
+
+Each external create has a bounded owner-only receipt before and after its request.
+The receipt keeps the exact build, Mini OID, tag, DEV base, branch, head, and known public URLs.
+PR creation and automatic merge are separate stages.
+Each automatic merge request binds the exact prepared head with `--match-head-commit`.
+A later failure keeps the known release and PR outputs.
+An unknown outcome stays requested and holds publication.
+
+The durable identity file is `canary-promote/release-attempts/<build-and-OID-SHA256>.json`.
+A retry retains the original tag and refuses a new create while that exact attempt exists.
+Read the exact saved tag, branch, release, and PR through GitHub before recovery.
+Do not delete the receipt, choose a new tag, reset the DEV root, or repeat an unknown create.
+Normal required tap CI and the automatic merge gate remain active.
+After both changes reach accepted tap main, `--if-needed` returns the existing result.
+The same tag stays held until that state or an explicit reviewed recovery.
+
+The explicit legacy `promote-execute` command also requires `LAST_STACK_FORMULA_TAP_DIR`.
+It passes the supplied root to the same strict public helper.
+It does not replace the hourly `promote-material` path or alter its quiet window.
 
 ## Install by proof
 
@@ -185,9 +219,10 @@ enforced. Rehearse against a local index with `--lastdb-bin … --index <dir>`.
 
 | | |
 |---|---|
-| Signing key | `~/.lastdb/registry-index-signing.key` (`LASTDB_REGISTRY_SIGNING_KEY`) |
+| Signing key | Existing `lastsecrets://` locator in `LASTDB_REGISTRY_SIGNING_KEY_LASTSECRETS`; native signer stdin |
 | Verifying key | pinned in `lastdb` (`lastdb app index trust-key`); published as `registry/index-signing.pub` |
-| Tap checkout the lane uses | `~/.local/state/last-stack/registry-tap` |
+| Publication DEV roots | Independent `LAST_STACK_FORMULA_TAP_DIR` and `LAST_STACK_REGISTRY_TAP_DIR` portal worktrees |
+| Partial release receipts | Owner-only `canary-promote/release-attempts` plus exact formula proof path |
 | Candidate sets | `~/.local/state/last-stack/canary-candidate-sets/<build>.json` |
 | Promote material | `~/.local/state/last-stack/canary-promote/<date>/PROMOTE.md` |
 | App set | `config/registry/apps.json` (forge + public source per app) |
