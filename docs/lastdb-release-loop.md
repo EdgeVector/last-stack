@@ -23,8 +23,17 @@ pauses their live registry entries.
 
 ## The nightly candidate gate, step by step
 
-1. **build** — `last-stack-canary-build-main --json` stages Forge fold `main`
-   under `~/.local/state/last-stack/canary-builds/<oid>/`.
+1. **build** — `last-stack-canary-build-main --json` stages public LastDB `main`
+   from GitHub under `~/.local/state/last-stack/canary-builds/<oid>/`.
+   The build and stage require `lastdb` and `lastdbd` from the same source.
+   The removed synthetic restore probe and harness are not required.
+   Stage reuse keeps the source manifest check. The build keeps equal versions
+   and refuses dirty binaries. The normal real-copy safe upgrade checks the
+   exact source, pair hashes, versions, restore receipt, and primary protection.
+   The resolver keeps its existing source and SHA drift fields. Legacy JSON
+   fields `lastdb_restore_probe` and `restore_probe_script` always return null.
+   The legacy `--allow-no-restore-script` flag is a deprecated no-op.
+   `--allow-daemon-only` stays explicit; backup restore still requires the pair.
 2. **resolve** — `last-stack-lastdb-canary-dogfood --dry-run --json` names the
    candidate build and binary; the pipeline `channels` command applies the
    cutover-hold policy. Same build as the primary → `noop`.

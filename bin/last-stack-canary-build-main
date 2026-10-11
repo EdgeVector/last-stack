@@ -6,17 +6,11 @@
 #
 # Stages under:
 #   ~/.local/state/last-stack/canary-builds/<full-oid>/
-#     lastdb, lastdbd, lastdb_restore_probe, manifest.json,
-#     scripts/run-lastdb-restore-probe.sh,
+#     lastdb, lastdbd, manifest.json,
 #     (optional) lastdb-*.tar.gz + .manifest.json
 #
-# The restore probe is a script plus a binary, and only the pair is source-bound.
-# A stage that shipped the three binaries without the script still resolved as
-# newest/complete, so the backup-restore-probe routine hand-pinned an OID
-# instead of trusting the resolver (card
-# lastdb-restore-probe-stage-script-missing-20260906). The script is read from
-# the MIRROR at the exact staged OID, so it is bound to the same source as the
-# binaries whether or not this run compiled anything.
+# The stage contains the CLI and daemon from the same source. The real-copy
+# safe-upgrade driver verifies that pair before a supervised primary change.
 #
 # Never touches the primary. Never publishes brew. Never uses GitHub as SoT.
 set -euo pipefail
@@ -41,7 +35,7 @@ Env:
   LAST_STACK_CANARY_BUILD_WORKDIR   checkout for cargo (default …/canary-build/lastdb-worktree)
   LAST_STACK_CANARY_FETCH_MAIN      1 (default) fetch origin main before resolve
   LAST_STACK_CANARY_CARGO_CMD       full cargo command override
-  LAST_STACK_CANARY_BUILD_BIN_DIR   with --skip-build: dir with all three binaries
+  LAST_STACK_CANARY_BUILD_BIN_DIR   with --skip-build: dir with lastdb and lastdbd
   LAST_STACK_CANARY_BUILD_KEEP      max staged OIDs to keep (default 5)
   LAST_STACK_CANARY_TARGET          package triple (default aarch64-apple-darwin)
   LAST_STACK_CANARY_BUILD_STEP_TIMEOUT  wall-clock bound per git op in ensure_worktree, seconds (default 300)
@@ -106,9 +100,6 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-# One canonical location inside a stage, matching last-stack-canary-resolve-lastdbd.
-RESTORE_SCRIPT_REL="scripts/run-lastdb-restore-probe.sh"
-
 HOME_DIR="${HOME:-$(eval echo ~)}"
 FOLD_MIRROR="${LAST_STACK_CANARY_FOLD_MIRROR:-$HOME_DIR/.cache/edgevector-git/lastdb.git}"
 BUILDS_DIR="${LAST_STACK_CANARY_BUILDS_DIR:-$HOME_DIR/.local/state/last-stack/canary-builds}"
@@ -116,7 +107,7 @@ WORKDIR="${LAST_STACK_CANARY_BUILD_WORKDIR:-$HOME_DIR/.local/state/last-stack/ca
 FETCH_MAIN="${LAST_STACK_CANARY_FETCH_MAIN:-1}"
 KEEP="${LAST_STACK_CANARY_BUILD_KEEP:-5}"
 TARGET="${LAST_STACK_CANARY_TARGET:-aarch64-apple-darwin}"
-CARGO_CMD="${LAST_STACK_CANARY_CARGO_CMD:-cargo build --release -p lastdb_node --bin lastdb --bin lastdbd --bin lastdb_restore_probe}"
+CARGO_CMD="${LAST_STACK_CANARY_CARGO_CMD:-cargo build --release -p lastdb_node --bin lastdb --bin lastdbd}"
 STEP_TIMEOUT="${LAST_STACK_CANARY_BUILD_STEP_TIMEOUT:-300}"
 
 # routinesd dispatch shells carry a stripped PATH without ~/.cargo/bin, so the
@@ -157,41 +148,10 @@ resolve_main_oid() {
   die "could not resolve LastDB main tip in $FOLD_MIRROR"
 }
 
-# The probe script must carry the corrupt-restore proof and the RED-path report
-# it writes. A file at the right path with the wrong contents would let a stage
-# be declared complete and fail only during the probe run.
-restore_script_ok() {
-  local path="$1"
-  [ -f "$path" ] || return 1
-  grep -q -- '--prove-corrupt-restore' "$path" || return 1
-  grep -q -- 'red-path.json' "$path" || return 1
-}
-
-# Read the script from the mirror at the exact staged OID, so it is bound to the
-# same source as the binaries even under --skip-build.
-stage_restore_script() {
-  local oid="$1" dest="$2"
-  mkdir -p "$(dirname "$dest")"
-  if git -C "$FOLD_MIRROR" show "${oid}:${RESTORE_SCRIPT_REL}" >"$dest" 2>/dev/null \
-    && [ -s "$dest" ]; then
-    chmod +x "$dest"
-    return 0
-  fi
-  rm -f "$dest"
-  if [ -f "$WORKDIR/$RESTORE_SCRIPT_REL" ]; then
-    cp "$WORKDIR/$RESTORE_SCRIPT_REL" "$dest"
-    chmod +x "$dest"
-    return 0
-  fi
-  return 1
-}
-
 stage_is_current() {
   local dir="$1" oid="$2"
   [ -x "$dir/lastdbd" ] || return 1
   [ -x "$dir/lastdb" ] || return 1
-  [ -x "$dir/lastdb_restore_probe" ] || return 1
-  restore_script_ok "$dir/$RESTORE_SCRIPT_REL" || return 1
   local man=""
   if [ -f "$dir/manifest.json" ]; then
     man="$dir/manifest.json"
@@ -221,7 +181,8 @@ doc = {
     "source_git_oid": oid,
     "lastdb_version": lv,
     "lastdbd_version": dv,
-    "restore_probe_script": "scripts/run-lastdb-restore-probe.sh",
+    # Retained JSON field for older readers. The synthetic harness is retired.
+    "restore_probe_script": None,
     "staged_by": "last-stack-canary-build-main",
 }
 with open(path, "w", encoding="utf-8") as f:
@@ -240,7 +201,7 @@ prune_old_stages() {
   # Delete oldest by mtime first, keep newest $keep
   ls -1t "$root" | tail -n +"$((keep + 1))" | while IFS= read -r name; do
     [ -n "$name" ] || continue
-    rm -rf "$root/$name"
+    rm -rf "${root:?}/$name"
     log "pruned old stage $name"
   done
 }
@@ -329,9 +290,8 @@ if [ "$skip_build" -eq 1 ]; then
   if [ -z "$bin_dir" ]; then
     bin_dir="$WORKDIR/target/release"
   fi
-  [ -x "$bin_dir/lastdbd" ] && [ -x "$bin_dir/lastdb" ] && \
-    [ -x "$bin_dir/lastdb_restore_probe" ] || \
-    die "--skip-build requires lastdb+lastdbd+lastdb_restore_probe under $bin_dir (or LAST_STACK_CANARY_BUILD_BIN_DIR)"
+  [ -x "$bin_dir/lastdbd" ] && [ -x "$bin_dir/lastdb" ] || \
+    die "--skip-build requires lastdb+lastdbd under $bin_dir (or LAST_STACK_CANARY_BUILD_BIN_DIR)"
 else
   ensure_worktree "$main_oid"
   log "building in $WORKDIR: $CARGO_CMD"
@@ -342,7 +302,6 @@ fi
 
 [ -x "$bin_dir/lastdb" ] || die "missing $bin_dir/lastdb after build"
 [ -x "$bin_dir/lastdbd" ] || die "missing $bin_dir/lastdbd after build"
-[ -x "$bin_dir/lastdb_restore_probe" ] || die "missing $bin_dir/lastdb_restore_probe after build"
 
 lastdb_ver="$("$bin_dir/lastdb" --version 2>/dev/null | awk '{print $NF}')"
 lastdbd_ver="$("$bin_dir/lastdbd" --version 2>/dev/null | awk '{print $NF}')"
@@ -359,7 +318,7 @@ if printf '%s' "$lastdbd_ver" | grep -Eq -- '-g[0-9a-f]{7,}'; then
     ${gsha}*) ;;
     *)
       case "$gsha" in
-        ${main_oid:0:${#gsha}}) ;;
+        "${main_oid:0:${#gsha}}") ;;
         *) log "warn: binary shortsha -g$gsha does not match main $main_oid (continuing; manifest pins oid)" ;;
       esac
       ;;
@@ -370,12 +329,7 @@ tmp_stage="$(mktemp -d "${TMPDIR:-/tmp}/canary-stage.XXXXXX")"
 trap 'rm -rf "$tmp_stage"' EXIT
 cp "$bin_dir/lastdb" "$tmp_stage/lastdb"
 cp "$bin_dir/lastdbd" "$tmp_stage/lastdbd"
-cp "$bin_dir/lastdb_restore_probe" "$tmp_stage/lastdb_restore_probe"
-chmod +x "$tmp_stage/lastdb" "$tmp_stage/lastdbd" "$tmp_stage/lastdb_restore_probe"
-stage_restore_script "$main_oid" "$tmp_stage/$RESTORE_SCRIPT_REL" \
-  || die "could not read ${RESTORE_SCRIPT_REL} at $main_oid from $FOLD_MIRROR"
-restore_script_ok "$tmp_stage/$RESTORE_SCRIPT_REL" \
-  || die "staged ${RESTORE_SCRIPT_REL} does not invoke --prove-corrupt-restore and reference red-path.json"
+chmod +x "$tmp_stage/lastdb" "$tmp_stage/lastdbd"
 write_simple_manifest "$tmp_stage/manifest.json" "$main_oid" "$lastdb_ver" "$lastdbd_ver"
 
 # Optional full Homebrew-shaped package (for promote-execute)
@@ -409,9 +363,6 @@ cp -a "$tmp_stage"/. "$stage_dir"/
 # ensure dogfood finds executables at stage root
 [ -x "$stage_dir/lastdbd" ] || die "stage missing lastdbd after copy"
 [ -x "$stage_dir/lastdb" ] || die "stage missing lastdb after copy"
-[ -x "$stage_dir/lastdb_restore_probe" ] || die "stage missing lastdb_restore_probe after copy"
-restore_script_ok "$stage_dir/$RESTORE_SCRIPT_REL" \
-  || die "stage missing or unusable $RESTORE_SCRIPT_REL after copy"
 [ -f "$stage_dir/manifest.json" ] || write_simple_manifest "$stage_dir/manifest.json" "$main_oid" "$lastdb_ver" "$lastdbd_ver"
 
 prune_old_stages "$BUILDS_DIR" "$KEEP"
