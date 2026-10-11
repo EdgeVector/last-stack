@@ -22,8 +22,8 @@ This command is the Mac half. It
      differs from --expect-build, a run older than --max-age-hours, and a proof
      that would move a pin BACKWARDS (a newer row for the same app and build is
      already on the tap);
-  6. calls last-stack-registry-publish-next, which signs with the local registry
-     key (through `lastdb app index sign`), opens one auto-merging tap PR, and
+  6. calls last-stack-registry-publish-next, which signs with the existing
+     LastSecrets key through `lastdb app index sign`, opens one tap PR, and
      names the CI run id in the row branch.
 
 --dry-run does steps 1 to 5 and runs publish-next in its own scratch clone with
@@ -143,7 +143,8 @@ def load_json_file(path: Path, what: str) -> dict:
     return data
 
 
-def verify_bundle(bundle: Path, run: dict, repo: str, run_id: str, conclusion: str, expect_build: str) -> dict:
+def verify_bundle(bundle: Path, run: dict, repo: str, run_id: str, conclusion: str,
+                  expect_build: str, expect_oid: str, expect_apps: dict[str, str]) -> dict:
     """Cross-check apply.json against the run and against the bundle's own files."""
     def need(cond: bool, why: str) -> None:
         if not cond:
@@ -152,6 +153,9 @@ def verify_bundle(bundle: Path, run: dict, repo: str, run_id: str, conclusion: s
     manifest = load_json_file(bundle / "apply.json", "manifest")
     proof = load_json_file(bundle / "proof.json", "proof")
     cset = load_json_file(bundle / "candidate-set.json", "candidate set") if (bundle / "candidate-set.json").is_file() else {}
+
+    need(proof.get("proof_kind") == "app_install_startup",
+         "proof does not name the current real install and startup producer")
 
     need(manifest.get("schema") == "registry-proof-bundle/1", f"unknown manifest schema {manifest.get('schema')}")
     need(str(manifest.get("run_id")) == run_id, f"manifest run_id is {manifest.get('run_id')}")
@@ -170,6 +174,13 @@ def verify_bundle(bundle: Path, run: dict, repo: str, run_id: str, conclusion: s
     need(bool(build), "no lastdb build in the manifest")
     set_build = str((cset.get("lastdb") or {}).get("build") or "")
     need(set_build == build, f"candidate set build {set_build or 'absent'} differs from the manifest build {build}")
+    source_oid = str((cset.get("lastdb") or {}).get("oid") or "")
+    need(bool(re.fullmatch(r"[0-9a-f]{40}", source_oid)), "candidate Mini source is not a full OID")
+    need(str((manifest.get("lastdb") or {}).get("oid") or "") == source_oid,
+         "manifest Mini source differs from the installed candidate")
+    need(proof.get("lastdb_oid") == source_oid, "startup Mini source differs from its installed candidate")
+    if expect_oid:
+        need(source_oid == expect_oid, "Mini source differs from the exact operator selection")
     proof_build = str(proof.get("lastdb_build") or "")
     need(proof_build == build, f"proof build {proof_build or 'absent'} differs from the manifest build {build}")
     need(manifest.get("proof_run") == f"ci-smoke-{run_id}-{safe_build(build)}", f"proof_run is {manifest.get('proof_run')}")
@@ -177,6 +188,8 @@ def verify_bundle(bundle: Path, run: dict, repo: str, run_id: str, conclusion: s
     set_apps = {a: str(v.get("sha") or "") for a, v in (cset.get("apps") or {}).items()}
     need(apps == set_apps and bool(apps), "manifest apps differ from the candidate set")
     need(all(re.fullmatch(r"[0-9a-f]{40}", s or "") for s in apps.values()), "an app sha is not a 40-hex oid")
+    for app, oid in expect_apps.items():
+        need(apps.get(app) == oid, f"app {app} differs from the exact operator selection")
     if expect_build:
         need(build == expect_build, f"build {build} is not the expected {expect_build}")
 
@@ -188,6 +201,9 @@ def verify_bundle(bundle: Path, run: dict, repo: str, run_id: str, conclusion: s
         need(bool(manifest.get("passed_apps")), "RED and no app passed its own checks")
     else:
         need(False, f"verdict is {verdict or 'absent'}")
+    selected_rows = rows_to_write(manifest)
+    for app, oid in expect_apps.items():
+        need(selected_rows.get(app) == oid, f"explicit app {app} did not pass its install and startup checks")
     return manifest
 
 
@@ -267,10 +283,21 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--repo", default=os.environ.get("LAST_STACK_REGISTRY_PROOF_REPO", "EdgeVector/last-stack"))
     parser.add_argument("--tap", default=os.environ.get("LAST_STACK_REGISTRY_TAP_REPO", "EdgeVector/homebrew-lastdb"))
     parser.add_argument("--expect-build", default="", help="refuse unless the proof names exactly this lastdb build")
+    parser.add_argument("--expect-mini-oid", default="", help="refuse unless the Mini source is this full accepted OID")
+    parser.add_argument("--expect-app", action="append", default=[], metavar="APP=OID",
+                        help="require this exact app source in the actual proof (repeatable)")
     parser.add_argument("--max-age-hours", type=float, default=48.0, help="refuse a run older than this (default 48)")
     parser.add_argument("--wait-merge", type=int, default=0, metavar="SECS", help="after the tap PR opens, poll its state up to SECS seconds")
     parser.add_argument("--publish-bin", default=os.environ.get("LAST_STACK_REGISTRY_PUBLISH_NEXT_BIN", str(ROOT / "bin" / "last-stack-registry-publish-next")))
     args = parser.parse_args(argv)
+    if args.expect_mini_oid and not re.fullmatch(r"[0-9a-f]{40}", args.expect_mini_oid):
+        parser.error("--expect-mini-oid must be a full lowercase 40-hex OID")
+    expect_apps: dict[str, str] = {}
+    for selection in args.expect_app:
+        match = re.fullmatch(r"([a-z0-9][a-z0-9-]*)=([0-9a-f]{40})", selection)
+        if not match or match.group(1) in expect_apps:
+            parser.error("--expect-app requires a unique app and a full lowercase 40-hex OID")
+        expect_apps[match.group(1)] = match.group(2)
 
     # 1. serial: one row PR at a time. Two open PRs both rewrite next.json and its signature.
     open_prs = open_row_prs(args.tap)
@@ -305,7 +332,8 @@ def main(argv: list[str]) -> int:
                 if created is None or (dt.datetime.now(dt.timezone.utc) - created).total_seconds() > args.max_age_hours * 3600:
                     raise Refused(f"run {run_id}: older than {args.max_age_hours:g} hours, or no creation time")
                 bundle = download_bundle(args.repo, run_id, Path(tmp) / run_id)
-                manifest = verify_bundle(bundle, run or {}, args.repo, run_id, conclusion, args.expect_build)
+                manifest = verify_bundle(bundle, run or {}, args.repo, run_id, conclusion,
+                                         args.expect_build, args.expect_mini_oid, expect_apps)
                 chosen = (run_id, run or {}, bundle, manifest)
                 break
             except Refused as exc:

@@ -19,7 +19,7 @@
 # This workflow does NOT sign and does NOT open a tap PR. The registry signing
 # key stays on Tom's Mac (decision D1). The Mac command
 # bin/last-stack-registry-apply-proof downloads the bundle, verifies the run,
-# signs with the local key and opens the tap PR.
+# signs through the existing LastSecrets locator and opens the tap PR.
 #
 # Triggers: every 30 minutes, and workflow_dispatch. A dispatch with an explicit
 # fold_oid, lastdb_release or probe_only runs exactly that (phases 1 and 2). A
@@ -49,6 +49,11 @@ on:
         type: string
       lastdb_build:
         description: "Expected lastdbd --version build string for a fold_oid build (for example 0.23.3-2378-gbe41e547e). Empty = no extra check."
+        required: false
+        default: ""
+        type: string
+      org_oid:
+        description: "Pin Org to this full accepted 40-hex OID in the actual install. Empty = the normal green source selection."
         required: false
         default: ""
         type: string
@@ -94,6 +99,7 @@ jobs:
       probe_only: ${{ steps.out.outputs.probe_only }}
       fingerprint: ${{ steps.out.outputs.fingerprint }}
       moved: ${{ steps.out.outputs.moved }}
+      org_oid: ${{ steps.out.outputs.org_oid }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -107,9 +113,18 @@ jobs:
           IN_BUILD: ${{ inputs.lastdb_build }}
           IN_PROBE: ${{ inputs.probe_only }}
           IN_FORCE: ${{ inputs.force }}
+          IN_ORG_OID: ${{ inputs.org_oid }}
         run: |
           set -euo pipefail
           mode=auto
+          if [ -n "$IN_ORG_OID" ] && [[ ! "$IN_ORG_OID" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::org_oid must be a full lowercase 40-hex accepted OID"
+            exit 1
+          fi
+          if [ -n "$IN_ORG_OID" ] && [ -z "$IN_FOLD_OID" ]; then
+            echo "::error::an exact Org pin requires the exact Mini source OID"
+            exit 1
+          fi
           if [ "$EVENT" = workflow_dispatch ] && { [ -n "$IN_RELEASE" ] || [ -n "$IN_FOLD_OID" ] || [ "$IN_PROBE" = true ]; }; then
             mode=explicit
           fi
@@ -124,6 +139,7 @@ jobs:
             echo "PLAN_PROBE=${IN_PROBE:-false}"
             echo "PLAN_FP="
             echo "PLAN_MOVED="
+            echo "PLAN_ORG_OID=$IN_ORG_OID"
           } >> "$GITHUB_ENV"
           if [ "$mode" = explicit ]; then
             echo "PLAN_RUN=true" >> "$GITHUB_ENV"
@@ -254,6 +270,7 @@ jobs:
             echo "probe_only=$PLAN_PROBE"
             echo "fingerprint=$PLAN_FP"
             echo "moved=$PLAN_MOVED"
+            echo "org_oid=$PLAN_ORG_OID"
           } >> "$GITHUB_OUTPUT"
           {
             echo "## registry-proof plan"
@@ -488,6 +505,7 @@ jobs:
           FOLD_OID: ${{ needs.plan.outputs.fold_oid }}
           # Built-in job token: reads the public app repos' check runs and artifacts.
           GH_TOKEN: ${{ github.token }}
+          ORG_OID: ${{ needs.plan.outputs.org_oid }}
         run: |
           set -euo pipefail
           t0=$SECONDS; rc=0
@@ -498,11 +516,27 @@ jobs:
           else
             oid_args=(--lastdb-manifest "$SCRATCH/dl/manifest.json")
           fi
+          pin_args=()
+          if [ -n "$ORG_OID" ]; then
+            main_oid="$(gh api repos/EdgeVector/org/commits/main --jq .sha)"
+            relation="$(gh api "repos/EdgeVector/org/compare/$ORG_OID...$main_oid" --jq .status)"
+            if [ "$relation" != identical ] && [ "$relation" != ahead ]; then
+              echo "::error::the exact Org source is not accepted on main"
+              exit 1
+            fi
+            checks="$(gh api "repos/EdgeVector/org/commits/$ORG_OID/check-runs?check_name=ci-required&per_page=100")"
+            if ! jq -e '[.check_runs[] | select(.name == "ci-required" and .conclusion == "success")] | length > 0' <<< "$checks" >/dev/null; then
+              echo "::error::the exact Org source needs its successful ci-required check"
+              exit 1
+            fi
+            pin_args=(--pin "org=$ORG_OID")
+          fi
           bin/last-stack-canary-candidate-set \
             --lastdbd "$SCRATCH/bin/lastdbd" \
             "${oid_args[@]}" \
             --source-venue github \
             --sha-source github-ci \
+            "${pin_args[@]}" \
             --out "$SCRATCH/candidate-set.json" || rc=$?
           printf 'candidate-set\t%s\t%s\n' "$((SECONDS - t0))" "$rc" >> "$BUNDLE/timings.tsv"
           [ "$rc" -eq 0 ] || exit "$rc"
@@ -529,7 +563,7 @@ jobs:
           cat "$p"
           printf 'probes\t%s\t0\n' "$((SECONDS - t0))" >> "$BUNDLE/timings.tsv"
 
-      - name: Isolated llms.txt install smoke
+      - name: Actual app install and startup
         if: ${{ needs.plan.outputs.probe_only != 'true' }}
         run: |
           set -u
@@ -552,6 +586,7 @@ jobs:
 
           SMOKE_LASTDBD_BIN="$SCRATCH/bin/lastdbd" \
           SMOKE_CANDIDATE_SET="$SCRATCH/candidate-set.json" \
+          SMOKE_LAST_STACK_OID="$GITHUB_SHA" \
           SMOKE_TOTAL_BUDGET_SECS=1800 \
           SMOKE_NO_FORGE_AUTH=1 \
           SMOKE_BREW_PLIST_NAME=sh.brew.lastdb.plist \
