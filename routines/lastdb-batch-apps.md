@@ -55,19 +55,37 @@ install (`$last_stack/config/registry/apps.json`, field `.apps`). Add
 `last-stack` itself and `fold` only when their code calls the LastDB API.
 
 The rotation state is one Brain record: `reference/lastdb-batch-apps-rotation`.
-It holds one line for each app: `<app> <ISO-UTC of last audit> <card-slug|none>`.
+It holds one line for each app:
+`<app> <ISO-UTC of last audit> <card-slug|none> <oid audited|-->`. The 4th
+field is the repo's `origin/main` oid at the last CLEAN (`card=none`) audit;
+write `--` for an app whose last audit filed a card.
 
 ```bash
 brain get lastdb-batch-apps-rotation --type reference
 ```
 
-If the record is missing, create it in step 4 with every app dated `1970-01-01T00:00:00Z`.
+If the record is missing, create it in step 4 with every app dated
+`1970-01-01T00:00:00Z`, card `none`, oid `--`.
 
-Pick the app with the OLDEST audit date. Skip an app when either is true:
+Pick the app with the OLDEST audit date among apps not skipped below. Skip an
+app when any of these is true:
 
 - an open card for it exists: `kanban search "batch lastdb calls <app>" --json`,
   then `kanban show <slug>` for each hit (column todo, doing, or backlog)
 - the app has no repo you can read (see `repo-venue-map`)
+- the last audit was clean (`card=none`) AND less than 24h ago AND the repo's
+  current `origin/main` oid still matches the stored oid. Check this with one
+  cheap `git -C ~/.cache/edgevector-git/<repo>.git ls-remote origin main`
+  (no worktree, no grep) before doing any Step 2 work. Re-eligible once the
+  tip moves, or once 24h have passed since that audit, whichever comes first.
+  A line with no 4th field (written before this rule existed) has no stored
+  oid — treat it as never-matched, do not skip on it, and stamp the oid in
+  Step 4 so the rule applies from the next run on.
+
+This is the fix for the recurring symptom "the eligible set collapses to the
+two cleanest apps and they ping-pong every hour forever": a clean app with an
+unmoved tip stops costing a Generate hour until there is something new to
+check or a day has passed.
 
 Capture first, parse second:
 
@@ -78,6 +96,9 @@ jq -r '.cards[] | [.slug, .column, .title] | @tsv' "$d/open.json"
 ```
 
 If every app is skipped: heartbeat `noop all-apps-have-open-cards` and EXIT.
+If every app is skipped only because of the unmoved-tip rule (no open cards
+anywhere), heartbeat `noop all-apps-clean-and-unchanged` and EXIT — do not
+re-run Step 2 on an app just to fill the hour.
 
 ## Step 2 — Find serial call patterns in that app
 
@@ -125,7 +146,9 @@ Remove test and test coverage requirements from the card before filing it.
 ## Step 4 — Stamp the rotation
 
 Update `lastdb-batch-apps-rotation` in place: set the audit date of the app
-to now and the card slug (or `none`). Re-read it after the write.
+to now, the card slug (or `none`), and the oid field — the `origin/main` oid
+you just audited when the result is clean (`card=none`), or `--` when you
+filed a card. Re-read it after the write.
 
 ```bash
 brain get lastdb-batch-apps-rotation --type reference
