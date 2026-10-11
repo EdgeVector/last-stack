@@ -134,9 +134,9 @@ def read_index(slug: str) -> list[str] | None:
         if _absent(proc, slug):
             return None
         sys.stderr.write(
-            f"last-stack-closeout-index: refusing to write: cannot read {slug} "
-            f"(rc={proc.returncode}). A rewrite from a failed read would "
-            f"truncate the index to one entry.\n"
+            f"last-stack-closeout-index: cannot read {slug} "
+            f"(rc={proc.returncode}). A read finds no entries in it; a "
+            f"write would truncate the index to one entry.\n"
             f"  stderr: {proc.stderr.strip()[:400]}\n"
         )
         raise SystemExit(4)
@@ -145,14 +145,15 @@ def read_index(slug: str) -> list[str] | None:
         body = payload["body"]
     except (ValueError, TypeError, KeyError) as exc:
         sys.stderr.write(
-            f"last-stack-closeout-index: refusing to write: {slug} read back "
-            f"unparseable ({exc}). Writing now would truncate the index.\n"
+            f"last-stack-closeout-index: {slug} read back unparseable "
+            f"({exc}). A read finds no entries in it; a write would "
+            f"truncate the index.\n"
         )
         raise SystemExit(4)
     if not isinstance(body, str):
         sys.stderr.write(
-            f"last-stack-closeout-index: refusing to write: {slug} body is not "
-            f"text. Writing now would truncate the index.\n"
+            f"last-stack-closeout-index: {slug} body is not text. A read "
+            f"finds no entries in it; a write would truncate the index.\n"
         )
         raise SystemExit(4)
     lines = body.splitlines()
@@ -162,9 +163,9 @@ def read_index(slug: str) -> list[str] | None:
         )
     except StopIteration:
         sys.stderr.write(
-            f"last-stack-closeout-index: refusing to write: {slug} has no "
-            f"{LIST_MARKER!r} marker, so it is not an index this tool wrote. "
-            f"Rewriting it would discard whatever it holds.\n"
+            f"last-stack-closeout-index: {slug} has no {LIST_MARKER!r} "
+            f"marker, so it is not an index this tool wrote. A read finds "
+            f"no entries in it; a write would discard whatever it holds.\n"
         )
         raise SystemExit(4)
     out: list[str] = []
