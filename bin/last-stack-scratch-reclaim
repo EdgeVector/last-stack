@@ -188,7 +188,9 @@ consider() {
   fi
 }
 
+shopt -s dotglob
 for p in "$home/.lastdb-test-copies"/*; do consider "$p" "$min_age_hours"; done
+shopt -u dotglob
 for p in "$home"/lastdb-ephemeral-*; do consider "$p" "$min_age_hours"; done
 for p in "$home"/.lastdb.broken-*; do consider "$p" "$broken_age_hours"; done
 
