@@ -77,7 +77,9 @@ def resolve_from_mirror(mirror: Path, dest: Path, auth_header: list[str] | None 
         )
     if fetch:
         origin = _git(mirror, ["config", "--get", "remote.origin.url"]).stdout.strip()
-        header = auth_header if origin.startswith(FORGE_PREFIXES) else []
+        if origin != "https://github.com/EdgeVector/lastdb.git":
+            raise PromoteScriptError("LastDB promotion source must be the canonical GitHub repository")
+        header = []
         last = None
         for _ in range(2):  # one retry: a sibling `wt fetch` can hold the ref lock
             last = _git(mirror, ["fetch", "--quiet", "origin", f"+refs/heads/main:{MAIN_REF}"], header=header)
@@ -120,4 +122,4 @@ def resolve(explicit: str | None, auth_header: list[str] | None = None,
     if dest is None:
         dest = Path(tempfile.mkdtemp(prefix="fold-promote-script."))
     script, oid = resolve_from_mirror(mirror, dest, auth_header=auth_header)
-    return script, f"LastDB origin/main {oid[:12]} via {mirror}"
+    return script, f"LastDB origin/main {oid} via {mirror}"

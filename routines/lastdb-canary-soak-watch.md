@@ -63,7 +63,7 @@ later hourly tick: at most `LAST_STACK_CANARY_V2_PROMOTE_MAX_ATTEMPTS`
 attempts (default 6), at least `LAST_STACK_CANARY_V2_PROMOTE_RETRY_SECONDS`
 apart (default 3000). Each retry posts a Situations notice, and so does the
 last failed attempt. Other actions stay one attempt per verdict token.
-The publisher takes fold's promote script from fold's Forgejo main (the
+The publisher takes the LastDB promote script from accepted GitHub main (the
 bare mirror `~/.cache/edgevector-git/lastdb.git`, fetched first), never from
 `~/.lastgit/mirrors`, and refuses a script that names a `lastdb:///` remote. The other actions stay planned until a command is
 configured.
@@ -82,7 +82,7 @@ LAST_STACK_CANARY_V2_RETIRE_CMD='short-command'
 LAST_STACK_CANARY_V2_PROMOTE_CMD='short-command'
 ```
 
-`LAST_STACK_CANARY_V2_ACTION_CMD` is a fallback override for tests. A missing
+`LAST_STACK_CANARY_V2_ACTION_CMD` is a fallback action command. A missing
 command leaves the action planned. It does not invent a wait loop.
 
 `--dry-run` (or `LAST_STACK_CANARY_V2_DRY_RUN=1`) prints the action plan and
@@ -91,6 +91,18 @@ writes no reconciler evidence, primary state, or stable-channel state.
 Stable publication is automatic on green. The same command works by hand
 (`last-stack-release-publish --lastdb-version <build> [--dry-run]`) and
 `LAST_STACK_RELEASE_AUTO_PUBLISH=0` returns the action to material-only.
+
+Stable publication requires the existing key locator in
+`LASTDB_REGISTRY_SIGNING_KEY_LASTSECRETS=lastsecrets://<existing-key-slug>`.
+The publisher passes LastSecrets stdout directly to the native signer on stdin.
+It checks the fixed existing public release trust key. It does not use a local key file.
+
+Set `LAST_STACK_REGISTRY_TAP_DIR` and `LAST_STACK_FORMULA_TAP_DIR` to two
+independent clean registered DEV worktrees. Both start at current accepted
+GitHub tap main. The publisher never resets or replaces either checkout.
+It validates the real hosted install/startup proof and public source reachability
+before either public step. A refusal keeps the same quiet gate and retry policy.
+A newer accepted helper source is recorded separately from the proved Mini source.
 
 ## Closeout
 
