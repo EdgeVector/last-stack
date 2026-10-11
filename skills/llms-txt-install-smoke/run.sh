@@ -13,9 +13,10 @@ while [ $# -gt 0 ]; do
       cat <<'EOF'
 Usage: run.sh [--keep] [--json]
 
-Runs an isolated first-time install smoke based on thelastdb.com/llms.txt.
+Runs the actual first-time install and startup commands.
 Creates a temporary HOME, clones last-stack, installs apps, boots lastdbd
-against an isolated LASTDB_HOME, runs brain/kanban/situations init + quick try.
+against an isolated LASTDB_HOME, and initializes the installed apps.
+It creates no example content and runs no tests or fixture harness.
 
   --keep   leave the sandbox directory for inspection
   --json   print a one-line JSON summary to stdout (verdict still on stderr)
@@ -32,6 +33,11 @@ done
 REAL_HOME="${REAL_HOME:-$(eval echo "~$(id -un)")}"
 SMOKE_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SMOKE_CANDIDATE_SET="${SMOKE_CANDIDATE_SET:-}"
+SMOKE_LAST_STACK_OID="${SMOKE_LAST_STACK_OID:-}"
+if [ -n "$SMOKE_LAST_STACK_OID" ] && [[ ! "$SMOKE_LAST_STACK_OID" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "the Last Stack source must be a full lowercase 40-hex OID" >&2
+  exit 2
+fi
 # `${REAL_HOME}/.local/bin` goes FIRST. That is the host-track tree, and
 # `~/.local/bin/lastdbd` symlinks through `~/.lastdb/current`, the daemon the
 # primary actually runs. With `/opt/homebrew/bin` ahead of it the smoke booted
@@ -93,8 +99,7 @@ smoke_scale_bound() {
   printf '%s\n' "$(( default * SMOKE_TOTAL_BUDGET_SECS / SMOKE_BUDGET_BASELINE_SECS ))"
 }
 
-# Per-call bound for the quick-try block. One hung brain/search call must fail
-# that step, not consume the whole routine budget.
+# Per-call bound for the actual search initialization command.
 QUICK_TRY_TIMEOUT="${QUICK_TRY_TIMEOUT:-$(smoke_scale_bound 60)}"
 # Per-call bound for the app init/list calls. `brain init` bootstraps 25 node
 # schemas and is where the 2026-08-29 run stalled; it is slower than a quick-try
@@ -108,13 +113,9 @@ smoke_deadline_init "$SMOKE_TOTAL_BUDGET_SECS"
 # caller's remaining cap AFTER the answer exists. A 2026-08-30 reproduction
 # reached VERDICT: RED at 376s and was then killed at 570s still inside
 # `rm -rf` of a 458M sandbox, so the caller saw a timeout instead of the real
-# verdict. Both teardown steps are bounded; leftovers are reaped on the next run.
+# verdict. Both teardown steps are bounded; retained paths need owner checks.
 SMOKE_DAEMON_STOP_SECS="${SMOKE_DAEMON_STOP_SECS:-15}"
 SMOKE_SANDBOX_RM_SECS="${SMOKE_SANDBOX_RM_SECS:-45}"
-# Age above which a sandbox from an earlier killed run is reaped at start. The
-# whole smoke is capped near 10 minutes, so nothing this old is still running.
-SMOKE_SANDBOX_REAP_MINS="${SMOKE_SANDBOX_REAP_MINS:-120}"
-SMOKE_SANDBOX_REAP_SECS="${SMOKE_SANDBOX_REAP_SECS:-60}"
 
 FAILS=()
 PASS=()
@@ -167,8 +168,7 @@ require_cmd() {
 # Reap sandboxes left behind by earlier runs that were killed mid-teardown, or
 # that outran the bounded removal below. Without this every capped run leaks one
 # directory: five leftovers held 3.5G when this was measured.
-smoke_reap_sandboxes /tmp 'llms-txt-install-smoke.*' \
-  "$SMOKE_SANDBOX_REAP_MINS" "$SMOKE_SANDBOX_REAP_SECS"
+# A caller may retain another run's files or node. Never delete them by age.
 
 FRESH_ROOT="$(mktemp -d /tmp/llms-txt-install-smoke.XXXXXX)"
 export FRESH_ROOT
@@ -258,7 +258,7 @@ stop_pid_bounded() {
 # after the VERDICT is printed. Renaming it is a single inode operation, so the
 # caller pays nothing, and the removal is detached to finish on its own. A
 # rename that fails, or a detach the host refuses, falls back to the bounded
-# removal; whatever survives is reaped at the start of a later run.
+# removal; whatever survives stays for exact-path, owner-checked cleanup.
 discard_sandbox() {
   local trash="${FRESH_ROOT}.trash-$$"
   if mv "$FRESH_ROOT" "$trash" 2>/dev/null; then
@@ -266,7 +266,7 @@ discard_sandbox() {
     return 0
   fi
   if ! run_bounded "$SMOKE_SANDBOX_RM_SECS" rm -rf "$FRESH_ROOT"; then
-    echo "sandbox removal exceeded ${SMOKE_SANDBOX_RM_SECS}s; left at $FRESH_ROOT (reaped by a later run)" >&4
+    echo "sandbox removal exceeded ${SMOKE_SANDBOX_RM_SECS}s; retained at $FRESH_ROOT for owner-checked cleanup" >&4
   fi
 }
 
@@ -325,6 +325,17 @@ if [ -n "$LASTDBD_BIN" ]; then
   LASTDBD_BUILD="${LASTDBD_VERSION#lastdbd }"
   live "lastdbd: $LASTDBD_BIN (${LASTDBD_VERSION:-version unknown})"
 fi
+LASTDB_BIN="${SMOKE_LASTDB_BIN:-$(command -v lastdb || true)}"
+LASTDB_BUILD=""
+if [ -n "$LASTDB_BIN" ] && [ -x "$LASTDB_BIN" ]; then
+  LASTDB_VERSION="$("$LASTDB_BIN" --version 2>/dev/null | grep -E '^lastdb ' | head -n1 || true)"
+  LASTDB_BUILD="${LASTDB_VERSION#lastdb }"
+fi
+if [ -z "$LASTDB_BUILD" ] || [ -z "$LASTDBD_BUILD" ] || [ "$LASTDB_BUILD" != "$LASTDBD_BUILD" ]; then
+  note_fail "prereq:Mini CLI and daemon builds differ or are absent"
+else
+  note_pass "prereq:matched Mini pair $LASTDB_BUILD"
+fi
 # The verdict JSON carries the build and its source oid on RED as well as GREEN
 # (phase 1 of registry-proof-in-github-ci printed them on GREEN only, so a RED
 # record could not say which build it judged). The oid comes from the candidate
@@ -372,6 +383,15 @@ step "clone last-stack"
 echo "source: $LAST_STACK_INSTALL_SOURCE"
 bounded_step "clone:last-stack" "$INSTALL_TIMEOUT" \
   git clone --depth 1 "$LAST_STACK_INSTALL_SOURCE" "$HOME/.last-stack" || true
+if [ -n "$SMOKE_LAST_STACK_OID" ] && [ -d "$HOME/.last-stack/.git" ]; then
+  bounded_step "clone:last-stack-source" "$INSTALL_TIMEOUT" \
+    git -C "$HOME/.last-stack" fetch --depth 1 origin "$SMOKE_LAST_STACK_OID" || true
+  bounded_step "clone:last-stack-checkout" "$INSTALL_TIMEOUT" \
+    git -C "$HOME/.last-stack" checkout --detach "$SMOKE_LAST_STACK_OID" || true
+  if [ "$(git -C "$HOME/.last-stack" rev-parse HEAD)" != "$SMOKE_LAST_STACK_OID" ]; then
+    note_fail "clone:last-stack-source differs from the workflow source"
+  fi
+fi
 
 step "setup"
 if [ -x "$HOME/.last-stack/setup" ]; then
@@ -391,9 +411,6 @@ if [ -x "$HOME/.last-stack/bin/last-stack-install-apps" ]; then
   elif [ -n "${SMOKE_INSTALL_CHANNEL:-}" ]; then
     install_apps_args+=(--channel "$SMOKE_INSTALL_CHANNEL")
   fi
-  if [ "${SMOKE_ALLOW_UNPROVED:-0}" = "1" ]; then
-    install_apps_args+=(--allow-unproved)
-  fi
   bounded_step "install-apps" "$INSTALL_TIMEOUT" \
     "$HOME/.last-stack/bin/last-stack-install-apps" "${install_apps_args[@]}" || true
   # Install-by-proof must not silently fall back to main. When a channel or a
@@ -405,9 +422,17 @@ if [ -x "$HOME/.last-stack/bin/last-stack-install-apps" ]; then
     for app in brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser; do
       mode="$(jq -r '.mode // "missing"' "$receipts/$app.json" 2>/dev/null || echo missing)"
       if [ "$mode" = "$want_mode" ]; then
-        note_pass "install-apps:$app:$mode"
-      elif [ "${SMOKE_ALLOW_UNPROVED:-0}" = "1" ]; then
-        live "  note: $app installed as $mode (SMOKE_ALLOW_UNPROVED=1)"
+        receipt_sha="$(jq -r '.sha // empty' "$receipts/$app.json" 2>/dev/null || true)"
+        actual_sha="$(git -C "$HOME/lastdb-apps/$app" rev-parse HEAD 2>/dev/null || true)"
+        wanted_sha="$receipt_sha"
+        if [ -n "$SMOKE_CANDIDATE_SET" ]; then
+          wanted_sha="$(jq -r --arg app "$app" '.apps[$app].sha // empty' "$SMOKE_CANDIDATE_SET" 2>/dev/null || true)"
+        fi
+        if [[ "$wanted_sha" =~ ^[0-9a-f]{40}$ ]] && [ "$receipt_sha" = "$wanted_sha" ] && [ "$actual_sha" = "$wanted_sha" ]; then
+          note_pass "install-apps:$app:$mode:$actual_sha"
+        else
+          note_fail "install-apps:$app source differs from its selected receipt"
+        fi
       else
         # A `failed` receipt names the stage and the source it tried, so the
         # RED line says which app broke and where it looked for its commit.
@@ -427,9 +452,13 @@ if [ -x "$HOME/lastdb-apps/brain/bin/brain" ]; then
   export PATH="$HOME/lastdb-apps/brain/bin:$PATH"
 fi
 
-for cli in brain kanban situations search; do
+for cli in brain kanban situations routines org lastsecrets search lastdb-browser; do
   if command -v "$cli" >/dev/null 2>&1; then
-    note_pass "cli:$cli=$(command -v $cli)"
+    cli_path="$(command -v "$cli")"
+    case "$cli_path" in
+      "$HOME/"*) note_pass "cli:$cli=$cli_path" ;;
+      *) note_fail "cli:$cli resolves outside the owned install home" ;;
+    esac
   else
     note_fail "cli:$cli not on PATH"
   fi
@@ -548,6 +577,13 @@ if [ -S "$SOCK" ]; then
     '{"status":"ok"'*) note_pass "health:$HEALTH" ;;
     *) note_fail "health: got '$HEALTH'" ;;
   esac
+  SERVED_VERSION="$(curl -fsS --max-time 15 --unix-socket "$SOCK" http://localhost/api/version || true)"
+  SERVED_BUILD="$(jq -r '.build // empty' <<< "$SERVED_VERSION" 2>/dev/null || true)"
+  if [ -n "$LASTDBD_BUILD" ] && [ "$SERVED_BUILD" = "$LASTDBD_BUILD" ]; then
+    note_pass "daemon:served-build=$SERVED_BUILD"
+  else
+    note_fail "daemon:served build differs from the selected Mini pair"
+  fi
 fi
 
 # --- app inits ---
@@ -615,50 +651,6 @@ if command -v search >/dev/null 2>&1; then
   fi
 fi
 
-# --- quick try (llms.txt) ---
-if command -v brain >/dev/null 2>&1; then
-  set +e
-  run_bounded "$(smoke_bounded_remaining "$QUICK_TRY_TIMEOUT")" brain concept new hello --title "Hello" --body "my first note"
-  rc=$?
-  set -e
-  if [ $rc -eq 0 ]; then
-    note_pass "brain:concept-new"
-  elif [ $rc -eq 124 ]; then
-    note_fail "brain:concept-new timeout=${QUICK_TRY_TIMEOUT}s"
-  else
-    note_fail "brain:concept-new exit=$rc"
-  fi
-  set +e
-  get_out=$(run_bounded "$(smoke_bounded_remaining "$QUICK_TRY_TIMEOUT")" brain get hello 2>&1)
-  rc=$?
-  set -e
-  if [ $rc -eq 0 ] && echo "$get_out" | grep -qi 'first note\|Hello'; then
-    note_pass "brain:get-hello"
-  elif [ $rc -eq 124 ]; then
-    note_fail "brain:get-hello timeout=${QUICK_TRY_TIMEOUT}s"
-  else
-    note_fail "brain:get-hello"
-  fi
-  # Prefer concrete term; allow search fallback if ask index lags
-  set +e
-  ask_out=$(run_bounded "$(smoke_bounded_remaining "$QUICK_TRY_TIMEOUT")" brain ask "first note" 2>&1)
-  ask_rc=$?
-  search_out=$(run_bounded "$(smoke_bounded_remaining "$QUICK_TRY_TIMEOUT")" brain search "first note" 2>&1)
-  search_rc=$?
-  set -e
-  if echo "$ask_out$search_out" | grep -qi 'hello\|first note'; then
-    note_pass "brain:ask-or-search"
-  elif [ $ask_rc -eq 124 ] || [ $search_rc -eq 124 ]; then
-    note_fail "brain:ask-or-search timeout=${QUICK_TRY_TIMEOUT}s (ask_rc=$ask_rc search_rc=$search_rc)"
-  else
-    echo "--- brain ask output (exit=$ask_rc) ---"
-    printf '%s\n' "$ask_out"
-    echo "--- brain search output (exit=$search_rc) ---"
-    printf '%s\n' "$search_out"
-    note_fail "brain:ask-or-search (ask_rc=$ask_rc search_rc=$search_rc)"
-  fi
-fi
-
 echo "=========================================="
 echo "PASS (${#PASS[@]}): ${PASS[*]:-none}"
 echo "FAIL (${#FAILS[@]}): ${FAILS[*]:-none}"
@@ -674,13 +666,13 @@ echo "=========================================="
 if [ "${#FAILS[@]}" -eq 0 ]; then
   echo "VERDICT: GREEN" >&2
   emit_status "VERDICT: GREEN"
-  emit_json '{"verdict":"GREEN","sandbox":"%s","pass":%d,"lastdb_build":"%s","lastdb_oid":"%s","candidate_set":"%s","proved_at":"%s"}\n' \
+  emit_json '{"proof_kind":"app_install_startup","verdict":"GREEN","sandbox":"%s","pass":%d,"lastdb_build":"%s","lastdb_oid":"%s","candidate_set":"%s","proved_at":"%s"}\n' \
     "$FRESH_ROOT" "${#PASS[@]}" "$LASTDBD_BUILD" "$LASTDB_OID" "$SMOKE_CANDIDATE_SET" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   exit 0
 else
   FAIL_STEPS="$(fail_steps_summary "${FAILS[@]}")"
   echo "VERDICT: RED ${FAIL_STEPS}" >&2
   emit_status "VERDICT: RED ${FAIL_STEPS}"
-  emit_json '{"verdict":"RED","sandbox":"%s","steps":"%s","lastdb_build":"%s","lastdb_oid":"%s","candidate_set":"%s","proved_at":"%s","fails":%s}\n' "$FRESH_ROOT" "$FAIL_STEPS" "$LASTDBD_BUILD" "$LASTDB_OID" "$SMOKE_CANDIDATE_SET" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(printf '%s\n' "${FAILS[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')"
+  emit_json '{"proof_kind":"app_install_startup","verdict":"RED","sandbox":"%s","steps":"%s","lastdb_build":"%s","lastdb_oid":"%s","candidate_set":"%s","proved_at":"%s","fails":%s}\n' "$FRESH_ROOT" "$FAIL_STEPS" "$LASTDBD_BUILD" "$LASTDB_OID" "$SMOKE_CANDIDATE_SET" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(printf '%s\n' "${FAILS[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')"
   exit 1
 fi
