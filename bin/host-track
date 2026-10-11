@@ -2694,6 +2694,21 @@ release_install_lock() {
   unset HOST_TRACK_INSTALL_LOCK_HELD
 }
 
+# install_lock_info <app> — "pid=<n> started=<ts>" when another process
+# currently holds this app's install lock, or empty when it does not. A
+# read-only stat of the lock dir; never acquires or waits. Lets a caller
+# surface the in-flight install instead of staying silent about it
+# (papercut-host-track-refresh-prints-already-current-while-its-own-install-runs-20261001).
+install_lock_info() {
+  local app="$1" lock pid started
+  lock="$HOST_TRACK_LOCK_DIR/install-${app}.lock.d"
+  [ -d "$lock" ] || return 0
+  pid="$(tr -d '[:space:]' <"$lock/pid" 2>/dev/null || true)"
+  started="$(tr -d '[:space:]' <"$lock/started_at" 2>/dev/null || true)"
+  [ -n "$pid" ] || [ -n "$started" ] || return 0
+  printf 'pid=%s started=%s\n' "${pid:-?}" "${started:-?}"
+}
+
 # An artifact install normally owns its lock. soak-watch can pass an existing
 # lock so its final probe, exact-digest checks, flip, and stamps form one
 # transaction. In that case the caller releases the lock after its own state
@@ -4296,7 +4311,7 @@ rollback_artifact_app() {
 
 refresh_app() {
   local app="$1" force="$2" json status stale refresh_path refresh_mode host_track install_mode exemption_kind
-  local self_upgrade setup_path
+  local self_upgrade setup_path lock_info
 
   json="$(require_app_json "$app")"
   # Ask the policy store FIRST: before the channel promote below, before any
@@ -4332,7 +4347,12 @@ refresh_app() {
         return
       fi
     fi
-    printf 'host-track: %s already current\n' "$app"
+    lock_info="$(install_lock_info "$app")"
+    if [ -n "$lock_info" ]; then
+      printf 'host-track: %s current pointer unchanged; install in progress (%s)\n' "$app" "$lock_info"
+    else
+      printf 'host-track: %s already current\n' "$app"
+    fi
     # Artifact stamps are the provenance record written by artifact_install_app.
     # Replacing one with the projected status shape drops source_oid and other
     # manifest fields, so a no-op refresh must leave it intact.
@@ -4833,7 +4853,7 @@ validate_registry_cmd() {
 soak_watch_one() {
   local app="$1" json install_root canary_rel canary_dir digest soak_h min_checks stamp checks started now elapsed need current_dir probe_rc probe_log activation_rc
   local active_target install_stamp_digest soak_stamp_digest abandoned source_oid starve_after window_ready starve_ready checks_total
-  local exact_request exact_oid="" exact_channel=""
+  local exact_request exact_oid="" exact_channel="" lock_info
   json="$(require_app_json "$app")"
   [ "$(setting "$json" install_mode)" = "artifact" ] || return 0
   IFS=$'\t' read -r _ _ _ install_root < <(artifact_paths "$app" "$json")
@@ -4847,7 +4867,12 @@ soak_watch_one() {
   # raced soak-watch and a healthy digest was rejected as soak RED).
   # Bounded and non-fatal: an install in progress just defers this tick.
   if ! acquire_install_lock "$app" "${HOST_TRACK_SOAK_LOCK_WAIT_S:-60}" 1; then
-    printf 'host-track: %s soak-watch deferred (install in progress)\n' "$app"
+    lock_info="$(install_lock_info "$app")"
+    if [ -n "$lock_info" ]; then
+      printf 'host-track: %s soak-watch deferred (install in progress; %s)\n' "$app" "$lock_info"
+    else
+      printf 'host-track: %s soak-watch deferred (install in progress)\n' "$app"
+    fi
     return 0
   fi
   # The lock spans the probe, exact-digest activation, and soak state updates.
