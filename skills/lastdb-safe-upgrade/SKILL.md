@@ -2,12 +2,13 @@
 name: lastdb-safe-upgrade
 description: |
   Required path for a primary LastDB Mini version change. The driver boots
-  the exact candidate on a fresh copy of the real primary. It requires keyed
-  reads, read latency, memory and persist status checks, and a source-free
-  restore of an exact DEV snapshot before a live cutover. It then requires a
-  strict stopped flush receipt, a byte-checked rollback copy, supervised live
-  health, and a cloud frontier check. The driver writes no synthetic probe
-  records. It does not run tests.
+  the exact candidate on a copy of a small synthetic seed. It never copies the
+  primary database and never runs a node on a copy of it (Tom, 2026-10-12). It
+  requires keyed reads, read latency, memory and persist status checks, and a
+  source-free restore of an exact DEV snapshot of the seed before a live
+  cutover. It then requires a strict stopped flush receipt, a byte-checked
+  rollback copy, supervised live health, and a cloud frontier check. It does
+  not run tests.
 ---
 
 # lastdb-safe-upgrade — never brick the primary; never take it down first
@@ -18,9 +19,17 @@ Tom does **not** experience primary-brain downtime as the first feedback that a
 release is broken — fail on the ephemeral copy; keep live on last known-good until
 GREEN. The candidate must pass on an ephemeral copy before the primary changes.
 
-**Candidate data:** each run makes a fresh CoW trial copy of the current
-primary. The candidate boots a separate copy of that trial copy. See
-[Candidate data: current primary copy](#candidate-data-current-primary-copy).
+**NEVER COPY THE PRIMARY DATABASE (Tom, 2026-10-12):** "I don't want anything
+to run copies of my database, it will kill my disk space and run super slow,
+always use synthetic data for safe upgrades, testing cloud backup, etc." No
+probe copies `~/.lastdb`. No node boots on a copy of it. There is no real-data
+mode and no `--data real`. Every probe, and the DEV photograph (cloud backup and
+restore proof), runs on SYNTHETIC data. Brain:
+`decision-2026-10-12-never-run-copies-of-primary-database-use-synthetic-data`.
+
+**Candidate data:** each run prepares a trial home from a small synthetic seed.
+The candidate boots a separate copy of that trial home. See
+[Candidate data: the synthetic seed](#candidate-data-the-synthetic-seed).
 
 This skill and its Loom `lastdb-safe-upgrade` graph are the **only** allowed
 path for a live binary change on this machine. The shell driver remains the
@@ -187,21 +196,37 @@ The cutover must stop the old worker, start the new worker, run the full
 health checks, and then issue `lastdb-proxy set-target`. The proxy returns a
 bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
 
-## Candidate data: current primary copy
+## Candidate data: the synthetic seed
 
-The driver accepts `--data real` or `LASTDB_SAFE_UPGRADE_DATA=real`.
-It rejects all other values. It does not build or use a synthetic seed.
+The driver accepts `--data synthetic` or `LASTDB_SAFE_UPGRADE_DATA=synthetic`
+and nothing else. `--data real` exits 2. No code path copies the primary home.
 
-Each run creates a fresh CoW trial copy from the current primary home.
-The driver refuses an existing target path. It keeps an older retained point
-until that point receives its own safe cleanup.
-The driver accepts a nonzero copy exit only for the two known runtime sockets.
-It rejects an error for a regular file or a CAS file. It checks the copied
-identity, bootstrap marker, and device ID before it writes a completion marker.
-An incomplete copy cannot serve as candidate data. The copy error stays in
-an owner-only, bounded file under the rollback root.
+The seed is a small home that the BASELINE daemon (the binary the primary runs)
+writes on a fresh empty home (`scripts/build-synthetic-home.sh`). The candidate
+must read what the installed daemon wrote, so the baseline writes the seed. The
+builder copies only `identity.key` and `.bootstrap_done` from the primary (two
+small files, never printed), so the DEV photograph registers the same identity.
+It registers the kanban and brain schemas through the apps' own `init`, writes a
+milestone, 10 cards and 8 brain records, stops the baseline, reboots it, and
+verifies the todo list and the `Board` title before it marks the seed complete.
+The kanban and brain CLIs use a seed-owned `HOME` (`cli-home`), because the seed
+pins different schema hashes than the primary.
 
-The candidate boots on a separate copy of this fresh trial copy.
+The seed is cached per key under `/tmp/lastdb-safe-upgrade-synthetic-<uid>/`
+(override: `LASTDB_SYNTHETIC_SEED_ROOT`). The key covers the baseline bytes, the
+identity hash, the live tuning flags, the kanban and brain versions, the data
+sizes, and the generator version. A cache hit builds nothing. A new baseline
+builds a new seed (about 2 to 4 minutes, because each write waits for a durable
+persist) and the driver removes the older seeds. The seed is about 60 MB.
+The build needs the network (schema service).
+
+Each run then clones the seed into a fresh trial home under
+`${TMPDIR}/lastdb-safe-upgrade-rollback-<uid>/trial-<new>-from-<old>-<ts>/` and
+writes a `kind=trial` completion marker. The driver refuses an existing target
+path. A clone error is RED and the error stays in an owner-only, bounded file
+under the rollback root.
+
+The candidate boots on a separate copy of this trial home.
 The candidate never boots on the live primary home. The driver checks:
 
 - The candidate loads schemas and serves the keyed `Board` title.
@@ -210,27 +235,39 @@ The candidate never boots on the live primary home. The driver checks:
 - The live primary process stays the same during the candidate check.
 
 The `BoardCards` result must contain at least one card. The `Board` title
-check also requires real data.
+check requires a non-empty title.
 
-The DEV proof also clones the same trial copy. It publishes one snapshot
+The DEV proof also clones the same trial home. It publishes one snapshot
 with the exact candidate pair. The candidate CLI restores that manifest into
 a new home that contains no local database data. The proof requires a complete
-Cloud Off restore report before it writes the receipt.
+Cloud Off restore report before it writes the receipt. This is the cloud backup
+test: it runs on the synthetic seed.
 
-A copy of a live primary can race with files that change during the copy.
-The candidate boot and keyed reads check the copy before the live change.
-The source-free DEV restore checks the cloud backup before the live change.
-The live trial copy has no fixed write frontier. The rollback point comes from
-the stopped primary after a clean flush receipt. The copy gate checks its paths
-and bytes before the candidate replaces the old binary.
+What the seed leaves out: real-data history and scale. That covers older schema
+pins, re-key leftovers, unreadable schema state rows, scale-dependent behavior
+(warm-set thrash, flush-lock waits, scan cost), and a crash-consistent clone of a
+running node. These meet real data for the first time on the live cutover. The
+cutover keeps the durability canary, the stopped flush receipt, the
+byte-checked rollback copy, the live post-check and the soak. Tom accepted this
+trade on 2026-10-09 and again on 2026-10-12.
+
+The rollback point comes from the stopped primary after a clean flush receipt.
+The copy gate checks its paths and bytes before the candidate replaces the old
+binary. That is the one copy of the primary this skill still makes, and only
+inside a live cutover. Open question for Tom (2026-10-12): keep it, or use the
+cloud backup as the rollback point.
 
 ## Hard rules (never skip)
 
+0. **Never copy the primary home and never boot a node on a copy of it** (Tom,
+   2026-10-12). Not for a probe, not for the DEV photograph, not for a cloud
+   backup test, not with `cp -cR`. Use the synthetic seed. The one exception is
+   the stopped rollback copy inside a live cutover (see above).
 1. **Never** run a candidate `lastdbd` with `--data-dir` pointing at the **live**
-   `~/.lastdb` until the candidate passes on a fresh copy of the primary.
-2. **Always** create a fresh CoW trial copy under the system temp directory
-   before the candidate check. This rule also applies to a probe-only run.
-   Do not call this trial copy a rollback point. For a live cutover, strictly
+   `~/.lastdb` until the candidate passes on a copy of the synthetic seed.
+2. **Always** prepare a fresh trial home from the seed under the system temp
+   directory before the candidate check. This rule also applies to a probe-only
+   run. Do not call this trial home a rollback point. For a live cutover, strictly
    stop and flush the old primary. Publish a stopped rollback copy only after
    its path and byte check passes. Keep that point on RED. Never write a
    rollback copy under `$HOME`.
@@ -238,7 +275,7 @@ and bytes before the candidate replaces the old binary.
 3b. **A read that answers fast with ZERO rows is RED, not GREEN.** The
    **row-count bar** counts the rows the Board point-read and the `kanban list
    --column todo` scan return on the candidate and on the baseline, over the
-   same CoW data. Baseline > 0 with candidate == 0 is a read-path regression
+   same seed data. Baseline > 0 with candidate == 0 is a read-path regression
    and fails the probe. There is **no skip flag**, and `LASTDB_PROBE_LAT_SKIP=1`
    does not buy a pass — this is a correctness bar, not a speed bar. Added
    2026-09-03 after lastdbd 0.23.3-1535 served every kanban BoardCards read
@@ -247,9 +284,9 @@ and bytes before the candidate replaces the old binary.
 4. **Never** kill the primary unattended outside this skill's live step; if live
    post-check fails after upgrade, **stop and restore** (binary bak and/or data
    retained rollback point) — do not improvise.
-5. **Real-copy deployment check:** the candidate loads schemas, serves a keyed
-   `Board` title, and serves a keyed `BoardCards` list on its own copy.
-   The title and list must contain real data. The primary process must not change.
+5. **Deployment check on the seed:** the candidate loads schemas, serves a keyed
+   `Board` title, and serves a keyed `BoardCards` list on its own copy of the
+   seed. The title and list must be non-empty. The primary process must not change.
 6. **RSS bar (memory-guard):** settle (~45s) and sample candidate memory size
    on the copy. **RED** if peak RSS ≥
    `LASTDBD_RSS_LIMIT_MB` minus headroom (default 10%). Limit is read from
@@ -553,16 +590,16 @@ done
 [ -n "$skill_root" ] || { echo "lastdb-safe-upgrade skill not installed; run ~/.last-stack/setup --host auto" >&2; exit 1; }
 driver="$skill_root/scripts/safe-upgrade-lastdb.sh"
 
-# Check a fresh primary copy. Do not install on the primary.
-bash "$driver" --probe-only --data real
+# Probe on the synthetic seed. Do not install on the primary.
+bash "$driver" --probe-only
 
 # Explicit candidate probe.
 # MUST be a release build with sibling /path/to/release/lastdb beside it —
 # never …/target/debug/lastdbd or a -dirty stamp.
-bash "$driver" --candidate /path/to/release/lastdbd --probe-only --data real
+bash "$driver" --candidate /path/to/release/lastdbd --probe-only
 
 # Bottle version probe only
-bash "$driver" --version 0.22.8 --probe-only --data real
+bash "$driver" --version 0.22.8 --probe-only
 
 ```
 
@@ -573,7 +610,7 @@ Do not use a copied receipt as a manual approval.
 Or, after last-stack is installed:
 
 ```bash
-bash ~/.last-stack/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh --probe-only --data real
+bash ~/.last-stack/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh --probe-only
 ```
 
 The script:
@@ -582,10 +619,10 @@ The script:
 |------|------|
 | Preflight | Primary home exists, identity.key present, live `/health` ok (if socket up) |
 | Resolve candidate | `brew update` / `--version` tarball / `--candidate` |
-| **1. Trial copy** | Every run makes a fresh CoW copy of the current primary under `${TMPDIR}/lastdb-safe-upgrade-rollback-<uid>/trial-<new>-from-<old>-<ts>/`. It rejects regular-file copy errors. The trial copy is not a rollback point. |
+| **1. Trial home** | Every run clones the cached synthetic seed (never the primary) under `${TMPDIR}/lastdb-safe-upgrade-rollback-<uid>/trial-<new>-from-<old>-<ts>/`. A clone error is RED. The trial home is not a rollback point. |
 | **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before multi-GB backup) |
-| **0b. Candidate data** | Require `--data real`; candidate copies come from the fresh trial copy. |
-| **2. Candidate check** | Boot the exact candidate on a real copy. Require schemas, the keyed Board title, a keyed BoardCards response, stable primary PID, and memory size below the guard. The driver checks candidate persist status, read latency, and record counts on real copies. |
+| **0b. Candidate data** | Build or reuse the synthetic seed (baseline writes it); candidate copies come from the trial home. |
+| **2. Candidate check** | Boot the exact candidate on a copy of the synthetic seed. Require schemas, the keyed Board title, a keyed BoardCards response, stable primary PID, and memory size below the guard. The driver checks candidate persist status, read latency, and record counts on real copies. |
 | Detect venue | sidebin vs brew |
 | **2c. DEV photograph proof** | The exact pair clones the trial copy, scrubs production state, connects the copied identity to DEV, and publishes a snapshot. The exact CLI restores that manifest from DEV into a source-free home. The fresh v3 receipt must match this Loom execution, this run's trial copy, and the retained restore report. |
 | **2d. Meter restart bar** | Read live status before restart. Refuse a `keep_small` plane above 1.5 GiB or a failed persist lane. The 2 GiB cold-group cap can prevent both new and old binaries from booting. |
@@ -595,10 +632,11 @@ The script:
 | **4b. Release** | After GREEN, delete the stopped rollback point and the trial copy. A GREEN probe-only run and an operator abort delete the trial copy. |
 | RED | Exit 1. Keep the stopped rollback point if one passed its gate. Keep the trial and incomplete copies until the primary recovers. An incomplete copy has no rollback status. A class or probe failure leaves the primary unchanged. |
 
-### What a probe copy leaves out (`--data real`)
+### Search receipts in a probe copy (history)
 
-Every disposable candidate copy leaves out one path: `apps/search/inbox/done`.
-The current driver uses copies for deployment and latency checks. The path holds the Search
+This section records why the clone helper skips one path: `apps/search/inbox/done`.
+The synthetic seed has no such path, so the skip does nothing today. It stays
+for any caller that clones a home that holds it. The path holds the Search
 app's processed batches (217,761 files on 2026-10-08). The daemon only writes
 the Search inbox. It never reads `done/`, and a probe never runs the Search app.
 The papercut measured about 13 minutes for one clone and about 8 minutes for
@@ -687,7 +725,7 @@ Always print:
 
 - Current version → candidate version  
 - Venue (sidebin / brew)  
-- Candidate data: `PROBE_DATA: real`, copied from the current primary
+- Candidate data: `PROBE_DATA: synthetic`, a copy of the cached seed (never the primary)
 - Rollback path and whether it was released or retained (TTL + cleanup owner)
 - Probe GREEN/RED (+ first Board title if green)  
 - **Probe peak RSS MiB vs memory-guard limit / fail_at**  
@@ -776,9 +814,11 @@ kanban list   # must show real cards
   installed files equal the photographed pair.
 - Start a second safe-upgrade while another probe or cutover owns the host-wide
   safety lock. Wait for the first owner to exit. The lock covers rollback
-  cleanup, the real-data probe, and the live cutover.
+  cleanup, the synthetic probe, and the live cutover.
 - Point candidate `--data-dir` at live `~/.lastdb` "just to see".
-- Reuse a prior rollback copy as the current primary copy.
+- Copy `~/.lastdb` (also with `cp -cR`) or boot a node on a copy of it, for any probe,
+  cloud backup test, smoke test or bar (Tom, 2026-10-12). Use the synthetic seed.
+- Reuse a prior rollback copy as the trial home.
 - Set `LASTDB_BUILD_CONFLICT_STAMP_ON_COPY` on the primary LaunchAgent, or copy the ephemeral copy's conflict stamp onto the primary home.
 - Read a probe's fast, empty query result as a pass. Count the rows.
 - Upload a CoW/ephemeral photograph into the primary's **production** backup

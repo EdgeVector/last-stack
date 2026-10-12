@@ -24,7 +24,7 @@ probe_stamp_env_allowed() {
   esac
 }
 
-# The real-data deployment copy exercises the copy-only stamp builder.
+# The deployment copy of the synthetic seed exercises the copy-only stamp builder.
 # Timed candidate and baseline copies receive no stamp work. The primary
 # never receives this flag.
 # $1 is the label.

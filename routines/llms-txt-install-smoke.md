@@ -118,7 +118,7 @@ real defect in the smoke — report it, do not raise the number.
 ## Related
 
 - Skill: `llms-txt-install-smoke` (and `routine-run.sh` wrapper)
-- Distinct from Mini real-data canary: `lastdb-local-smoke-test` / skill `lastdb-smoke-test`
+- Distinct from the Mini synthetic-data canary: `lastdb-local-smoke-test` / skill `lastdb-smoke-test`
 
 ## Close-out (always the LAST step)
 

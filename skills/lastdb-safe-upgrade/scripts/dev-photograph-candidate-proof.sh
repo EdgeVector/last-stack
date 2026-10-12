@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prove that one exact lastdb/lastdbd pair can publish a real-data photograph
+# Prove that one exact lastdb/lastdbd pair can publish a synthetic-data photograph
 # to DEV. This helper never points a candidate at the live primary home.
 set -euo pipefail
 
