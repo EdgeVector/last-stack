@@ -44,6 +44,15 @@ Hazards that no guard can see:
   prints help). Prefix it with `./` or keep scratch names plain.
 - Put captures in a fresh `mktemp -d "$TMPDIR/x.XXXXXX"` dir, not
   `/tmp/<name>-*.json`: a glob over /tmp mixes in files from old runs.
+- `python3 <<'EOF' src dest ... EOF` silently ignores the heredoc: a trailing
+  positional argument makes Python treat THAT PATH as the script to run, not
+  stdin (measured — the heredoc body then prints as a `SyntaxError` quoting
+  the target file's own first line, which reads like the target file is
+  corrupt rather than like a shell mistake). Write a `.py` file and run
+  `python3 script.py src dest`, or keep the heredoc and add an explicit `-`
+  before the positional args so Python reads the program from stdin:
+  `python3 - src dest <<'EOF' ... EOF` (verified: `sys.argv` is
+  `['-', 'src', 'dest']`, heredoc body runs).
 
 - A TSV `read` with `IFS=$'\t'` collapses empty fields and shifts the next
   columns. Emit `-` for an empty field (`(.x // "-")`), or keep the JSON.
