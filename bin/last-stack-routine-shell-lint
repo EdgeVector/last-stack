@@ -90,6 +90,15 @@
 #                     "the fix never shipped" shape as piped-count-false-zero.
 #                     strings <path> | grep -c <sym>, or grep -ac, are correct
 #                     and not refused.
+#   seq-empty-range   on macOS, $(seq 1 "$n") prints BOTH endpoints when n is 0
+#                     (BSD seq treats first>last as descending), so a
+#                     zero-iteration loop runs TWICE instead of zero times.
+#                     for ((i=1;i<=n;i++)) has no empty-range case. A literal
+#                     non-zero range (seq 1 5) is not flagged -- the hazard is
+#                     a variable bound that can be 0 (measured 2026-10-01: a
+#                     zero-iteration control fixture silently carried two
+#                     commits, and the resulting failure looked like a defect
+#                     three layers away from the real cause).
 #
 # Text inside a heredoc body is data, so only heredoc-backticks looks there.
 # Escape hatch: put "shell-lint-ok: <reason>" anywhere in the command.
@@ -128,7 +137,8 @@ while [ "$#" -gt 0 ]; do
     --list-rules)
       printf '%s\n' spin-wait heredoc-backticks dquote-backticks jq-optional-call jq-escaped-quote \
         awk-match-array sed-inplace date-nanos stat-local-zulu printf-dash bin-path mktemp-suffix zsh-status zsh-mapfile \
-        zsh-word-split zsh-cond-flag-expansion home-root-scan piped-count-false-zero grep-binary-false-zero
+        zsh-word-split zsh-cond-flag-expansion home-root-scan piped-count-false-zero grep-binary-false-zero \
+        seq-empty-range
       exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 64 ;;
@@ -176,6 +186,7 @@ rule_slug() {
     home-root-scan) echo papercut-codex-routines-lack-home-root-scan-guard-20260927 ;;
     piped-count-false-zero) echo papercut-piped-count-from-a-home-path-producer-answers-zero-when-the-path-is-absent-20261003 ;;
     grep-binary-false-zero) echo papercut-grep-c-symbol-on-bun-binary-answers-zero-false-negative-20261008 ;;
+    seq-empty-range) echo papercut-bsd-seq-counts-down-so-seq-1-0-runs-a-zero-iteration-loop-twice-20261001 ;;
   esac
 }
 
@@ -246,6 +257,9 @@ rule_fix() {
     grep-binary-false-zero) printf '%s\n' \
       "grep's binary-content heuristic suppresses normal match counting on a file it sniffs as binary, so grep -c/-q/--count against a bun-compiled executable answers 0/exit-1 even when the symbol IS present. That is the same answer as the symbol being absent, so the verdict silently inverts toward 'not delivered'." \
       "Read it as text: strings <path> | grep -c <sym>   or   grep -ac <sym> <path>" ;;
+    seq-empty-range) printf '%s\n' \
+      "On macOS, seq 1 0 prints '1' then '0' (BSD seq treats first>last as descending), so for i in \$(seq 1 \"\$n\") runs TWICE when n is 0 -- exactly backwards from the intended zero-iteration loop." \
+      "Use the portable C-style loop, which has no empty-range case: for ((i = 1; i <= n; i++)); do ...; done" ;;
   esac
 }
 
@@ -423,6 +437,15 @@ re_grep_count_binary="(^|[^[:alnum:]_-])grep[[:space:]]+(-[[:alnum:]]*[cq][[:aln
 # worth re-deriving which specific grep invocation it was attached to.
 re_grep_binary_safe='(^|[^[:alnum:]_-])grep[[:space:]]+-[[:alnum:]]*a[[:alnum:]]*([[:space:]]|$)|--text([[:space:]]|$)|--binary-files[=[:space:]]+text'
 
+# seq-empty-range: for VAR in $(seq ...) where the seq arguments reference a
+# variable (a $ appears inside the parens). BSD seq treats first>last as a
+# descending range and prints both endpoints, so a zero upper bound runs the
+# loop TWICE instead of zero times. A literal non-zero range ($(seq 1 5)) has
+# no $ between "seq" and the closing paren and is not flagged -- the hazard is
+# specifically a bound that can be 0 at runtime.
+# Brain: papercut-bsd-seq-counts-down-so-seq-1-0-runs-a-zero-iteration-loop-twice-20261001
+re_seq_empty_range='(^|[^[:alnum:]_])for[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]+in[[:space:]]+\$\(seq[[:space:]]+[^)]*\$[^)]*\)'
+
 check_command_line() {
   local line="$1"
   if [[ $line =~ $re_spin ]] || [[ $line =~ $re_spin_b ]]; then
@@ -463,6 +486,9 @@ check_command_line() {
   fi
   if [[ $line =~ $re_grep_count_binary ]] && ! [[ $line =~ $re_grep_binary_safe ]]; then
     reject grep-binary-false-zero "$line"
+  fi
+  if [[ $line =~ $re_seq_empty_range ]]; then
+    reject seq-empty-range "$line"
   fi
   if [ "$shell_kind" = zsh ]; then
     if [[ $line =~ $re_zsh_status ]]; then
