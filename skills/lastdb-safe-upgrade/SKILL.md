@@ -77,7 +77,8 @@ The live cutover makes no copy of the primary home. Not a rollback copy, not a
 stopped copy, not a copy for a first backup. The recovery point is:
 
 - the primary's own cloud backup, which must be CURRENT before the old daemon
-  stops (Cloud Sync on and `Syncing`, no failures, the mutation log published
+  stops (Cloud Sync on and state `Idle`, `Dirty`, or `Syncing`, no failures,
+  the mutation log published
   through the local frontier, no upload backlog, recovery point age at most 300 s;
   `LASTDB_CLOUD_RECOVERY_MAX_AGE_SECS` changes the unsigned limit). A bounded
   exact-integer decoder requires the published frontier to cover both the
@@ -86,6 +87,10 @@ stopped copy, not a copy for a first backup. The recovery point is:
   The strict stop remains a separate gate. If any sample requirement is
   false the driver exits RED and the primary is not stopped.
 - the saved binary pair `lastdbd.bak-pre-*` and `lastdb.bak-pre-*`.
+
+`Idle`, `Dirty`, and `Syncing` are normal native phases. Each phase must pass
+the same coverage and health checks. `Offline`, `Paused`, and unknown states
+fail the gate.
 
 A bad cutover recovers the binary first (see Rollback). It recovers data with
 `lastdb restore --into <fresh home>` from the latest cloud backup. That restore is
