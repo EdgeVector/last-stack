@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Mechanical papercut sweep: close exact duplicates, report retire filters.
+
+The reconciler files cards and the resolver verifies `fixed` rows, but nothing
+reconciled the OPEN pile (934 rows on 2026-10-11, about 100 new rows a day).
+This sweep is the zero-LLM step that runs first in each resolver pass.
+
+It reads each status ONCE from the keyed index (five reads, no per-record read)
+and does two things:
+
+1. CLOSE (only with --apply): an open row whose (component, symptom_hash) equals
+   an older LIVE row (open or fixed) closes as `duplicate` of that older row.
+   An exact hash is the evidence. A hash that matches a CLOSED row is a
+   recurrence, never a duplicate: it is reported, not closed.
+2. REPORT: write counts per candidate retire filter to the Brain reference
+   `papercut-sweep-<YYYYMMDD>`. Tom retires by filter. This tool never retires
+   a complaint, so a row is never closed because it is old or unactioned.
+
+Exit 0 on success, 3 when the index cannot be read (a degraded node is not a
+defect of this tool and nothing was written).
+"""
+
+from __future__ import annotations
+
+import argparse
+import collections
+import datetime as dt
+import json
+import re
+import subprocess
+import sys
+
+LIVE = ("open", "fixed")
+CLOSED = ("verified", "wontfix", "duplicate")
+POLICY_FILTERS = {
+    # name -> regex over slug + title. Counts only; Tom approves a retirement.
+    "tests-fixtures-coverage (superseded by no-tests decision 2026-10-09)":
+        re.compile(r"\b(tests?|fixtures?|flak(e|y)|mutation|coverage)\b", re.I),
+    "gbrain (superseded by no-gbrain decision 2026-09-25)": re.compile(r"gbrain", re.I),
+}
+EXIT_UNAVAILABLE = 3
+
+
+def run(argv: list[str], stdin: str | None = None, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, input=stdin, text=True, capture_output=True, check=False, timeout=timeout)
+
+
+def read_status(brain: str, status: str) -> list[dict]:
+    proc = run([brain, "papercut", "list", "--status", status, "--json"])
+    if proc.returncode != 0:
+        raise RuntimeError(f"brain papercut list --status {status} rc={proc.returncode}: {(proc.stderr or proc.stdout).strip()[:300]}")
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"brain papercut list --status {status}: unparseable output: {error}")
+    rows = payload.get("rows") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise RuntimeError(f"brain papercut list --status {status}: no rows array")
+    if isinstance(payload.get("total"), int) and payload["total"] != len(rows):
+        raise RuntimeError(f"brain papercut list --status {status}: total {payload['total']} != rows {len(rows)} (truncated read)")
+    return rows
+
+
+def find_duplicates(rows: dict[str, list[dict]]):
+    """Return (duplicate pairs, recurrence pairs, stale-partition pairs)."""
+    stale: list[tuple[dict, dict]] = []
+    live_by_key: dict[tuple[str, str], list[dict]] = collections.defaultdict(list)
+    for status in LIVE:
+        for row in rows[status]:
+            if row.get("symptom_hash"):
+                live_by_key[(row.get("component", ""), row["symptom_hash"])].append(row)
+    closed_by_key: dict[tuple[str, str], dict] = {}
+    for status in CLOSED:
+        for row in rows[status]:
+            if row.get("symptom_hash"):
+                closed_by_key.setdefault((row.get("component", ""), row["symptom_hash"]), row)
+    dups: list[tuple[dict, dict]] = []
+    recurrences: list[tuple[dict, dict]] = []
+    for key, group in live_by_key.items():
+        group.sort(key=lambda r: (r.get("created_at", ""), r["slug"]))
+        canonical = group[0]
+        for row in group[1:]:
+            if row["status"] == "open":
+                dups.append((row, canonical))
+        closed = closed_by_key.get(key)
+        if closed:
+            for row in group:
+                if row["status"] != "open":
+                    continue
+                # The same slug under two status partitions is a stale index
+                # entry, not a recurrence. Report it apart.
+                (stale if row["slug"] == closed["slug"] else recurrences).append((row, closed))
+    return dups, recurrences, stale
+
+
+def close_duplicates(brain: str, dups: list[tuple[dict, dict]], limit: int) -> tuple[list[str], list[str]]:
+    closed: list[str] = []
+    failed: list[str] = []
+    for row, canonical in dups[:limit]:
+        evidence = (f"auto-sweep: exact symptom_hash {row['symptom_hash']} in component {row.get('component','')} "
+                    f"matches older live row {canonical['slug']} ({canonical['status']})")
+        proc = run([brain, "papercut", "close", row["slug"], "--status", "duplicate",
+                    "--duplicate-of", canonical["slug"], "--evidence", evidence, "--durable"], timeout=60)
+        (closed if proc.returncode == 0 else failed).append(row["slug"])
+    return closed, failed
+
+
+def build_report(rows: dict[str, list[dict]], dups, recurrences, stale, closed, failed, today: str) -> str:
+    open_rows = rows["open"]
+    complaints = [r for r in open_rows if r.get("kind") == "complaint"]
+    now = dt.datetime.now(dt.timezone.utc)
+
+    def age_days(row: dict) -> int:
+        try:
+            return (now - dt.datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))).days
+        except (KeyError, ValueError):
+            return 0
+
+    lines = [
+        "---", "type: reference", f"slug: papercut-sweep-{today}",
+        f"title: Papercut sweep {today}", "---", "",
+        f"# Papercut sweep {today}", "",
+        "Written by `last-stack-papercut-auto-sweep`. Counts only: Tom approves a retirement by filter.", "",
+        "## Ledger", "",
+        "| Status | Rows |", "|---|---|",
+    ]
+    for status in ("open", "fixed", "verified", "duplicate", "wontfix"):
+        lines.append(f"| {status} | {len(rows[status])} |")
+    by_kind = collections.Counter(r.get("kind") or "-" for r in open_rows)
+    lines += ["", "Open by kind: " + ", ".join(f"{k}={v}" for k, v in sorted(by_kind.items())), "",
+              "## Closed by this pass", "",
+              f"- Exact duplicates found: {len(dups)}; closed: {len(closed)}; failed: {len(failed)}"]
+    lines += [f"  - closed `{s}`" for s in closed] + [f"  - FAILED `{s}`" for s in failed]
+    lines += ["", "## Recurrences (open row matches a CLOSED row; resolver reopens or files, never auto-closed)", ""]
+    lines += [f"- `{r['slug']}` repeats `{c['slug']}` ({c['status']})" for r, c in recurrences] or ["- none"]
+    lines += ["", "## Stale index entries (same slug listed under open AND a closed status)", ""]
+    lines += [f"- `{r['slug']}` is open and {c['status']}" for r, c in stale] or ["- none"]
+    lines += ["", "## Retire-filter candidates (leave open; Tom decides)", "",
+              "| Filter | Open rows |", "|---|---|"]
+    for name, pattern in POLICY_FILTERS.items():
+        lines.append(f"| {name} | {sum(1 for r in open_rows if pattern.search(r['slug'] + ' ' + r.get('title', '')))} |")
+    lines.append(f"| complaint, no fixed_by, age over 14 days | {sum(1 for r in complaints if not r.get('fixed_by') and age_days(r) > 14)} |")
+    lines.append(f"| complaint, no fixed_by, age over 7 days | {sum(1 for r in complaints if not r.get('fixed_by') and age_days(r) > 7)} |")
+    lines.append(f"| open with a fixed_by merge reference (needs live check) | {sum(1 for r in open_rows if r.get('fixed_by'))} |")
+    for severity in ("p3", "p2"):
+        lines.append(f"| complaint, severity {severity} | {sum(1 for r in complaints if r.get('severity') == severity)} |")
+    components = collections.Counter(r.get("component", "") for r in complaints)
+    lines += ["", "Top components among open complaints: " + ", ".join(f"{c or '-'}={n}" for c, n in components.most_common(8)), ""]
+    return "\n".join(lines)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--apply", action="store_true", help="close exact duplicates and write the report record (default: print only)")
+    parser.add_argument("--max-close", type=int, default=25, help="closes per pass (default 25)")
+    parser.add_argument("--brain-bin", default="brain")
+    args = parser.parse_args()
+
+    try:
+        rows = {status: read_status(args.brain_bin, status) for status in LIVE + CLOSED}
+    except (RuntimeError, subprocess.TimeoutExpired) as error:
+        print(f"papercut-auto-sweep: index unavailable, nothing written: {error}", file=sys.stderr)
+        return EXIT_UNAVAILABLE
+
+    dups, recurrences, stale = find_duplicates(rows)
+    closed: list[str] = []
+    failed: list[str] = []
+    if args.apply:
+        closed, failed = close_duplicates(args.brain_bin, dups, args.max_close)
+    today = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d")
+    report = build_report(rows, dups, recurrences, stale, closed, failed, today)
+    if args.apply:
+        proc = run([args.brain_bin, "put", f"papercut-sweep-{today}", "--type", "reference"], stdin=report, timeout=60)
+        if proc.returncode != 0:
+            print(f"papercut-auto-sweep: report write failed rc={proc.returncode}: {proc.stderr.strip()[:300]}", file=sys.stderr)
+            return 1
+    print(report)
+    print(f"SWEEP open={len(rows['open'])} dup_found={len(dups)} closed={len(closed)} failed={len(failed)} recurrences={len(recurrences)} stale_index={len(stale)}")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
