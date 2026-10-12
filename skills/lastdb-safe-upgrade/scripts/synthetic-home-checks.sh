@@ -14,11 +14,11 @@
 # bash 3.2 compatible (macOS /bin/bash). No nested functions.
 
 # Bump when build-synthetic-home.sh writes different data.
-SYNTH_GENERATOR_VERSION="2"
+SYNTH_GENERATOR_VERSION="3"
 # 10 cards give a todo list of 10 and 8 records give the brain reads data. That is
-# enough for the keyed-read, row-count and latency bars. Each write waits for a
-# durable persist, so a larger seed makes a cold build slow (about 7 s per write
-# on a loaded host). The seed is cached per key, so most runs build nothing.
+# enough for the keyed-read, row-count and latency bars. One complete batch
+# waits for durable persistence. The seed is cached per key, so most runs
+# build nothing.
 SYNTH_DEFAULT_CARDS=10
 SYNTH_DEFAULT_RECORDS=8
 
@@ -57,12 +57,12 @@ synth_data_mode_valid() {
   esac
 }
 
-# $1 = a count. A positive integer of at most 100000.
+# $1 = a count. A positive integer of at most 64 for one complete seed batch.
 synth_count_valid() {
   case "${1:-}" in
     ''|*[!0-9]*|0|0[0-9]*) return 1 ;;
   esac
-  [ "${#1}" -le 6 ] && [ "$1" -le 100000 ]
+  [ "${#1}" -le 2 ] && [ "$1" -le 64 ]
 }
 
 # $1 = card count. Prints how many of cards 1..N the builder places in todo.
@@ -76,15 +76,6 @@ synth_expected_todo() {
   rem=$((n % 20))
   [ "$rem" -le 11 ] || rem=11
   printf '%s\n' $((full * 12 + rem))
-}
-
-# $1 = written, $2 = requested, $3 = minimum percent. Integer math only.
-synth_write_ratio_ok() {
-  local ok="${1:-}" total="${2:-}" pct="${3:-}"
-  case "$ok" in ''|*[!0-9]*) return 1 ;; esac
-  case "$total" in ''|*[!0-9]*|0) return 1 ;; esac
-  case "$pct" in ''|*[!0-9]*) return 1 ;; esac
-  [ $((ok * 100)) -ge $((total * pct)) ]
 }
 
 # $1 = file. Prints the lowercase hex SHA-256, or fails.
@@ -130,7 +121,7 @@ synth_app_token() {
     hop=$((hop + 1))
   done
   [ ! -L "$path" ] && [ -f "$path" ] || return 1
-  dir="$(CDPATH= cd -- "$(dirname -- "$path")" && pwd -P)" || return 1
+  dir="$(CDPATH='' cd -- "$(dirname -- "$path")" && pwd -P)" || return 1
   leaf="$(basename -- "$path")"
   path="$dir/$leaf"
   case "$path" in
@@ -192,48 +183,54 @@ synth_seed_is_complete() {
   synth_seed_key_valid "$key" || return 1
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
   [ -f "$dir/.complete" ] || return 1
+  [ ! -L "$dir/.complete" ] && [ ! -L "$dir/seed.meta" ] || return 1
   [ "$(synth_meta_value "$dir/seed.meta" key)" = "$key" ] || return 1
+  [ "$(synth_meta_value "$dir/seed.meta" generator)" = "$SYNTH_GENERATOR_VERSION" ] || return 1
+  [ "$(synth_meta_value "$dir/seed.meta" known_keys_verified)" = true ] || return 1
+  [ "$(synth_meta_value "$dir/seed.meta" shutdown_flush_verified)" = true ] || return 1
+  synth_owned_directory "$dir" || return 1
+  jq -e --arg meta "$(synth_sha256_file "$dir/seed.meta")" '
+    (keys | sort) == (["version","seed_meta_sha256","known_keys_verified","shutdown_flush_verified"] | sort)
+    and .version == 1 and .seed_meta_sha256 == $meta
+    and .known_keys_verified == true and .shutdown_flush_verified == true
+  ' "$dir/.complete" >/dev/null || return 1
   [ -f "$dir/home/identity.key" ] && [ ! -L "$dir/home/identity.key" ] || return 1
   [ -d "$dir/home/data" ] && [ ! -L "$dir/home/data" ] || return 1
   [ -d "$dir/cli-home" ] && [ ! -L "$dir/cli-home" ] || return 1
+  synth_owned_directory "$dir/home" && synth_owned_directory "$dir/cli-home" || return 1
   cards="$(synth_meta_value "$dir/seed.meta" cards)"
   case "$cards" in ''|*[!0-9]*|0) return 1 ;; esac
   return 0
 }
 
-# $1 = seed root, $2 = path. Remove one direct child of the root and nothing
-# else. A link is removed as a link and never followed.
-synth_rm_seed_child() {
-  local root="${1:-}" path="${2:-}"
-  case "$root" in /?*) ;; *) return 1 ;; esac
-  [ "$root" != "/" ] || return 1
-  [ -n "$path" ] || return 1
-  [ "$(dirname -- "$path")" = "$root" ] || return 1
-  if [ -L "$path" ]; then
-    rm -f -- "$path"
-    return $?
+# Exact owner-only container guard; it never changes a foreign directory.
+synth_owned_directory() {
+  local path="${1:-}" owner mode
+  [ -d "$path" ] && [ ! -L "$path" ] || return 1
+  if stat --version >/dev/null 2>&1; then
+    owner="$(stat -c %u "$path")" && mode="$(stat -c %a "$path")" || return 1
+  else
+    owner="$(stat -f %u "$path")" && mode="$(stat -f %Lp "$path")" || return 1
   fi
-  [ -e "$path" ] || return 0
-  rm -rf -- "$path"
+  [ "$owner" = "$(id -u)" ] && [ "$mode" = 700 ]
 }
 
-# $1 = seed root, $2 = key to keep. Remove every other seed and every stale
-# build directory. Only direct children of the root are touched.
-synth_seed_reclaim_others() {
-  local root="${1:-}" keep="${2:-}" d base n=0
-  [ -d "$root" ] && [ ! -L "$root" ] || return 0
-  for d in "$root"/* "$root"/.build-*; do
-    [ -e "$d" ] || [ -L "$d" ] || continue
-    base="$(basename -- "$d")"
-    case "$base" in
-      "$keep") continue ;;
-      .build-*) ;;
-      *[!0-9a-f]*) continue ;;
-      *) [ "${#base}" -eq 20 ] || continue ;;
-    esac
-    synth_rm_seed_child "$root" "$d" && n=$((n + 1))
-  done
-  printf '%s\n' "$n"
+# A marker grants no cleanup by itself. The operator closes every consumer
+# and uses the normal exact-home route only after this driver exits.
+synth_mark_trial_owner() {
+  local dir="${1:-}" dev ino marker
+  synth_owned_directory "$dir" || return 1
+  marker="$dir/.synthetic-seed-owner.json"
+  [ ! -e "$marker" ] && [ ! -L "$marker" ] || return 1
+  if stat --version >/dev/null 2>&1; then
+    dev="$(stat -c %d "$dir")" && ino="$(stat -c %i "$dir")" || return 1
+  else
+    dev="$(stat -f %d "$dir")" && ino="$(stat -f %i "$dir")" || return 1
+  fi
+  (umask 077; set -C
+    jq -n --argjson uid "$(id -u)" --argjson dev "$dev" --argjson ino "$ino" --argjson pid "$$" \
+      '{version:1,kind:"synthetic-trial",owner_uid:$uid,device:$dev,inode:$ino,creator_pid:$pid}' >"$marker"
+  )
 }
 
 # Where seeds live. The driver and the warm-up script must agree, or a warm
@@ -242,8 +239,8 @@ synth_seed_reclaim_others() {
 # the base becomes /tmp. LASTDB_SYNTHETIC_SEED_ROOT overrides.
 synth_seed_root_default() {
   local base="${TMPDIR:-/tmp}" base_real home_real
-  home_real="$(CDPATH= cd -- "$HOME" 2>/dev/null && pwd -P)" || home_real="$HOME"
-  base_real="$(CDPATH= cd -- "$base" 2>/dev/null && pwd -P)" || base_real="$base"
+  home_real="$(CDPATH='' cd -- "$HOME" 2>/dev/null && pwd -P)" || home_real="$HOME"
+  base_real="$(CDPATH='' cd -- "$base" 2>/dev/null && pwd -P)" || base_real="$base"
   case "$base_real" in
     "$home_real"|"$home_real"/*) base=/tmp ;;
   esac
@@ -266,42 +263,46 @@ synth_seed_key_for() {
 # $1 = seed root, $2 = key, rest = the builder command. The builder gets
 # --out DIR --key KEY appended. Prints the seed dir. Builder output goes to
 # stderr so a caller can capture the dir with $(...).
-# A cache hit builds nothing. Anything incomplete or mismatched is removed
-# first, so a half-built seed never serves a probe.
-synth_seed_ensure() {
-  local root="${1:-}" key="${2:-}" dir build rc=0
+# A cache hit builds nothing. An incomplete or foreign path refuses. No seed
+# or build is removed here. The operator releases exact containers only after
+# all PROBE, CUTOVER and recovery consumers close (see the skill).
+synth_seed_ensure() (
+  local root="${1:-}" key="${2:-}" dir build rc=0 lock token nonce
   shift 2 || return 1
   synth_seed_key_valid "$key" || return 1
   case "$root" in /?*) ;; *) return 1 ;; esac
   [ "$root" != "/" ] || return 1
   [ ! -L "$root" ] || return 1
-  mkdir -p "$root" || return 1
-  chmod 700 "$root" || return 1
+  if [ ! -e "$root" ]; then (umask 077; mkdir "$root") || return 1; fi
+  synth_owned_directory "$root" || return 1
+  root="$(CDPATH='' cd -- "$root" && pwd -P)" || return 1
+  lock="$root/.seed-$key.lock"
+  token="$$.$RANDOM.$RANDOM"
+  (umask 077; mkdir "$lock") || return 1
+  printf '%s\n' "$token" >"$lock/owner" || return 1
+  # Remove only this invocation's empty coordination lock, never a data home.
+  trap '[ ! -L "$lock" ] && [ "$(cat "$lock/owner" 2>/dev/null)" = "$token" ] && { rm -- "$lock/owner"; rmdir "$lock"; }' EXIT
   dir="$root/$key"
   if synth_seed_is_complete "$dir" "$key"; then
     printf '%s\n' "$dir"
     return 0
   fi
-  synth_rm_seed_child "$root" "$dir" || return 1
-  build="$root/.build-$$"
-  synth_rm_seed_child "$root" "$build" || return 1
+  [ ! -e "$dir" ] && [ ! -L "$dir" ] || return 1
+  nonce="$(uuidgen | tr 'A-Z' 'a-z')" || return 1
+  # Keep the path short enough for the native macOS Unix socket.
+  build="$root/.build-${key:0:8}-${nonce%%-*}"
+  [ ! -e "$build" ] && [ ! -L "$build" ] || return 1
   "$@" --out "$build" --key "$key" >&2 || rc=$?
   if [ "$rc" -ne 0 ]; then
-    synth_rm_seed_child "$root" "$build" || true
+    printf '[synthetic-home] retained failed owned build: %s\n' "$build" >&2
     return 1
   fi
-  # Another builder (the post-cutover warm-up) may have finished this key while
-  # this one ran. Keep the complete seed; do not nest this build inside it.
-  if synth_seed_is_complete "$dir" "$key"; then
-    synth_rm_seed_child "$root" "$build" || true
-    printf '%s\n' "$dir"
-    return 0
-  fi
-  mv "$build" "$dir" || { synth_rm_seed_child "$root" "$build" || true; return 1; }
+  [ ! -e "$dir" ] && [ ! -L "$dir" ] || return 1
+  synth_seed_is_complete "$build" "$key" || return 1
+  mv "$build" "$dir" || return 1
   # A builder that exits 0 but leaves a half seed must not serve a probe.
   if ! synth_seed_is_complete "$dir" "$key"; then
-    synth_rm_seed_child "$root" "$dir" || true
     return 1
   fi
   printf '%s\n' "$dir"
-}
+)

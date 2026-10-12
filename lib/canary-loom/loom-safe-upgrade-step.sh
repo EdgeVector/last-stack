@@ -404,22 +404,6 @@ def run_driver_bounded(argv, node, env, recovery_argv=None):
                         signal.SIG_UNBLOCK, handled_signals
                     ),
                 )
-                if env.get("LOOM_SAFE_UPGRADE_TEST_SIGNAL_AFTER_POPEN") == "TERM":
-                    # Test seam: queue TERM while the child exists but before
-                    # the parent restores delivery of wrapper signals.
-                    os.kill(os.getpid(), signal.SIGTERM)
-                    ready_raw = env.get(
-                        "LOOM_SAFE_UPGRADE_TEST_SIGNAL_AFTER_POPEN_READY"
-                    )
-                    if ready_raw:
-                        ready_path = Path(ready_raw)
-                        if not ready_path.is_absolute():
-                            raise RuntimeError("safe-upgrade test ready path must be absolute")
-                        ready_deadline = time.monotonic() + 5
-                        while not ready_path.exists() and time.monotonic() < ready_deadline:
-                            time.sleep(0.01)
-                        if not ready_path.exists():
-                            raise RuntimeError("safe-upgrade test driver did not become ready")
             finally:
                 # A pending signal now runs only after proc owns the detached
                 # process group. The child unblocks these signals before exec.

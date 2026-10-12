@@ -41,6 +41,7 @@
 #                                  stop our node, then delete a dev home and its
 #                                  .clone-<pid> / .old-<ts> residue once no
 #                                  process holds it (default: this dev home)
+#   lastdb-dev reclaim --home OWNED_SEED_CONTAINER --exact-home [--dry-run]
 #   lastdb-dev reclaim --sweep [--ttl-hours N] [--include-default] [--dry-run]
 #                                  delete every unheld dev home under the sweep
 #                                  roots: dead-owner .clone-<pid>, .old-<ts>, and
@@ -730,8 +731,66 @@ reclaim_home_and_residue() {
   done
   reclaim_one "$h" "owner reclaim" "$dry"
 }
+# The operator closes all current and future proof/recovery consumers first.
+# This path accepts one marked seed or trial, checks all descendant
+# open files, and never visits .clone-* or .old-* siblings.
+reclaim_exact_seed() (
+  local h="$1" dry="$2" r p uid dev ino before marker creator scratch="" rc=0 processes pid executable args alias logical=""
+  trap '[ -z "$scratch" ] || { rm -- "$scratch/pids" "$scratch/error"; rmdir "$scratch"; }' EXIT
+  [ "$(uname -s)" = Darwin ] || die "exact seed reclaim requires macOS"
+  [ -d "$h" ] && [ ! -L "$h" ] || die "exact seed container is unsafe"
+  r="$(realpath_of "$h")"; p="$(primary_real)"; uid="$(id -u)"
+  case "$r" in "$p"|"$p"/*) die "exact seed aliases the primary" ;; esac
+  case "$p" in "$r"/*) die "exact seed contains the primary" ;; esac
+  [ "$(stat -f %u "$r")" = "$uid" ] && [ "$(stat -f %Lp "$r")" = 700 ] \
+    || die "exact seed owner or mode differs"
+  dev="$(stat -f %d "$r")"; ino="$(stat -f %i "$r")"
+  before="$(stat -f '%u:%Lp:%d:%i' "$r")"
+  marker="$r/.synthetic-seed-owner.json"
+  [ -f "$marker" ] && [ ! -L "$marker" ] \
+    && [ "$(stat -f %u "$marker")" = "$uid" ] \
+    && [ "$(stat -f %Lp "$marker")" = 600 ] \
+    && [ "$(stat -f %l "$marker")" = 1 ] \
+    && [ "$(stat -f %z "$marker")" -le 4096 ] || die "exact seed owner marker is unsafe"
+  jq -e --argjson uid "$uid" --argjson dev "$dev" --argjson ino "$ino" '
+    (keys | sort) == (["version","kind","owner_uid","device","inode","creator_pid"] | sort)
+    and .version == 1 and (.kind == "synthetic-seed" or .kind == "synthetic-trial") and .owner_uid == $uid
+    and .device == $dev and .inode == $ino
+    and (.creator_pid | type) == "number" and .creator_pid > 0
+    and .creator_pid <= 2147483647 and .creator_pid == (.creator_pid | floor)
+  ' "$marker" >/dev/null || die "exact seed owner marker differs"
+  creator="$(jq -er '.creator_pid' "$marker")" || die "exact seed creator is unavailable"
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/lastdb-exact-seed-no-use.XXXXXX")"
+  ps -p "$creator" -o pid= >"$scratch/pids" 2>"$scratch/error" || rc=$?
+  [ "$rc" -eq 1 ] && [ ! -s "$scratch/pids" ] && [ ! -s "$scratch/error" ] \
+    || die "exact seed creator is active or its check is incomplete"
+  rc=0
+  case "$r" in /private/tmp/*|/private/var/*) logical="${r#/private}" ;; esac
+  [ -z "$logical" ] || [ "$(realpath_of "$logical")" = "$r" ] \
+    || die "exact seed logical alias differs"
+  processes="$(ps -ww -axo pid=,comm=)" || die "exact seed process check is unavailable"
+  while read -r pid executable; do
+    [ "${executable##*/}" = lastdbd ] || continue
+    args="$(ps -ww -p "$pid" -o args=)" || die "exact seed daemon arguments are unavailable"
+    for alias in "$h" "$r" "$logical"; do
+      [ -n "$alias" ] || continue
+      case " $args " in
+        *" --data-dir $alias "*|*" --data-dir=$alias "*|*" --data-dir $alias/"*|*" --data-dir=$alias/"*)
+          die "exact seed has an active daemon" ;;
+      esac
+    done
+  done <<< "$processes"
+  lsof -t +D "$r" >"$scratch/pids" 2>"$scratch/error" || rc=$?
+  [ "$rc" -eq 1 ] && [ ! -s "$scratch/pids" ] && [ ! -s "$scratch/error" ] \
+    || die "exact seed is held or its no-use check is incomplete"
+  [ "$(stat -f '%u:%Lp:%d:%i' "$r")" = "$before" ] \
+    || die "exact seed container changed"
+  reclaim_one "$r" "released exact synthetic seed" "$dry"
+  [ "$dry" -eq 1 ] || { [ ! -e "$r" ] && [ ! -L "$r" ]; } \
+    || die "exact seed deletion is incomplete"
+)
 reclaim_cmd() {
-  local target="" sweep=0 ttl=24 include_default=0 dry=0 roots root c base idle df0 df1
+  local target="" sweep=0 ttl=24 include_default=0 dry=0 exact=0 roots root c base idle df0 df1
   RECLAIMED=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -742,11 +801,17 @@ reclaim_cmd() {
       --ttl-hours=*) ttl="${1#*=}"; shift ;;
       --include-default) include_default=1; shift ;;
       --dry-run) dry=1; shift ;;
+      --exact-home) exact=1; shift ;;
       -h|--help) usage 0 ;;
       *) echo "lastdb-dev reclaim: unknown argument $1" >&2; usage 2 ;;
     esac
   done
   case "$ttl" in ''|*[!0-9]*) die "--ttl-hours takes a whole number of hours" ;; esac
+  if [ "$exact" -eq 1 ]; then
+    [ "$sweep" -eq 0 ] && [ -n "$target" ] || die "--exact-home requires one explicit --home"
+    reclaim_exact_seed "${target%/}" "$dry"
+    return
+  fi
   df0="$(df -k "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')"
   if [ "$sweep" -eq 0 ]; then
     [ -n "$target" ] || target="$DEV_HOME"

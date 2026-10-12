@@ -10,7 +10,7 @@
 #
 # WHAT IT WRITES: a home with Tom's identity.key (copied, never printed), the
 # kanban and brain schemas registered by the apps' own init commands, one
-# milestone, N cards in todo/backlog/done, and M brain records. The kanban and
+# milestone, N cards in todo/backlog/done, and M brain records in one batch. The kanban and
 # brain CLIs get their own HOME (cli-home) so they never read or write the real
 # ~/.fkanban or ~/.brain. The seed pins different schema hashes from the
 # primary, so the probes must read it through this cli-home.
@@ -28,12 +28,12 @@
 #   NEW_DIR/seed.meta   key=value facts, written last
 #   NEW_DIR/.complete   written after seed.meta; a seed without it is unusable
 #
-# Exit: 0 = complete seed; 1 = failed (NEW_DIR removed, evidence kept); 2 = usage.
+# Exit: 0 = complete seed; 1 = failed (owned container and evidence kept); 2 = usage.
 #
 # bash 3.2 compatible (macOS /bin/bash).
 set -euo pipefail
 
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=live-lastdb-env.sh
 . "$SCRIPT_DIR/live-lastdb-env.sh"
 # shellcheck source=probe-copy-guards.sh
@@ -53,14 +53,6 @@ LIVE_PLIST="${LASTDB_LAUNCHD_PLIST:-}"
 INIT_DEADLINE_SECS="${LASTDB_SYNTHETIC_INIT_DEADLINE_SECS:-600}"
 BOOT_WAIT_SECS="${LASTDB_SYNTHETIC_BOOT_WAIT_SECS:-300}"
 STOP_WAIT_SECS="${LASTDB_SYNTHETIC_STOP_WAIT_SECS:-240}"
-# Serial by default. Measured 2026-10-09 on lastdbd 0.23.3-2693 without resident
-# write mode: 30 `kanban add` calls took 203 s one at a time and 199 s at 6-way
-# parallel, and both left every row after a clean restart. Each write waits for a
-# durable persist, so parallel callers gain nothing. (An earlier note blamed
-# parallel writers for lost rows. The cause was resident write mode; see
-# synthetic-home-checks.sh.)
-CARD_PARALLEL="${LASTDB_SYNTHETIC_CARD_PARALLEL:-1}"
-RECORD_PARALLEL="${LASTDB_SYNTHETIC_RECORD_PARALLEL:-1}"
 EVIDENCE_ROOT="${LASTDB_SYNTHETIC_EVIDENCE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/lastdb-safe-upgrade/synthetic-build-failures}"
 
 usage() {
@@ -109,46 +101,66 @@ HOME_DIR="$OUT/home"
 CLI_HOME="$OUT/cli-home"
 BUILD="$OUT/.build"
 SOCK="$HOME_DIR/data/folddb.sock"
+[ "$(LC_ALL=C printf '%s' "$SOCK" | wc -c | tr -d ' ')" -le 103 ] \
+  || { echo "synthetic owner socket path exceeds the native macOS bound" >&2; exit 2; }
 BOOT_LOG="$BUILD/boot.log"
 NODE_PID=""
+NODE_PS_START=""
+NODE_REAPED=1
+NODE_START_TS=""
+STOPPED_PID=""
+STOPPED_START_TS=""
+KNOWN_KEYS_VERIFIED=0
+SHUTDOWN_FLUSH_VERIFIED=0
+OUT_CREATED=0
 
 cleanup() {
   local rc=$?
   trap - EXIT
-  if [ -n "$NODE_PID" ] && kill -0 "$NODE_PID" 2>/dev/null; then
-    kill "$NODE_PID" 2>/dev/null || true
-    sleep 2
-    kill -9 "$NODE_PID" 2>/dev/null || true
-    wait "$NODE_PID" 2>/dev/null || true
-  fi
-  if [ "$rc" -ne 0 ]; then
-    save_evidence || true
-    rm -rf "$OUT"
-  else
-    rm -rf "$BUILD"
+  if [ -n "$NODE_PID" ]; then stop_baseline || rc=1; fi
+  if [ "$OUT_CREATED" -eq 1 ]; then
+    save_evidence || rc=1
+    # Keep the exact owned container until its public closeout is preserved
+    # and all PROBE/CUTOVER/recovery consumers close. No cache-wide deletion.
+    [ "$rc" -eq 0 ] || log "owned build retained for supported cleanup: $OUT" >&2
   fi
   exit "$rc"
 }
 
-# Keep bounded tails only. The logs hold no key material, but they stay small.
+# Keep bounded private tails. Only public-closeout.json is public evidence.
 save_evidence() {
   local dir stamp f
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   dir="$EVIDENCE_ROOT/$stamp-$$"
-  [ -d "$BUILD" ] || return 0
-  mkdir -p "$dir" || return 0
+  [ "$OUT_CREATED" -eq 1 ] || return 0
+  mkdir -p "$EVIDENCE_ROOT" || return 1
+  dir="$(mktemp -d "$EVIDENCE_ROOT/seed-closeout-$stamp.XXXXXX")" || return 1
   chmod 700 "$dir" 2>/dev/null || true
-  printf 'reason=%s\n' "${FAIL_REASON:-unknown}" >"$dir/reason.txt"
+  jq -n --arg container "$OUT" --arg key "$SEED_KEY" \
+    --argjson uid "$(id -u)" --argjson keys "$KNOWN_KEYS_VERIFIED" \
+    --argjson flushed "$SHUTDOWN_FLUSH_VERIFIED" --argjson reaped "$NODE_REAPED" \
+    '{version:1,container:$container,key:$key,owner_uid:$uid,
+      known_keys_verified:($keys == 1),shutdown_flush_verified:($flushed == 1),
+      owned_child_reaped:($reaped == 1),consumer_release_required:true}' >"$dir/public-closeout.json" || return 1
+  # Private diagnostic text cannot grow the retained proof without a bound.
+  printf 'reason=%s\n' "${FAIL_REASON:-none}" | head -c 4096 >"$dir/reason.txt" || true
   for f in "$BUILD"/*.log "$BUILD"/*.out "$BUILD"/*.err; do
-    [ -f "$f" ] || continue
-    tail -n 200 "$f" >"$dir/$(basename "$f")" 2>/dev/null || true
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    tail -c 65536 "$f" 2>/dev/null | tail -n 200 >"$dir/$(basename "$f")" || true
   done
   log "failure evidence: $dir" >&2
 }
 trap cleanup EXIT
 
 umask 077
-mkdir -m 700 "$OUT" "$HOME_DIR" "$CLI_HOME" "$BUILD"
+mkdir -m 700 "$OUT"
+OUT_CREATED=1
+mkdir -m 700 "$HOME_DIR" "$CLI_HOME" "$BUILD" "$CLI_HOME/.kanban" "$CLI_HOME/.brain"
+printf 'version=1\nowner_uid=%s\ncreator_pid=%s\n' "$(id -u)" "$$" >"$OUT/owner.meta"
+jq -n --argjson uid "$(id -u)" --argjson dev "$(stat -f %d "$OUT")" \
+  --argjson ino "$(stat -f %i "$OUT")" --argjson pid "$$" \
+  '{version:1,kind:"synthetic-seed",owner_uid:$uid,device:$dev,inode:$ino,creator_pid:$pid}' \
+  >"$OUT/.synthetic-seed-owner.json"
 
 # Copy only the identity (and the bootstrap marker). Never log the key.
 cp -p "$IDENTITY_FROM/identity.key" "$HOME_DIR/identity.key"
@@ -190,9 +202,11 @@ boot_baseline() {
     ${env_pairs[@]+"${env_pairs[@]}"} \
     "$BASELINE_BIN" --data-dir "$HOME_DIR" >>"$BOOT_LOG" 2>&1 &
   NODE_PID=$!
+  NODE_REAPED=0
+  NODE_PS_START="$(ps -p "$NODE_PID" -o lstart=)" || fail "owned baseline start identity unavailable"
   while [ "$i" -lt "$BOOT_WAIT_SECS" ]; do
     i=$((i + 1))
-    kill -0 "$NODE_PID" 2>/dev/null || fail "baseline exited during $label boot ($(tail -2 "$BOOT_LOG" 2>/dev/null | tr '\n' ' '))"
+    kill -0 "$NODE_PID" 2>/dev/null || fail "baseline exited during $label boot; private evidence retained"
     if [ -S "$SOCK" ]; then
       uh="$(curl -sS --max-time 3 --unix-socket "$SOCK" -H 'Host: localhost' \
         -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/system/auto-identity 2>/dev/null \
@@ -202,21 +216,68 @@ boot_baseline() {
     sleep 1
   done
   [ -n "$uh" ] || fail "baseline identity not ready in ${BOOT_WAIT_SECS}s ($label boot)"
+  NODE_START_TS="$(jq -er --argjson pid "$NODE_PID" '
+    select(.pid == $pid and (.start_ts | type) == "number" and .start_ts > 0) | .start_ts
+  ' "$HOME_DIR/current-session.json")" || fail "owned baseline session identity unavailable"
+  [ ! -e "$HOME_DIR/.shutdown_flush_ready" ] && [ ! -L "$HOME_DIR/.shutdown_flush_ready" ] \
+    || fail "owned baseline retains a stale shutdown receipt"
   log "baseline identity ready after ${i}s ($label boot)"
 }
 
 # Stop with SIGTERM and wait for the exit. A forced kill would leave a store
 # that is not flushed, so a slow stop fails the build instead.
+owned_baseline_alive() {
+  local current command state
+  kill -0 "$NODE_PID" 2>/dev/null || return 1
+  state="$(ps -p "$NODE_PID" -o stat= 2>/dev/null)" || return 1
+  case "$state" in Z*) return 1 ;; esac
+  current="$(ps -p "$NODE_PID" -o lstart= 2>/dev/null)" || return 1
+  [ "$current" = "$NODE_PS_START" ] || return 1
+  command="$(ps -ww -p "$NODE_PID" -o command= 2>/dev/null)" || return 1
+  case " $command " in *" --data-dir $HOME_DIR "*) return 0 ;; *) return 1 ;; esac
+}
+
 stop_baseline() {
-  local i=0
-  kill "$NODE_PID" 2>/dev/null || true
-  while kill -0 "$NODE_PID" 2>/dev/null; do
-    i=$((i + 1))
-    [ "$i" -le "$STOP_WAIT_SECS" ] || fail "baseline did not stop within ${STOP_WAIT_SECS}s; the seed would not be a flushed store"
-    sleep 1
-  done
-  log "baseline stopped after ${i}s"
+  local i=0 rc=0 state pid="$NODE_PID" start="$NODE_START_TS" receipt="$HOME_DIR/.shutdown_flush_ready"
+  [ -n "$pid" ] || return 0
+  SHUTDOWN_FLUSH_VERIFIED=0
+  if kill -0 "$pid" 2>/dev/null; then
+    owned_baseline_alive || return 1
+    kill -TERM "$pid" || return 1
+    while owned_baseline_alive; do
+      i=$((i + 1))
+      if [ "$i" -gt "$STOP_WAIT_SECS" ]; then
+        owned_baseline_alive && kill -KILL "$pid" || true
+        rc=1
+        sleep 2
+        break
+      fi
+      sleep 1
+    done
+  fi
+  if kill -0 "$pid" 2>/dev/null; then
+    state="$(ps -p "$pid" -o stat= 2>/dev/null)" || return 1
+    case "$state" in Z*) ;; *) return 1 ;; esac
+  fi
+  wait "$pid" || rc=1
   NODE_PID=""
+  NODE_REAPED=1
+  [ "$rc" -eq 0 ] && [ -n "$start" ] || return 1
+  [ -f "$receipt" ] && [ ! -L "$receipt" ] || return 1
+  jq -e --argjson pid "$pid" --argjson start "$start" '
+    (keys | sort) == (["flush_ok","pid","start_ts","version"] | sort)
+    and .version == 1 and .pid == $pid and .start_ts == $start and .flush_ok == true
+  ' "$receipt" >/dev/null || return 1
+  [ -f "$HOME_DIR/sessions.jsonl" ] && [ ! -L "$HOME_DIR/sessions.jsonl" ] || return 1
+  jq -se --argjson pid "$pid" --argjson start "$start" '
+    ([.[] | select(.pid == $pid and .start_ts == $start)] | length) == 1
+    and all(.[] | select(.pid == $pid and .start_ts == $start);
+      .exit == "clean" and (.end_ts | type) == "number" and .end_ts >= $start)
+  ' "$HOME_DIR/sessions.jsonl" >/dev/null || return 1
+  SHUTDOWN_FLUSH_VERIFIED=1
+  STOPPED_PID="$pid"
+  STOPPED_START_TS="$start"
+  log "owned baseline reaped with exact clean session and shutdown flush receipt"
 }
 
 phase first-boot
@@ -224,6 +285,8 @@ boot_baseline first
 
 cli_env() {
   env HOME="$CLI_HOME" LASTDB_HOME="$HOME_DIR" FOLDDB_HOME="$HOME_DIR" \
+    KANBAN_CONFIG="$CLI_HOME/.kanban/config.json" FKANBAN_CONFIG="$CLI_HOME/.kanban/config.json" \
+    BRAIN_CONFIG="$CLI_HOME/.brain/config.json" FBRAIN_CONFIG="$CLI_HOME/.brain/config.json" \
     FOLDDB_SOCKET_PATH="$SOCK" FBRAIN_FOLDDB_SOCKET="$SOCK" "$@"
 }
 
@@ -235,119 +298,39 @@ log "kanban init"
 rc=0
 run_op_with_deadline "$INIT_DEADLINE_SECS" cli_env kanban init \
   --node-socket-path "$SOCK" --name synthetic >"$BUILD/kanban-init.out" 2>"$BUILD/kanban-init.err" || rc=$?
-[ "$rc" -eq 0 ] || fail "kanban init failed (rc=$rc): $(tail -3 "$BUILD/kanban-init.err" 2>/dev/null | tr '\n' ' ')"
+[ "$rc" -eq 0 ] || fail "kanban init failed (rc=$rc); private evidence retained"
 phase brain-init
 log "brain init"
 rc=0
 run_op_with_deadline "$INIT_DEADLINE_SECS" cli_env brain init \
   --node-url http://127.0.0.1 --name synthetic --yes >"$BUILD/brain-init.out" 2>"$BUILD/brain-init.err" || rc=$?
-[ "$rc" -eq 0 ] || fail "brain init failed (rc=$rc): $(tail -3 "$BUILD/brain-init.err" 2>/dev/null | tr '\n' ' ')"
+[ "$rc" -eq 0 ] || fail "brain init failed (rc=$rc); private evidence retained"
 
-# --- data --------------------------------------------------------------------
-# One item per call, one at a time. The seed is a throwaway node, so this loop
-# adds no load to the primary.
-HELPER="$BUILD/item.sh"
-cat >"$HELPER" <<'EOF_HELPER'
-#!/usr/bin/env bash
-# usage: item.sh card|record N   (env: CLI_HOME HOME_DIR SOCK)
-set -u
-kind="${1:?}"; n="${2:?}"
-cli() {
-  env HOME="$CLI_HOME" LASTDB_HOME="$HOME_DIR" FOLDDB_HOME="$HOME_DIR" \
-    FOLDDB_SOCKET_PATH="$SOCK" FBRAIN_FOLDDB_SOCKET="$SOCK" "$@"
-}
-para() {
-  # Deterministic filler, about 1 KB, varied by $1.
-  local i=0 out=""
-  while [ "$i" -lt 8 ]; do
-    out="${out}Synthetic paragraph $1.$i: the safe-upgrade probe reads and rewrites this text to exercise the store with a realistic body size. Token $((($1 * 7919 + i * 104729) % 100003)).
-"
-    i=$((i + 1))
-  done
-  printf '%s' "$out"
-}
-case "$kind" in
-  card)
-    case $((n % 20)) in
-      0|1|2|3|4|5|6|7|8|9|10|11) col=todo ;;
-      12|13|14) col=backlog ;;
-      *) col=done ;;
-    esac
-    body="$(printf '## GOAL\n\n%s\n## END STATE\n\n- Synthetic card %s reaches %s.\n' "$(para "$n")" "$n" "$col")"
-    if printf '%s\n' "$body" | cli kanban add "synth-card-$n" --title "Synthetic card $n" \
-        --column "$col" --kind pr --milestone synth-ms --repo EdgeVector/synthetic \
-        --priority "P$((n % 4))" --tags "synthetic,lane-$((n % 7))" >/dev/null 2>&1; then
-      echo "OK card $n $col"
-    else
-      echo "FAIL card $n $col"
-    fi
-    ;;
-  record)
-    case $((n % 4)) in
-      0) type=reference ;;
-      1) type=concept ;;
-      2) type=preference ;;
-      *) type=design ;;
-    esac
-    if printf -- '---\ntype: %s\nslug: synth-%s-%s\ntitle: Synthetic %s %s\n---\n%s\n' \
-        "$type" "$type" "$n" "$type" "$n" "$(para "$n")" | cli brain put >/dev/null 2>&1; then
-      echo "OK record $n $type"
-    else
-      echo "FAIL record $n $type"
-    fi
-    ;;
-  *) echo "FAIL unknown $kind $n"; exit 2 ;;
-esac
-EOF_HELPER
-chmod 700 "$HELPER"
-export CLI_HOME HOME_DIR SOCK
+# Collect the complete seed before one native durable mutation batch.
+# The separate Python helper uses only the owned seed socket and the canonical
+# schema identities returned by normal app initialization.
+BATCH_HELPER="$SCRIPT_DIR/synthetic-record-batch.py"
+[ -f "$BATCH_HELPER" ] || fail "synthetic batch helper unavailable"
+phase seed-batch
+if ! python3 "$BATCH_HELPER" write --home "$HOME_DIR" --cli-home "$CLI_HOME" \
+    --primary-home "$IDENTITY_FROM" --cards "$CARDS" --records "$RECORDS" \
+    >"$BUILD/batch-write.out" 2>"$BUILD/batch-write.err"; then
+  fail "whole synthetic batch refused; no automatic retry"
+fi
 
-phase milestone
-log "milestone"
-rc=0
-printf '## GOAL\n\nSynthetic milestone for probes.\n\n## END STATE\n\n- Cards exist.\n' \
-  | run_op_with_deadline 120 cli_env kanban milestone add synth-ms --title "Synthetic milestone" --state active \
-    >"$BUILD/milestone.out" 2>"$BUILD/milestone.err" || rc=$?
-[ "$rc" -eq 0 ] || fail "milestone add failed (rc=$rc): $(tail -3 "$BUILD/milestone.err" 2>/dev/null | tr '\n' ' ')"
-
-phase cards
-log "cards: $CARDS (parallel $CARD_PARALLEL)"
-seq 1 "$CARDS" | xargs -P "$CARD_PARALLEL" -n 1 bash "$HELPER" card >"$BUILD/cards.log" 2>/dev/null || true
-cards_ok="$(grep -c '^OK card ' "$BUILD/cards.log" || true)"
-phase records
-log "records: $RECORDS (parallel $RECORD_PARALLEL)"
-seq 1 "$RECORDS" | xargs -P "$RECORD_PARALLEL" -n 1 bash "$HELPER" record >"$BUILD/records.log" 2>/dev/null || true
-records_ok="$(grep -c '^OK record ' "$BUILD/records.log" || true)"
-log "written: cards_ok=$cards_ok/$CARDS records_ok=$records_ok/$RECORDS"
-synth_write_ratio_ok "$cards_ok" "$CARDS" 90 || fail "too few cards written ($cards_ok of $CARDS)"
-synth_write_ratio_ok "$records_ok" "$RECORDS" 75 || fail "too few records written ($records_ok of $RECORDS)"
-
-# --- flush, reboot, verify ---------------------------------------------------
-# A running baseline under the live flags can list a stale view of rows it just
-# wrote (measured 2026-10-09: 12 serial `kanban add` calls, `kanban list`
-# showed 1, and a clean restart showed 12). So stop first, boot again, and
-# judge the seed on the second boot. That is also the state the probes boot.
 phase stop-after-writes
-stop_baseline
+stop_baseline || fail "owned baseline did not prove a clean flush and exit after the batch"
 phase verify-boot
 boot_baseline verify
-
-list_rc=0
-cli_env kanban list --column todo --json >"$BUILD/list.out" 2>"$BUILD/list.err" || list_rc=$?
-todo_total="$(jq -r '.total // (.cards | length) // 0' "$BUILD/list.out" 2>/dev/null || echo 0)"
-case "$todo_total" in ''|*[!0-9]*) todo_total=0 ;; esac
-todo_expected="$(synth_expected_todo "$CARDS")"
-[ "$todo_total" -gt 0 ] \
-  || fail "kanban list --column todo returns no cards on the rebooted seed (rc=$list_rc bytes=$(wc -c <"$BUILD/list.out" | tr -d ' ') err=$(head -c 200 "$BUILD/list.err" | tr '\n' ' '))"
-synth_write_ratio_ok "$todo_total" "$todo_expected" 90 \
-  || fail "rebooted seed lists $todo_total todo cards; expected about $todo_expected"
-board_title="$(curl -sS --max-time 30 --unix-socket "$SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' -H 'Content-Type: application/json' \
-  --data '{"schema_name":"Board","fields":["title"],"filter":{"HashKey":"default"}}' http://x/api/query 2>/dev/null \
-  | jq -r '.results[0].fields.title // empty' 2>/dev/null || true)"
-[ -n "$board_title" ] || fail "Board/default has no title on the rebooted seed"
-log "verified on reboot: todo cards=$todo_total (expected about $todo_expected), board title present"
+phase known-key-verification
+if ! python3 "$BATCH_HELPER" verify --home "$HOME_DIR" --cli-home "$CLI_HOME" \
+    --primary-home "$IDENTITY_FROM" --cards "$CARDS" --records "$RECORDS" \
+    >"$BUILD/batch-verify.out" 2>"$BUILD/batch-verify.err"; then
+  fail "rebooted seed exact known-key verification refused"
+fi
+KNOWN_KEYS_VERIFIED=1
 phase final-stop
-stop_baseline
+stop_baseline || fail "owned baseline did not prove the final clean flush and exit"
 phase finish
 
 rm -f "$HOME_DIR"/data/*.sock
@@ -361,11 +344,17 @@ probe_strip_cloud_state "$HOME_DIR" "$IDENTITY_FROM" || fail "cloud state could 
   printf 'built_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'baseline_version=%s\n' "$BASELINE_VERSION"
   printf 'baseline_sha256=%s\n' "$(synth_sha256_file "$BASELINE_BIN")"
-  printf 'cards=%s\n' "$cards_ok"
-  printf 'records=%s\n' "$records_ok"
-  printf 'todo_cards=%s\n' "$todo_total"
+  printf 'cards=%s\n' "$CARDS"
+  printf 'records=%s\n' "$RECORDS"
+  printf 'todo_cards=%s\n' "$(synth_expected_todo "$CARDS")"
+  printf 'known_keys_verified=true\nshutdown_flush_verified=true\n'
+  printf 'owner_uid=%s\ncreator_pid=%s\n' "$(id -u)" "$$"
   printf 'write_env_omitted=%s\n' "$SYNTH_WRITE_OMIT_KEYS"
 } >"$OUT/seed.meta"
-: >"$OUT/.complete"
+python3 "$BATCH_HELPER" commit --home "$HOME_DIR" --cli-home "$CLI_HOME" \
+  --primary-home "$IDENTITY_FROM" --cards "$CARDS" --records "$RECORDS" \
+  --pid "$STOPPED_PID" --start-ts "$STOPPED_START_TS" \
+  >"$BUILD/batch-commit.out" 2>"$BUILD/batch-commit.err" \
+  || fail "owned seed completion commit refused"
 phase ""
 log "seed complete: $OUT ($(du -sh "$OUT" 2>/dev/null | awk '{print $1}')) in ${SECONDS}s"
