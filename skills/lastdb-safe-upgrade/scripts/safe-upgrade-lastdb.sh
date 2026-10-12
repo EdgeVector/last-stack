@@ -2418,7 +2418,7 @@ else
   DEV_STAMP_OUT=""
   set +e
   DEV_STAMP_OUT="$(assert_dev_photograph_stamp_ok \
-    "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" "$TRIAL_COPY" 2>&1)"
+    "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" "$TRIAL_COPY" 1 2>&1)"
   DEV_STAMP_RC=$?
   set -e
   if [ "$DEV_STAMP_RC" -ne 0 ]; then
@@ -2427,6 +2427,7 @@ else
     DEV_PROOF_OUT=""
     set +e
     DEV_PROOF_OUT="$(LASTDB_LAUNCHD_PLIST="$LAUNCHD_PLIST" bash "$DEV_PHOTOGRAPH_PROOF_SH" \
+      --retain-for-cloud-cleanup \
       --candidate-lastdbd "$CANDIDATE_BIN" \
       --candidate-lastdb "$CANDIDATE_CLI_BIN" \
       --primary-home "$PRIMARY_HOME" \
@@ -2445,7 +2446,7 @@ else
 
   DEV_STAMP_OUT=""
   set +e
-  DEV_STAMP_OUT="$(assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" "$TRIAL_COPY" 2>&1)"
+  DEV_STAMP_OUT="$(assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" "$TRIAL_COPY" 1 2>&1)"
   DEV_STAMP_RC=$?
   set -e
   if [ -n "$DEV_STAMP_OUT" ]; then

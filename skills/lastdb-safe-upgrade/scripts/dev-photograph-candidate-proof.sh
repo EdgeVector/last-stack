@@ -26,6 +26,11 @@ PROOF_SENTINEL=""
 PROOF_TOKEN=""
 COW_HOME=""
 CANDIDATE_PID=""
+CANDIDATE_REAPED=1
+RETAIN_FOR_CLOUD_CLEANUP=0
+CLOUD_ACCESS_ATTEMPTED=0
+HANDOFF_WRITTEN=0
+HANDOFF_HELPER="$SCRIPT_DIR/dev-photograph-cleanup-handoff.py"
 DAEMON_LOG=""
 SNAPSHOT_LOG=""
 RESTORE_LOG=""
@@ -46,7 +51,8 @@ usage() {
   cat <<'EOF'
 Usage: dev-photograph-candidate-proof.sh \
   --candidate-lastdbd PATH --candidate-lastdb PATH \
-  --primary-home PATH --clone-source PATH --receipt PATH --source-git-oid OID
+  --primary-home PATH --clone-source PATH --receipt PATH --source-git-oid OID \
+  [--retain-for-cloud-cleanup]
 
 The immutable hashes, versions, paths, source OID, and Loom execution ID must
 also exist in the LASTDB_SAFE_UPGRADE_EXPECTED_* and LOOM_EXEC_ID variables.
@@ -191,6 +197,7 @@ while [ "$#" -gt 0 ]; do
     --primary-home) [ "$#" -ge 2 ] || proof_die "primary home argument is incomplete"; PRIMARY_HOME_ARG="$2"; shift 2 ;;
     --clone-source) [ "$#" -ge 2 ] || proof_die "clone source argument is incomplete"; CLONE_SOURCE="$2"; shift 2 ;;
     --receipt) [ "$#" -ge 2 ] || proof_die "receipt argument is incomplete"; RECEIPT="$2"; shift 2 ;;
+    --retain-for-cloud-cleanup) RETAIN_FOR_CLOUD_CLEANUP=1; shift ;;
     --source-git-oid) [ "$#" -ge 2 ] || proof_die "source OID argument is incomplete"; SOURCE_OID="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) proof_die "unknown DEV photograph proof argument" ;;
@@ -249,6 +256,16 @@ fi
   || proof_die "the primary device ID is absent or unsafe"
 
 proof_tmp_base="${LASTDB_DEV_PHOTOGRAPH_TMP_ROOT:-/tmp}"
+if [ "$RETAIN_FOR_CLOUD_CLEANUP" -eq 1 ]; then
+  proof_tmp_base="${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/dev-photo"
+  [ ! -L "$proof_tmp_base" ] || proof_die "the retained DEV parent is a symlink"
+  mkdir -p -- "$proof_tmp_base" && chmod 700 "$proof_tmp_base" \
+    || proof_die "the retained DEV proof parent cannot be prepared"
+  [ ! -L "$proof_tmp_base" ] && [ -f "$HANDOFF_HELPER" ] && [ ! -L "$HANDOFF_HELPER" ] \
+    || proof_die "the retained DEV proof contract is unsafe"
+  [ ! -e "${RECEIPT}.cloud-cleanup.json" ] && [ ! -L "${RECEIPT}.cloud-cleanup.json" ] \
+    || proof_die "this execution already owns a cleanup handoff; use the normal retry"
+fi
 proof_tmp_base="$(_dev_stamp_real_dir "$proof_tmp_base")" \
   || proof_die "the DEV proof temporary root cannot resolve"
 case "$proof_tmp_base" in /|"") proof_die "the DEV proof temporary root is unsafe" ;; esac
@@ -279,7 +296,13 @@ receipt_parent_real="$(_dev_stamp_real_maybe_absent "$(dirname -- "$RECEIPT")")"
 RECEIPT="$receipt_root_real/$expected_receipt_name"
 
 FAILURE_PHASE="proof_root"
-PROOF_ROOT="$(mktemp -d "$proof_tmp_base/lastdb-dev-photograph-${safe_exec_id}.XXXXXX")" \
+proof_root_template="$proof_tmp_base/lastdb-dev-photograph-${safe_exec_id}.XXXXXX"
+[ "$RETAIN_FOR_CLOUD_CLEANUP" -eq 0 ] || proof_root_template="$proof_tmp_base/photo-XXXXXX"
+if [ "$RETAIN_FOR_CLOUD_CLEANUP" -eq 1 ]; then
+  socket_bytes="$(printf '%s' "$proof_tmp_base/photo-XXXXXX/cow/data/folddb-full.sock" | wc -c | tr -d ' ')"
+  [ "$socket_bytes" -le 103 ] || proof_die "the retained DEV home exceeds the native socket path cap"
+fi
+PROOF_ROOT="$(mktemp -d "$proof_root_template")" \
   || proof_die "the DEV proof root cannot be created"
 PROOF_ROOT_REAL="$(_dev_stamp_real_dir "$PROOF_ROOT")" \
   || proof_die "the DEV proof root cannot resolve"
@@ -364,30 +387,51 @@ candidate_pid_mismatch_is_confirmed() {
 }
 
 stop_exact_candidate() {
-  if candidate_pid_is_owned; then
+  [ -n "$CANDIDATE_PID" ] || return 0
+  local wait_n=0 wait_rc=0
+  if kill -0 "$CANDIDATE_PID" 2>/dev/null; then
+    candidate_pid_is_owned || return 1
     kill "$CANDIDATE_PID" 2>/dev/null || true
-    local wait_n=0
     while kill -0 "$CANDIDATE_PID" 2>/dev/null && [ "$wait_n" -lt 50 ]; do
       sleep 0.1
       wait_n=$((wait_n + 1))
     done
-    if candidate_pid_is_owned; then
-      kill -KILL "$CANDIDATE_PID" 2>/dev/null || true
+    if kill -0 "$CANDIDATE_PID" 2>/dev/null; then
+      candidate_pid_is_owned || return 1
+      kill -KILL "$CANDIDATE_PID" 2>/dev/null || return 1
     fi
-    wait "$CANDIDATE_PID" 2>/dev/null || true
   fi
+  wait "$CANDIDATE_PID" 2>/dev/null || wait_rc=$?
+  [ "$wait_rc" -ne 127 ] && ! kill -0 "$CANDIDATE_PID" 2>/dev/null || return 1
   CANDIDATE_PID=""
+  CANDIDATE_REAPED=1
+}
+
+write_cleanup_handoff() {
+  local verdict="$1"
+  [ "$CANDIDATE_REAPED" -eq 1 ] || return 1
+  mkdir -p -- "$(dirname -- "$RECEIPT")" && chmod 700 "$(dirname -- "$RECEIPT")" || return 1
+  python3 -I "$HANDOFF_HELPER" write-pending --root "$PROOF_ROOT_REAL" \
+    --receipt "$RECEIPT" --creator-pid "$$" --candidate-reaped --verdict "$verdict" \
+    --source-git-oid "$SOURCE_OID" --loom-execution-id "$LOOM_EXEC_ID" >/dev/null 2>&1 || return 1
+  HANDOFF_WRITTEN=1
 }
 
 cleanup_dev_proof() {
-  local rc=$?
+  local rc=$? stopped=0
   trap - EXIT HUP INT TERM
   set +e
-  stop_exact_candidate
+  stop_exact_candidate && stopped=1
   if [ "$rc" -ne 0 ]; then
     emit_dev_photograph_failure_evidence
   fi
-  if proof_root_is_owned; then
+  if [ "$RETAIN_FOR_CLOUD_CLEANUP" -eq 1 ] && [ "$CLOUD_ACCESS_ATTEMPTED" -eq 1 ]; then
+    if [ "$HANDOFF_WRITTEN" -eq 0 ] && [ "$stopped" -eq 1 ]; then
+      write_cleanup_handoff RED || true
+    fi
+    # A failed handoff also keeps the access home. It never authorizes deletion.
+    printf 'DEV_PHOTOGRAPH_CLOUD_CLEANUP: pending\n' >&2
+  elif proof_root_is_owned && [ "$stopped" -eq 1 ]; then
     rm -rf -- "$PROOF_ROOT_REAL"
   fi
   exit "$rc"
@@ -488,6 +532,7 @@ done
 
 # Keep the invite in one pipe. Do not store, print, log, or pass it in argv.
 FAILURE_PHASE="dev_connect"
+CLOUD_ACCESS_ATTEMPTED=1
 set +e
 "$LASTSECRETS_BIN" get "$DEV_INVITE_SLUG" 2>/dev/null \
   | env -u LASTDB_HOME -u FOLDDB_HOME -u FOLD_SYNC_DEVICE_ID \
@@ -585,6 +630,7 @@ env -u LASTDB_HOME -u FOLDDB_HOME -u FOLD_SYNC_DEVICE_ID \
   LASTDB_UDS_ADMIN_TIMEOUT_SECS="$snapshot_client_timeout" \
   "$CANDIDATE_DAEMON" --data-dir "$COW_HOME" >"$DAEMON_LOG" 2>&1 &
 CANDIDATE_PID=$!
+CANDIDATE_REAPED=0
 
 socket="$COW_HOME/data/folddb.sock"
 ready=0
@@ -782,13 +828,21 @@ if [ "$restore_evidence_bytes" -gt 4096 ] \
 fi
 restore_report_sha256="$(dev_stamp_sha256_file "$restore_evidence")" \
   || proof_die "the DEV restore evidence digest is unavailable"
-write_dev_stamp_receipt_v3 \
+if [ "$RETAIN_FOR_CLOUD_CLEANUP" -eq 1 ]; then
+  FAILURE_PHASE="candidate_stop"
+  stop_exact_candidate || proof_die "the exact DEV candidate did not stop and reap"
+fi
+write_dev_stamp_receipt_v4 \
   "$RECEIPT" "$PRIMARY_HOME_ARG" "$COW_HOME" \
   "$counter" "$cas_counter" "$manifest_sha256" "$cloud_db_hash" "$manifest_key" "$latest_key" \
   "$user_hash" "$manifest_cache" "$committed_at" "$committed_epoch" \
-  "$CLONE_SOURCE" "$restore_report_sha256" \
+  "$CLONE_SOURCE" "$restore_report_sha256" "$RETAIN_FOR_CLOUD_CLEANUP" \
   || proof_die "the exact-candidate DEV photograph receipt could not be written"
-assert_dev_photograph_stamp_ok "$RECEIPT" "$PRIMARY_HOME_ARG" "$CLONE_SOURCE" >/dev/null \
+if [ "$RETAIN_FOR_CLOUD_CLEANUP" -eq 1 ]; then
+  FAILURE_PHASE="cleanup_handoff"
+  write_cleanup_handoff GREEN || proof_die "the stopped DEV cleanup handoff could not be written"
+fi
+assert_dev_photograph_stamp_ok "$RECEIPT" "$PRIMARY_HOME_ARG" "$CLONE_SOURCE" "$RETAIN_FOR_CLOUD_CLEANUP" >/dev/null \
   || proof_die "the exact-candidate DEV photograph receipt failed its own gate"
 
 FAILURE_PHASE="complete"

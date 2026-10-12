@@ -534,8 +534,8 @@ def verify_candidate_binding():
         return False, "candidate binding is missing: " + ",".join(missing)
     if not re.fullmatch(r"[0-9a-f]{40}", source_git_oid):
         return False, "candidate source Git OID is not one full lowercase commit"
-    if safe_upgrade_protocol_version != "6":
-        return False, "safe-upgrade protocol version is not 6"
+    if safe_upgrade_protocol_version != "7":
+        return False, "safe-upgrade protocol version is not 7"
     if not re.fullmatch(r"[0-9a-f]{64}", lastdbd_sha256) or not re.fullmatch(
         r"[0-9a-f]{64}", lastdb_sha256
     ):

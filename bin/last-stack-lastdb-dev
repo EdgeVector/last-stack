@@ -91,6 +91,8 @@ while [ -L "$_self_src" ]; do
   case "$_self_link" in /*) _self_src="$_self_link" ;; *) _self_src="$(dirname "$_self_src")/$_self_link" ;; esac
 done
 ROOT="$(cd "$(dirname "$_self_src")/.." && pwd -P)"
+# Internal release authority never comes from the caller environment.
+EXACT_PHOTOGRAPH_RELEASED_ROOT=""
 DEFAULT_DEV_HOME="$HOME/.lastdb-dev"
 DEV_HOME="${LASTDB_DEV_HOME:-$DEFAULT_DEV_HOME}"
 DEV_HOME="${DEV_HOME%/}"
@@ -271,11 +273,18 @@ mirror_env_lines() {
   fi
 }
 
+refuse_retained_home_change() {
+  python3 -I "$ROOT/skills/lastdb-safe-upgrade/scripts/dev-photograph-cleanup-handoff.py" \
+    check-home-change --root "$1" >/dev/null 2>&1 \
+    || die "retained photograph requires the exact released cleanup path"
+}
+
 # ---------- fresh empty home ----------
 # Tom, 2026-10-12: never copy the primary home. The dev home starts empty; the
 # node makes its own identity on first boot. The caller loads synthetic data.
 create_fresh_home() {
   local tmp ts old start
+  refuse_retained_home_change "$DEV_HOME"
   assert_dev_home_is_not_primary
   mkdir -p "$STATE" "$(dirname "$DEV_HOME")"
   # The .clone-<pid> suffix is kept so `reclaim --sweep` still removes residue
@@ -629,6 +638,9 @@ up_cmd() {
     esac
   done
   assert_dev_home_is_not_primary
+  if [ "$fresh" -eq 1 ] || [ ! -d "$DEV_HOME/data" ]; then
+    refuse_retained_home_change "$DEV_HOME"
+  fi
   if [ -z "$mode" ]; then
     cand="$(resolve_worktree "")"
     if [ -n "$cand" ]; then wt="$cand"; mode=build
@@ -710,12 +722,20 @@ reclaim_one() {
   # $1 = path, $2 = reason, $3 = dry-run (0/1). Refuses the primary, anything
   # inside it, and symlinks; never follows a symlink inside the tree (rm -rf
   # removes the link, not its target).
-  local h="$1" why="$2" dry="$3" p r
+  local h="$1" why="$2" dry="$3" p r retained_base
   p="$(primary_real)"
   [ -L "$h" ] && { warn "skip $h: symlink"; return 0; }
   [ -d "$h" ] || return 0
   r="$(realpath_of "$h")"
   case "$r" in "$p"|"$p"/*) warn "skip $h: resolves to the primary home"; return 0 ;; esac
+  retained_base="$(realpath_of "${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/dev-photo")"
+  if [ -n "$retained_base" ]; then
+    case "$retained_base/" in "$r/"*) warn "skip $h: contains retained photographs"; return 0 ;; esac
+    case "$r/" in "$retained_base/"*)
+      [ "${EXACT_PHOTOGRAPH_RELEASED_ROOT:-}" = "$r" ] \
+        || { warn "skip $h: retained photograph requires exact released cleanup"; return 0; } ;;
+    esac
+  fi
   if home_is_held "$h"; then warn "skip $h: held by a live process"; return 0; fi
   if [ "$dry" -eq 1 ]; then say "would reclaim $h ($why)"; return 0; fi
   say "reclaiming $h ($why)"
@@ -754,11 +774,16 @@ reclaim_exact_seed() (
     && [ "$(stat -f %z "$marker")" -le 4096 ] || die "exact seed owner marker is unsafe"
   jq -e --argjson uid "$uid" --argjson dev "$dev" --argjson ino "$ino" '
     (keys | sort) == (["version","kind","owner_uid","device","inode","creator_pid"] | sort)
-    and .version == 1 and (.kind == "synthetic-seed" or .kind == "synthetic-trial") and .owner_uid == $uid
+    and .version == 1 and (.kind == "synthetic-seed" or .kind == "synthetic-trial" or .kind == "synthetic-photograph") and .owner_uid == $uid
     and .device == $dev and .inode == $ino
     and (.creator_pid | type) == "number" and .creator_pid > 0
     and .creator_pid <= 2147483647 and .creator_pid == (.creator_pid | floor)
   ' "$marker" >/dev/null || die "exact seed owner marker differs"
+  if [ "$(jq -er '.kind' "$marker")" = "synthetic-photograph" ]; then
+    python3 -I "$ROOT/skills/lastdb-safe-upgrade/scripts/dev-photograph-cleanup-handoff.py" \
+      verify-release --root "$r" >/dev/null 2>&1 \
+      || die "exact photograph cleanup consumer is pending or its proof differs"
+  fi
   creator="$(jq -er '.creator_pid' "$marker")" || die "exact seed creator is unavailable"
   scratch="$(mktemp -d "${TMPDIR:-/tmp}/lastdb-exact-seed-no-use.XXXXXX")"
   ps -p "$creator" -o pid= >"$scratch/pids" 2>"$scratch/error" || rc=$?
@@ -785,7 +810,14 @@ reclaim_exact_seed() (
     || die "exact seed is held or its no-use check is incomplete"
   [ "$(stat -f '%u:%Lp:%d:%i' "$r")" = "$before" ] \
     || die "exact seed container changed"
-  reclaim_one "$r" "released exact synthetic seed" "$dry"
+  if [ "$(jq -er '.kind' "$marker")" = "synthetic-photograph" ]; then
+    python3 -I "$ROOT/skills/lastdb-safe-upgrade/scripts/dev-photograph-cleanup-handoff.py" \
+      verify-release --root "$r" >/dev/null 2>&1 \
+      || die "exact photograph release changed before cleanup"
+    EXACT_PHOTOGRAPH_RELEASED_ROOT="$r" reclaim_one "$r" "released exact synthetic photograph" "$dry"
+  else
+    reclaim_one "$r" "released exact synthetic seed" "$dry"
+  fi
   [ "$dry" -eq 1 ] || { [ ! -e "$r" ] && [ ! -L "$r" ]; } \
     || die "exact seed deletion is incomplete"
 )
@@ -816,6 +848,7 @@ reclaim_cmd() {
   if [ "$sweep" -eq 0 ]; then
     [ -n "$target" ] || target="$DEV_HOME"
     target="${target%/}"
+    refuse_retained_home_change "$target"
     if [ "$target" = "$DEV_HOME" ] && pid="$(node_pid)"; then
       [ "$dry" -eq 1 ] || stop_node
     fi
@@ -884,6 +917,7 @@ case "$cmd" in
     [ -n "$wt" ] || die "no fold worktree: pass --worktree DIR, set LASTDB_DEV_WORKTREE, or run from inside one"
     do_build "$wt" "$profile" ;;
   refresh)
+    refuse_retained_home_change "$DEV_HOME"
     was_up=0
     if node_pid >/dev/null; then was_up=1; stop_node; fi
     create_fresh_home
@@ -921,6 +955,7 @@ case "$cmd" in
     say "subshell: brain / kanban / lastdb now talk to $SOCK  (exit to leave)"
     exec "${SHELL:-/bin/bash}" ;;
   reset)
+    refuse_retained_home_change "$DEV_HOME"
     stop_node
     assert_dev_home_is_not_primary
     if [ -d "$DEV_HOME" ]; then

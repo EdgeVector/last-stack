@@ -7,7 +7,7 @@
 
 LASTDB_DEV_BACKUP_API_URL_DEFAULT="https://ygyu7ritx8.execute-api.us-west-2.amazonaws.com"
 LASTDB_PROD_BACKUP_API_HOST="jdsx4ixk2i.execute-api.us-east-1.amazonaws.com"
-LASTDB_DEV_STAMP_RECEIPT_VERSION="3"
+LASTDB_DEV_STAMP_RECEIPT_VERSION="4"
 LASTDB_DEV_STAMP_MAX_AGE_SECS_DEFAULT="3600"
 LASTDB_DEV_STAMP_FUTURE_SKEW_SECS_DEFAULT="60"
 
@@ -137,6 +137,8 @@ production_manifest_cache_absent
 copied_session_absent
 identity_preserved
 bootstrap_preserved
+cleanup_retention
+cleanup_handoff
 EOF
 }
 
@@ -151,7 +153,7 @@ _dev_stamp_key_is_known() {
     fresh_device_id|production_cloud_config_absent|\
     production_cloud_residue_absent|production_presence_cache_absent|\
     production_manifest_cache_absent|copied_session_absent|identity_preserved|\
-    bootstrap_preserved) return 0 ;;
+    bootstrap_preserved|cleanup_retention|cleanup_handoff) return 0 ;;
   esac
   return 1
 }
@@ -286,12 +288,13 @@ _dev_stamp_paths_do_not_overlap() {
   return 0
 }
 
-# Validate one v3 receipt. Every failure prints a fixed RED reason. Receipt
+# Validate one v4 receipt. Every failure prints a fixed RED reason. Receipt
 # values do not reach output because a path or cloud key can contain secrets.
 assert_dev_photograph_stamp_ok() {
   local receipt="${1:-$(dev_stamp_receipt_path)}"
   local primary="${2:-${LASTDB_HOME:-$HOME/.lastdb}}"
   local clone_source="${3:-${LASTDB_SAFE_UPGRADE_EXPECTED_CLONE_SOURCE:-}}"
+  local require_retention="${4:-0}"
   local failed=0 line key required value expected
   local mode home phome counter cas_counter manifest_sha256 cloud_db_hash manifest_key latest_key
   local user_hash manifest_cache
@@ -335,7 +338,7 @@ $(_dev_stamp_required_keys)
 EOF
 
   [ "$(dev_stamp_receipt_get "$receipt" receipt_version || true)" = "$LASTDB_DEV_STAMP_RECEIPT_VERSION" ] \
-    || { printf 'RED: DEV photograph receipt version is not 3\n'; failed=1; }
+    || { printf 'RED: DEV photograph receipt version is not 4\n'; failed=1; }
   [ "$(dev_stamp_receipt_get "$receipt" verdict || true)" = "GREEN" ] \
     || { printf 'RED: DEV photograph receipt verdict is not GREEN\n'; failed=1; }
   [ "$(dev_stamp_receipt_get "$receipt" loom_execution_id || true)" = "${LOOM_EXEC_ID:-}" ] \
@@ -507,16 +510,28 @@ EOF
       || { printf 'RED: DEV photograph isolation proof is incomplete\n'; failed=1; }
   done
 
+  case "$(dev_stamp_receipt_get "$receipt" cleanup_retention || true)" in
+    required)
+      [ "$(dev_stamp_receipt_get "$receipt" cleanup_handoff || true)" = "${receipt}.cloud-cleanup.json" ] \
+        && python3 -I "$(dirname -- "${BASH_SOURCE[0]}")/dev-photograph-cleanup-handoff.py" \
+          check --receipt "$receipt" >/dev/null 2>&1 \
+        || { printf 'RED: stopped DEV cleanup handoff is absent or differs\n'; failed=1; } ;;
+    not_requested)
+      [ "$require_retention" = "0" ] \
+        && [ "$(dev_stamp_receipt_get "$receipt" cleanup_handoff || true)" = "none" ] \
+        || { printf 'RED: this upgrade requires retained DEV cleanup access\n'; failed=1; } ;;
+    *) printf 'RED: DEV cleanup retention contract is invalid\n'; failed=1 ;;
+  esac
   [ "$failed" -eq 0 ]
 }
 
-# Write a v3 receipt from an already validated snapshot and restore. The immutable candidate
+# Write a v4 receipt from an already validated snapshot and restore. The immutable candidate
 # fields come only from the Loom environment. The rename is same-directory.
-write_dev_stamp_receipt_v3() {
+write_dev_stamp_receipt_v4() {
   local path="$1" primary_home="$2" cow_home="$3" counter="$4" cas_counter="$5"
   local manifest_sha256="$6" cloud_db_hash="$7" manifest_key="$8" latest_key="$9"
   local user_hash="${10}" manifest_cache="${11}" committed_at="${12}" committed_epoch="${13}"
-  local clone_source="${14}" restore_report_sha256="${15}"
+  local clone_source="${14}" restore_report_sha256="${15}" retain="${16:-0}"
   local dir base tmp
 
   dev_stamp_expected_binding_is_complete >/dev/null || return 1
@@ -578,6 +593,13 @@ write_dev_stamp_receipt_v3() {
     printf 'copied_session_absent=true\n'
     printf 'identity_preserved=true\n'
     printf 'bootstrap_preserved=true\n'
+    if [ "$retain" = "1" ]; then
+      printf 'cleanup_retention=required\n'
+      printf 'cleanup_handoff=%s.cloud-cleanup.json\n' "$path"
+    else
+      printf 'cleanup_retention=not_requested\n'
+      printf 'cleanup_handoff=none\n'
+    fi
   } >"$tmp"; chmod 600 "$tmp") ; then
     rm -f -- "$tmp"
     return 1
