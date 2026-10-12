@@ -29,6 +29,7 @@ CANDIDATE_PID=""
 DAEMON_LOG=""
 SNAPSHOT_LOG=""
 RESTORE_LOG=""
+RESTORE_REPORT=""
 FAILURE_PHASE="preflight"
 FAILURE_REASON="DEV photograph proof failed"
 SNAPSHOT_ATTEMPT=0
@@ -39,6 +40,7 @@ SNAPSHOT_CACHE_PRESENT_BEFORE="not-observed"
 SNAPSHOT_CACHE_PRESENT_AFTER="not-observed"
 FAILURE_EVIDENCE=""
 EVIDENCE_SANITIZER="$SCRIPT_DIR/dev-photograph-sanitize-tail.py"
+RESTORE_ERROR_REDUCER="$SCRIPT_DIR/dev-photograph-restore-error.py"
 
 usage() {
   cat <<'EOF'
@@ -112,7 +114,7 @@ emit_dev_photograph_failure_summary() {
 }
 
 persist_dev_photograph_failure_evidence() {
-  local root root_real bundle bundle_tmp summary daemon_tail snapshot_tail restore_tail stamp
+  local root root_real bundle bundle_tmp summary daemon_tail snapshot_tail restore_tail restore_error stamp
   [ -n "${PROOF_ROOT_REAL:-}" ] && [ -d "$PROOF_ROOT_REAL" ] || return 1
   root="$(dev_photograph_evidence_root)" || return 1
   case "$root" in /*) ;; *) return 1 ;; esac
@@ -136,6 +138,7 @@ persist_dev_photograph_failure_evidence() {
   daemon_tail="$bundle_tmp/daemon.tail.log"
   snapshot_tail="$bundle_tmp/snapshot.tail.log"
   restore_tail="$bundle_tmp/restore.tail.log"
+  restore_error="$bundle_tmp/restore.error.json"
   {
     emit_dev_photograph_failure_summary
     printf 'reason=%s\n' "${FAILURE_REASON:-DEV photograph proof failed}"
@@ -146,7 +149,13 @@ persist_dev_photograph_failure_evidence() {
     || { rm -rf -- "$bundle_tmp"; return 1; }
   sanitize_proof_log_tail "${RESTORE_LOG:-}" >"$restore_tail" \
     || { rm -rf -- "$bundle_tmp"; return 1; }
-  chmod 600 "$summary" "$daemon_tail" "$snapshot_tail" "$restore_tail" \
+  if [ ! -f "$RESTORE_ERROR_REDUCER" ] || [ -L "$RESTORE_ERROR_REDUCER" ] \
+      || ! python3 -I "$RESTORE_ERROR_REDUCER" --source "${RESTORE_REPORT:-}" \
+        >"$restore_error" 2>/dev/null; then
+    printf '%s\n' '{"schema":"lastdb.dev-photograph.restore-error.v1","captured":false,"reason":"UNKNOWN","error":null}' \
+      >"$restore_error" || { rm -rf -- "$bundle_tmp"; return 1; }
+  fi
+  chmod 600 "$summary" "$daemon_tail" "$snapshot_tail" "$restore_tail" "$restore_error" \
     || { rm -rf -- "$bundle_tmp"; return 1; }
   [ ! -e "$root_real/$bundle" ] || { rm -rf -- "$bundle_tmp"; return 1; }
   mv "$bundle_tmp" "$root_real/$bundle" || { rm -rf -- "$bundle_tmp"; return 1; }
@@ -170,6 +179,9 @@ emit_dev_photograph_failure_evidence() {
   printf 'DEV_PHOTOGRAPH_RESTORE_TAIL_BEGIN\n' >&2
   cat "$FAILURE_EVIDENCE/restore.tail.log" >&2
   printf 'DEV_PHOTOGRAPH_RESTORE_TAIL_END\n' >&2
+  printf 'DEV_PHOTOGRAPH_RESTORE_ERROR_BEGIN\n' >&2
+  cat "$FAILURE_EVIDENCE/restore.error.json" >&2
+  printf 'DEV_PHOTOGRAPH_RESTORE_ERROR_END\n' >&2
 }
 
 while [ "$#" -gt 0 ]; do
