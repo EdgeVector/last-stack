@@ -215,6 +215,24 @@ synth_owned_directory() {
   [ "$owner" = "$(id -u)" ] && [ "$mode" = 700 ]
 }
 
+# A marker grants no cleanup by itself. The operator closes every consumer
+# and uses the normal exact-home route only after this driver exits.
+synth_mark_trial_owner() {
+  local dir="${1:-}" dev ino marker
+  synth_owned_directory "$dir" || return 1
+  marker="$dir/.synthetic-seed-owner.json"
+  [ ! -e "$marker" ] && [ ! -L "$marker" ] || return 1
+  if stat --version >/dev/null 2>&1; then
+    dev="$(stat -c %d "$dir")" && ino="$(stat -c %i "$dir")" || return 1
+  else
+    dev="$(stat -f %d "$dir")" && ino="$(stat -f %i "$dir")" || return 1
+  fi
+  (umask 077; set -C
+    jq -n --argjson uid "$(id -u)" --argjson dev "$dev" --argjson ino "$ino" --argjson pid "$$" \
+      '{version:1,kind:"synthetic-trial",owner_uid:$uid,device:$dev,inode:$ino,creator_pid:$pid}' >"$marker"
+  )
+}
+
 # Where seeds live. The driver and the warm-up script must agree, or a warm
 # seed is never found. Same rule as the driver's probe WORK dir: a TMPDIR under
 # HOME, or one longer than 12 bytes, is too deep for the node's Unix socket, so

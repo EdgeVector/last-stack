@@ -732,10 +732,10 @@ reclaim_home_and_residue() {
   reclaim_one "$h" "owner reclaim" "$dry"
 }
 # The operator closes all current and future proof/recovery consumers first.
-# This path accepts one marked synthetic container, checks all descendant
+# This path accepts one marked seed or trial, checks all descendant
 # open files, and never visits .clone-* or .old-* siblings.
 reclaim_exact_seed() (
-  local h="$1" dry="$2" r p uid dev ino before marker scratch="" rc=0 processes pid executable args alias logical=""
+  local h="$1" dry="$2" r p uid dev ino before marker creator scratch="" rc=0 processes pid executable args alias logical=""
   trap '[ -z "$scratch" ] || { rm -- "$scratch/pids" "$scratch/error"; rmdir "$scratch"; }' EXIT
   [ "$(uname -s)" = Darwin ] || die "exact seed reclaim requires macOS"
   [ -d "$h" ] && [ ! -L "$h" ] || die "exact seed container is unsafe"
@@ -754,10 +754,17 @@ reclaim_exact_seed() (
     && [ "$(stat -f %z "$marker")" -le 4096 ] || die "exact seed owner marker is unsafe"
   jq -e --argjson uid "$uid" --argjson dev "$dev" --argjson ino "$ino" '
     (keys | sort) == (["version","kind","owner_uid","device","inode","creator_pid"] | sort)
-    and .version == 1 and .kind == "synthetic-seed" and .owner_uid == $uid
+    and .version == 1 and (.kind == "synthetic-seed" or .kind == "synthetic-trial") and .owner_uid == $uid
     and .device == $dev and .inode == $ino
     and (.creator_pid | type) == "number" and .creator_pid > 0
+    and .creator_pid <= 2147483647 and .creator_pid == (.creator_pid | floor)
   ' "$marker" >/dev/null || die "exact seed owner marker differs"
+  creator="$(jq -er '.creator_pid' "$marker")" || die "exact seed creator is unavailable"
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/lastdb-exact-seed-no-use.XXXXXX")"
+  ps -p "$creator" -o pid= >"$scratch/pids" 2>"$scratch/error" || rc=$?
+  [ "$rc" -eq 1 ] && [ ! -s "$scratch/pids" ] && [ ! -s "$scratch/error" ] \
+    || die "exact seed creator is active or its check is incomplete"
+  rc=0
   case "$r" in /private/tmp/*|/private/var/*) logical="${r#/private}" ;; esac
   [ -z "$logical" ] || [ "$(realpath_of "$logical")" = "$r" ] \
     || die "exact seed logical alias differs"
@@ -773,7 +780,6 @@ reclaim_exact_seed() (
       esac
     done
   done <<< "$processes"
-  scratch="$(mktemp -d "${TMPDIR:-/tmp}/lastdb-exact-seed-no-use.XXXXXX")"
   lsof -t +D "$r" >"$scratch/pids" 2>"$scratch/error" || rc=$?
   [ "$rc" -eq 1 ] && [ ! -s "$scratch/pids" ] && [ ! -s "$scratch/error" ] \
     || die "exact seed is held or its no-use check is incomplete"

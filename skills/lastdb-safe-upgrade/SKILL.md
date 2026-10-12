@@ -58,6 +58,19 @@ Shipped in **last-stack** (`skills/lastdb-safe-upgrade/`). After
 
 Prefer the **driver script** path below; do not hard-code a single harness dir.
 
+To install an accepted LastStack repair without a change to unrelated services:
+
+```bash
+LAST_STACK_SETUP_PRESERVE_SERVICES=1 host-track refresh last-stack
+```
+
+The opt-in flag accepts only 0 or 1. The default remains 0.
+It skips the routines CLI installer, refresh agent, other LaunchAgent installers,
+all routine registry seeders, and the self-upgrade agent installer or uninstaller.
+It also refuses the broad setup uninstaller. Nested setup inherits the flag.
+Artifact provenance, probes, command and skill links, compatibility layout,
+and instruction updates retain the normal path.
+
 ## Recovery point: the cloud backup, never a copy (Tom, 2026-10-12)
 
 The live cutover makes no copy of the primary home. Not a rollback copy, not a
@@ -66,7 +79,11 @@ stopped copy, not a copy for a first backup. The recovery point is:
 - the primary's own cloud backup, which must be CURRENT before the old daemon
   stops (Cloud Sync on and `Syncing`, no failures, the mutation log published
   through the local frontier, no upload backlog, recovery point age at most 300 s;
-  `LASTDB_CLOUD_RECOVERY_MAX_AGE_SECS` changes the limit). If any of this is
+  `LASTDB_CLOUD_RECOVERY_MAX_AGE_SECS` changes the unsigned limit). A bounded
+  exact-integer decoder requires the published frontier to cover both the
+  compatibility frontier and the separate local durable frontier in that sample.
+  The sample does not cover later writes or writes that still wait for local flush.
+  The strict stop remains a separate gate. If any sample requirement is
   false the driver exits RED and the primary is not stopped.
 - the saved binary pair `lastdbd.bak-pre-*` and `lastdb.bak-pre-*`.
 
@@ -157,7 +174,8 @@ CAUTION: Keep the exact seed through every PROBE, CUTOVER and recovery consumer.
 The operator closes their current and future uses before seed cleanup.
 This also applies to failed builds. A failed or forced stop gives no completion proof.
 The builder retains a fixed public closeout outside the owned container.
-Raw app and daemon logs stay private.
+Raw app and daemon logs stay private. Each tail is limited to 64 KiB and 200 lines.
+The private reason file is limited to 4 KiB.
 
 After consumer closure, preserve that closeout and bind the exact current
 container path, owner UID, mode, device and inode from its owner marker.
@@ -169,8 +187,9 @@ lastdb-dev reclaim --home "$owned_seed_container" --exact-home --dry-run
 lastdb-dev reclaim --home "$owned_seed_container" --exact-home
 ```
 
-The opt-in route requires the native synthetic owner marker and refuses the
+The opt-in route requires the native synthetic seed or trial owner marker and refuses the
 primary, its descendants, or a container that contains it.
+It requires the creator PID to be absent with a complete process check.
 It checks canonical and macOS alias daemon arguments and complete descendant
 open-file use. It refuses an incomplete process or file-use check.
 It deletes only the named container and confirms its absence.
@@ -183,9 +202,10 @@ Each run then clones the seed into a fresh trial home under
 `${TMPDIR}/lastdb-safe-upgrade-rollback-<uid>/trial-<new>-from-<old>-<ts>/` and
 writes a `kind=trial` completion marker. The driver refuses an existing target
 path. A clone error is RED and the error stays in an owner-only, bounded file
-under the rollback root. The driver removes a trial home made from the seed at the
-end of every run and at the start of the next one. A stale trial home made from the seed is removed
-automatically at the next run and at the end of every run.
+under the rollback root. The trial has an exact owner marker for this driver.
+It stays until all Loom, proof, and recovery consumers close.
+The operator then uses the same exact-container cleanup route.
+The driver never selects or deletes a stale sibling by its source prefix.
 
 The candidate boots on a separate copy of this trial home.
 The candidate never boots on the live primary home. The driver checks:
@@ -305,9 +325,9 @@ The live cutover has no rollback copy of the primary. See
    `LASTDB_CANDIDATE_SIZE_RATIO` (default 1.5). Brain:
    `incident-20260801-debug-worktree-lastdbd-primary-cutover-latency`. Promote
    from `origin/main`, never from a feature branch.
-9. **No synthetic mutation check:** the safe upgrade uses the current
-   primary data and read-only candidate checks. It does not create false
-   CAS writes or scratch records.
+9. **No primary mutation check:** the candidate reads the baseline-written
+   synthetic seed. The primary remains unchanged during the candidate checks.
+   The driver does not create false CAS writes or scratch records on the primary.
 10. **Binary-pair bar (lastdb + lastdbd):** before backup/probe, require a
     sibling `lastdb` CLI next to the candidate `lastdbd` and require both
     binaries to report the same version. Sidebin live install copies both
@@ -456,7 +476,8 @@ The live cutover has no rollback copy of the primary. See
     so KeepAlive cannot respawn. It sends `launchctl kill SIGTERM` and waits up
     to 300 seconds (`LASTDB_PRIMARY_GRACEFUL_STOP_WAIT_SECS`). A timeout fails
     the cutover without a forced kill. The driver requires a matching flush
-    receipt and clean session before it copies the stopped home. The reload
+    receipt and clean session before it replaces the binary pair. It makes no
+    copy of the stopped primary. The reload
     then bootstraps the new definition. Log key: `LASTDB_LAUNCHD_PRESTOP`.
     Brain: `papercut-lastdbd-primary-launchagent-exit-timeout-5s-sigkills-shutdown-drain-20260924`.
 
@@ -579,14 +600,14 @@ The script:
 | **1. Trial home** | Every run clones the cached synthetic seed (never the primary) under `${TMPDIR}/lastdb-safe-upgrade-rollback-<uid>/trial-<new>-from-<old>-<ts>/`. A clone error is RED. The trial home is not a rollback point. |
 | **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before any probe) |
 | **0b. Candidate data** | Build or reuse the synthetic seed (baseline writes it); candidate copies come from the trial home. |
-| **2. Candidate check** | Boot the exact candidate on a copy of the synthetic seed. Require schemas, the keyed Board title, a keyed BoardCards response, stable primary PID, and memory size below the guard. The driver checks candidate persist status, read latency, and record counts on real copies. |
+| **2. Candidate check** | Boot the exact candidate on a copy of the synthetic seed. Require schemas, the keyed Board title, a keyed BoardCards response, stable primary PID, and memory size below the guard. The driver checks candidate persist status, read latency, and record counts on synthetic seed copies. |
 | Detect venue | sidebin vs brew |
 | **2c. DEV photograph proof** | The exact pair clones the trial copy, scrubs production state, connects the copied identity to DEV, and publishes a snapshot. The exact CLI restores that manifest from DEV into a source-free home. The fresh v3 receipt must match this Loom execution, this run's trial copy, and the retained restore report. |
 | **2d. Meter restart bar** | Read live status before restart. Refuse a `keep_small` plane above 1.5 GiB or a failed persist lane. The 2 GiB cold-group cap can prevent both new and old binaries from booting. |
 | **3. Live** | Refuse brew. For sidebin, write the boot-ledger restart intent. Stage and check both candidate files. Require a current cloud backup. Stop the old daemon without a forced kill. Require its exact flush receipt and clean session. No copy of the primary is made. Then replace the saved binary pair and reload the LaunchAgent job. |
 | **4. Post-check** | Exact installed pair hashes, live `/health`, schemas > 0, Board title, **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **live peak RSS** vs guard, **live point-read + batch-read latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency in notice |
 | **4a. Live soak** | Keep checking for at least five minutes by default. `--zero-live-soak` removes only that minimum. At least one fresh GREEN status sample remains required. Check persist failures, write access, and meter size on each status sample. If Cloud Sync was on before cutover, require the cloud frontier to stay at or beyond its pre-live value. A failed or stale bar is RED. |
-| **4b. Release** | After GREEN, a GREEN probe-only run, an operator abort or a RED end, the driver deletes the trial home (a clone of the seed). |
+| **4b. Release** | The exact owned seed and trial stay through all Loom, proof, and recovery consumers. After consumer closure and driver exit, the operator preserves the public proof and uses the exact-container cleanup route. No sibling sweep runs. |
 | RED | Exit 1. No copy of the primary exists; recovery is the saved binary pair, then `lastdb restore` of the cloud backup. A class, probe or cloud-recovery-point failure leaves the primary unchanged. |
 
 ### Search receipts in a probe copy (history)

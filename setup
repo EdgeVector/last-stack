@@ -15,6 +15,13 @@
 #
 # Re-running is idempotent.
 set -e
+LAST_STACK_SETUP_PRESERVE_SERVICES="${LAST_STACK_SETUP_PRESERVE_SERVICES:-0}"
+case "$LAST_STACK_SETUP_PRESERVE_SERVICES" in
+  0|1) ;;
+  *) echo "LAST_STACK_SETUP_PRESERVE_SERVICES must be 0 or 1" >&2; exit 2 ;;
+esac
+# Nested artifact-layout setup keeps the same opt-in service policy.
+export LAST_STACK_SETUP_PRESERVE_SERVICES
 umask 077
 
 ROOT="$(cd "$(dirname "$0")" && pwd -P)"
@@ -63,7 +70,12 @@ while [ $# -gt 0 ]; do
     --host) HOST="$2"; shift 2 ;;
     --host=*) HOST="${1#*=}"; shift ;;
     --local) LOCAL_INSTALL=1; shift ;;
-    --uninstall) exec "$SOURCE_ROOT/bin/last-stack-uninstall" ;;
+    --uninstall)
+      if [ "$LAST_STACK_SETUP_PRESERVE_SERVICES" -eq 1 ]; then
+        echo "service-preserving setup does not run the uninstaller" >&2
+        exit 2
+      fi
+      exec "$SOURCE_ROOT/bin/last-stack-uninstall" ;;
     -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
@@ -1004,8 +1016,11 @@ echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) ..."
 [ "$INSTALL_AGY"      -eq 1 ] && upsert_harness_instruction_blocks "$HOME/.gemini/config/GEMINI.md" "agy (config)"
 [ "$INSTALL_AGY"      -eq 1 ] && ensure_agy_mcp_servers
 install_host_track_shim
-install_routines_cli
+if [ "$LAST_STACK_SETUP_PRESERVE_SERVICES" -eq 0 ]; then
+  install_routines_cli
+fi
 install_shared_checkout_guards
+if [ "$LAST_STACK_SETUP_PRESERVE_SERVICES" -eq 0 ]; then
 install_host_track_refresh_agent
 
 # Zero-LLM board closeout (merged PR/CR → done) — survives low-credit watch pause.
@@ -1093,6 +1108,9 @@ if [ -x "$SOURCE_ROOT/bin/last-stack-self-upgrade-install" ]; then
     "$SOURCE_ROOT/bin/last-stack-self-upgrade-install" install || \
       echo "  last-stack-self-upgrade LaunchAgent: install failed (non-fatal)" >&2
   fi
+fi
+else
+  echo "  unrelated services and routine registry entries preserved"
 fi
 
 # One rule: when this setup is running from the Host Track artifact, ensure

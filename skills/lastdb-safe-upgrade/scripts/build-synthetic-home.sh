@@ -136,16 +136,17 @@ save_evidence() {
   mkdir -p "$EVIDENCE_ROOT" || return 1
   dir="$(mktemp -d "$EVIDENCE_ROOT/seed-closeout-$stamp.XXXXXX")" || return 1
   chmod 700 "$dir" 2>/dev/null || true
-  printf 'reason=%s\n' "${FAIL_REASON:-none}" >"$dir/reason.txt"
   jq -n --arg container "$OUT" --arg key "$SEED_KEY" \
     --argjson uid "$(id -u)" --argjson keys "$KNOWN_KEYS_VERIFIED" \
     --argjson flushed "$SHUTDOWN_FLUSH_VERIFIED" --argjson reaped "$NODE_REAPED" \
     '{version:1,container:$container,key:$key,owner_uid:$uid,
       known_keys_verified:($keys == 1),shutdown_flush_verified:($flushed == 1),
       owned_child_reaped:($reaped == 1),consumer_release_required:true}' >"$dir/public-closeout.json" || return 1
+  # Private diagnostic text cannot grow the retained proof without a bound.
+  printf 'reason=%s\n' "${FAIL_REASON:-none}" | head -c 4096 >"$dir/reason.txt" || true
   for f in "$BUILD"/*.log "$BUILD"/*.out "$BUILD"/*.err; do
-    [ -f "$f" ] || continue
-    tail -n 200 "$f" >"$dir/$(basename "$f")" 2>/dev/null || true
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    tail -c 65536 "$f" 2>/dev/null | tail -n 200 >"$dir/$(basename "$f")" || true
   done
   log "failure evidence: $dir" >&2
 }

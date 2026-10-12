@@ -333,29 +333,17 @@ if [ "${CHECK_DEV_STAMP:-0}" -eq 1 ]; then
 fi
 
 release_trial_copy() {
-  [ -n "${TRIAL_COPY:-}" ] && [ -d "$TRIAL_COPY" ] && rm -rf "$TRIAL_COPY"
+  if [ -n "${TRIAL_COPY:-}" ] && [ -d "$TRIAL_COPY" ]; then
+    log "owned trial retained until all Loom/proof/recovery consumers close: $TRIAL_COPY"
+    log "after this driver exits, preserve its owner metadata and use lastdb-dev reclaim --home <exact-trial> --exact-home"
+  fi
   TRIAL_READY=0
 }
 
 # There is no rollback copy of the primary (Tom, 2026-10-12). The name stays for
-# the call sites; this releases the trial home, a clone of the synthetic seed.
+# the call sites; this records the trial's required consumer release.
 release_rollback_point() {
   release_trial_copy
-  rmdir "$ROLLBACK_ROOT" 2>/dev/null || true
-}
-
-# A trial home made from the synthetic seed holds nothing worth keeping. Its marker
-# names the seed home as source_home. A trial from an older flow names the PRIMARY
-# home as its source; it does not match here and stays for the explicit cleanup
-# helper (cleanup-retained-upgrade-copy.sh).
-trial_is_seed_clone() {
-  local dir="$1" marker="$1/.safe-upgrade/complete" src root
-  [ -d "$dir" ] && [ ! -L "$dir" ] && [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
-  grep -qx 'kind=trial' "$marker" || return 1
-  src="$(sed -n 's/^source_home=//p' "$marker" | head -1)"
-  root="$(synth_seed_root_default)"
-  case "$src" in "$root"/*/home) return 0 ;; esac
-  return 1
 }
 
 # The BACKUP line of a RED verdict. The driver makes no copy of the primary
@@ -390,16 +378,9 @@ cleanup_work() {
   if type cleanup_upgrade_restart_intent >/dev/null 2>&1; then
     cleanup_upgrade_restart_intent
   fi
-  # The trial home is a clone of the synthetic seed. Remove it on any end. A
-  # trial home from an older flow (a copy of the primary) stays for the explicit
-  # cleanup helper.
-  if [ -n "${TRIAL_COPY:-}" ] && [ -d "$TRIAL_COPY" ]; then
-    if trial_is_seed_clone "$TRIAL_COPY"; then
-      rm -rf "$TRIAL_COPY"
-    elif [ "$rc" -ne 0 ]; then
-      warn "trial copy retained for cleanup-retained-upgrade-copy.sh: $TRIAL_COPY"
-    fi
-  fi
+  # The exact trial stays until the whole Loom execution and its proof/recovery
+  # consumers close. A text source-prefix match cannot authorize deletion.
+  release_trial_copy
   if type safe_upgrade_owner_lock_release >/dev/null 2>&1; then
     safe_upgrade_owner_lock_release "$OWNER_LOCK_DIR" "$OWNER_LOCK_TOKEN" "$OWNER_LOCK_HELD" \
       || warn "owner lock release failed: $OWNER_LOCK_DIR"
@@ -519,9 +500,12 @@ backup_data_is_not_live() {
 }
 
 prepare_rollback_root() {
-  local root_real home_real stale
-  mkdir -p "$ROLLBACK_ROOT"
+  local root_real home_real
   [ ! -L "$ROLLBACK_ROOT" ] || die "rollback root must not be a symlink: $ROLLBACK_ROOT"
+  if [ ! -e "$ROLLBACK_ROOT" ]; then
+    (umask 077; mkdir -p "$ROLLBACK_ROOT") || die "rollback root cannot be created"
+  fi
+  synth_owned_directory "$ROLLBACK_ROOT" || die "rollback root owner or mode is unsafe"
   root_real="$(cd "$ROLLBACK_ROOT" && pwd -P)"
   home_real="$(cd "$HOME" && pwd -P)"
   case "$root_real" in
@@ -529,17 +513,7 @@ prepare_rollback_root() {
       die "rollback root must be ephemeral and outside HOME: $root_real"
       ;;
   esac
-  # A stale trial home made from the synthetic seed is removed. A copy of the
-  # primary from an older flow needs the explicit cleanup helper first.
-  for stale in "$ROLLBACK_ROOT"/trial-* "$ROLLBACK_ROOT"/*.incomplete; do
-    [ -e "$stale" ] || [ -L "$stale" ] || continue
-    if trial_is_seed_clone "$stale"; then
-      log "rollback: removing a stale trial home made from the synthetic seed: $stale"
-      rm -rf "$stale" || die "could not remove the stale seed trial home: $stale"
-      continue
-    fi
-    die "a retained copy of the primary home from an older flow needs cleanup (cleanup-retained-upgrade-copy.sh) before another trial: $stale"
-  done
+  # Select only this run's fresh exact path. Never inspect or delete siblings.
 }
 
 rss_mb_of_pid() {
@@ -1655,38 +1629,21 @@ CLOUD_RECOVERY_FRONTIER=""
 CLOUD_RECOVERY_MAX_AGE_SECS="${LASTDB_CLOUD_RECOVERY_MAX_AGE_SECS:-300}"
 
 cloud_recovery_point_preflight() {
-  local status="$WORK/pre-stop-cloud-status.json" reason age
+  local status="$WORK/pre-stop-cloud-status.json" result reason age
   case "$CLOUD_RECOVERY_MAX_AGE_SECS" in ''|*[!0-9]*) die "LASTDB_CLOUD_RECOVERY_MAX_AGE_SECS must be a whole number" ;; esac
+  (umask 077; set -C; : >"$status") \
+    || die "cloud recovery status path already exists or is unsafe; the primary was not stopped"
   curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
     -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
     http://x/api/status >"$status" 2>/dev/null \
     || die "cloud recovery point: primary status is unavailable; the primary was not stopped"
-  reason="$(jq -r --argjson max_age "$CLOUD_RECOVERY_MAX_AGE_SECS" '
-    .status.sync as $s
-    | if .ok != true then "status-not-ok"
-      elif $s.enabled != true then "cloud-sync-disabled"
-      elif $s.state != "Syncing" then "cloud-sync-state-" + ($s.state | tostring)
-      elif $s.sync_degraded != false then "cloud-sync-degraded"
-      elif ($s.consecutive_sync_failures // 1) != 0 then "cloud-sync-failing"
-      elif $s.last_error != null then "cloud-sync-last-error"
-      elif $s.replay_blocker != null then "cloud-replay-blocker"
-      elif $s.mutation_log_active != true then "mutation-log-inactive"
-      elif ($s.mutation_log_frontier_f | type) != "number" then "frontier-unavailable"
-      elif ($s.mutation_log_published_through | type) != "number" then "published-through-unavailable"
-      elif $s.mutation_log_published_through < $s.mutation_log_frontier_f then "frontier-not-published"
-      elif $s.mutation_log_lag_degraded != false then "mutation-log-lag-degraded"
-      elif ($s.upload_queue_count // 1) != 0 or ($s.pending_count // 1) != 0 or ($s.durable_outbox_count // 1) != 0 then "upload-backlog"
-      elif ($s.mutation_log_recovery_point_age_secs | type) != "number" then "recovery-point-age-unavailable"
-      elif $s.mutation_log_recovery_point_age_secs > $max_age then "recovery-point-stale"
-      else "ok" end
-  ' "$status" 2>/dev/null || echo "status-unreadable")"
-  [ "$reason" = ok ] \
-    || die "cloud recovery point is not current ($reason); the primary was not stopped. The live cutover makes no copy of the primary (Tom, 2026-10-12) and needs a current cloud backup instead"
-  CLOUD_RECOVERY_FRONTIER="$(jq -er '.status.sync.mutation_log_published_through' "$status")" \
-    || die "cloud recovery point: published frontier is unreadable"
-  age="$(jq -er '.status.sync.mutation_log_recovery_point_age_secs' "$status")" \
-    || die "cloud recovery point: age is unreadable"
-  log "cloud recovery point: published_through=$CLOUD_RECOVERY_FRONTIER age=${age}s; no copy of the primary is made"
+  result="$(python3 "$_SCRIPT_DIR/cloud-recovery-status.py" --status "$status" \
+    --max-age-secs "$CLOUD_RECOVERY_MAX_AGE_SECS")" \
+    || die "cloud recovery status refused; the primary was not stopped"
+  read -r reason CLOUD_RECOVERY_FRONTIER age <<< "$result"
+  [ "$reason" = ok ] && [ -n "$CLOUD_RECOVERY_FRONTIER" ] && [ -n "$age" ] \
+    || die "cloud recovery status result is unsupported; the primary was not stopped"
+  log "sampled cloud recovery point covers the local durable frontier: published_through=$CLOUD_RECOVERY_FRONTIER age=${age}s; later or unflushed writes are not covered by this sample"
 }
 
 # Runs after the strict stop. Nothing is copied. The saved binary pair and the
@@ -2215,6 +2172,9 @@ step1_trial_home() {
   log "STEP 1/4: trial home from the synthetic seed → $TRIAL_COPY"
   CP_RC=0
   probe_clone_entry "$SYNTH_SEED_DIR/home" "$TRIAL_COPY" 2>"$WORK/trial-clone.err" || CP_RC=$?
+  if [ -d "$TRIAL_COPY" ] && [ ! -L "$TRIAL_COPY" ]; then
+    synth_mark_trial_owner "$TRIAL_COPY" || trial_clone_red "the trial owner marker could not be written"
+  fi
   if [ "$CP_RC" -ne 0 ]; then
     trial_clone_red "the synthetic trial home could not be cloned from the seed (cp exit=$CP_RC)"
   fi
@@ -2426,7 +2386,7 @@ if [ "$PROBE_ONLY" -eq 1 ]; then
   echo "VERDICT: GREEN_PROBE_ONLY"
   echo "SUMMARY: candidate $CAND_VER boots and serves a CoW of $PROBE_DATA_LABEL; peak_rss_mb=${PROBE_RSS_MB} under guard limit=$(resolve_rss_limit_mb); latency within bar. Primary left on $CURRENT_VER."
   echo "PROBE_DATA: $PROBE_DATA"
-  echo "TRIAL_COPY: released (probe GREEN; primary untouched)"
+  echo "TRIAL_COPY: retained until all Loom/proof/recovery consumers close (probe GREEN; primary untouched)"
   echo "RSS:     peak_mb=${PROBE_RSS_MB} limit_mb=$(resolve_rss_limit_mb) fail_at_mb=$(rss_fail_threshold_mb "$(resolve_rss_limit_mb)")"
   echo "LATENCY: cold_point=${CAND_LAT_COLD_POINT_MS}ms(base ${BASE_LAT_COLD_POINT_MS}ms) cold_scan=${CAND_LAT_COLD_SCAN_MS}ms(base ${BASE_LAT_COLD_SCAN_MS}ms) hot_point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) hot_scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) boot=${CAND_BOOT_SECS}s(base ${BASE_BOOT_SECS:-?}s)"
   echo "ROWCOUNT: point cand=${CAND_ROWS_POINT}(base ${BASE_ROWS_POINT}) scan cand=${CAND_ROWS_SCAN}(base ${BASE_ROWS_SCAN})"
@@ -2551,13 +2511,13 @@ if [ "$ASSUME_YES" -eq 0 ]; then
     echo "  brew services restart lastdb"
   fi
   echo "  post-check live /health + Board title"
-  echo "Candidate trial copy: $TRIAL_COPY (released if the operator aborts)"
+  echo "Candidate trial copy: $TRIAL_COPY (retained until all Loom/proof/recovery consumers close, including an operator abort)"
   echo "No copy of the primary is made. Recovery point: current cloud backup + saved binary pair."
   printf "Proceed with LIVE upgrade? [y/N] "
   read -r ans
   case "$ans" in
     y|Y|yes|YES) ;;
-    *) release_rollback_point; log "aborted by user; primary still on $CURRENT_VER; trial copy released"; exit 0 ;;
+    *) release_rollback_point; log "aborted by user; primary still on $CURRENT_VER; trial retained for closed-consumer cleanup"; exit 0 ;;
   esac
 fi
 
@@ -2918,7 +2878,7 @@ for cand in \
 do
   [ -x "$cand" ] && POST_NOTICE="$cand" && break
 done
-NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} with lastdb=${INSTALLED_CLI:-?} venue=${VENUE} cutover_s=${CUTOVER_SECS}; real-copy reads and live status passed; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone."
+NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} with lastdb=${INSTALLED_CLI:-?} venue=${VENUE} cutover_s=${CUTOVER_SECS}; synthetic seed reads, exact DEV restore and live status passed; no copy of the primary; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone."
 
 if [ -n "$POST_NOTICE" ]; then
   if "$POST_NOTICE" \
@@ -2958,7 +2918,7 @@ else
   warn "situations CLI not on PATH — skipped agent-impact notice for this upgrade"
 fi
 
-# GREEN is terminal. Release the trial home (a clone of the synthetic seed).
+# GREEN is terminal. Record the trial's required closed-consumer cleanup.
 release_rollback_point
 
 last_stack_root="$(printenv LAST_STACK_ROOT || printf '%s' "$HOME/.last-stack")"
@@ -2972,7 +2932,7 @@ fi
 
 echo ""
 echo "VERDICT: GREEN"
-echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED and lastdb → ${INSTALLED_CLI:-?}; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + live Board read OK; probe_rss_mb=${PROBE_RSS_MB:-?} live_rss_mb=${LIVE_RSS_MB:-?} limit_mb=$(resolve_rss_limit_mb); trial home released"
+echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED and lastdb → ${INSTALLED_CLI:-?}; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + live Board read OK; probe_rss_mb=${PROBE_RSS_MB:-?} live_rss_mb=${LIVE_RSS_MB:-?} limit_mb=$(resolve_rss_limit_mb); trial retained for closed-consumer cleanup"
 echo "LATENCY: probe point/scan=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}ms baseline=${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}ms live_point=${LIVE_LAT_POINT_MS:-?}ms live_scan=${LIVE_LAT_SCAN_MS:-?}ms"
 echo ""
 echo "ROLLBACK (binary only, if new binary misbehaves but data is fine):"
