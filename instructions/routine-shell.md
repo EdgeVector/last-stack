@@ -29,6 +29,12 @@ fix, and the command does not run.
 
 Hazards that no guard can see:
 
+- A Bash call with no explicit `timeout` silently moves to background at the
+  tool's 120000ms default, even inside a scheduled dispatch whose single-turn
+  contract requires every long-running command to stay foreground. There is
+  no error or warning when this happens. Pass `timeout` explicitly (up to
+  600000ms) on every poll, wait, or CI-watch command, sized to its own worst
+  case — not the default.
 - The Codex routine shell is already bash. Do not wrap a command in
   `bash -lc '...'`: the nested single quotes break `$'\t'`, heredocs and
   backticks.
