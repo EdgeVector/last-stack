@@ -134,9 +134,13 @@ writes on a fresh empty home (`scripts/build-synthetic-home.sh`). The candidate
 must read what the installed daemon wrote, so the baseline writes the seed. The
 builder copies only `identity.key` and `.bootstrap_done` from the primary (two
 small files, never printed), so the DEV photograph registers the same identity.
-It registers the kanban and brain schemas through the apps' own `init`, writes a
-milestone, 10 cards and 8 brain records, stops the baseline, reboots it, and
-verifies the todo list and the `Board` title before it marks the seed complete.
+It registers the kanban and brain schemas through the apps' own `init`.
+It collects all record and membership keys before one durable native batch.
+The default seed has one milestone, 10 cards and 8 brain records.
+The builder stops and reaps the baseline, then reboots it.
+One query batch verifies every known key and every requested field.
+Both stops require the exact native clean session and shutdown flush receipt.
+The completion marker receives a file flush and a directory flush.
 The kanban and brain CLIs use a seed-owned `HOME` (`cli-home`), because the seed
 pins different schema hashes than the primary.
 
@@ -144,9 +148,36 @@ The seed is cached per key under `/tmp/lastdb-safe-upgrade-synthetic-<uid>/`
 (override: `LASTDB_SYNTHETIC_SEED_ROOT`). The key covers the baseline bytes, the
 identity hash, the live tuning flags, the kanban and brain versions, the data
 sizes, and the generator version. A cache hit builds nothing. A new baseline
-builds a new seed (about 2 to 4 minutes, because each write waits for a durable
-persist) and the driver removes the older seeds. The seed is about 60 MB.
+builds a new seed. An existing incomplete or foreign seed path refuses.
+The driver never sweeps or replaces cache siblings. Counts are bounded to 64
+cards and 64 Brain records for the single complete batch.
 The build needs the network (schema service).
+
+CAUTION: Keep the exact seed through every PROBE, CUTOVER and recovery consumer.
+The operator closes their current and future uses before seed cleanup.
+This also applies to failed builds. A failed or forced stop gives no completion proof.
+The builder retains a fixed public closeout outside the owned container.
+Raw app and daemon logs stay private.
+
+After consumer closure, preserve that closeout and bind the exact current
+container path, owner UID, mode, device and inode from its owner marker.
+Use a fresh unique `LASTDB_DEV_HOME` and `LASTDB_DEV_STATE` for the cleanup tool.
+Run the normal exact-container preview, then the real change:
+
+```bash
+lastdb-dev reclaim --home "$owned_seed_container" --exact-home --dry-run
+lastdb-dev reclaim --home "$owned_seed_container" --exact-home
+```
+
+The opt-in route requires the native synthetic owner marker and refuses the
+primary, its descendants, or a container that contains it.
+It checks canonical and macOS alias daemon arguments and complete descendant
+open-file use. It refuses an incomplete process or file-use check.
+It deletes only the named container and confirms its absence.
+It never selects `.clone-*`, `.old-*`, other seeds or other builds.
+Preserve the preview, execution and final absence result outside the container.
+The file-use check is current evidence; the explicit consumer closure protects future use.
+An unknown deletion result stops the sequence for review.
 
 Each run then clones the seed into a fresh trial home under
 `${TMPDIR}/lastdb-safe-upgrade-rollback-<uid>/trial-<new>-from-<old>-<ts>/` and

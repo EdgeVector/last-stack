@@ -2194,7 +2194,8 @@ if [ "$SEED_RC" -ne 0 ] || [ -z "$SYNTH_SEED_DIR" ]; then
   exit 1
 fi
 log "synthetic probe data ready after $(( $(date +%s) - seed_started ))s: $SYNTH_SEED_DIR"
-synth_seed_reclaim_others "$SEED_ROOT" "$SEED_KEY" >/dev/null || true
+# Keep this exact seed through PROBE and CUTOVER. The operator releases its
+# owned container only after all proof and recovery consumers close.
 PROBE_DATA_LABEL="the synthetic seed ($(synth_meta_value "$SYNTH_SEED_DIR/seed.meta" cards) cards, $(synth_meta_value "$SYNTH_SEED_DIR/seed.meta" records) records)"
 log "candidate data: a fresh copy of $PROBE_DATA_LABEL"
 
