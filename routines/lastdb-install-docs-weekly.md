@@ -102,7 +102,7 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 
 - Skill: `lastdb-install-docs-weekly`
 - Smoke script: skill `llms-txt-install-smoke`
-- Distinct from real-data Mini canary: `lastdb-local-smoke-test`
+- Distinct from the synthetic-data Mini canary: `lastdb-local-smoke-test`
 
 ## Close-out (always the LAST step)
 

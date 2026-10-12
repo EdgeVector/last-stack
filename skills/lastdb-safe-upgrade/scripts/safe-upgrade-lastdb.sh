@@ -2,13 +2,19 @@
 #
 # Safe LastDB Mini upgrade against Tom's PRIMARY brain home.
 #
+# NO COPY OF THE PRIMARY DATABASE (Tom, 2026-10-12): no probe copies the primary
+# home or boots a node on a copy of it. Every probe runs on SYNTHETIC data: a
+# small seed that the installed (baseline) daemon wrote on a fresh empty home.
+# There is no real-data mode. Brain:
+# decision-2026-10-12-never-run-copies-of-primary-database-use-synthetic-data
+#
 # ALWAYS:
-#   1. Create a fresh ephemeral CoW trial copy from the current primary
-#      outside $HOME before any candidate check.
-#   2. Boot the CANDIDATE lastdbd against a separate copy of that trial copy.
+#   1. Prepare the trial home from the synthetic seed outside $HOME before any
+#      candidate check. The seed is cached per key; most runs build nothing.
+#   2. Boot the CANDIDATE lastdbd against a separate copy of that trial home.
 #      The candidate never boots on the live primary home.
 #   3. Require GREEN (identity decrypts, schemas load, keyed Board and
-#      BoardCards reads return valid real-data responses)
+#      BoardCards reads return valid responses from the seed)
 #      AND probe RSS stays under the memory-guard ceiling (so live cutover
 #      does not immediately thrash-restart under lastdbd-memory-guard)
 #      AND the LATENCY BAR: real workloads on the candidate copy must not
@@ -25,7 +31,7 @@
 #      debug paths (target/debug), -dirty version stamps, and binaries
 #      ≫ incumbent size (debug/unstripped) before any backup or probe
 #      AND the DEV PHOTOGRAPH STAMP GATE (Tom 2026-08-19): live cutover is
-#      refused unless an ephemeral/CoW copy of real data uploaded a
+#      refused unless a copy of the synthetic seed uploaded a
 #      photograph to DEV (not the primary's production backup home) and
 #      CAS-flipped backup/latest. Never point the candidate at live ~/.lastdb
 #      for that upload. The exact DEV manifest must restore into a new home
@@ -39,7 +45,8 @@
 #
 # NEVER:
 #   - Run the candidate against the live ~/.lastdb before probe is GREEN
-#   - Treat the live trial copy as the rollback point
+#   - Treat the synthetic trial home as the rollback point
+#   - Copy the primary home for a probe, or boot a node on a copy of it
 #   - Install only lastdbd without the sibling lastdb CLI from the same build
 #   - Kill/restart the primary on a RED probe
 #   - brew upgrade when formula is not installed / primary is sidebin+launchd
@@ -49,8 +56,6 @@
 # Usage:
 #   safe-upgrade-lastdb.sh --probe-only     # probe only (no live install)
 #   safe-upgrade-lastdb.sh --candidate /path/to/lastdbd --probe-only
-#   safe-upgrade-lastdb.sh --candidate /path/to/lastdbd --probe-only --data real
-#                                           # fresh real primary copy
 #   safe-upgrade-lastdb.sh --version 0.22.8 # fetch that tap release tarball
 #   safe-upgrade-lastdb.sh --check-dev-stamp  # refuse/allow live based on DEV photograph receipt only
 #
@@ -59,8 +64,9 @@
 # Env (ephemeral trial copy and rollback):
 #   LASTDB_ROLLBACK_ROOT=<path>    # defaults under TMPDIR, never under $HOME
 #   LASTDB_ROLLBACK_TTL_HOURS=24   # RED retention metadata; explicit cleanup
-# Env (candidate data):
-#   LASTDB_SAFE_UPGRADE_DATA=real             # fresh current primary copy
+# Env (probe data; synthetic is the only mode):
+#   LASTDB_SYNTHETIC_SEED_ROOT=<path>         # seed cache; defaults under /tmp
+#   LASTDB_SYNTHETIC_CARDS / _RECORDS         # seed size (changes the seed key)
 #
 set -euo pipefail
 
@@ -142,8 +148,9 @@ LAUNCHD_PLIST="${LASTDB_LAUNCHD_PLIST:-$HOME/Library/LaunchAgents/${LAUNCHD_LABE
 PROBE_ONLY=0
 ASSUME_YES=0
 CHECK_DEV_STAMP=0
-# The deployment check uses the primary's real data on an isolated copy.
-PROBE_DATA="${LASTDB_SAFE_UPGRADE_DATA:-real}"
+# Probe data is synthetic. No mode copies the primary home (Tom, 2026-10-12).
+# Validated once synthetic-home-checks.sh is sourced.
+PROBE_DATA="${LASTDB_SAFE_UPGRADE_DATA:-synthetic}"
 CANDIDATE_BIN=""
 CANDIDATE_CLI_BIN=""
 TARGET_VERSION=""
@@ -268,6 +275,8 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/probe-copy-guards.sh"
 # shellcheck source=live-lastdb-env.sh
 . "$_SCRIPT_DIR/live-lastdb-env.sh"
+# shellcheck source=synthetic-home-checks.sh
+. "$_SCRIPT_DIR/synthetic-home-checks.sh"
 # shellcheck source=dev-photograph-stamp-gate.sh
 . "$_SCRIPT_DIR/dev-photograph-stamp-gate.sh"
 # shellcheck source=launchd-job-checks.sh
@@ -281,13 +290,20 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 # shellcheck source=deadline.sh
 . "$_SCRIPT_DIR/deadline.sh"
 DEV_PHOTOGRAPH_PROOF_SH="$_SCRIPT_DIR/dev-photograph-candidate-proof.sh"
-if [ "$PROBE_DATA" != "real" ]; then
-  echo "safe upgrade requires --data real" >&2
-  exit 2
-fi
-# Every candidate copy starts from this run's fresh primary trial copy.
-PROBE_SOURCE_HOME="$PRIMARY_HOME"
+SYNTH_BUILD_SH="$_SCRIPT_DIR/build-synthetic-home.sh"
+synth_data_mode_valid "$PROBE_DATA" \
+  || { echo "unknown --data value: ${PROBE_DATA:-<empty>}. The only mode is synthetic. Tom, 2026-10-12: never copy or run a copy of the primary database." >&2; exit 2; }
+SYNTH_CARDS="${LASTDB_SYNTHETIC_CARDS:-$SYNTH_DEFAULT_CARDS}"
+SYNTH_RECORDS="${LASTDB_SYNTHETIC_RECORDS:-$SYNTH_DEFAULT_RECORDS}"
+synth_count_valid "$SYNTH_CARDS" && synth_count_valid "$SYNTH_RECORDS" \
+  || { echo "LASTDB_SYNTHETIC_CARDS and LASTDB_SYNTHETIC_RECORDS must be positive integers" >&2; exit 2; }
+# Every candidate copy starts from this run's trial home, a copy of the
+# synthetic seed. PROBE_CLI_HOME is the HOME that kanban and brain use on a probe
+# copy. The seed pins schema hashes that differ from the primary's, so the
+# ambient HOME would read the wrong config.
+PROBE_SOURCE_HOME=""
 PROBE_CLI_HOME=""
+SYNTH_SEED_DIR=""
 
 if [ "${CHECK_DEV_STAMP:-0}" -eq 1 ]; then
   DEV_BINDING_OUT=""
@@ -489,27 +505,6 @@ backup_essentials_ok() {
   [ -e "$root/data/db" ] || [ -d "$root/data/data" ] || [ -d "$root/data/laststore" ]
 }
 
-trial_clone_socket_errors_only() {
-  local line seen=0
-  # cp can refuse the live Unix socket, or lose that exact socket during a
-  # daemon restart. A vanished regular or CAS file is not an allowed race.
-  [ -s "$WORK/trial-clone.err" ] || return 1
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      "cp: $PRIMARY_HOME/data/folddb.sock is a socket (not copied)."|\
-      "cp: $PRIMARY_HOME/data/folddb-full.sock is a socket (not copied)."|\
-      "cp: $PRIMARY_SOCK: Operation not supported"|\
-      "cp: $PRIMARY_SOCK: No such file or directory"|\
-      "cp: cannot copy a socket file: '$PRIMARY_SOCK'"|\
-      "cp: $PRIMARY_HOME/data/folddb-full.sock: Operation not supported"|\
-      "cp: $PRIMARY_HOME/data/folddb-full.sock: No such file or directory"|\
-      "cp: cannot copy a socket file: '$PRIMARY_HOME/data/folddb-full.sock'")
-        seen=$((seen + 1)) ;;
-      *) return 1 ;;
-    esac
-  done <"$WORK/trial-clone.err"
-  [ "$seen" -gt 0 ]
-}
 
 trial_clone_red() {
   local reason="$1" evidence
@@ -1039,8 +1034,8 @@ stop_probe_node() {
   remove_probe_copy "$copy" "$blog" || return 1
 }
 
-# A deployment check reads real data on a copy with the exact candidate.
-# It does not create synthetic records or mutate the copy.
+# A deployment check boots the exact candidate on a copy of the synthetic seed.
+# It writes nothing to the copy.
 candidate_deployment_check() {
   local copy pid sock blog schemas query cards status before after ready=0 i rss peak=0
   case "$RSS_SETTLE_SECS" in ''|*[!0-9]*) warn "the candidate memory settle interval is invalid"; return 1 ;; esac
@@ -1083,7 +1078,7 @@ candidate_deployment_check() {
         and ((.results[0].fields.title // .results[0].title // "") | length) > 0
         and (.unresolved_rows // 0) == 0
       ' "$query" >/dev/null 2>&1; then
-    warn "the candidate did not serve the keyed Board read from a real copy"
+    warn "the candidate did not serve the keyed Board read from the synthetic seed"
     stop_probe_node "$pid" "$copy" "$blog" || true
     return 1
   fi
@@ -1093,7 +1088,7 @@ candidate_deployment_check() {
         kanban list --board default --column todo --json >"$cards" 2>/dev/null \
       || ! jq -e '(.cards | type == "array") and (.cards | length > 0)' \
         "$cards" >/dev/null 2>&1; then
-    warn "the candidate did not serve the keyed BoardCards read from a real copy"
+    warn "the candidate did not serve the keyed BoardCards read from the synthetic seed"
     stop_probe_node "$pid" "$copy" "$blog" || true
     return 1
   fi
@@ -1139,7 +1134,7 @@ candidate_deployment_check() {
     warn "the primary process changed during the deployment check"
     return 1
   fi
-  log "deployment check GREEN: candidate booted a real copy and served keyed Board and BoardCards reads"
+  log "deployment check GREEN: candidate booted a copy of the synthetic seed and served keyed Board and BoardCards reads"
 }
 
 # Boot candidate and baseline CoWs together. Cold fetch = first query after
@@ -1991,9 +1986,21 @@ live_install_sidebin() {
 }
 
 resolve_live_primary_pid() {
-  local pid=""
-  if [ -S "$PRIMARY_SOCK" ]; then
-    pid="$(lsof -t "$PRIMARY_SOCK" 2>/dev/null | head -1 || true)"
+  local pid="" sess="$PRIMARY_HOME/current-session.json" cmd
+  # The node writes its own pid to its session record. `lsof -t` on the socket
+  # also lists every CLIENT that holds a connection, so its first pid can be a
+  # client; that read the primary as "changed" while only a client came and went
+  # (2026-10-12, papercut-safe-upgrade-primary-pid-lsof-picks-socket-clients).
+  if [ -f "$sess" ] && [ ! -L "$sess" ]; then
+    pid="$(jq -r '.pid // empty' "$sess" 2>/dev/null || true)"
+    case "$pid" in ''|*[!0-9]*) pid="" ;; esac
+    if [ -n "$pid" ]; then
+      cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+      case "$cmd" in *lastdbd*) ;; *) pid="" ;; esac
+    fi
+  fi
+  if [ -z "$pid" ] && [ -S "$PRIMARY_SOCK" ]; then
+    pid="$(lsof -a -t -c lastdbd "$PRIMARY_SOCK" 2>/dev/null | head -1 || true)"
   fi
   if [ -z "$pid" ]; then
     pid="$(pgrep -f "$SIDEBIN_DIR/lastdbd\$|$SIDEBIN_DIR/lastdbd " 2>/dev/null | head -1 || true)"
@@ -2037,7 +2044,7 @@ else
 fi
 [ -n "$CURRENT_VER" ] || die "cannot read current lastdbd --version (is brew lastdb installed?)"
 log "current lastdbd: $CURRENT_VER"
-log "primary home:    $PRIMARY_HOME ($(du -sh "$PRIMARY_HOME" 2>/dev/null | awk '{print $1}'))"
+log "primary home:    $PRIMARY_HOME (read only; never copied)"
 
 if [ -S "$PRIMARY_SOCK" ]; then
   if ! curl -sS --max-time 5 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/health \
@@ -2205,81 +2212,106 @@ if [ "$CLASS_RC" -ne 0 ]; then
 fi
 log "candidate class GREEN: path/version/size ok (vs baseline ${BASELINE_FOR_CLASS:-none})"
 
-# --- 0b) candidate data ------------------------------------------------------
-PROBE_DATA_LABEL="the primary home (real data)"
+# --- 0b) probe data: the synthetic seed ----------------------------------------
+# A small home that the BASELINE daemon wrote on a fresh empty home. The
+# candidate must read what the installed daemon wrote, so the baseline writes it.
+# The seed is cached per key, so most runs build nothing. No step below copies
+# the primary home or boots a node on a copy of it (Tom, 2026-10-12).
+PROBE_DATA_LABEL="the synthetic seed"
+SEED_ROOT="$(synth_seed_root_default)"
+[ -n "$BASELINE_FOR_CLASS" ] && [ -x "$BASELINE_FOR_CLASS" ] \
+  || die "synthetic probe data needs the baseline daemon (the binary the primary runs) and none was found; set LASTDB_PROBE_BASELINE_BIN"
+SEED_KEY_RC=0
+SEED_KEY="$(synth_seed_key_for "$BASELINE_FOR_CLASS" "$PRIMARY_HOME" "$LAUNCHD_PLIST" \
+  "$SYNTH_CARDS" "$SYNTH_RECORDS")" || SEED_KEY_RC=$?
+case "$SEED_KEY_RC" in
+  0) ;;
+  2) die "synthetic probe data: cannot identify the installed kanban CLI" ;;
+  3) die "synthetic probe data: cannot identify the installed brain CLI" ;;
+  *) die "synthetic probe data: cannot compute the seed key" ;;
+esac
+log "synthetic probe data: seed key $SEED_KEY (baseline $CURRENT_VER, cards=$SYNTH_CARDS records=$SYNTH_RECORDS, root $SEED_ROOT)"
+seed_started="$(date +%s)"
+set +e
+SYNTH_SEED_DIR="$(synth_seed_ensure "$SEED_ROOT" "$SEED_KEY" bash "$SYNTH_BUILD_SH" \
+  --baseline-bin "$BASELINE_FOR_CLASS" --identity-from "$PRIMARY_HOME" \
+  --cards "$SYNTH_CARDS" --records "$SYNTH_RECORDS" --live-env-plist "$LAUNCHD_PLIST")"
+SEED_RC=$?
+set -e
+if [ "$SEED_RC" -ne 0 ] || [ -z "$SYNTH_SEED_DIR" ]; then
+  echo ""
+  echo "VERDICT: RED"
+  echo "REASON: synthetic probe data could not be prepared: the baseline $CURRENT_VER did not write a usable seed. No bar ran. The primary is untouched."
+  echo "NEXT:   read the [synthetic-home] lines above and the evidence under ~/.local/state/last-stack/lastdb-safe-upgrade/synthetic-build-failures/. The seed build needs the network (schema service). Do not copy the primary home."
+  exit 1
+fi
+log "synthetic probe data ready after $(( $(date +%s) - seed_started ))s: $SYNTH_SEED_DIR"
+synth_seed_reclaim_others "$SEED_ROOT" "$SEED_KEY" >/dev/null || true
+PROBE_DATA_LABEL="the synthetic seed ($(synth_meta_value "$SYNTH_SEED_DIR/seed.meta" cards) cards, $(synth_meta_value "$SYNTH_SEED_DIR/seed.meta" records) records)"
 log "candidate data: a fresh copy of $PROBE_DATA_LABEL"
 
-# --- 1) ephemeral CoW trial copy ---------------------------------------------
+# --- 1) trial home from the seed -----------------------------------------------
 
-# The trial copy supplies real data for the candidate and DEV proof.
-step1_trial_copy() {
+# The trial home supplies the data for the candidate and DEV proof. It is a
+# clone of the small seed, never of the primary home.
+step1_trial_home() {
   local stable marker_tmp
   prepare_rollback_root
   TS="$(date -u +%Y%m%dT%H%M%SZ)"
   TRIAL_COPY="$ROLLBACK_ROOT/trial-${CAND_VER}-from-${CURRENT_VER}-${TS}"
   [ ! -e "$TRIAL_COPY" ] && [ ! -L "$TRIAL_COPY" ] \
-    || die "the new trial path already exists; refusing a stale primary copy"
-  # A prior rollback point may protect an earlier failed run. Keep it until
-  # its own cleanup. This run always reads a new copy of the current primary.
-  # A live primary can race with this copy. Only the runtime socket may be
-  # absent. A missing regular or CAS file makes this copy unusable.
-  log "STEP 1/4: fresh ephemeral CoW trial copy → $TRIAL_COPY"
-  set +e
-  if stat --version >/dev/null 2>&1; then
-    cp -R "$PRIMARY_HOME" "$TRIAL_COPY" 2>"$WORK/trial-clone.err"
-  else
-    cp -cR "$PRIMARY_HOME" "$TRIAL_COPY" 2>"$WORK/trial-clone.err"
+    || die "the new trial path already exists; refusing a stale trial home"
+  probe_copy_is_not_primary "$TRIAL_COPY" "$PRIMARY_HOME" \
+    || die "the trial path overlaps the primary home; refusing"
+  log "STEP 1/4: trial home from the synthetic seed → $TRIAL_COPY"
+  CP_RC=0
+  probe_clone_entry "$SYNTH_SEED_DIR/home" "$TRIAL_COPY" 2>"$WORK/trial-clone.err" || CP_RC=$?
+  if [ "$CP_RC" -ne 0 ]; then
+    trial_clone_red "the synthetic trial home could not be cloned from the seed (cp exit=$CP_RC)"
   fi
-  CP_RC=$?
-  set -e
-  if [ "$CP_RC" -ne 0 ] || [ -s "$WORK/trial-clone.err" ]; then
-    trial_clone_socket_errors_only \
-      || trial_clone_red "CoW trial clone has an unexpected cp error"
-  fi
+  rm -f "$TRIAL_COPY"/data/*.sock 2>/dev/null || true
   backup_essentials_ok "$TRIAL_COPY" \
-    || trial_clone_red "CoW trial clone lacks a required durable file"
+    || trial_clone_red "the synthetic trial home lacks a required durable file"
   [ ! -L "$TRIAL_COPY" ] && [ ! -L "$TRIAL_COPY/data" ] \
-    || trial_clone_red "CoW trial clone resolved to a symlink"
+    || trial_clone_red "the synthetic trial home resolved to a symlink"
   backup_data_is_not_live "$TRIAL_COPY" \
-    || trial_clone_red "CoW trial clone data aliases the live primary"
-  for stable in identity.key .bootstrap_done data/.device_id; do
+    || trial_clone_red "the synthetic trial home data aliases the live primary"
+  for stable in identity.key .bootstrap_done; do
     [ ! -L "$TRIAL_COPY/$stable" ] && cmp -s "$PRIMARY_HOME/$stable" "$TRIAL_COPY/$stable" \
-      || trial_clone_red "CoW trial clone has a missing or changed stable file"
+      || trial_clone_red "the synthetic trial home has a missing or changed identity file"
   done
   mkdir -p "$TRIAL_COPY/.safe-upgrade" \
-    || trial_clone_red "CoW trial clone marker directory cannot be created"
+    || trial_clone_red "the trial home marker directory cannot be created"
   [ -d "$TRIAL_COPY/.safe-upgrade" ] && [ ! -L "$TRIAL_COPY/.safe-upgrade" ] \
     && [ ! -e "$TRIAL_COPY/.safe-upgrade/complete" ] \
-    || trial_clone_red "CoW trial clone marker path is unsafe"
+    || trial_clone_red "the trial home marker path is unsafe"
   marker_tmp="$(umask 077; mktemp "$TRIAL_COPY/.safe-upgrade/.complete.XXXXXX")" \
-    || trial_clone_red "CoW trial clone completion marker cannot be created"
+    || trial_clone_red "the trial home completion marker cannot be created"
   if ! printf 'kind=trial\nsource_home=%s\ncreated_at=%s\ncp_exit=%s\n' \
-      "$PRIMARY_HOME" "$TS" "$CP_RC" >"$marker_tmp" \
+      "$SYNTH_SEED_DIR/home" "$TS" "$CP_RC" >"$marker_tmp" \
     || ! chmod 600 "$marker_tmp" \
     || ! mv "$marker_tmp" "$TRIAL_COPY/.safe-upgrade/complete"; then
-    trial_clone_red "CoW trial clone completion marker cannot be written"
+    trial_clone_red "the trial home completion marker cannot be written"
   fi
   TRIAL_READY=1
-  log "trial: CoW clone ready (cp exit=$CP_RC; only runtime socket errors accepted)"
-  if [ "$CP_RC" -ne 0 ] && [ -s "$WORK/trial-clone.err" ]; then
-    log "trial: non-fatal cp notes (first 5 lines):"
-    head -5 "$WORK/trial-clone.err" | while IFS= read -r line; do log "  $line"; done
-  fi
-  log "trial copy ok ($(du -sh "$TRIAL_COPY" 2>/dev/null | awk '{print $1}'))"
+  log "trial home ok ($(du -sh "$TRIAL_COPY" 2>/dev/null | awk '{print $1}'))"
 }
 
-step1_trial_copy
+step1_trial_home
 
-if [ "$PROBE_DATA" = "real" ]; then
-  [ -n "$TRIAL_COPY" ] && [ "$TRIAL_READY" -eq 1 ] \
-    || die "the real-data deployment check needs a complete trial copy"
-  PROBE_SOURCE_HOME="$TRIAL_COPY"
-  candidate_deployment_check \
-    || die "the candidate failed the real-data deployment check; the primary is unchanged"
-fi
+[ -n "$TRIAL_COPY" ] && [ "$TRIAL_READY" -eq 1 ] \
+  || die "the deployment check needs a complete synthetic trial home"
+PROBE_SOURCE_HOME="$TRIAL_COPY"
+# kanban and brain read their own config for the seed. One CLI home per run,
+# cloned from the seed.
+PROBE_CLI_HOME="$WORK/cli-home"
+probe_clone_entry "$SYNTH_SEED_DIR/cli-home" "$PROBE_CLI_HOME" \
+  || die "cannot clone the seed CLI home"
+candidate_deployment_check \
+  || die "the candidate failed the deployment check on the synthetic seed; the primary is unchanged"
 
-# The candidate already booted a fresh real copy and served a keyed read.
-log "STEP 2/4: real-copy candidate deployment check GREEN for $CAND_VER"
+# The candidate already booted a copy of the seed and served a keyed read.
+log "STEP 2/4: synthetic-seed candidate deployment check GREEN for $CAND_VER"
 
 # RSS + like-to-like cold/hot latency. Clone both CoWs, boot both to
 # identity-ready, cold fetch, settle + warmup, then hot medians.
