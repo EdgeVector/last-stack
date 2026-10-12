@@ -413,6 +413,12 @@ and bytes before the candidate replaces the old binary.
     sanitized daemon tail and the final snapshot-attempt stderr tail. Daemon
     text can include continuous-publisher or earlier-attempt events, so it does
     not change the reported phase. The helper removes raw logs with the CoW.
+    Before cleanup, it also reduces restore stdout into `restore.error.json`.
+    This file contains only the validated `lastdb.restore.error.v1` stage,
+    code, and optional numeric and closed replay diagnosis fields. The reducer
+    rejects duplicate or unknown fields, unsupported enums, and changed files.
+    An absent, invalid, or unavailable report produces a fixed `UNKNOWN` record.
+    The helper never copies raw restore stdout or private error detail.
     It never stores the raw snapshot envelope, credentials, device IDs, user
     hashes, object digests, or full CoW paths. The driver prints the helper's
     sanitized failure output before its final RED verdict.
