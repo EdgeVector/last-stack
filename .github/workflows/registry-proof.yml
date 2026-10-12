@@ -516,6 +516,9 @@ jobs:
           else
             oid_args=(--lastdb-manifest "$SCRATCH/dl/manifest.json")
           fi
+          # pin_args stays empty on a scheduled run (no org_oid). The macOS
+          # runner's /bin/bash is 3.2: "${pin_args[@]}" on an empty array is an
+          # unbound variable under set -u, so it expands as ${pin_args[@]+...}.
           pin_args=()
           if [ -n "$ORG_OID" ]; then
             main_oid="$(gh api repos/EdgeVector/org/commits/main --jq .sha)"
@@ -536,7 +539,7 @@ jobs:
             "${oid_args[@]}" \
             --source-venue github \
             --sha-source github-ci \
-            "${pin_args[@]}" \
+            ${pin_args[@]+"${pin_args[@]}"} \
             --out "$SCRATCH/candidate-set.json" || rc=$?
           printf 'candidate-set\t%s\t%s\n' "$((SECONDS - t0))" "$rc" >> "$BUNDLE/timings.tsv"
           [ "$rc" -eq 0 ] || exit "$rc"
