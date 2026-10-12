@@ -5105,7 +5105,7 @@ main() {
     soak-watch) shift; soak_watch_cmd "$@" ;;
     install) shift; install_cmd "$@" ;;
     rollback) shift; rollback_cmd "$@" ;;
-    -h|--help|"") usage; exit 0 ;;
+    help|-h|--help|"") usage; exit 0 ;;
     *) die "unknown subcommand: $1" ;;
   esac
 }
