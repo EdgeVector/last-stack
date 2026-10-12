@@ -98,7 +98,7 @@ def main():
     require(type(value.get("status")) is dict)
     sync = value["status"].get("sync")
     require(type(sync) is dict)
-    require(sync.get("enabled") is True and sync.get("state") == "Syncing")
+    require(sync.get("enabled") is True and sync.get("state") in ("Idle", "Dirty", "Syncing"))
     require(sync.get("sync_degraded") is False and unsigned(sync.get("consecutive_sync_failures")) == 0)
     require("last_error" in sync and sync["last_error"] is None)
     require("replay_blocker" in sync and sync["replay_blocker"] is None)
