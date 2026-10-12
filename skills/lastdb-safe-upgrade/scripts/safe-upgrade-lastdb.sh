@@ -36,8 +36,10 @@
 #      CAS-flipped backup/latest. Never point the candidate at live ~/.lastdb
 #      for that upload. The exact DEV manifest must restore into a new home
 #      with no local database data. A mock object store is not DEV.
-#   4. Strictly stop and flush the old primary, then copy its fixed data as
-#      the rollback point before the sidebin install and LaunchAgent reload.
+#   4. Require a CURRENT cloud backup (the recovery point), then strictly stop
+#      and flush the old primary and install the sidebin pair and reload the
+#      LaunchAgent. NO copy of the primary is made (Tom, 2026-10-12): the
+#      recovery point is the cloud backup plus the saved binary pair.
 #   5. Post-check the LIVE home (incl. lastdb/lastdbd version parity and live
 #      RSS vs guard); print rollback if wrong
 #
@@ -50,8 +52,7 @@
 #   - Install only lastdbd without the sibling lastdb CLI from the same build
 #   - Kill/restart the primary on a RED probe
 #   - brew upgrade when formula is not installed / primary is sidebin+launchd
-#   - Leave rollback copies under $HOME. The current point is released on GREEN;
-#     RED retains it until the explicit retained-point cleanup is safe.
+#   - Make a copy of the primary home for any reason, including a rollback point
 #
 # Usage:
 #   safe-upgrade-lastdb.sh --probe-only     # probe only (no live install)
@@ -63,7 +64,6 @@
 # last-stack-safe-upgrade-loom --candidate /path/to/lastdbd.
 # Env (ephemeral trial copy and rollback):
 #   LASTDB_ROLLBACK_ROOT=<path>    # defaults under TMPDIR, never under $HOME
-#   LASTDB_ROLLBACK_TTL_HOURS=24   # RED retention metadata; explicit cleanup
 # Env (probe data; synthetic is the only mode):
 #   LASTDB_SYNTHETIC_SEED_ROOT=<path>         # seed cache; defaults under /tmp
 #   LASTDB_SYNTHETIC_CARDS / _RECORDS         # seed size (changes the seed key)
@@ -86,7 +86,6 @@ case "$(cd "$_rollback_default_tmp" 2>/dev/null && pwd -P || printf '%s' "$_roll
   "$_rollback_home_real"|"$_rollback_home_real"/*) _rollback_default_tmp="/tmp" ;;
 esac
 ROLLBACK_ROOT="${LASTDB_ROLLBACK_ROOT:-${LASTDB_BACKUP_ROOT:-${_rollback_default_tmp}/lastdb-safe-upgrade-rollback-${UID:-$(id -u)}}}"
-ROLLBACK_TTL_HOURS="${LASTDB_ROLLBACK_TTL_HOURS:-24}"
 # Resolved under this run's WORK directory after mktemp unless explicitly set.
 PROBE_ROOT="${LASTDB_PROBE_ROOT:-}"
 TAP_REPO="EdgeVector/homebrew-lastdb"
@@ -155,10 +154,8 @@ CANDIDATE_BIN=""
 CANDIDATE_CLI_BIN=""
 TARGET_VERSION=""
 WORK=""
-BACKUP=""
 TRIAL_COPY=""
 TRIAL_READY=0
-ROLLBACK_READY=0
 
 usage() {
   sed -n '2,34p' "$0"
@@ -340,39 +337,36 @@ release_trial_copy() {
   TRIAL_READY=0
 }
 
+# There is no rollback copy of the primary (Tom, 2026-10-12). The name stays for
+# the call sites; this releases the trial home, a clone of the synthetic seed.
 release_rollback_point() {
-  local had_rollback="${ROLLBACK_READY:-0}"
-  if [ "$had_rollback" -eq 1 ]; then
-    [ -n "${BACKUP:-}" ] && [ -d "$BACKUP" ] && rm -rf "$BACKUP"
-    ROLLBACK_READY=0
-  fi
   release_trial_copy
   rmdir "$ROLLBACK_ROOT" 2>/dev/null || true
-  if [ "$had_rollback" -eq 1 ]; then
-    log "rollback: released after GREEN ($BACKUP)"
-  fi
 }
 
-# The BACKUP line of a RED verdict.
+# A trial home made from the synthetic seed holds nothing worth keeping. Its marker
+# names the seed home as source_home. A trial from an older flow names the PRIMARY
+# home as its source; it does not match here and stays for the explicit cleanup
+# helper (cleanup-retained-upgrade-copy.sh).
+trial_is_seed_clone() {
+  local dir="$1" marker="$1/.safe-upgrade/complete" src root
+  [ -d "$dir" ] && [ ! -L "$dir" ] && [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  grep -qx 'kind=trial' "$marker" || return 1
+  src="$(sed -n 's/^source_home=//p' "$marker" | head -1)"
+  root="$(synth_seed_root_default)"
+  case "$src" in "$root"/*/home) return 0 ;; esac
+  return 1
+}
+
+# The BACKUP line of a RED verdict. The driver makes no copy of the primary
+# (Tom, 2026-10-12). The recovery point is the cloud backup and the saved binary
+# pair.
 backup_red_note() {
-  if [ "${ROLLBACK_READY:-0}" -eq 1 ] && [ -n "${BACKUP:-}" ]; then
-    printf 'BACKUP: %s  (kept; inspect the primary before restore)\n' "$BACKUP"
-  elif [ -n "${BACKUP:-}" ]; then
-    printf 'BACKUP: none  (the stopped copy is incomplete at %s)\n' "$BACKUP"
+  if [ -n "${CLOUD_RECOVERY_FRONTIER:-}" ]; then
+    printf 'BACKUP: none  (no copy of the primary is made; recovery point = cloud published_through=%s and the saved binary pair; data restore = lastdb restore)\n' "$CLOUD_RECOVERY_FRONTIER"
   else
-    printf 'BACKUP: none  (failure occurred before the stopped rollback copy)\n'
+    printf 'BACKUP: none  (no copy of the primary is made; failure occurred before the cloud recovery point was recorded)\n'
   fi
-}
-
-retain_rollback_point() {
-  [ "${ROLLBACK_READY:-0}" -eq 1 ] || return 0
-  mkdir -p "$BACKUP/.safe-upgrade"
-  {
-    printf 'retained_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf 'ttl_hours=%s\n' "$ROLLBACK_TTL_HOURS"
-    printf 'cleanup_owner=manual-after-primary-recovery\n'
-  } >"$BACKUP/.safe-upgrade/retention"
-  warn "rollback: RED retained at $BACKUP ttl_hours=$ROLLBACK_TTL_HOURS cleanup_owner=manual-after-primary-recovery"
 }
 
 OWNER_LOCK_DIR="${LASTDB_SAFE_UPGRADE_OWNER_LOCK_DIR:-/tmp/lastdb-safe-upgrade-owner-${UID:-$(id -u)}.lock.d}"
@@ -384,7 +378,6 @@ DRIVER_ENDED_STEP=0
 SIDEBIN_BACKUP_DAEMON=""
 SIDEBIN_BACKUP_CLI=""
 CUTOVER_RECOVERY_STATE_TMP=""
-STAGE_BACKUP=""
 OLD_PRIMARY_PID=""
 OLD_PRIMARY_START_TS=""
 OLD_PRIMARY_PS_LSTART=""
@@ -397,21 +390,15 @@ cleanup_work() {
   if type cleanup_upgrade_restart_intent >/dev/null 2>&1; then
     cleanup_upgrade_restart_intent
   fi
-  # GREEN / probe-only / operator abort call release_rollback_point first
-  # (ROLLBACK_READY=0). Any other end — including a loom drive deadline that
-  # reparents this script and then SIGTERM/SIGHUP with a false-zero EXIT —
-  # keeps this run's validated rollback point for explicit recovery or cleanup.
-  if [ "${ROLLBACK_READY:-0}" -eq 1 ]; then
-    retain_rollback_point
-    if [ "${DRIVER_ENDED_STEP:-0}" -eq 1 ]; then
-      warn "rollback: driver ended the step; kept newest point ${BACKUP:-none}"
+  # The trial home is a clone of the synthetic seed. Remove it on any end. A
+  # trial home from an older flow (a copy of the primary) stays for the explicit
+  # cleanup helper.
+  if [ -n "${TRIAL_COPY:-}" ] && [ -d "$TRIAL_COPY" ]; then
+    if trial_is_seed_clone "$TRIAL_COPY"; then
+      rm -rf "$TRIAL_COPY"
+    elif [ "$rc" -ne 0 ]; then
+      warn "trial copy retained for cleanup-retained-upgrade-copy.sh: $TRIAL_COPY"
     fi
-  fi
-  if [ "$rc" -ne 0 ] && [ -n "${TRIAL_COPY:-}" ] && [ -d "$TRIAL_COPY" ]; then
-    warn "trial copy retained for cleanup-retained-upgrade-copy.sh: $TRIAL_COPY (not a rollback point)"
-  fi
-  if [ "$rc" -ne 0 ] && [ -n "${STAGE_BACKUP:-}" ] && [ -d "$STAGE_BACKUP" ]; then
-    warn "incomplete stopped copy retained for cleanup-retained-upgrade-copy.sh: $STAGE_BACKUP (not a rollback point)"
   fi
   if type safe_upgrade_owner_lock_release >/dev/null 2>&1; then
     safe_upgrade_owner_lock_release "$OWNER_LOCK_DIR" "$OWNER_LOCK_TOKEN" "$OWNER_LOCK_HELD" \
@@ -542,15 +529,17 @@ prepare_rollback_root() {
       die "rollback root must be ephemeral and outside HOME: $root_real"
       ;;
   esac
-  # A RED run keeps these copies until the recovered primary permits explicit
-  # cleanup. Refuse another large trial while one remains.
+  # A stale trial home made from the synthetic seed is removed. A copy of the
+  # primary from an older flow needs the explicit cleanup helper first.
   for stale in "$ROLLBACK_ROOT"/trial-* "$ROLLBACK_ROOT"/*.incomplete; do
     [ -e "$stale" ] || [ -L "$stale" ] || continue
-    die "retained trial or incomplete copy needs cleanup before another trial: $stale"
+    if trial_is_seed_clone "$stale"; then
+      log "rollback: removing a stale trial home made from the synthetic seed: $stale"
+      rm -rf "$stale" || die "could not remove the stale seed trial home: $stale"
+      continue
+    fi
+    die "a retained copy of the primary home from an older flow needs cleanup (cleanup-retained-upgrade-copy.sh) before another trial: $stale"
   done
-  # An older name and timestamp cannot prove that its copy completed. Keep
-  # all older points until the explicit safe cleanup path verifies them.
-  log "rollback: root=$root_real previous points kept; use the matching explicit cleanup helper"
 }
 
 rss_mb_of_pid() {
@@ -755,8 +744,8 @@ EOF
   return 1
 }
 
-# The stopped old daemon must produce the exact flush receipt before the
-# rollback copy becomes valid. No synthetic record is written on the primary.
+# The stopped old daemon must produce the exact flush receipt before the swap.
+# No synthetic record is written on the primary.
 cleanup_upgrade_restart_intent() {
   [ "${RESTART_INTENT_START_REQUESTED:-0}" -eq 0 ] || return 0
   [ -n "${RESTART_INTENT_PATH:-}" ] || return 0
@@ -1573,7 +1562,7 @@ ensure_primary_launchd_exit_timeout() {
   log "stamped primary LaunchAgent ExitTimeOut=${want}s (was ${current:-unset}); the reloaded job gets the full graceful-drain window"
 }
 
-# A stopped copy is valid only after this exact process reports a clean flush.
+# The stop is valid only after this exact process reports a clean flush.
 verify_old_primary_stopped() {
   local service="$1" receipt="$PRIMARY_HOME/.shutdown_flush_ready"
   local ledger="$PRIMARY_HOME/sessions.jsonl" session="$PRIMARY_HOME/current-session.json" ledger_size
@@ -1651,101 +1640,60 @@ strict_prestop_old_primary() {
   write_cutover_recovery_state "sidebin-stopped" true
 }
 
-stopped_rollback_preflight() {
-  local free_kib
-  [ "$(uname -s)" = Darwin ] || die "stopped rollback requires APFS on macOS"
-  [ -n "$(command -v gtimeout || command -v timeout || true)" ] \
-    && command -v rsync >/dev/null \
-    || die "stopped rollback requires timeout and rsync"
-  [ "$(stat -f '%d' "$PRIMARY_HOME")" = "$(stat -f '%d' "$ROLLBACK_ROOT")" ] \
-    || die "stopped rollback root is not on the primary volume"
-  free_kib="$(df -Pk "$ROLLBACK_ROOT" | awk 'NR==2 {print $4}')"
-  case "$free_kib" in ''|*[!0-9]*) die "stopped rollback free space is unreadable" ;; esac
-  [ "$free_kib" -ge 31457280 ] \
-    || die "stopped rollback requires 30 GiB free before the primary stops"
+# CLOUD RECOVERY POINT (Tom, 2026-10-12): the live cutover makes NO copy of the
+# primary home. The recovery point is the primary's own cloud backup plus the
+# saved binary pair. Before the old daemon stops, the cloud backup must be
+# current: Cloud Sync on and healthy, the mutation log published through the local
+# frontier, no upload backlog, and a recovery point younger than the limit. The
+# `mutation_log_lag` field is a duration in nanoseconds between the durable and the
+# published frontier; a busy primary shows seconds of it, so only the node's own
+# `mutation_log_lag_degraded` flag gates here. If the check fails, the primary is
+# not stopped. Data recovery after a bad cutover is
+# `lastdb restore` of the latest cloud backup into a fresh home (slow; a past
+# restore needed about 43 minutes to republish its cloud frontier).
+CLOUD_RECOVERY_FRONTIER=""
+CLOUD_RECOVERY_MAX_AGE_SECS="${LASTDB_CLOUD_RECOVERY_MAX_AGE_SECS:-300}"
+
+cloud_recovery_point_preflight() {
+  local status="$WORK/pre-stop-cloud-status.json" reason age
+  case "$CLOUD_RECOVERY_MAX_AGE_SECS" in ''|*[!0-9]*) die "LASTDB_CLOUD_RECOVERY_MAX_AGE_SECS must be a whole number" ;; esac
+  curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
+    -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+    http://x/api/status >"$status" 2>/dev/null \
+    || die "cloud recovery point: primary status is unavailable; the primary was not stopped"
+  reason="$(jq -r --argjson max_age "$CLOUD_RECOVERY_MAX_AGE_SECS" '
+    .status.sync as $s
+    | if .ok != true then "status-not-ok"
+      elif $s.enabled != true then "cloud-sync-disabled"
+      elif $s.state != "Syncing" then "cloud-sync-state-" + ($s.state | tostring)
+      elif $s.sync_degraded != false then "cloud-sync-degraded"
+      elif ($s.consecutive_sync_failures // 1) != 0 then "cloud-sync-failing"
+      elif $s.last_error != null then "cloud-sync-last-error"
+      elif $s.replay_blocker != null then "cloud-replay-blocker"
+      elif $s.mutation_log_active != true then "mutation-log-inactive"
+      elif ($s.mutation_log_frontier_f | type) != "number" then "frontier-unavailable"
+      elif ($s.mutation_log_published_through | type) != "number" then "published-through-unavailable"
+      elif $s.mutation_log_published_through < $s.mutation_log_frontier_f then "frontier-not-published"
+      elif $s.mutation_log_lag_degraded != false then "mutation-log-lag-degraded"
+      elif ($s.upload_queue_count // 1) != 0 or ($s.pending_count // 1) != 0 or ($s.durable_outbox_count // 1) != 0 then "upload-backlog"
+      elif ($s.mutation_log_recovery_point_age_secs | type) != "number" then "recovery-point-age-unavailable"
+      elif $s.mutation_log_recovery_point_age_secs > $max_age then "recovery-point-stale"
+      else "ok" end
+  ' "$status" 2>/dev/null || echo "status-unreadable")"
+  [ "$reason" = ok ] \
+    || die "cloud recovery point is not current ($reason); the primary was not stopped. The live cutover makes no copy of the primary (Tom, 2026-10-12) and needs a current cloud backup instead"
+  CLOUD_RECOVERY_FRONTIER="$(jq -er '.status.sync.mutation_log_published_through' "$status")" \
+    || die "cloud recovery point: published frontier is unreadable"
+  age="$(jq -er '.status.sync.mutation_log_recovery_point_age_secs' "$status")" \
+    || die "cloud recovery point: age is unreadable"
+  log "cloud recovery point: published_through=$CLOUD_RECOVERY_FRONTIER age=${age}s; no copy of the primary is made"
 }
 
-copy_stopped_primary_rollback() {
-  # A measured unfiltered home clone took about 13 minutes. Allow 15 minutes
-  # for the stopped clone and 10 minutes for a full-home checksum comparison.
-  # A slow operation fails RED and the wrapper restores the old primary.
-  local timeout_bin copy_time=900 compare_time=600 sock special marker_tmp
-  local before_free after_free copied_at receipt_sha
-  stopped_rollback_preflight
-  timeout_bin="$(command -v gtimeout || command -v timeout)"
-  before_free="$(df -Pk "$ROLLBACK_ROOT" | awk 'NR==2 {print $4}')"
-  case "$before_free" in ''|*[!0-9]*) die "stopped rollback free space is unreadable before the copy" ;; esac
-  BACKUP="$ROLLBACK_ROOT/pre-${CAND_VER}-from-${CURRENT_VER}-$(date -u +%Y%m%dT%H%M%SZ)"
-  STAGE_BACKUP="${BACKUP}.incomplete"
-  [ ! -e "$BACKUP" ] && [ ! -L "$BACKUP" ] \
-    && [ ! -e "$STAGE_BACKUP" ] && [ ! -L "$STAGE_BACKUP" ] \
-    || die "stopped rollback path already exists"
-  for sock in "$PRIMARY_SOCK" "$PRIMARY_HOME/data/folddb-full.sock"; do
-    if [ -e "$sock" ] || [ -L "$sock" ]; then
-      [ -S "$sock" ] && ! live_unix_socket_has_listener "$sock" \
-        || die "the stopped primary has a live or unsafe socket path"
-      unlink_stale_unix_socket "$sock" >/dev/null \
-        || die "could not remove a stale stopped-primary socket"
-    fi
-  done
-  # walk-ok: the stopped LastDB data tree needs a complete special-path check.
-  special="$("$timeout_bin" -s TERM 120 find "$PRIMARY_HOME/data" ! -type f ! -type d -print -quit)" \
-    || die "stopped rollback data path check failed"
-  [ -z "$special" ] || die "stopped rollback data contains a special path"
-  write_cutover_recovery_state "sidebin-rollback-copy-started" true
-  if ! (umask 077; "$timeout_bin" -s TERM "$copy_time" cp -cRp "$PRIMARY_HOME" "$STAGE_BACKUP") \
-      2>"$WORK/stopped-rollback-copy.err"; then
-    die "stopped rollback copy failed; the old primary must restart"
-  fi
-  [ ! -s "$WORK/stopped-rollback-copy.err" ] \
-    || die "stopped rollback copy reported an error"
-  backup_essentials_ok "$STAGE_BACKUP" && backup_data_is_not_live "$STAGE_BACKUP" \
-    || die "stopped rollback copy lacks required durable data"
-  [ ! -L "$STAGE_BACKUP" ] && [ ! -L "$STAGE_BACKUP/data" ] \
-    || die "stopped rollback copy contains an unsafe data root"
-  if ! "$timeout_bin" -s TERM "$compare_time" rsync -rclptn --delete --itemize-changes \
-      "$PRIMARY_HOME/" "$STAGE_BACKUP/" \
-      >"$WORK/stopped-rollback-diff" 2>"$WORK/stopped-rollback-compare.err"; then
-    die "stopped rollback byte check failed"
-  fi
-  [ ! -s "$WORK/stopped-rollback-diff" ] \
-    && [ ! -s "$WORK/stopped-rollback-compare.err" ] \
-    || die "stopped rollback differs from the stopped primary"
-  verify_old_primary_stopped "gui/$(id -u)/${LAUNCHD_LABEL}"
-  cmp -s "$PRIMARY_HOME/.shutdown_flush_ready" "$STAGE_BACKUP/.shutdown_flush_ready" \
-    || die "stopped rollback flush receipt differs from the primary"
-  receipt_sha="$(dev_stamp_sha256_file "$STAGE_BACKUP/.shutdown_flush_ready")"
-  copied_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  mkdir -p "$STAGE_BACKUP/.safe-upgrade" \
-    || die "stopped rollback marker directory cannot be created"
-  [ ! -L "$STAGE_BACKUP/.safe-upgrade" ] \
-    && [ ! -e "$STAGE_BACKUP/.safe-upgrade/complete" ] \
-    || die "stopped rollback marker path is unsafe"
-  marker_tmp="$(umask 077; mktemp "$STAGE_BACKUP/.safe-upgrade/.complete.XXXXXX")" \
-    || die "stopped rollback completion marker cannot be created"
-  printf 'kind=stopped-rollback\nsource_home=%s\nsource_pid=%s\nsource_start_ts=%s\nflush_receipt_sha256=%s\ncopied_at=%s\n' \
-    "$PRIMARY_HOME" "$OLD_PRIMARY_PID" "$OLD_PRIMARY_START_TS" "$receipt_sha" "$copied_at" \
-    >"$marker_tmp" \
-    && chmod 600 "$marker_tmp" \
-    && mv "$marker_tmp" "$STAGE_BACKUP/.safe-upgrade/complete" \
-    || die "stopped rollback completion marker cannot be written"
-  after_free="$(df -Pk "$ROLLBACK_ROOT" | awk 'NR==2 {print $4}')"
-  case "$after_free" in ''|*[!0-9]*) die "stopped rollback free space is unreadable after the copy" ;; esac
-  [ "$after_free" -ge 31457280 ] \
-    || die "stopped rollback requires 30 GiB free after the copy"
-  [ "$((before_free - after_free))" -le 23068672 ] \
-    || die "stopped rollback consumed more than the existing 22 GiB APFS copy limit"
-  # The comparison can be stale if launchd or another actor restarts the old
-  # daemon before publication. Require the same stopped session again.
-  verify_old_primary_stopped "gui/$(id -u)/${LAUNCHD_LABEL}"
-  cmp -s "$PRIMARY_HOME/.shutdown_flush_ready" "$STAGE_BACKUP/.shutdown_flush_ready" \
-    || die "stopped rollback flush receipt changed before publication"
-  mv "$STAGE_BACKUP" "$BACKUP" \
-    || die "stopped rollback cannot be published"
-  STAGE_BACKUP=""
-  ROLLBACK_READY=1
+# Runs after the strict stop. Nothing is copied. The saved binary pair and the
+# cloud frontier recorded before the stop are the recovery point.
+record_cloud_recovery_point() {
   write_cutover_recovery_state "sidebin-rollback-ready" true
-  log "stopped rollback ready: $BACKUP source_pid=$OLD_PRIMARY_PID flush_receipt_sha256=$receipt_sha"
+  log "recovery point (no copy of the primary): cloud published_through=$CLOUD_RECOVERY_FRONTIER; saved binary pair $(basename -- "$SIDEBIN_BACKUP_DAEMON") + $(basename -- "$SIDEBIN_BACKUP_CLI")"
 }
 
 # Version parity cannot detect replacement bytes that report the same version.
@@ -1882,14 +1830,14 @@ live_install_sidebin() {
   ensure_primary_launchd_rss_limit
   ensure_primary_launchd_warm_cache_limit
   ensure_primary_launchd_exit_timeout
-  stopped_rollback_preflight
+  cloud_recovery_point_preflight
   local uid
   uid="$(id -u)"
   strict_prestop_old_primary "gui/${uid}/${LAUNCHD_LABEL}" "$dest/lastdbd"
-  copy_stopped_primary_rollback
+  record_cloud_recovery_point
   sidebin_pair_hashes_match_expected \
-    "$dest/lastdbd.new" "$dest/lastdb.new" "staged pair after stopped copy" \
-    || die "candidate pair changed during the stopped rollback copy"
+    "$dest/lastdbd.new" "$dest/lastdb.new" "staged pair after the stop" \
+    || die "candidate pair changed during the stop"
   verify_old_primary_stopped "gui/${uid}/${LAUNCHD_LABEL}"
 
   # Same-directory rename changes each path atomically. A partial pair swap or
@@ -2018,7 +1966,7 @@ live_install_brew() {
     sleep 2
   fi
   brew upgrade edgevector/lastdb/lastdb 2>&1 \
-    || die "brew upgrade failed (primary may still be running if brew was not supervising it). Check launchd/sidebin. Backup: $BACKUP"
+    || die "brew upgrade failed (primary may still be running if brew was not supervising it). Check launchd/sidebin. There is no copy of the primary; recovery = saved binary pair + lastdb restore of the cloud backup"
   brew services start lastdb || die "brew services start lastdb failed"
   RESTART_INTENT_START_REQUESTED=1
 }
@@ -2603,7 +2551,7 @@ if [ "$ASSUME_YES" -eq 0 ]; then
   fi
   echo "  post-check live /health + Board title"
   echo "Candidate trial copy: $TRIAL_COPY (released if the operator aborts)"
-  echo "A stopped-primary rollback copy follows the strict flush check."
+  echo "No copy of the primary is made. Recovery point: current cloud backup + saved binary pair."
   printf "Proceed with LIVE upgrade? [y/N] "
   read -r ans
   case "$ans" in
@@ -2677,7 +2625,7 @@ for i in $(seq 1 120); do
   fi
   sleep 1
 done
-[ "$LIVE_OK" -eq 1 ] || die "live /health not ok after cutover — STOP. Binary rollback: restore $SIDEBIN_DIR/lastdbd.bak-pre-* if sidebin; data backup: $BACKUP"
+[ "$LIVE_OK" -eq 1 ] || die "live /health not ok after cutover — STOP. Binary rollback: restore $SIDEBIN_DIR/lastdbd.bak-pre-* if sidebin; data: no copy of the primary exists; lastdb restore of the cloud backup"
 
 # THE cutover assertion: the RUNNING daemon must report the candidate version.
 #
@@ -2740,7 +2688,7 @@ if [ -n "${INSTALLED:-}" ] && [ "$RUNNING_VERSION" != "$INSTALLED" ]; then
   echo "        Most likely the launchd label is wrong, so kickstart was a no-op."
   echo "        Resolved label: $LAUNCHD_LABEL (venue=$VENUE)"
   echo "        Check: launchctl list | grep lastdbd"
-  echo "BACKUP: $BACKUP"
+  backup_red_note
   die "cutover did not take effect; primary still running $RUNNING_VERSION"
 fi
 log "cutover verified: running daemon reports $RUNNING_VERSION (matches installed candidate)"
@@ -2762,14 +2710,14 @@ fi
 
 # Live data check (same keyed Board read as the deployment check)
 UH="$(curl -sS --max-time 5 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/system/auto-identity 2>/dev/null | jq -r '.user_hash // empty')"
-[ -n "$UH" ] || die "live auto-identity empty after cutover — treat as RED; consider restore from $BACKUP"
+[ -n "$UH" ] || die "live auto-identity empty after cutover — treat as RED; recovery = saved binary pair, then lastdb restore of the cloud backup (no copy of the primary exists)"
 NSCHEMAS="$(curl -sS --max-time 30 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/schemas 2>/dev/null | jq -r '.schemas|length // 0')"
-[ "${NSCHEMAS:-0}" -gt 0 ] || die "live /api/schemas empty after cutover — treat as RED; restore from $BACKUP"
+[ "${NSCHEMAS:-0}" -gt 0 ] || die "live /api/schemas empty after cutover — treat as RED; recovery = saved binary pair, then lastdb restore of the cloud backup (no copy of the primary exists)"
 QRES="$(curl -sS --max-time 30 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' -H 'Content-Type: application/json' \
   --data '{"schema_name":"Board","fields":["title"],"filter":{"HashKey":"default"}}' http://x/api/query 2>/dev/null || true)"
 QOK="$(echo "$QRES" | jq -r '.ok // empty' 2>/dev/null || true)"
 QVAL="$(echo "$QRES" | jq -r '.results[0].fields.title // .results[0].title // empty' 2>/dev/null || true)"
-[ "$QOK" = "true" ] && [ -n "$QVAL" ] || die "live Board query failed after cutover — treat as RED; restore from $BACKUP"
+[ "$QOK" = "true" ] && [ -n "$QVAL" ] || die "live Board query failed after cutover — treat as RED; recovery = saved binary pair, then lastdb restore of the cloud backup (no copy of the primary exists)"
 
 # Live RSS vs memory-guard (settle briefly — embeddings may still be loading).
 log "live RSS settle ${RSS_SETTLE_SECS}s then sample ${RSS_SAMPLE_SECS}s..."
@@ -2793,7 +2741,7 @@ if [ -n "${LIVE_RSS_MB:-}" ]; then
     echo ""
     echo "VERDICT: RED"
     echo "REASON: live peak_rss_mb=${LIVE_RSS_MB} exceeds memory-guard bar after cutover — primary may thrash-restart"
-    echo "BACKUP: $BACKUP"
+    backup_red_note
     echo "BINARY ROLLBACK (preferred first try, sidebin):"
     echo "  cp -a $SIDEBIN_DIR/lastdbd.bak-pre-* $SIDEBIN_DIR/lastdbd  # pick newest bak"
     echo "  launchctl kickstart -k gui/\$(id -u)/$LAUNCHD_LABEL"
@@ -2830,7 +2778,7 @@ live_lat_check_op() {
       echo ""
       echo "VERDICT: RED"
       echo "REASON: live $label ${live_ms}ms is >${LAT_RATIO}x the candidate's probe ${cand_ms}ms after cutover"
-      echo "BACKUP: $BACKUP"
+      backup_red_note
       echo "BINARY ROLLBACK (preferred first try, sidebin):"
       echo "  cp -a $SIDEBIN_DIR/lastdbd.bak-pre-* $SIDEBIN_DIR/lastdbd  # pick newest bak"
       echo "  launchctl kickstart -k gui/\$(id -u)/$LAUNCHD_LABEL"
@@ -2898,12 +2846,12 @@ if [ "$VENUE" = "sidebin" ]; then
     echo "        service=$_svc live_pid=${LIVE_PID:-unset}"
     echo "        Recover: launchctl bootstrap gui/${_uid} ${LAUNCHD_PLIST}"
     echo "        Then: launchctl print $_svc  # must show state=running and this pid"
-    echo "BACKUP: $BACKUP"
+    backup_red_note
     die "primary LaunchAgent is not supervising the live daemon; KeepAlive does not own lastdbd"
   fi
 fi
 
-# Keep the stopped rollback copy through the live status period.
+# Keep checking the live status through the soak period. There is no data copy to hold.
 # An idle cloud frontier may equal the pre-live frontier.
 SOAK_MIN_SECS=300
 case "${LASTDB_SAFE_UPGRADE_ZERO_LIVE_SOAK:-0}" in
@@ -2916,7 +2864,7 @@ case "${LASTDB_SAFE_UPGRADE_ZERO_LIVE_SOAK:-0}" in
   *) die "LASTDB_SAFE_UPGRADE_ZERO_LIVE_SOAK must be 0 or 1" ;;
 esac
 # A real-data rollback needed about 43 minutes to republish its cloud frontier.
-# Keep the rollback point and health checks active until that startup work ends.
+# Keep the health checks active until that startup work ends.
 SOAK_MAX_SECS=3600
 SOAK_START="$(date +%s)"
 SOAK_STATUS="$WORK/post-cutover-soak-status.json"
@@ -2935,7 +2883,7 @@ while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
         if post_cutover_status_retryable "$SOAK_OUT"; then
           SOAK_CONFIRMED=0
         else
-          die "post-cutover status bar failed: $SOAK_OUT; rollback point retained"
+          die "post-cutover status bar failed: $SOAK_OUT; recovery = saved binary pair and the cloud backup (no copy of the primary exists)"
         fi ;;
     esac
   else
@@ -2951,7 +2899,7 @@ while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
   sleep 15
 done
 post_cutover_soak_green_in_bounds "$SOAK_ELAPSED" "$SOAK_MIN_SECS" "$SOAK_MAX_SECS" "$SOAK_CONFIRMED" \
-  || die "post-cutover status did not confirm cloud health within ${SOAK_MAX_SECS}s; rollback point retained"
+  || die "post-cutover status did not confirm cloud health within ${SOAK_MAX_SECS}s; recovery = saved binary pair and the cloud backup (no copy of the primary exists)"
 
 # After this point the driver proved the live primary healthy and supervised.
 # A later wrapper timeout must not restart that already-green primary.
@@ -3009,8 +2957,7 @@ else
   warn "situations CLI not on PATH — skipped agent-impact notice for this upgrade"
 fi
 
-# GREEN is terminal: the rollback point has served its purpose and must not
-# become a backup under another name.
+# GREEN is terminal. Release the trial home (a clone of the synthetic seed).
 release_rollback_point
 
 last_stack_root="$(printenv LAST_STACK_ROOT || printf '%s' "$HOME/.last-stack")"
@@ -3024,7 +2971,7 @@ fi
 
 echo ""
 echo "VERDICT: GREEN"
-echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED and lastdb → ${INSTALLED_CLI:-?}; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + live Board read OK; probe_rss_mb=${PROBE_RSS_MB:-?} live_rss_mb=${LIVE_RSS_MB:-?} limit_mb=$(resolve_rss_limit_mb); rollback point released"
+echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED and lastdb → ${INSTALLED_CLI:-?}; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + live Board read OK; probe_rss_mb=${PROBE_RSS_MB:-?} live_rss_mb=${LIVE_RSS_MB:-?} limit_mb=$(resolve_rss_limit_mb); trial home released"
 echo "LATENCY: probe point/scan=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}ms baseline=${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}ms live_point=${LIVE_LAT_POINT_MS:-?}ms live_scan=${LIVE_LAT_SCAN_MS:-?}ms"
 echo ""
 echo "ROLLBACK (binary only, if new binary misbehaves but data is fine):"
@@ -3058,6 +3005,6 @@ else
   echo "  brew services start lastdb"
 fi
 echo ""
-echo "DATA ROLLBACK: not retained after GREEN. Any RED or driver-ended step keeps the newest"
-echo "verified stopped rollback point for ${ROLLBACK_TTL_HOURS}h if its copy completed."
+echo "DATA ROLLBACK: no copy of the primary exists (Tom, 2026-10-12). Data recovery is lastdb restore of the"
+echo "latest cloud backup into a fresh home; binary recovery uses the saved .bak-pre pair."
 exit 0

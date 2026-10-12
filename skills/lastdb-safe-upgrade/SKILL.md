@@ -6,9 +6,9 @@ description: |
   primary database and never runs a node on a copy of it (Tom, 2026-10-12). It
   requires keyed reads, read latency, memory and persist status checks, and a
   source-free restore of an exact DEV snapshot of the seed before a live
-  cutover. It then requires a strict stopped flush receipt, a byte-checked
-  rollback copy, supervised live health, and a cloud frontier check. It does
-  not run tests.
+  cutover. It then requires a current cloud backup (the recovery point), a
+  strict stopped flush receipt, supervised live health, and a cloud frontier
+  check. It makes no copy of the primary at any step. It does not run tests.
 ---
 
 # lastdb-safe-upgrade — never brick the primary; never take it down first
@@ -58,99 +58,27 @@ Shipped in **last-stack** (`skills/lastdb-safe-upgrade/`). After
 
 Prefer the **driver script** path below; do not hard-code a single harness dir.
 
-## Stopped copy for a backup after an upgrade
+## Recovery point: the cloud backup, never a copy (Tom, 2026-10-12)
 
-The first safe upgrade keeps Cloud Sync Off. It does not use the live rollback
-copy as a cloud backup source. That copy can miss writes that remain in memory.
+The live cutover makes no copy of the primary home. Not a rollback copy, not a
+stopped copy, not a copy for a first backup. The recovery point is:
 
-After the new daemon passes its live checks, run `stopped-home-copy.sh` as a
-separate supervised action. The new daemon must write `.shutdown_flush_ready`
-only after all host writers stop and the final flush succeeds. The script
-requires that receipt for the exact stopped session. It also requires Cloud
-Sync Off, the expected binary hashes, and at least 30 GiB of free disk space.
+- the primary's own cloud backup, which must be CURRENT before the old daemon
+  stops (Cloud Sync on and `Syncing`, no failures, the mutation log published
+  through the local frontier, no upload backlog, recovery point age at most 300 s;
+  `LASTDB_CLOUD_RECOVERY_MAX_AGE_SECS` changes the limit). If any of this is
+  false the driver exits RED and the primary is not stopped.
+- the saved binary pair `lastdbd.bak-pre-*` and `lastdb.bak-pre-*`.
 
-The script runs `situations preflight --action restart --system lastdbd` before
-it takes the owner lock or stops the daemon. A block or read error leaves the
-primary and the copy path unchanged. After a successful restart, it posts a
-Situations restart notice.
+A bad cutover recovers the binary first (see Rollback). It recovers data with
+`lastdb restore --into <fresh home>` from the latest cloud backup. That restore is
+slow (a past restore needed about 43 minutes to republish its cloud frontier).
+This is weaker than a byte-exact local copy. Tom chose it because a copy of the
+primary fills the disk and slows the machine.
 
-Use a new path under `/private/tmp`. Do not use `/tmp`, which is a symlink on
-this host. Supply the release pair's SHA-256 values from the safe upgrade
-receipt:
-
-```bash
-bash ~/.last-stack/skills/lastdb-safe-upgrade/scripts/stopped-home-copy.sh \
-  --copy /private/tmp/lastdb-stopped-backup-<unique-run-id> \
-  --launchd-label <primary-label> \
-  --expected-lastdbd-sha256 <release-daemon-sha256> \
-  --expected-lastdb-sha256 <release-cli-sha256>
-```
-
-The script stops the candidate, verifies its flush receipt, makes one APFS
-copy, and restarts the same candidate. It writes `.cloud_backup_source_copy`
-to the final copy after restart checks pass. The marker binds the copy to the
-stopped PID and session start time. The copy has no cloud backup request.
-If `current-session.json` remains, the script checks it against the clean
-session ledger and exact flush receipt. It removes that file from the copy
-only. A missing or mismatched receipt stops the copy.
-After the script reports `STOPPED_COPY=green`, run the candidate `lastdb`
-one-shot `cloud backup-while-off` command on that copy. Keep the copy until
-the cloud backup and a fresh restore both pass. The live home remains Off.
-
-### One approved old-daemon source without a flush receipt
-
-Tom accepted possible loss of an acked write that the old daemon did not flush.
-The decision is `decision-2026-10-06-cloud-sync-rescue-risk-acceptance`.
-This one-time mode uses the installed old daemon pair. It does not require a
-new primary upgrade solely to obtain a shutdown receipt.
-
-Run the same supervised action with this additional argument:
-
-```bash
-  --accept-unproved-flush decision-2026-10-06-cloud-sync-rescue-risk-acceptance
-```
-
-The action writes `.cloud_backup_unproved_flush_claim` in the stopped home
-only after the strict supervised stop succeeds. The claim binds the approval
-to one PID, session, and exact copy path. A failed stop leaves no claim.
-On a strict stop timeout, the action restores the program and returns RED.
-It leaves the daemon alive and does not use a forced kill. A later copy error
-releases the claim only if the primary recovers, Cloud Sync stays Off, and no
-final copy exists. A published copy keeps the claim. Do not remove the claim
-by hand. The script keeps an incomplete stage for review. Use a new copy path
-for a retry. The action still requires a graceful stop without a forced kill,
-no live session or socket in the copy, the same-volume APFS copy, matching
-identity and paused cloud files, a healthy supervised restart, and Cloud Sync
-Off on the live socket. It writes a version 2 `.cloud_backup_source_copy` only
-after the restart. That marker states `flush_proof=absent` and
-`owner_approved=2026-10-06`. It does not claim that every acked write reached
-disk. A separate Fold publisher must accept this exact marker before upload.
-
-CAUTION: The current cleanup helper requires a version 1 flush receipt. Keep a
-version 2 stopped copy until the helper supports the waiver and a fresh
-source-free restore proves the rescue.
-
-After the fresh source-free restore passes, check the exact stopped copy with
-`cleanup-stopped-copy.py`. Use the captured restore JSON report. The report
-must name the same database hash and manifest SHA-256 as the source and the
-restored home. The source must have `.rescue_s0_complete`. The restored home
-must have `.rescue_s0_restore_ready`. The helper also requires Cloud Sync Off.
-It refuses a socket path, an open file, or a process that names either home.
-It checks only by default:
-
-```bash
-python3 ~/.last-stack/skills/lastdb-safe-upgrade/scripts/cleanup-stopped-copy.py \
-  --copy /private/tmp/lastdb-stopped-backup-<unique-run-id> \
-  --restored-home /private/tmp/<fresh-restore-home> \
-  --restore-report /private/tmp/<captured-restore-report>.json \
-  --expect-db-hash <source-database-hash> \
-  --expect-manifest-sha256 <rescue-manifest-sha256>
-```
-
-Review the `STOPPED_COPY_CLEANUP=checked` result. Repeat the same command with
-`--execute` to remove that one source copy. Keep the restored home and report.
-Do not use `laststore_backup_manifest.json` as the rescue proof. It records the
-previous normal backup, and the rescue backup uses a separate manifest.
+The older one-off flow that stopped the daemon, made an APFS copy and ran
+`cloud backup-while-off` on it (`stopped-home-copy.sh`, `cleanup-stopped-copy.py`)
+is removed. The primary syncs to the cloud now; use that backup.
 
 ## Live venue (important — 2026-07-16)
 
@@ -224,7 +152,9 @@ Each run then clones the seed into a fresh trial home under
 `${TMPDIR}/lastdb-safe-upgrade-rollback-<uid>/trial-<new>-from-<old>-<ts>/` and
 writes a `kind=trial` completion marker. The driver refuses an existing target
 path. A clone error is RED and the error stays in an owner-only, bounded file
-under the rollback root.
+under the rollback root. The driver removes a trial home made from the seed at the
+end of every run and at the start of the next one. A stale trial home made from the seed is removed
+automatically at the next run and at the end of every run.
 
 The candidate boots on a separate copy of this trial home.
 The candidate never boots on the live primary home. The driver checks:
@@ -248,29 +178,25 @@ pins, re-key leftovers, unreadable schema state rows, scale-dependent behavior
 (warm-set thrash, flush-lock waits, scan cost), and a crash-consistent clone of a
 running node. These meet real data for the first time on the live cutover. The
 cutover keeps the durability canary, the stopped flush receipt, the
-byte-checked rollback copy, the live post-check and the soak. Tom accepted this
-trade on 2026-10-09 and again on 2026-10-12.
+live post-check and the soak. Tom accepted this trade on 2026-10-09 and again
+on 2026-10-12.
 
-The rollback point comes from the stopped primary after a clean flush receipt.
-The copy gate checks its paths and bytes before the candidate replaces the old
-binary. That is the one copy of the primary this skill still makes, and only
-inside a live cutover. Open question for Tom (2026-10-12): keep it, or use the
-cloud backup as the rollback point.
+The live cutover has no rollback copy of the primary. See
+[Recovery point](#recovery-point-the-cloud-backup-never-a-copy-tom-2026-10-12).
 
 ## Hard rules (never skip)
 
 0. **Never copy the primary home and never boot a node on a copy of it** (Tom,
    2026-10-12). Not for a probe, not for the DEV photograph, not for a cloud
-   backup test, not with `cp -cR`. Use the synthetic seed. The one exception is
-   the stopped rollback copy inside a live cutover (see above).
+   backup test, not for a rollback point, not with `cp -cR`. There is no
+   exception. Use the synthetic seed and the cloud backup.
 1. **Never** run a candidate `lastdbd` with `--data-dir` pointing at the **live**
    `~/.lastdb` until the candidate passes on a copy of the synthetic seed.
 2. **Always** prepare a fresh trial home from the seed under the system temp
    directory before the candidate check. This rule also applies to a probe-only
-   run. Do not call this trial home a rollback point. For a live cutover, strictly
-   stop and flush the old primary. Publish a stopped rollback copy only after
-   its path and byte check passes. Keep that point on RED. Never write a
-   rollback copy under `$HOME`.
+   run. The trial home is not a rollback point; no rollback copy of the primary
+   exists. For a live cutover, require a current cloud backup first, then strictly
+   stop and flush the old primary.
 3. **Never** restart/upgrade on a RED probe.
 3b. **A read that answers fast with ZERO rows is RED, not GREEN.** The
    **row-count bar** counts the rows the Board point-read and the `kanban list
@@ -282,8 +208,8 @@ cloud backup as the rollback point.
    empty on the primary for an hour; every latency bar passed it GREEN, because
    an empty answer is the fastest possible answer.
 4. **Never** kill the primary unattended outside this skill's live step; if live
-   post-check fails after upgrade, **stop and restore** (binary bak and/or data
-   retained rollback point) — do not improvise.
+   post-check fails after upgrade, **stop and restore** (binary bak, then
+   `lastdb restore` of the cloud backup if the data is damaged) — do not improvise.
 5. **Deployment check on the seed:** the candidate loads schemas, serves a keyed
    `Board` title, and serves a keyed `BoardCards` list on its own copy of the
    seed. The title and list must be non-empty. The primary process must not change.
@@ -358,12 +284,12 @@ cloud backup as the rollback point.
     installed live CLI/daemon pair is skewed.
 11. Do not claim “primary stopped” unless this script actually stopped the
    supervisor for that venue.
-12. **Stopped flush and rollback:** before the old daemon stops, the driver
-    writes `restart-intent.json` for the exact old session. The daemon must
-    stop without a forced kill and write its exact flush receipt. The driver
-    checks that receipt and the clean session. It copies the stopped primary
-    and checks every path and byte before it marks the rollback copy ready.
-    The driver does not write a canary record.
+12. **Cloud recovery point and stopped flush:** before the old daemon stops, the
+    driver requires a current cloud backup (see Recovery point) and writes
+    `restart-intent.json` for the exact old session. The daemon must stop
+    without a forced kill and write its exact flush receipt. The driver checks
+    that receipt and the clean session. It makes no copy of the primary. The
+    driver does not write a canary record.
 13. **Exact-candidate DEV photograph (required before live cutover — Tom
     2026-08-19):** the CUTOVER pass clones the fresh trial copy from step 1.
     It does not clone live `~/.lastdb` again. The versioned execution-key digest covers the source
@@ -539,7 +465,7 @@ last-stack-safe-upgrade-loom \
 For the one-client rescue, Tom approved the explicit `--zero-live-soak` option.
 Add it to this command only for that cutover. The option removes the 300-second
 minimum after the live cutover. The driver still requires a
-fresh GREEN status sample and keeps the rollback point until that check passes.
+fresh GREEN status sample before it ends.
 The option uses a separate Loom execution key. The default remains 300 seconds.
 
 The sibling `lastdb` binary and the bundle manifest must be next to `lastdbd`.
@@ -620,17 +546,17 @@ The script:
 | Preflight | Primary home exists, identity.key present, live `/health` ok (if socket up) |
 | Resolve candidate | `brew update` / `--version` tarball / `--candidate` |
 | **1. Trial home** | Every run clones the cached synthetic seed (never the primary) under `${TMPDIR}/lastdb-safe-upgrade-rollback-<uid>/trial-<new>-from-<old>-<ts>/`. A clone error is RED. The trial home is not a rollback point. |
-| **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before multi-GB backup) |
+| **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before any probe) |
 | **0b. Candidate data** | Build or reuse the synthetic seed (baseline writes it); candidate copies come from the trial home. |
 | **2. Candidate check** | Boot the exact candidate on a copy of the synthetic seed. Require schemas, the keyed Board title, a keyed BoardCards response, stable primary PID, and memory size below the guard. The driver checks candidate persist status, read latency, and record counts on real copies. |
 | Detect venue | sidebin vs brew |
 | **2c. DEV photograph proof** | The exact pair clones the trial copy, scrubs production state, connects the copied identity to DEV, and publishes a snapshot. The exact CLI restores that manifest from DEV into a source-free home. The fresh v3 receipt must match this Loom execution, this run's trial copy, and the retained restore report. |
 | **2d. Meter restart bar** | Read live status before restart. Refuse a `keep_small` plane above 1.5 GiB or a failed persist lane. The 2 GiB cold-group cap can prevent both new and old binaries from booting. |
-| **3. Live** | Refuse brew. For sidebin, write the boot-ledger restart intent. Stage and check both candidate files. Stop the old daemon without a forced kill. Require its exact flush receipt and clean session. Copy the stopped primary. Require an exact path and byte check before the rollback point becomes ready. Then replace the saved binary pair and reload the LaunchAgent job. |
+| **3. Live** | Refuse brew. For sidebin, write the boot-ledger restart intent. Stage and check both candidate files. Require a current cloud backup. Stop the old daemon without a forced kill. Require its exact flush receipt and clean session. No copy of the primary is made. Then replace the saved binary pair and reload the LaunchAgent job. |
 | **4. Post-check** | Exact installed pair hashes, live `/health`, schemas > 0, Board title, **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **live peak RSS** vs guard, **live point-read + batch-read latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency in notice |
-| **4a. Live soak** | Keep the rollback point for at least five minutes by default. `--zero-live-soak` removes only that minimum. At least one fresh GREEN status sample remains required. Check persist failures, write access, and meter size on each status sample. If Cloud Sync was on before cutover, require the cloud frontier to stay at or beyond its pre-live value. A failed or stale bar is RED. |
-| **4b. Release** | After GREEN, delete the stopped rollback point and the trial copy. A GREEN probe-only run and an operator abort delete the trial copy. |
-| RED | Exit 1. Keep the stopped rollback point if one passed its gate. Keep the trial and incomplete copies until the primary recovers. An incomplete copy has no rollback status. A class or probe failure leaves the primary unchanged. |
+| **4a. Live soak** | Keep checking for at least five minutes by default. `--zero-live-soak` removes only that minimum. At least one fresh GREEN status sample remains required. Check persist failures, write access, and meter size on each status sample. If Cloud Sync was on before cutover, require the cloud frontier to stay at or beyond its pre-live value. A failed or stale bar is RED. |
+| **4b. Release** | After GREEN, a GREEN probe-only run, an operator abort or a RED end, the driver deletes the trial home (a clone of the seed). |
+| RED | Exit 1. No copy of the primary exists; recovery is the saved binary pair, then `lastdb restore` of the cloud backup. A class, probe or cloud-recovery-point failure leaves the primary unchanged. |
 
 ### Search receipts in a probe copy (history)
 
@@ -645,27 +571,14 @@ seconds and its removal took 34 seconds. An earlier run of an equal filter took
 263 and 207 seconds, so expect a wide range. I did not time a full clone in
 those runs.
 
-The stopped copy uses the existing 30 GiB free-space floor before the stop
-and after the copy. The physical disk drop cannot exceed 22 GiB. The copy
-has a 900-second limit. The full-home comparison has a 600-second limit.
-The floor and disk cap match `stopped-home-copy.sh`. The longer copy limit
-allows the measured 13-minute unfiltered clone plus two minutes. The
-comparison reads content across the full home. Its 10-minute limit is a
-bounded allowance for that work. A limit failure returns RED and starts
-old-primary recovery. No rollback point is published in that case.
-The stopped path can use 120 seconds for its data-path check, 900 seconds for
-the copy, and 600 seconds for the comparison. The primary remains unavailable
-during that work and the subsequent reload.
+### Release a retained copy of the primary from an older flow
 
-### Release a retained trial or incomplete stopped copy
-
-A RED run keeps its trial and `.incomplete` copies until primary recovery.
-A new run refuses another trial while either copy remains in the rollback
-root. This rule prevents repeated RED runs from adding more copies.
-Use `scripts/cleanup-retained-upgrade-copy.sh` after the primary is healthy.
-The helper requires a supervised socket listener and an exact current session.
-It checks one direct child of the rollback root. The default does not delete.
-`--execute` removes that one copy with a 600-second limit. A timeout can
+Older runs of this skill could leave a trial home or a `pre-*` rollback point that
+is a COPY OF THE PRIMARY. The driver refuses to start while one remains, and it
+never makes one now. Release it with the supported helper after the primary is
+healthy. The helper requires a supervised socket listener and an exact current
+session. It checks one direct child of the rollback root. The default does not
+delete. `--execute` removes that one copy with a 600-second limit. A timeout can
 leave a partial copy. Run the same command again after the primary check.
 
 ```bash
@@ -677,41 +590,11 @@ bash "$helper" --copy "$LASTDB_ROLLBACK_ROOT/trial-CANDIDATE-from-CURRENT-YYYYMM
 # After READY, repeat the command with --execute.
 ```
 
-Use the exact `.incomplete` path for a stopped copy. Read the current PID and
-start time from the primary session file. This helper refuses published
-rollback points. Keep a published point until its recovery need ends.
-
-The trial copy, the DEV photograph copy, and the stopped rollback copy
-keep `done/`. `search bootstrap` replays it, so a copy that can restore the
-primary must hold it. Helper: `probe_clone_home_without_search_receipts` in
-`scripts/probe-copy-guards.sh`. Brain:
-`papercut-safe-upgrade-probes-copy-search-receipts-20261007`.
-
-### Release one retained RED point without a new probe
-
-Use `scripts/cleanup-retained-rollback.sh` only for an older point from the
-former live-copy flow, when that run ended before a live cutover. The helper
-checks the exact point name and retention
-marker, the host owner lock, the primary process start time and build, the
-installed daemon build, and active probe processes. It fails closed if the
-primary status over the Unix socket is unavailable. The default does not
-delete data. `--execute` deletes only the named rollback point. It does not
-start a candidate, create a copy, install a binary, or restart the primary.
-
-```bash
-export LASTDB_ROLLBACK_ROOT=/path/to/lastdb-safe-upgrade-rollback-UID
-helper="$HOME/.last-stack/skills/lastdb-safe-upgrade/scripts/cleanup-retained-rollback.sh"
-point="$LASTDB_ROLLBACK_ROOT/pre-CANDIDATE-from-CURRENT-YYYYMMDDTHHMMSSZ"
-bash "$helper" --point "$point" --expect-primary-pid PID \
-  --expect-retained-at YYYY-MM-DDTHH:MM:SSZ
-# After the check reports READY, run the same command with --execute.
-```
-
-Use the PID and `retained_at` from that older record. Check the current
-primary with `lastdb status` first. Do not use this helper after any live
-cutover attempt or when the rollback point may be needed for recovery. A
-release can free less physical disk than `du` reports because APFS clones can
-share blocks.
+Read the current PID and start time from `~/.lastdb/current-session.json`. This
+helper refuses published rollback points; use `scripts/cleanup-retained-rollback.sh`
+for a `pre-*` point from the former live-copy flow (same READY check, then
+`--execute`). A release can free less physical disk than `du` reports because APFS
+clones can share blocks.
 
 ### C. If the graph or script is missing or fails open
 
@@ -726,12 +609,12 @@ Always print:
 - Current version → candidate version  
 - Venue (sidebin / brew)  
 - Candidate data: `PROBE_DATA: synthetic`, a copy of the cached seed (never the primary)
-- Rollback path and whether it was released or retained (TTL + cleanup owner)
+- Recovery point: cloud `published_through` before the stop (no copy of the primary exists)
 - Probe GREEN/RED (+ first Board title if green)  
 - **Probe peak RSS MiB vs memory-guard limit / fail_at**  
 - **Latency: cold Board/column reads and hot Board/batch reads, candidate vs baseline (ms) + boot seconds.** The hot batch uses the receipt key `lat_hot_scan_ms`. A `nothot` pair is dropped.
 - Whether live upgrade ran + cutover seconds + live peak RSS + live point-read ms  
-- Rollback commands (script prints them)
+- Recovery commands (the script prints them): binary pair, then `lastdb restore`
 
 Optional: append a one-liner to brain reference `lastdb-safe-upgrade-log` via
 `brain append` (non-secret metadata only).
@@ -749,7 +632,7 @@ This driver does not create host-track registry rows. App installs may wait for 
 | `VERDICT: GREEN` | Probe + live cutover + live post-check passed | Done |
 | `VERDICT: GREEN_PROBE_ONLY` | Probe passed; primary still on old version | Start `last-stack-safe-upgrade-loom` with the candidate and source commit if Tom wants the upgrade |
 | `VERDICT: ALREADY_CURRENT` | Already on candidate/stable | Nothing to do |
-| `VERDICT: RED` | A candidate, DEV restore, stopped flush, rollback copy, live health, or cloud check failed. | Stop the upgrade. Keep a valid rollback copy when recovery needs it. |
+| `VERDICT: RED` | A candidate, DEV restore, cloud recovery point, stopped flush, live health, or cloud check failed. | Stop the upgrade. Recover with the saved binary pair, then `lastdb restore` if the data is damaged. |
 
 
 ## Rollback
@@ -791,12 +674,16 @@ kanban list
 > The rollback must copy to a new inode. In-place replacement can preserve a
 > cached code signature and make launchd kill every exec.
 
-**Data (only if home corrupted and the run is RED):**
+**Data (only if the home is corrupted and the run is RED).** No copy of the
+primary exists. Restore the latest cloud backup into a fresh home, check it, then
+swap the homes. Keep the broken home until the restored node serves real cards.
 
 ```bash
-# stop primary supervisor, then:
+# stop the primary supervisor first
+lastdb restore --into ~/.lastdb.restored-$(date +%Y%m%dT%H%M%S) --env prod --json
+# check the restored home with a node pointed at it (never the live path), then:
 mv ~/.lastdb ~/.lastdb.broken-$(date +%Y%m%dT%H%M%S)
-cp -a <printed-ephemeral-rollback-path> ~/.lastdb
+mv ~/.lastdb.restored-<ts> ~/.lastdb
 # restart supervisor (kickstart or brew services start)
 kanban list   # must show real cards
 ```
@@ -818,7 +705,6 @@ kanban list   # must show real cards
 - Point candidate `--data-dir` at live `~/.lastdb` "just to see".
 - Copy `~/.lastdb` (also with `cp -cR`) or boot a node on a copy of it, for any probe,
   cloud backup test, smoke test or bar (Tom, 2026-10-12). Use the synthetic seed.
-- Reuse a prior rollback copy as the trial home.
 - Set `LASTDB_BUILD_CONFLICT_STAMP_ON_COPY` on the primary LaunchAgent, or copy the ephemeral copy's conflict stamp onto the primary home.
 - Read a probe's fast, empty query result as a pass. Count the rows.
 - Upload a CoW/ephemeral photograph into the primary's **production** backup
