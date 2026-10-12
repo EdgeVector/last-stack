@@ -356,7 +356,7 @@ if [ "$RECOVER" -eq 1 ]; then
   recover_cutover="$(recover_field cutover)"
   recover_verify="$(recover_field verify)"
   if [ "$recover_status" != "succeeded" ] || [ "$recover_state" != "DONE" ] \
-    || [ "$recover_protocol_version" != "6" ] || [ "$recover_verdict" != "green" ] \
+    || [ "$recover_protocol_version" != "7" ] || [ "$recover_verdict" != "green" ] \
     || [ "$recover_cutover" != "live" ] || [ "$recover_verify" != "live" ] \
     || [ -z "$recover_candidate" ] || [ -z "$recover_candidate_cli" ] \
     || [ -z "$recover_oid" ] || [ -z "$recover_version" ] \

@@ -127,7 +127,7 @@ def exact_upgrade_job(candidate, source_git_oid, claimed_version):
         "lastdbd_sha256": daemon_sha,
         "lastdb_sha256": cli_sha,
         "candidate_artifact_digest": artifact_digest,
-        "safe_upgrade_protocol_version": "6",
+        "safe_upgrade_protocol_version": "7",
     }
 
 
@@ -177,7 +177,7 @@ if not live:
             "lastdbd_sha256": "stand-in",
             "lastdb_sha256": "stand-in",
             "candidate_artifact_digest": "stand-in",
-            "safe_upgrade_protocol_version": "6",
+            "safe_upgrade_protocol_version": "7",
         }
         emit(
             {
@@ -347,8 +347,8 @@ if step == "RECOVER_LIVE":
 
     if not re.fullmatch(r"lx-[A-Za-z0-9._-]+", child):
         recovery_fail("recovery_child_execution has an invalid form")
-    if protocol_version != "6":
-        recovery_fail("recovery child does not use safe-upgrade protocol v6")
+    if protocol_version != "7":
+        recovery_fail("recovery child does not use safe-upgrade protocol v7")
     if not re.fullmatch(r"[0-9a-f]{40}", oid):
         recovery_fail("recovery_source_git_oid must be a full lowercase SHA")
     if not re.fullmatch(r"[0-9a-f]{64}", lastdbd_sha256):

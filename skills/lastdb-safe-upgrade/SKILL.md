@@ -411,13 +411,42 @@ The live cutover has no rollback copy of the primary. See
     database hashes, verified source scope, remote read-only access, and Cloud
     Off. The target must hold the paused cloud config and resume-required marker.
 
-    The owner-only v3 receipt belongs to one Loom execution and expires after
+    The owner-only v4 receipt belongs to one Loom execution and expires after
     one hour. It records the exact source, pair paths, pair hashes, pair
     versions, DEV URL, CoW path, primary path, fresh trial copy path, snapshot report, snapshot user
     hash, cloud DB hash, manifest object key, exact manifest-cache path,
     source-free restore proof, and isolation facts. The proof retains a bounded
     owner-only restore report with a digest in the receipt. The gate reads that
     report again before it accepts the receipt.
+
+    The normal driver requires `--retain-for-cloud-cleanup`. The helper keeps
+    its exact owned home under `${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/dev-photo/`.
+    The short home path preserves the native socket cap. Before GREEN, the helper
+    stops and reaps its exact candidate. It writes an immutable, private
+    `${receipt}.cloud-cleanup.json` handoff with root and credential-file metadata.
+    The metadata helper never reads the credential, seed, or device bytes.
+    A failure after the first DEV connect attempt also keeps the home. Its
+    private RED handoff has unknown cloud scope. A failed handoff keeps the
+    home and cannot authorize cleanup. A failure before cloud access deletes
+    the owned home as before. The standalone helper defaults to no retention;
+    the normal cutover gate rejects that receipt.
+
+    The handoff stays pending until the exact cloud cleanup consumer closes.
+    The consumer sends a bounded FIFO attestation to:
+    `python3 -I <skill>/scripts/dev-photograph-cleanup-handoff.py release --receipt <receipt>`.
+    The strict attestation contains `schema`, `consumer_closed`,
+    `expected_handoff_sha256`, and `server_closure_refs`. The schema is
+    `lastdb.dev-photograph.cloud-cleanup-consumer-closed.v1`. Each of 1–16
+    references names an exact protected proof file and its SHA256.
+    The consumer attests that all current and future access-home uses close.
+    The helper checks the references; it does not infer provider closure.
+    It creates a closed record and a truthful `synthetic-photograph` marker.
+    An incomplete release stays pending and requires review; it has no retry.
+    The operator then uses `lastdb-dev reclaim --home <photo-parent> --exact-home --dry-run`,
+    followed by the same command without `--dry-run`. Both checks require
+    unchanged private handoff and file metadata, exact released proof references,
+    no creator process, no open descendant files, and no primary overlap.
+    A normal home reclaim or a TTL sweep cannot delete a retained photograph.
     The gate rejects missing, duplicate, or unknown fields. It also
     rejects a legacy receipt, a stale time, a future time, another candidate,
     a production URL, or an overlapping home. Skip
@@ -508,7 +537,7 @@ The live cutover has no rollback copy of the primary. See
 
 Start the graph with an explicit release candidate. The launcher reads the
 full candidate source commit. It hashes the sibling `lastdbd` and `lastdb`
-files. The default fixed-length `safe-upgrade-v6-<digest>` key includes the gate
+files. The default fixed-length `safe-upgrade-v7-<digest>` key includes the gate
 protocol version. Its digest covers the source OID, both canonical paths, both
 binary hashes, and both versions. The graph checks the complete tuple before
 PROBE and CUTOVER.
@@ -548,7 +577,7 @@ last-stack-canary-loom --start --oid <full-lastdb-main-commit>
 The parent graph builds the candidate and calls `lastdb-safe-upgrade` as a Loom
 child. Do not call the cutover driver from a routine or an agent.
 
-`last-stack-canary-loom --recover` accepts only a complete protocol-v6 child
+`last-stack-canary-loom --recover` accepts only a complete protocol-v7 child
 receipt. Recovery rechecks both canonical paths, versions, hashes, the tuple
 digest, the successful nodes, and the installed live pair. A legacy receipt
 cannot record the dogfood ledger.
