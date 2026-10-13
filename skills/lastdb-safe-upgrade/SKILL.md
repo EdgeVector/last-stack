@@ -85,7 +85,8 @@ stopped copy, not a copy for a first backup. The recovery point is:
   compatibility frontier and the separate local durable frontier in that sample.
   The sample does not cover later writes or writes that still wait for local flush.
   The strict stop remains a separate gate. If any sample requirement is
-  false the driver exits RED and the primary is not stopped.
+  false the driver exits RED and the primary is not stopped. The bounded
+  waiver below is the only exception.
 - the saved binary pair `lastdbd.bak-pre-*` and `lastdb.bak-pre-*`.
 
 `Idle`, `Dirty`, and `Syncing` are normal native phases. Each phase must pass
@@ -101,6 +102,60 @@ primary fills the disk and slows the machine.
 The older one-off flow that stopped the daemon, made an APFS copy and ran
 `cloud backup-while-off` on it (`stopped-home-copy.sh`, `cleanup-stopped-copy.py`)
 is removed. The primary syncs to the cloud now; use that backup.
+
+## Bounded waiver for a stale cloud backup (Tom, 2026-10-13)
+
+CAUTION: Use this only when Tom approves it in chat for one named candidate.
+
+The gate above can block the upgrade that fixes the problem. A bug in the
+primary's own sync code is the case: sync fails, the backup goes stale, and the
+fix needs a cutover that the gate refuses. A cloud outage is not this case. The
+backup recovers by itself when the cloud recovers, and the gate then passes.
+
+A bounded waiver lets one cutover go ahead with a stale backup. It has limits:
+
+- **By name.** `--accept-stale-recovery-point <decision-slug>` names one brain
+  decision record. The record has `type: decision`, `status: go`,
+  `decided_by: Tom`, `program: lastdb-safe-upgrade`, and
+  `gate_slug: stale-recovery-point-cutover`.
+- **By candidate.** The record body contains the sha256 of the candidate
+  `lastdbd` in lowercase hex. The driver hashes the candidate file itself.
+- **By time.** The record was created less than 24 hours ago. An edit does not
+  extend this. The driver reads the creation time.
+- **By window.** The unpublished window is at most
+  `LASTDB_CLOUD_RECOVERY_WAIVER_MAX_WINDOW_SECS` (default 86400, 24 hours). The
+  window is the span between the newest local frontier and `published_through`
+  (`mutation_log_lag`). It is the span of writes the cloud backup does not hold.
+  Do not use `mutation_log_recovery_point_age_secs` for this. On 2026-10-13 that
+  field read 212 s while the real window was 7 h 55 min.
+- **By run.** A waived run has its own Loom execution key,
+  `...-stale-recovery-<12 hex of the slug>`. It cannot resume or reuse an
+  unwaived run.
+- **By scope.** The waiver replaces only the cloud-state checks. These are the
+  sync state, failures, errors, lag, frontier coverage, backlog, and age. The
+  strict stop, the flush receipt, the binary hash checks, the synthetic probe
+  and the DEV photograph stay in force.
+- **In the open.** The driver prints the failed checks and the window, adds a
+  `RECOVERY_POINT_WAIVER:` line to the verdict, and puts the window in the
+  Situations notice.
+
+On a bad cutover the data recovery is the saved binary pair and then
+`lastdb restore` of the stale backup. The writes in the window are lost.
+
+The driver checks the record's fields. It cannot check who typed them. An agent
+writes the record only after Tom approves that cutover in chat, and the record
+quotes the approval. Do not write one on your own initiative.
+
+To see whether a cutover would pass now, and which checks fail, without any
+cutover:
+
+```bash
+d=$(mktemp -d "$TMPDIR/crs.XXXXXX"); chmod 700 "$d"
+(umask 077; curl -fsS --unix-socket "$HOME/.lastdb/data/folddb.sock" \
+  -H 'Host: localhost' http://x/api/status > "$d/status.json")
+python3 ~/.last-stack/skills/lastdb-safe-upgrade/scripts/cloud-recovery-status.py \
+  --status "$d/status.json" --max-age-secs 300 --report
+```
 
 ## Live venue (important — 2026-07-16)
 
@@ -548,6 +603,11 @@ last-stack-safe-upgrade-loom \
   --source-git-oid <full-lastdb-commit>
 ```
 
+For a candidate that fixes the primary's own sync defect while the cloud backup is
+stale, Tom can approve a bounded waiver. Add
+`--accept-stale-recovery-point <decision-slug>` to this command. See
+[Bounded waiver](#bounded-waiver-for-a-stale-cloud-backup-tom-2026-10-13).
+
 For the one-client rescue, Tom approved the explicit `--zero-live-soak` option.
 Add it to this command only for that cutover. The option removes the 300-second
 minimum after the live cutover. The driver still requires a
@@ -795,6 +855,10 @@ kanban list   # must show real cards
 - Read a probe's fast, empty query result as a pass. Count the rows.
 - Upload a CoW/ephemeral photograph into the primary's **production** backup
   home, or treat a mock object-store "stamp" as the DEV photograph gate.
+- Write a `stale-recovery-point-cutover` decision, or pass
+  `--accept-stale-recovery-point`, without Tom's approval in chat for that
+  candidate. Do not raise `LASTDB_CLOUD_RECOVERY_MAX_AGE_SECS` to get past a
+  failed backup. It changes the age limit only and hides the real window.
 - Reuse a DEV photograph receipt from another execution, source, daemon, or
   CLI. A matching version does not prove matching bytes.
 - Use `LASTDB_PROBE_DEV_STAMP_SKIP=1` to skip the final binary-binding check.

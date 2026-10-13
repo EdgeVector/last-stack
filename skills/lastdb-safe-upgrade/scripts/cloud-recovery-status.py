@@ -1,6 +1,19 @@
 #!/usr/bin/env python3
-"""Validate one owned native cloud recovery status sample with exact integers."""
+"""Validate one owned native cloud recovery status sample with exact integers.
+
+Default (strict gate): print "ok <published> <age>", or print "refused" and exit 1.
+--report: print which checks fail. Exit 0 unless the sample itself is malformed.
+Bounded waiver (all four --waiver/--candidate options together): a refused sample
+passes only when a Tom-approved decision record names this candidate's lastdbd
+sha256, is under 24 hours old, and the unpublished window is known and within the
+waiver limit. The window is the time between the local durable frontier and the
+published frontier (mutation_log_lag). It is the span of writes that the cloud
+backup does not hold. mutation_log_recovery_point_age_secs is not that span.
+Print "waived <published> <window secs> <failed,checks>". A refused waiver prints
+"waiver refused: <fixed reason>" and exits 1.
+"""
 import argparse
+from datetime import datetime, timedelta, timezone
 import json
 import math
 import os
@@ -10,7 +23,19 @@ import stat
 import sys
 
 CAP = 4 * 1024 * 1024
+DECISION_CAP = 256 * 1024
 U64_MAX = 18446744073709551615
+WAIVER_PROGRAM = "lastdb-safe-upgrade"
+WAIVER_GATE = "stale-recovery-point-cutover"
+WAIVER_APPROVER = "Tom"
+WAIVER_DECISION_MAX_AGE = timedelta(hours=24)
+WAIVER_CLOCK_SKEW = timedelta(minutes=5)
+SLUG = re.compile(r"decision-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9][a-z0-9-]{0,120}")
+CREATED = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.[0-9]+)?Z")
+
+
+class Refusal(Exception):
+    """A bounded waiver refusal. The message is a fixed string, never file text."""
 
 
 def require(value):
@@ -85,38 +110,168 @@ def unsigned(value):
     return value
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--status", required=True, type=Path)
-    parser.add_argument("--max-age-secs", required=True)
-    args = parser.parse_args()
-    require(re.fullmatch(r"[0-9]+", args.max_age_secs) is not None)
-    require(len(args.max_age_secs) <= 20)
-    max_age = unsigned(int(args.max_age_secs))
-    value = read_status(args.status)
+def load_sync(path):
+    value = read_status(path)
     require(type(value) is dict and value.get("ok") is True)
     require(type(value.get("status")) is dict)
     sync = value["status"].get("sync")
     require(type(sync) is dict)
-    require(sync.get("enabled") is True and sync.get("state") in ("Idle", "Dirty", "Syncing"))
-    require(sync.get("sync_degraded") is False and unsigned(sync.get("consecutive_sync_failures")) == 0)
-    require("last_error" in sync and sync["last_error"] is None)
-    require("replay_blocker" in sync and sync["replay_blocker"] is None)
-    require(sync.get("mutation_log_active") is True and sync.get("mutation_log_lag_degraded") is False)
-    frontier = unsigned(sync.get("mutation_log_frontier_f"))
-    durable = unsigned(sync.get("mutation_log_last_durable_frontier"))
-    published = unsigned(sync.get("mutation_log_published_through"))
-    require(published >= frontier and published >= durable)
+    return sync
+
+
+def number(sync, key, lenient):
+    """An exact unsigned integer. A lenient read turns a bad value into None."""
+    try:
+        return unsigned(sync.get(key))
+    except ValueError:
+        if lenient:
+            return None
+        raise
+
+
+def failed_checks(sync, max_age, lenient):
+    """Return (failed check names, published frontier, recovery point age, window).
+
+    The window is the span in seconds between the newest local frontier and the
+    published frontier, or None when a frontier is unknown.
+
+    The strict gate calls this with lenient=False: a missing or malformed value
+    raises, as before. Report and waiver modes call it with lenient=True.
+    """
+    failed = []
+
+    def check(name, condition):
+        if not condition:
+            failed.append(name)
+
+    check("sync_enabled", sync.get("enabled") is True)
+    check("sync_state", sync.get("state") in ("Idle", "Dirty", "Syncing"))
+    check("sync_degraded", sync.get("sync_degraded") is False)
+    check("consecutive_sync_failures", number(sync, "consecutive_sync_failures", lenient) == 0)
+    check("last_error", "last_error" in sync and sync["last_error"] is None)
+    check("replay_blocker", "replay_blocker" in sync and sync["replay_blocker"] is None)
+    check("mutation_log_active", sync.get("mutation_log_active") is True)
+    check("mutation_log_lag_degraded", sync.get("mutation_log_lag_degraded") is False)
+    frontier = number(sync, "mutation_log_frontier_f", lenient)
+    durable = number(sync, "mutation_log_last_durable_frontier", lenient)
+    published = number(sync, "mutation_log_published_through", lenient)
+    check("published_covers_frontier",
+          None not in (frontier, durable, published)
+          and published >= frontier and published >= durable)
     for key in ("upload_queue_count", "pending_count", "durable_outbox_count"):
-        require(unsigned(sync.get(key)) == 0)
-    age = unsigned(sync.get("mutation_log_recovery_point_age_secs"))
-    require(age <= max_age)
-    print("ok %d %d" % (published, age))
+        check(key, number(sync, key, lenient) == 0)
+    age = number(sync, "mutation_log_recovery_point_age_secs", lenient)
+    check("recovery_point_age", age is not None and age <= max_age)
+    window = None
+    if None not in (frontier, durable, published):
+        window = max(0, max(frontier, durable) - published) // 1_000_000_000
+    return failed, published, age, window
+
+
+def read_decision(path):
+    require(path.is_absolute())
+    before = path.lstat()
+    require(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid())
+    require(stat.S_IMODE(before.st_mode) == 0o600 and before.st_nlink == 1)
+    require(0 < before.st_size <= DECISION_CAP)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        require(metadata(os.fstat(fd)) == metadata(before))
+        raw = bytearray()
+        while len(raw) <= DECISION_CAP:
+            block = os.read(fd, DECISION_CAP + 1 - len(raw))
+            if not block:
+                break
+            raw.extend(block)
+    finally:
+        os.close(fd)
+    require(len(raw) == before.st_size)
+    return json.loads(bytes(raw).decode("utf-8", errors="strict"), object_pairs_hook=pairs,
+                      parse_constant=lambda _value: require(False))
+
+
+def refuse_unless(condition, reason):
+    if not condition:
+        raise Refusal(reason)
+
+
+def check_waiver(decision_path, slug, candidate_sha256, published, window, waiver_max_window):
+    """Raise Refusal unless every bound of the waiver holds."""
+    require(SLUG.fullmatch(slug) is not None)
+    require(re.fullmatch(r"[0-9a-f]{64}", candidate_sha256) is not None)
+    refuse_unless(published is not None and published > 0,
+                  "no cloud recovery point has been published")
+    refuse_unless(window is not None and window <= waiver_max_window,
+                  "the unpublished window is unknown or beyond the waiver limit")
+    doc = read_decision(decision_path)
+    refuse_unless(type(doc) is dict and doc.get("slug") == slug
+                  and doc.get("type") == "decision" and doc.get("status") == "go",
+                  "the record is not an approved decision with that slug")
+    extra = doc.get("extra_fields")
+    refuse_unless(type(extra) is dict and extra.get("decided_by") == WAIVER_APPROVER
+                  and extra.get("program") == WAIVER_PROGRAM
+                  and extra.get("gate_slug") == WAIVER_GATE,
+                  "the decision is not approved by Tom for this gate")
+    created = CREATED.fullmatch(doc.get("created_at") if type(doc.get("created_at")) is str else "")
+    refuse_unless(created is not None, "the decision has no creation time")
+    made = datetime(*[int(part) for part in created.groups()], tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    refuse_unless(-WAIVER_CLOCK_SKEW <= now - made <= WAIVER_DECISION_MAX_AGE,
+                  "the decision is older than 24 hours")
+    body = doc.get("body")
+    refuse_unless(type(body) is str and candidate_sha256 in body.lower(),
+                  "the decision does not name this candidate's lastdbd sha256")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--status", required=True, type=Path)
+    parser.add_argument("--max-age-secs", required=True)
+    parser.add_argument("--report", action="store_true")
+    parser.add_argument("--waiver-decision", type=Path)
+    parser.add_argument("--waiver-slug")
+    parser.add_argument("--candidate-sha256")
+    parser.add_argument("--waiver-max-window-secs")
+    args = parser.parse_args()
+    require(re.fullmatch(r"[0-9]+", args.max_age_secs) is not None)
+    require(len(args.max_age_secs) <= 20)
+    max_age = unsigned(int(args.max_age_secs))
+    sync = load_sync(args.status)
+    waiver = (args.waiver_decision, args.waiver_slug, args.candidate_sha256,
+              args.waiver_max_window_secs)
+    if not args.report and not any(waiver):
+        failed, published, age, _window = failed_checks(sync, max_age, lenient=False)
+        require(not failed)
+        print("ok %d %d" % (published, age))
+        return
+    failed, published, age, window = failed_checks(sync, max_age, lenient=True)
+    if args.report:
+        require(not any(waiver))
+        state = sync.get("state")
+        state = state if type(state) is str and re.fullmatch(r"[A-Za-z]{1,16}", state) else "?"
+        print("report failed=%s published=%s age=%s window=%s state=%s" % (
+            ",".join(failed) or "none",
+            "-" if published is None else published,
+            "-" if age is None else age,
+            "-" if window is None else window, state))
+        return
+    require(all(waiver))
+    if not failed:
+        print("ok %d %d" % (published, age))
+        return
+    require(re.fullmatch(r"[0-9]{1,20}", args.waiver_max_window_secs) is not None)
+    check_waiver(args.waiver_decision, args.waiver_slug, args.candidate_sha256,
+                 published, window, unsigned(int(args.waiver_max_window_secs)))
+    print("waived %d %d %s" % (published, window, ",".join(failed)))
 
 
 if __name__ == "__main__":
     try:
         main()
+    except Refusal as refusal:
+        print("waiver refused: %s" % refusal)
+        raise SystemExit(1)
     except (OSError, ValueError, TypeError, KeyError, RecursionError):
         print("refused")
         raise SystemExit(1)
