@@ -11,6 +11,13 @@
 # refreshes a portal a human or agent already checked out locally. This
 # tool detects (default) or heals (--fix) that drift for one portal or
 # every portal under ~/code/edgevector.
+#
+# The marker files above drive automation; a portal's README.md is read by
+# humans and agents and goes stale the exact same way with nobody
+# re-stamping it (papercut-portal-readmes-name-retired-lastgit-remotes-20261009:
+# fold/laststore/search/lastdb-disk README.md still said "usually LastGit"
+# and showed a lastdb:/// example remote weeks after their mirrors flipped
+# to GitHub). --fix now also heals that doc text.
 set -euo pipefail
 
 MIRRORS_TSV="${LAST_STACK_GITHUB_MIRRORS_TSV:-$HOME/.lastgit/github-mirrors.tsv}"
@@ -20,10 +27,10 @@ usage() {
   cat <<'EOF'
 Usage: last-stack-portal-resync-venue [--fix] [--portal <dir> | --sweep]
 
-Detect (default) or heal (--fix) stale .portal/remote, .portal/venue, and
-.last-stack/pr-venue markers against the canonical source_url column of
-~/.lastgit/github-mirrors.tsv (the same registry the live
-lastgit-mirror-primary launchd job reads). Detect mode exits 1 when any
+Detect (default) or heal (--fix) stale .portal/remote, .portal/venue,
+.last-stack/pr-venue, and README.md venue text against the canonical
+source_url column of ~/.lastgit/github-mirrors.tsv (the same registry the
+live lastgit-mirror-primary launchd job reads). Detect mode exits 1 when any
 checked portal is stale; --fix mode rewrites the stale files and exits 0.
 
   --sweep         check every portal under $HOME/code/edgevector (default)
@@ -78,19 +85,32 @@ venue_of_url() {
   esac
 }
 
+# A portal's README.md is usually the generated share/portal-template stub
+# (safe to rewrite) but can be a hand-written product README that legitimately
+# documents the lastdb:/// transport itself (e.g. lastgit) or has nothing to
+# do with venue at all. Only touch files that carry the stub's own wording.
+is_portal_doc_stub() {
+  head -5 "$1" 2>/dev/null | grep -qE 'EdgeVector[^$]*portal|not a product checkout'
+}
+
+# Human-readable label as the portal template writes it ("usually GitHub").
+venue_label() {
+  case "$1" in
+    github) echo GitHub ;;
+    forgejo) echo Forgejo ;;
+    lastgit) echo LastGit ;;
+    *) echo "" ;;
+  esac
+}
+
 any_stale=0
 
 check_portal() {
-  local d="$1" slug canon_url canon_venue remote_f venue_f pr_venue_f
-  local cur_remote cur_venue cur_pr stale=0
+  local d="$1" slug canon_url="" canon_venue="" remote_f venue_f pr_venue_f
+  local cur_remote cur_venue cur_pr stale=0 doc doc_stale=0 doc_venue doc_label
 
   [ -f "$d/.portal/remote" ] || return 0
   slug="$(basename "$d")"
-  canon_url="$(canonical_source_url "$slug")"
-  [ -n "$canon_url" ] || return 0
-  canon_venue="$(venue_of_url "$canon_url")"
-  [ -n "$canon_venue" ] || return 0
-
   remote_f="$d/.portal/remote"
   venue_f="$d/.portal/venue"
   pr_venue_f="$d/.last-stack/pr-venue"
@@ -101,25 +121,64 @@ check_portal() {
   cur_pr=""
   [ -f "$pr_venue_f" ] && cur_pr="$(sed -n '1{s/[[:space:]]*$//;p;}' "$pr_venue_f")"
 
-  if [ "$cur_remote" != "$canon_url" ]; then
-    stale=1
-    printf 'STALE %s .portal/remote: %s -> %s\n' "$slug" "${cur_remote:-<absent>}" "$canon_url"
+  canon_url="$(canonical_source_url "$slug")"
+  if [ -n "$canon_url" ]; then
+    canon_venue="$(venue_of_url "$canon_url")"
   fi
-  if [ "$cur_venue" != "$canon_venue" ]; then
-    stale=1
-    printf 'STALE %s .portal/venue: %s -> %s\n' "$slug" "${cur_venue:-<absent>}" "$canon_venue"
+  if [ -n "$canon_url" ] && [ -n "$canon_venue" ]; then
+    if [ "$cur_remote" != "$canon_url" ]; then
+      stale=1
+      printf 'STALE %s .portal/remote: %s -> %s\n' "$slug" "${cur_remote:-<absent>}" "$canon_url"
+    fi
+    if [ "$cur_venue" != "$canon_venue" ]; then
+      stale=1
+      printf 'STALE %s .portal/venue: %s -> %s\n' "$slug" "${cur_venue:-<absent>}" "$canon_venue"
+    fi
+    if [ -f "$pr_venue_f" ] && [ "$cur_pr" != "$canon_venue" ]; then
+      stale=1
+      printf 'STALE %s .last-stack/pr-venue: %s -> %s\n' "$slug" "${cur_pr:-<absent>}" "$canon_venue"
+    fi
   fi
-  if [ -f "$pr_venue_f" ] && [ "$cur_pr" != "$canon_venue" ]; then
-    stale=1
-    printf 'STALE %s .last-stack/pr-venue: %s -> %s\n' "$slug" "${cur_pr:-<absent>}" "$canon_venue"
+
+  # README.md venue text drifts the same way the markers do, but the TSV
+  # registry above only covers repos the live LastGit->GitHub mirror job
+  # still tracks; a repo fully migrated and frozen (no mirror row left,
+  # e.g. fold/laststore/search/lastdb-disk) is invisible to it even though
+  # its OWN .portal/venue already resolved correctly. Trust that
+  # already-resolved local marker as the doc's ground truth instead of
+  # requiring a TSV row (papercut-portal-readmes-name-retired-lastgit-remotes-20261009).
+  doc_venue="$cur_venue"
+  [ -n "$doc_venue" ] || doc_venue="$(venue_of_url "$cur_remote")"
+  doc_label="$(venue_label "$doc_venue")"
+
+  doc="$d/README.md"
+  if [ -n "$doc_label" ] && [ -f "$doc" ] && is_portal_doc_stub "$doc"; then
+    if grep -qE 'usually (LastGit|Forgejo|GitHub)' "$doc" \
+        && ! grep -q "usually $doc_label" "$doc"; then
+      stale=1
+      doc_stale=1
+      printf 'STALE %s README.md: venue label is not "usually %s"\n' "$slug" "$doc_label"
+    fi
+    if [ "$doc_venue" = github ] && grep -q 'lastdb:///' "$doc"; then
+      stale=1
+      doc_stale=1
+      printf 'STALE %s README.md: example remote still lastdb:///...\n' "$slug"
+    fi
   fi
 
   if [ "$stale" -eq 1 ]; then
     any_stale=1
     if [ "$fix" -eq 1 ]; then
-      printf '%s\n' "$canon_url" > "$remote_f"
-      printf '%s\n' "$canon_venue" > "$venue_f"
-      [ -f "$pr_venue_f" ] && printf '%s\n' "$canon_venue" > "$pr_venue_f"
+      if [ -n "$canon_url" ] && [ -n "$canon_venue" ]; then
+        printf '%s\n' "$canon_url" > "$remote_f"
+        printf '%s\n' "$canon_venue" > "$venue_f"
+        [ -f "$pr_venue_f" ] && printf '%s\n' "$canon_venue" > "$pr_venue_f"
+      fi
+      if [ "$doc_stale" -eq 1 ] && [ -f "$doc" ]; then
+        [ -n "$doc_label" ] && sed -i '' -E "s/usually (LastGit|Forgejo|GitHub)/usually $doc_label/" "$doc"
+        [ "$doc_venue" = github ] && sed -i '' -E \
+          's#lastdb:///([A-Za-z0-9_-]+)#https://github.com/EdgeVector/\1.git#g' "$doc"
+      fi
       printf 'FIXED %s\n' "$slug"
     fi
   fi
