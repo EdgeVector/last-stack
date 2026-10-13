@@ -1195,8 +1195,8 @@ def sync_cause(v, now):
     err_at = v.get("sync_err_at")
     if v.get("sync_err") and isinstance(err_at, (int, float)) and now - err_at < 900:
         parts.append("last error %ds ago: %s" % (now - err_at, v["sync_err"]))
-    if v.get("rp_age_s") is not None:
-        parts.append("recovery point %ss old" % v["rp_age_s"])
+    if v.get("mlog_lag_s") is not None:
+        parts.append("recovery point %ss old" % v["mlog_lag_s"])
     if v.get("dl_deferred"):
         parts.append("%s download entries deferred" % v["dl_deferred"])
     return " (%s)" % "; ".join(parts) if parts else ""
