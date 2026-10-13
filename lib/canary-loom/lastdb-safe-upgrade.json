@@ -18,6 +18,7 @@
       "candidate_artifact_digest": { "type": "string" },
       "safe_upgrade_protocol_version": { "type": "string" },
       "zero_live_soak": { "type": "boolean" },
+      "accept_stale_recovery_point": { "type": "string" },
       "attempt": { "type": "integer", "minimum": 1 },
       "item": {}
     },

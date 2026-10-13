@@ -147,6 +147,9 @@ LAUNCHD_PLIST="${LASTDB_LAUNCHD_PLIST:-$HOME/Library/LaunchAgents/${LAUNCHD_LABE
 PROBE_ONLY=0
 ASSUME_YES=0
 CHECK_DEV_STAMP=0
+# Bounded waiver for a stale cloud recovery point (Tom, 2026-10-13). The Loom
+# execution input owns it; see cloud_recovery_point_preflight.
+STALE_RECOVERY_WAIVER="${LASTDB_SAFE_UPGRADE_STALE_RECOVERY_WAIVER:-}"
 # Probe data is synthetic. No mode copies the primary home (Tom, 2026-10-12).
 # Validated once synthetic-home-checks.sh is sourced.
 PROBE_DATA="${LASTDB_SAFE_UPGRADE_DATA:-synthetic}"
@@ -167,6 +170,7 @@ while [ "$#" -gt 0 ]; do
     --probe-only) PROBE_ONLY=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --check-dev-stamp) CHECK_DEV_STAMP=1; shift ;;
+    --accept-stale-recovery-point) STALE_RECOVERY_WAIVER="${2:-}"; shift 2 ;;
     --data) PROBE_DATA="${2:-}"; shift 2 ;;
     --candidate) CANDIDATE_BIN="$2"; shift 2 ;;
     --version) TARGET_VERSION="$2"; shift 2 ;;
@@ -174,6 +178,13 @@ while [ "$#" -gt 0 ]; do
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+if [ -n "$STALE_RECOVERY_WAIVER" ] \
+  && ! printf '%s\n' "$STALE_RECOVERY_WAIVER" \
+    | grep -Eq '^decision-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9][a-z0-9-]{0,120}$'; then
+  echo "[safe-upgrade] ERROR: --accept-stale-recovery-point needs a decision slug (decision-YYYY-MM-DD-name)" >&2
+  exit 2
+fi
 
 log() { printf '[safe-upgrade] %s\n' "$*"; }
 die() { printf '[safe-upgrade] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -351,7 +362,7 @@ release_rollback_point() {
 # pair.
 backup_red_note() {
   if [ -n "${CLOUD_RECOVERY_FRONTIER:-}" ]; then
-    printf 'BACKUP: none  (no copy of the primary is made; recovery point = cloud published_through=%s and the saved binary pair; data restore = lastdb restore)\n' "$CLOUD_RECOVERY_FRONTIER"
+    printf 'BACKUP: none  (no copy of the primary is made; recovery point = cloud published_through=%s and the saved binary pair; data restore = lastdb restore)%s\n' "$CLOUD_RECOVERY_FRONTIER" "${CLOUD_RECOVERY_WAIVER_NOTE:+ STALE: $CLOUD_RECOVERY_WAIVER_NOTE}"
   else
     printf 'BACKUP: none  (no copy of the primary is made; failure occurred before the cloud recovery point was recorded)\n'
   fi
@@ -1627,30 +1638,74 @@ strict_prestop_old_primary() {
 # restore needed about 43 minutes to republish its cloud frontier).
 CLOUD_RECOVERY_FRONTIER=""
 CLOUD_RECOVERY_MAX_AGE_SECS="${LASTDB_CLOUD_RECOVERY_MAX_AGE_SECS:-300}"
+# A bounded waiver (--accept-stale-recovery-point <decision-slug>) lets a cutover
+# go ahead when the cloud backup is NOT current, for the case where the primary's
+# own sync defect is what the candidate fixes. It never skips the stop gates. It
+# needs a Tom-approved decision record that names this candidate's lastdbd sha256
+# and is under 24 hours old. The unpublished window (the span of writes the cloud
+# backup does not hold) must be within the limit below. The window is printed,
+# and it goes into the verdict and the Situations notice.
+CLOUD_RECOVERY_WAIVER_MAX_WINDOW_SECS="${LASTDB_CLOUD_RECOVERY_WAIVER_MAX_WINDOW_SECS:-86400}"
+CLOUD_RECOVERY_WAIVER_NOTE=""
 
 cloud_recovery_point_preflight() {
-  local status="$WORK/pre-stop-cloud-status.json" result reason age
+  local status="$WORK/pre-stop-cloud-status.json" decision="$WORK/stale-recovery-decision.json"
+  local result reason age_or_window report failed candidate_sha window_h window_m
   case "$CLOUD_RECOVERY_MAX_AGE_SECS" in ''|*[!0-9]*) die "LASTDB_CLOUD_RECOVERY_MAX_AGE_SECS must be a whole number" ;; esac
+  case "$CLOUD_RECOVERY_WAIVER_MAX_WINDOW_SECS" in ''|*[!0-9]*) die "LASTDB_CLOUD_RECOVERY_WAIVER_MAX_WINDOW_SECS must be a whole number" ;; esac
   (umask 077; set -C; : >"$status") \
     || die "cloud recovery status path already exists or is unsafe; the primary was not stopped"
   curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
     -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
     http://x/api/status >"$status" 2>/dev/null \
     || die "cloud recovery point: primary status is unavailable; the primary was not stopped"
-  result="$(python3 "$_SCRIPT_DIR/cloud-recovery-status.py" --status "$status" \
-    --max-age-secs "$CLOUD_RECOVERY_MAX_AGE_SECS")" \
-    || die "cloud recovery status refused; the primary was not stopped"
-  read -r reason CLOUD_RECOVERY_FRONTIER age <<< "$result"
-  [ "$reason" = ok ] && [ -n "$CLOUD_RECOVERY_FRONTIER" ] && [ -n "$age" ] \
-    || die "cloud recovery status result is unsupported; the primary was not stopped"
-  log "sampled cloud recovery point covers the local durable frontier: published_through=$CLOUD_RECOVERY_FRONTIER age=${age}s; later or unflushed writes are not covered by this sample"
+  if ! result="$(python3 "$_SCRIPT_DIR/cloud-recovery-status.py" --status "$status" \
+    --max-age-secs "$CLOUD_RECOVERY_MAX_AGE_SECS" 2>/dev/null)"; then
+    report="$(python3 "$_SCRIPT_DIR/cloud-recovery-status.py" --status "$status" \
+      --max-age-secs "$CLOUD_RECOVERY_MAX_AGE_SECS" --report 2>/dev/null)" \
+      || die "cloud recovery status refused; the primary was not stopped"
+    log "cloud recovery point is not current: ${report#report }"
+    [ -n "$STALE_RECOVERY_WAIVER" ] \
+      || die "cloud recovery point is not current; the primary was not stopped. A bounded waiver needs a Tom-approved decision: --accept-stale-recovery-point <decision-slug> (see SKILL.md)"
+    (umask 077; set -C; : >"$decision") \
+      || die "waiver decision path already exists or is unsafe; the primary was not stopped"
+    brain get "$STALE_RECOVERY_WAIVER" --type decision --json >"$decision" 2>/dev/null \
+      || die "waiver decision $STALE_RECOVERY_WAIVER cannot be read; the primary was not stopped"
+    candidate_sha="$(shasum -a 256 -- "$CANDIDATE_BIN" | awk '{print $1}')"
+    result="$(python3 "$_SCRIPT_DIR/cloud-recovery-status.py" --status "$status" \
+      --max-age-secs "$CLOUD_RECOVERY_MAX_AGE_SECS" \
+      --waiver-decision "$decision" --waiver-slug "$STALE_RECOVERY_WAIVER" \
+      --candidate-sha256 "$candidate_sha" \
+      --waiver-max-window-secs "$CLOUD_RECOVERY_WAIVER_MAX_WINDOW_SECS" 2>&1)" \
+      || die "bounded waiver refused (${result#waiver refused: }); the primary was not stopped"
+  fi
+  read -r reason CLOUD_RECOVERY_FRONTIER age_or_window failed <<< "$result"
+  case "$reason" in
+    ok)
+      [ -n "$CLOUD_RECOVERY_FRONTIER" ] && [ -n "$age_or_window" ] \
+        || die "cloud recovery status result is unsupported; the primary was not stopped"
+      log "sampled cloud recovery point covers the local durable frontier: published_through=$CLOUD_RECOVERY_FRONTIER age=${age_or_window}s; later or unflushed writes are not covered by this sample"
+      ;;
+    waived)
+      [ -n "$CLOUD_RECOVERY_FRONTIER" ] && [ -n "$age_or_window" ] && [ -n "$failed" ] \
+        || die "cloud recovery status result is unsupported; the primary was not stopped"
+      window_h=$((age_or_window / 3600))
+      window_m=$(((age_or_window % 3600) / 60))
+      CLOUD_RECOVERY_WAIVER_NOTE="bounded waiver ${STALE_RECOVERY_WAIVER}: the cloud backup is not current; it holds no writes from the last ${window_h}h${window_m}m (${age_or_window}s); failed checks: ${failed}"
+      warn "BOUNDED WAIVER IN FORCE ($STALE_RECOVERY_WAIVER): the cloud backup is NOT current. Failed checks: $failed."
+      warn "The cloud backup holds no writes from the last ${window_h}h${window_m}m (${age_or_window}s). A bad cutover that damages the local data loses them. Recovery = the saved binary pair, then lastdb restore of the stale backup."
+      ;;
+    *)
+      die "cloud recovery status result is unsupported; the primary was not stopped"
+      ;;
+  esac
 }
 
 # Runs after the strict stop. Nothing is copied. The saved binary pair and the
 # cloud frontier recorded before the stop are the recovery point.
 record_cloud_recovery_point() {
   write_cutover_recovery_state "sidebin-rollback-ready" true
-  log "recovery point (no copy of the primary): cloud published_through=$CLOUD_RECOVERY_FRONTIER; saved binary pair $(basename -- "$SIDEBIN_BACKUP_DAEMON") + $(basename -- "$SIDEBIN_BACKUP_CLI")"
+  log "recovery point (no copy of the primary): cloud published_through=$CLOUD_RECOVERY_FRONTIER${CLOUD_RECOVERY_WAIVER_NOTE:+ (STALE, ${CLOUD_RECOVERY_WAIVER_NOTE})}; saved binary pair $(basename -- "$SIDEBIN_BACKUP_DAEMON") + $(basename -- "$SIDEBIN_BACKUP_CLI")"
 }
 
 # Version parity cannot detect replacement bytes that report the same version.
@@ -2879,7 +2934,7 @@ for cand in \
 do
   [ -x "$cand" ] && POST_NOTICE="$cand" && break
 done
-NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} with lastdb=${INSTALLED_CLI:-?} venue=${VENUE} cutover_s=${CUTOVER_SECS}; synthetic seed reads, exact DEV restore and live status passed; no copy of the primary; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone."
+NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} with lastdb=${INSTALLED_CLI:-?} venue=${VENUE} cutover_s=${CUTOVER_SECS}; synthetic seed reads, exact DEV restore and live status passed; no copy of the primary; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone.${CLOUD_RECOVERY_WAIVER_NOTE:+ The cloud backup was STALE at cutover: $CLOUD_RECOVERY_WAIVER_NOTE.}"
 
 if [ -n "$POST_NOTICE" ]; then
   if "$POST_NOTICE" \
@@ -2933,6 +2988,9 @@ fi
 
 echo ""
 echo "VERDICT: GREEN"
+if [ -n "$CLOUD_RECOVERY_WAIVER_NOTE" ]; then
+  echo "RECOVERY_POINT_WAIVER: $CLOUD_RECOVERY_WAIVER_NOTE"
+fi
 echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED and lastdb → ${INSTALLED_CLI:-?}; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + live Board read OK; probe_rss_mb=${PROBE_RSS_MB:-?} live_rss_mb=${LIVE_RSS_MB:-?} limit_mb=$(resolve_rss_limit_mb); trial retained for closed-consumer cleanup"
 echo "LATENCY: probe point/scan=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}ms baseline=${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}ms live_point=${LIVE_LAT_POINT_MS:-?}ms live_scan=${LIVE_LAT_SCAN_MS:-?}ms"
 echo ""

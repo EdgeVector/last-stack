@@ -31,6 +31,7 @@ if isinstance(item, dict):
         "candidate_artifact_digest",
         "safe_upgrade_protocol_version",
         "zero_live_soak",
+        "accept_stale_recovery_point",
     )
     conflicts = [
         key for key in immutable
@@ -58,6 +59,13 @@ safe_upgrade_protocol_version = str(ctx.get("safe_upgrade_protocol_version") or 
 zero_live_soak = ctx.get("zero_live_soak", False)
 if type(zero_live_soak) is not bool:
     print("safe-upgrade zero_live_soak must be a boolean", file=sys.stderr)
+    raise SystemExit(2)
+accept_stale_recovery_point = ctx.get("accept_stale_recovery_point", "")
+if type(accept_stale_recovery_point) is not str or (
+    accept_stale_recovery_point
+    and re.fullmatch(r"decision-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9][a-z0-9-]{0,120}", accept_stale_recovery_point) is None
+):
+    print("safe-upgrade accept_stale_recovery_point must be a decision slug", file=sys.stderr)
     raise SystemExit(2)
 
 
@@ -593,6 +601,8 @@ def exact_driver_env():
     # The Loom execution input owns this policy. An ambient variable cannot
     # shorten the default live check or alter an already-started execution.
     env.pop("LASTDB_SAFE_UPGRADE_ZERO_LIVE_SOAK", None)
+    # The same rule holds for the waiver: only the execution input can set it.
+    env.pop("LASTDB_SAFE_UPGRADE_STALE_RECOVERY_WAIVER", None)
     env.update(
         {
             "LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID": source_git_oid,
@@ -839,6 +849,8 @@ if step == "CUTOVER":
     cutover_env["LASTDB_SAFE_UPGRADE_VIA_LOOM"] = "1"
     if zero_live_soak:
         cutover_env["LASTDB_SAFE_UPGRADE_ZERO_LIVE_SOAK"] = "1"
+    if accept_stale_recovery_point:
+        cutover_env["LASTDB_SAFE_UPGRADE_STALE_RECOVERY_WAIVER"] = accept_stale_recovery_point
     cutover_env.setdefault("LASTDB_SAFE_UPGRADE_OWNER_LOCK_WAIT_S", "1800")
     state_path = make_cutover_recovery_state(cutover_env)
     recovery_script_raw = os.environ.get(
