@@ -1181,8 +1181,12 @@ def fire(name, msg, now):
     script = 'display notification %s with title "LastDB load" sound name "Basso"' % json.dumps(msg)
     detach(["osascript", "-e", script])
     sit = os.path.join(HOME, ".local/bin/situations")
-    if os.access(sit, os.X_OK):  # best effort: goes through LastDB, never awaited
-        detach(["/usr/bin/perl", "-e", "alarm 5; exec @ARGV"] + notice_argv(sit, name, msg))
+    if os.access(sit, os.X_OK):  # outcome tracked in delivery.jsonl, same as phone/sentry below —
+        # the bare `detach()` this replaced had no record of success or failure, so a silent
+        # drop (measured: 23:38Z-02:10Z on 2026-10-13, local alerts.jsonl fired every ~30m with
+        # no gap while situations notices show a ~2.5h hole) looked identical to no condition.
+        detach_logged("situations", name,
+                      ["/usr/bin/perl", "-e", "alarm 5; exec @ARGV"] + notice_argv(sit, name, msg))
 
 
 def sync_cause(v, now):
