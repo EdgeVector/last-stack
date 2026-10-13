@@ -108,6 +108,7 @@ any_stale=0
 check_portal() {
   local d="$1" slug canon_url="" canon_venue="" remote_f venue_f pr_venue_f
   local cur_remote cur_venue cur_pr stale=0 doc doc_stale=0 doc_venue doc_label
+  local local_venue="" tsv_distrusted=0 authority_venue
 
   [ -f "$d/.portal/remote" ] || return 0
   slug="$(basename "$d")"
@@ -125,7 +126,29 @@ check_portal() {
   if [ -n "$canon_url" ]; then
     canon_venue="$(venue_of_url "$canon_url")"
   fi
-  if [ -n "$canon_url" ] && [ -n "$canon_venue" ]; then
+
+  # The TSV registry row can outlive the migration it used to track: a repo
+  # that fully left the live LastGit->GitHub mirror sync keeps its old row
+  # (the launchd job that reads it never prunes one), while the portal's OWN
+  # markers already resolved correctly. Treat the TSV as a BOOTSTRAP default
+  # for a slug with no local marker yet, not as the permanent source of
+  # truth once a local marker exists. When the portal's own marker disagrees
+  # with the TSV, ask last-stack-pr-venue -- the tool that actually governs
+  # PR/CR routing -- which one it agrees with, and distrust the TSV row only
+  # when the portal's own marker is the one it confirms
+  # (papercut-portal-resync-venue-tsv-canonical-source-stale-for-migrated-pilot-repos-20261013).
+  local_venue="$cur_venue"
+  [ -n "$local_venue" ] || local_venue="$(venue_of_url "$cur_remote")"
+  if [ -n "$local_venue" ] && [ -n "$canon_venue" ] && [ "$local_venue" != "$canon_venue" ]; then
+    authority_venue="$(last-stack-pr-venue "EdgeVector/$slug" "$d" 2>/dev/null || true)"
+    if [ "$authority_venue" = "$local_venue" ]; then
+      tsv_distrusted=1
+      printf 'TSV-STALE-IGNORED %s: registry says %s, portal marker + last-stack-pr-venue agree on %s\n' \
+        "$slug" "$canon_venue" "$local_venue"
+    fi
+  fi
+
+  if [ -n "$canon_url" ] && [ -n "$canon_venue" ] && [ "$tsv_distrusted" -eq 0 ]; then
     if [ "$cur_remote" != "$canon_url" ]; then
       stale=1
       printf 'STALE %s .portal/remote: %s -> %s\n' "$slug" "${cur_remote:-<absent>}" "$canon_url"
@@ -169,7 +192,7 @@ check_portal() {
   if [ "$stale" -eq 1 ]; then
     any_stale=1
     if [ "$fix" -eq 1 ]; then
-      if [ -n "$canon_url" ] && [ -n "$canon_venue" ]; then
+      if [ -n "$canon_url" ] && [ -n "$canon_venue" ] && [ "$tsv_distrusted" -eq 0 ]; then
         printf '%s\n' "$canon_url" > "$remote_f"
         printf '%s\n' "$canon_venue" > "$venue_f"
         [ -f "$pr_venue_f" ] && printf '%s\n' "$canon_venue" > "$pr_venue_f"
