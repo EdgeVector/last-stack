@@ -141,11 +141,21 @@ def build_report(rows: dict[str, list[dict]], dups, recurrences, stale, closed, 
         lines.append(f"| {name} | {sum(1 for r in open_rows if pattern.search(r['slug'] + ' ' + r.get('title', '')))} |")
     lines.append(f"| complaint, no fixed_by, age over 14 days | {sum(1 for r in complaints if not r.get('fixed_by') and age_days(r) > 14)} |")
     lines.append(f"| complaint, no fixed_by, age over 7 days | {sum(1 for r in complaints if not r.get('fixed_by') and age_days(r) > 7)} |")
-    lines.append(f"| open with a fixed_by merge reference (needs live check) | {sum(1 for r in open_rows if r.get('fixed_by'))} |")
+    fixed_by_open = [r for r in open_rows if r.get("fixed_by")]
+    lines.append(f"| open with a fixed_by merge reference (needs live check) | {len(fixed_by_open)} |")
     for severity in ("p3", "p2"):
         lines.append(f"| complaint, severity {severity} | {sum(1 for r in complaints if r.get('severity') == severity)} |")
     components = collections.Counter(r.get("component", "") for r in complaints)
     lines += ["", "Top components among open complaints: " + ", ".join(f"{c or '-'}={n}" for c, n in components.most_common(8)), ""]
+    lines += ["", "## Open rows carrying a fixed_by (status=open, not status=fixed — UNIT 1's",
+              "status=fixed drain query cannot see these; see",
+              "papercut-lifecycle-complaint-row-with-fixed-by-never-reaches-unit1-sweep-20261014)",
+              "", "`fixed_by` on an open row is not reliably a remedy marker — it can name a PR",
+              "that merely touched the timeframe. Read each row before acting. Never auto-close",
+              "on this list; close `verified` only after a real live check, per UNIT 1's own rule.", ""]
+    lines += [f"- `{r['slug']}` kind={r.get('kind') or '-'} severity={r.get('severity') or '-'} fixed_by={r['fixed_by']}"
+              for r in sorted(fixed_by_open, key=lambda r: r.get("created_at", ""))] or ["- none"]
+    lines.append("")
     return "\n".join(lines)
 
 
