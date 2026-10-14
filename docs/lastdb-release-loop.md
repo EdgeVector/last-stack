@@ -114,6 +114,19 @@ The publisher does not write a key file or change the public trust identity.
 Normal `gh` authentication serves the GitHub commands.
 The publisher does not retrieve a GitHub token into a receipt or log.
 
+The `next` channel publisher (`last-stack-registry-publish-next`, called by
+`last-stack-registry-apply-proof`) needs one worktree. When
+`LAST_STACK_REGISTRY_TAP_DIR` is unset it starts its own through the
+`homebrew-lastdb` portal (`LAST_STACK_REGISTRY_TAP_PORTAL`, default
+`~/code/edgevector/homebrew-lastdb`) and removes it on exit, so the scheduled
+signer needs no long-lived worktree. It compares the stored `remote.origin.url`
+and `pushurl`, not `git remote get-url`, because a host-wide `url.<base>.insteadOf`
+rule changes the answer of the second command.
+The scheduled signer is a LaunchAgent with no shell environment. Install it with
+`LASTDB_REGISTRY_SIGNING_KEY_LASTSECRETS=lastsecrets://<slug>
+last-stack-registry-apply-proof-install install`; the locator (a name, not a
+secret) goes into the agent's `EnvironmentVariables`. `status` prints it.
+
 Before either public change, the publisher verifies the selected signed rows,
 the current hosted install/startup proof, exact app and Mini OIDs, and source reachability.
 The one-hour quiet verdict remains a separate required gate.

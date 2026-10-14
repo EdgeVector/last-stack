@@ -85,7 +85,9 @@ tap repo, records the proof, signs, and opens an auto-merging GitHub PR.
                          attribution existed; a RED proof of any shape dies
 
 Env: GH_BIN, LAST_STACK_REGISTRY_TAP_REPO,
-     LAST_STACK_REGISTRY_TAP_DIR (explicit clean DEV worktree for publication),
+     LAST_STACK_REGISTRY_TAP_DIR (explicit clean DEV worktree for publication;
+       when unset, this run starts its own through the tap portal and removes it),
+     LAST_STACK_REGISTRY_TAP_PORTAL (default ~/code/edgevector/homebrew-lastdb),
      LASTDB_REGISTRY_SIGNING_KEY_LASTSECRETS, LASTSECRETS_BIN (default lastsecrets)
 
 Per-app attribution of a RED proof's fails[] entries:
@@ -167,17 +169,51 @@ lastdb_for_sign="${LASTDB_BIN:-$(command -v lastdb || true)}"
 "$lastdb_for_sign" app index sign --help >/dev/null 2>&1 || die "$lastdb_for_sign has no \`app index sign\`; point LASTDB_BIN at a build that does"
 
 # Use an explicit clean DEV worktree. Never reset a shared STATE checkout.
+#
+# LAST_STACK_REGISTRY_TAP_DIR names one when the caller prepared it. When it is
+# unset, this run starts its own through the tap portal's `wt` and removes it on
+# exit. An unattended pass (the LaunchAgent) cannot depend on a long-lived
+# worktree: after one publish it sits on that publish's branch, and the next
+# pass would stop at "must start at current accepted main".
+TAP_PORTAL="${LAST_STACK_REGISTRY_TAP_PORTAL:-$HOME/code/edgevector/homebrew-lastdb}"
+OWNED_TAP_SLUG=""
+release_owned_tap() {
+  [ -n "$OWNED_TAP_SLUG" ] || return 0
+  (cd "$TAP_PORTAL" && ./bin/wt rm "$OWNED_TAP_SLUG") >/dev/null 2>&1 || true
+}
+acquire_owned_tap() {
+  local slug started
+  [ -x "$TAP_PORTAL/bin/wt" ] || die "LAST_STACK_REGISTRY_TAP_DIR is unset and there is no tap portal at $TAP_PORTAL"
+  slug="registry-next-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  started="$(cd "$TAP_PORTAL" && ./bin/wt start "$slug" 2>&1)" \
+    || die "could not start a DEV worktree for the tap: $(printf '%s' "$started" | tail -n 1)"
+  OWNED_TAP_SLUG="$slug"
+  trap release_owned_tap EXIT
+  TAP_DIR="$(printf '%s\n' "$started" | sed -n 's/^  path[[:space:]]*//p' | head -n 1)"
+  [ -n "$TAP_DIR" ] && [ -d "$TAP_DIR" ] || die "wt start for $slug reported no worktree path"
+}
+# Compare the URLs git stores, not `git remote get-url`. That command applies
+# `url.<base>.insteadOf`, which rewrites a GitHub URL on a host that sets one
+# (and can embed a credential), so its answer never equals TAP_URL.
+tap_config_urls() { git -C "$TAP_DIR" config --get-all "remote.origin.$1" 2>/dev/null || true; }
+tap_push_urls() {
+  local urls
+  urls="$(tap_config_urls pushurl)"
+  [ -n "$urls" ] || urls="$(tap_config_urls url)"
+  printf '%s' "$urls"
+}
+
 if [ "$DRY_RUN" -eq 1 ]; then
   TAP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/registry-tap-dry.XXXXXX")"
   trap 'rm -rf "$TAP_DIR"' EXIT
   git clone --quiet "$TAP_URL" "$TAP_DIR"
 else
-  [ -n "$TAP_DIR" ] || die "LAST_STACK_REGISTRY_TAP_DIR must name a dedicated clean DEV worktree"
+  [ -n "$TAP_DIR" ] || acquire_owned_tap
   [ -f "$TAP_DIR/.git" ] || die "the publication checkout must be a registered DEV worktree"
   [ "$(git -C "$TAP_DIR" rev-parse --show-toplevel)" = "$(cd "$TAP_DIR" && pwd -P)" ] || die "the publication path must be the worktree root"
   [ -z "$(git -C "$TAP_DIR" status --porcelain)" ] || die "the publication worktree is not clean"
-  [ "$(git -C "$TAP_DIR" remote get-url --all origin)" = "$TAP_URL" ] || die "the publication fetch URLs differ from the one GitHub registry"
-  [ "$(git -C "$TAP_DIR" remote get-url --push --all origin)" = "$TAP_URL" ] || die "the publication push URLs differ from the one GitHub registry"
+  [ "$(tap_config_urls url)" = "$TAP_URL" ] || die "the publication fetch URLs differ from the one GitHub registry"
+  [ "$(tap_push_urls)" = "$TAP_URL" ] || die "the publication push URLs differ from the one GitHub registry"
   [ "$(head -n1 "$TAP_DIR/.last-stack/pr-venue" 2>/dev/null || true)" = github ] || die "the registry source must declare the GitHub venue"
   git -C "$TAP_DIR" fetch --quiet origin main
   [ "$(git -C "$TAP_DIR" rev-parse HEAD)" = "$(git -C "$TAP_DIR" rev-parse origin/main)" ] || die "the publication worktree must start at current accepted main"

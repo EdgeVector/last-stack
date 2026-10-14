@@ -11,6 +11,15 @@
 # 5+ occurrences). The command itself already refuses unsafely (serial
 # open-PR check, run verification, stale/backwards-pin check); this agent
 # only has to call it regularly.
+#
+# Signing key: the publisher reads the existing registry signing key from
+# LastSecrets and needs its locator in its environment. A LaunchAgent has none
+# of the user's shell environment. Install with
+#   LASTDB_REGISTRY_SIGNING_KEY_LASTSECRETS=lastsecrets://<slug> \
+#     last-stack-registry-apply-proof-install install
+# and the locator (a name, not a secret) is written into the agent's
+# EnvironmentVariables. An install without it removes the setting, because the
+# plist is rendered again from the template each time.
 set -euo pipefail
 
 self="${BASH_SOURCE[0]}"
@@ -47,6 +56,15 @@ install_agent() {
   mkdir -p "$HOME/Library/Logs"
   rendered="$(mktemp "${TMPDIR:-/tmp}/last-stack-registry-apply-proof.plist.XXXXXX")"
   last_stack_agent_render_plist "$plist_src" "$rendered" "$last_stack"
+  locator="${LASTDB_REGISTRY_SIGNING_KEY_LASTSECRETS:-}"
+  if [ -n "$locator" ]; then
+    [[ "${locator#lastsecrets://}" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || {
+      echo "LASTDB_REGISTRY_SIGNING_KEY_LASTSECRETS must be lastsecrets://<slug> (lowercase letters, digits, . _ -)" >&2
+      rm -f "$rendered"
+      exit 2
+    }
+    /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:LASTDB_REGISTRY_SIGNING_KEY_LASTSECRETS string $locator" "$rendered"
+  fi
   last_stack_agent_commit_plist \
     "$label" "$plist_dst" "$rendered" "last-stack-registry-apply-proof"
 }
@@ -65,6 +83,9 @@ status_agent() {
     case "$plist_program" in
       */artifacts/versions/*) echo "program: VERSION-PINNED (will re-toast on refresh)" ;;
     esac
+    # The locator is a LastSecrets name, not a secret, so status may print it.
+    plist_locator="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:LASTDB_REGISTRY_SIGNING_KEY_LASTSECRETS' "$plist_dst" 2>/dev/null || true)"
+    echo "signing-key locator: ${plist_locator:-MISSING (the publisher cannot sign)}"
   else
     echo "plist: missing"
   fi
