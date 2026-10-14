@@ -404,6 +404,14 @@ loaded, nothing ticks `soak-watch` either: every step below is a command that
 you run. Name one app in each command. Do not run `host-track refresh --all`
 before step 3.
 
+`last-stack-post-merge-safe-upgrade` maps `situations` and runs
+`host-track refresh situations` after each merged situations PR. Keep it stopped
+until step 2 is done. It has no per-repo switch, and last-stack ships no
+supervisor for it (`launchd/` has no plist for it), so it runs only if you
+started it. Check that it is not running: `pgrep -fl last-stack-post-merge-safe-upgrade`
+prints nothing, and `grep -l post-merge-safe-upgrade ~/Library/LaunchAgents/*.plist`
+prints nothing.
+
 1. Merge this PR. Then run `host-track refresh last-stack` alone. This is the
    only way to pick up the new registry. It stages the new last-stack tree and
    parks it as a canary for the soak.
