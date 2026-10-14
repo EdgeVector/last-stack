@@ -3011,14 +3011,63 @@ retire_artifact_links() {
   done < <(printf '%s\n' "$json" | jq -r '.retired_links[]? | @base64')
 }
 
+# The schemas a post_install hook may register in the Schema Service for this
+# app: the entry's approved_schema_registration as a compact JSON array. Each
+# entry is a schema name, or {"name": ..., "fields": [...]} when the approval
+# pins the shape. The hook reads it from its environment, never from the
+# candidate tree, because the artifact being installed must not choose its own
+# approval. [] unless the registry is the default one: a custom registry
+# (HOST_TRACK_REGISTRY, every fixture or dev run) approves nothing. host-track
+# always sets the variable, so a value inherited from the caller never reaches
+# the hook.
+approved_schema_registration_json() {
+  local json="$1"
+  if [ "${REGISTRY_IS_DEFAULT:-0}" != "1" ]; then
+    printf '[]\n'
+    return 0
+  fi
+  printf '%s\n' "$json" | jq -c '
+    (.approved_schema_registration // [])
+    | if type == "array" then map(select(type == "string" or type == "object")) else [] end'
+}
+
+# post_install_timeout_s on the app entry bounds the hook. Without it the hook
+# has no limit, as before: the routines hook waits up to 900 s for a drain.
+post_install_timeout_for() {
+  local value
+  value="$(printf '%s\n' "$1" | jq -r '.post_install_timeout_s // "" | tostring')"
+  case "$value" in
+    ''|*[!0-9]*|0) printf '\n' ;;
+    *) printf '%s\n' "$value" ;;
+  esac
+}
+
+# run_post_install_hook APP TIMEOUT_S HOOK ENV=VALUE...: run the hook with that
+# environment. 124 means it ran past its limit. A hang here would stall the
+# serial refresh of every app behind it.
+run_post_install_hook() {
+  local app="$1" timeout_s="$2" hook="$3" rc=0
+  shift 3
+  if [ -n "$timeout_s" ]; then
+    run_with_timeout "$timeout_s" env "$@" "$hook" || rc=$?
+    if [ "$rc" -eq 124 ]; then
+      printf 'host-track: %s post-install timed out after %ss: %s\n' "$app" "$timeout_s" "$hook" >&2
+    fi
+    return "$rc"
+  fi
+  env "$@" "$hook"
+}
+
 run_artifact_post_install() {
-  local app="$1" json="$2" install_root="$3" digest="$4" post_install
+  local app="$1" json="$2" install_root="$3" digest="$4" post_install approved
   post_install="$(expand_path "$(field "$json" post_install)")"
   [ -n "$post_install" ] || return 0
   [ -x "$post_install" ] || die "artifact post-install is not executable: $post_install"
-  HOST_TRACK_APP="$app" HOST_TRACK_INSTALL_ROOT="$install_root" \
+  approved="$(approved_schema_registration_json "$json")"
+  run_post_install_hook "$app" "$(post_install_timeout_for "$json")" "$post_install" \
+    HOST_TRACK_APP="$app" HOST_TRACK_INSTALL_ROOT="$install_root" \
     HOST_TRACK_MANIFEST_DIGEST="$digest" LAST_STACK_ROOT="$install_root/current" \
-    "$post_install"
+    HOST_TRACK_APPROVED_SCHEMAS="$approved"
 }
 
 # True when an existing versions/<digest> tree is missing or content-corrupt.
@@ -3151,6 +3200,22 @@ resolve_post_install_hook() {
   local json="$1" install_root="$2" digest="$3" configured base rewritten version_dir
   configured="$(expand_path "$(field "$json" post_install)")"
   [ -n "$configured" ] || return 1
+  # A hook that the registry puts OUTSIDE the app's own install root (the
+  # last-stack tree, ~/.local/bin) is resolved from exactly that path. The
+  # candidate tree must not supply it or shadow it with a file of the same
+  # name: the candidate is the artifact under test. Only a hook that sits in the
+  # app's own `current` tree (brain, search, reconciler: they ship in the
+  # artifact by design) is looked up in the candidate tree, below.
+  case "$configured" in
+    "$install_root"/current/*) ;;
+    *)
+      if [ -x "$configured" ]; then
+        printf '%s\n' "$configured"
+        return 0
+      fi
+      return 1
+      ;;
+  esac
   version_dir="$install_root/versions/$digest"
   base="$(basename "$configured")"
   if [ -n "$base" ] && [ -x "$version_dir/bin/$base" ]; then
@@ -3170,15 +3235,16 @@ resolve_post_install_hook() {
 }
 
 run_artifact_post_install_on_tree() {
-  local app="$1" json="$2" install_root="$3" digest="$4" version_dir="$5" hook
+  local app="$1" json="$2" install_root="$3" digest="$4" version_dir="$5" hook approved
   [ -n "$(field "$json" post_install)" ] || return 0
   if ! hook="$(resolve_post_install_hook "$json" "$install_root" "$digest")"; then
     die "artifact post-install is not executable for $app (digest=$digest)"
   fi
-  HOST_TRACK_APP="$app" HOST_TRACK_INSTALL_ROOT="$install_root" \
+  approved="$(approved_schema_registration_json "$json")"
+  run_post_install_hook "$app" "$(post_install_timeout_for "$json")" "$hook" \
+    HOST_TRACK_APP="$app" HOST_TRACK_INSTALL_ROOT="$install_root" \
     HOST_TRACK_MANIFEST_DIGEST="$digest" HOST_TRACK_VERSION_DIR="$version_dir" \
-    LAST_STACK_ROOT="$version_dir" \
-    "$hook"
+    LAST_STACK_ROOT="$version_dir" HOST_TRACK_APPROVED_SCHEMAS="$approved"
 }
 
 run_one_probe() {
@@ -4766,11 +4832,34 @@ validate_registry_cmd() {
             ((cycle_from($app.app; []; $g)) as $c
               | if $c != null and ($c[0] == $app.app) then "requires cycle: " + ($c | join(" -> ")) else empty end)
           ];
+      def approval_problems($app):
+        # approved_schema_registration is the allowlist of schemas a post_install
+        # hook may register in the Schema Service. Each entry is a schema name or
+        # {name, fields}; fields are the exact field names, sorted and unique.
+        # A reviewer reads the approval from this list.
+        def schema_name: type == "string" and test("^[A-Za-z][A-Za-z0-9_]*$");
+        def entry_problems:
+          if schema_name then empty
+          elif type == "object" then
+            (if (.name | schema_name) then empty
+             else "approved_schema_registration entry has no schema name: \(tojson)" end),
+            (if ((.fields | type) == "array") and (.fields | length) > 0
+                and (.fields | all(type == "string" and test("^[A-Za-z_][A-Za-z0-9_]*$")))
+                and (.fields == (.fields | sort | unique))
+             then empty
+             else "approved_schema_registration fields of \(.name) are not a sorted list of field names: \(.fields | tojson)" end)
+          else "approved_schema_registration entry is not a schema name or {name, fields}: \(tojson)" end;
+        if ($app.approved_schema_registration == null) then []
+        elif (($app.approved_schema_registration | type) != "array") then
+          ["approved_schema_registration is not an array"]
+        else [ $app.approved_schema_registration[] | entry_problems ]
+        end;
       ($root.apps // [])
       | map({
           app: .app,
           requires: ((.requires // []) | if type == "array" then map(tostring) else [] end),
           requires_problems: requires_problems(.),
+          approval_problems: approval_problems(.),
           install_mode: mode(.),
           registry_compliance: compliance(.),
           artifact_exemption: exemption(.),
@@ -4784,9 +4873,11 @@ validate_registry_cmd() {
       | ($apps | map(select(.soak_ok == false)) | length) as $ms
       | ($apps | map(select(.probe_depth_ok == false)) | length) as $tp
       | ($apps | map(select((.requires_problems | length) > 0)) | length) as $br
+      | ($apps | map(select((.approval_problems | length) > 0)) | length) as $ba
       | {
-          ok: (($nc == 0) and ($mp == 0) and ($ms == 0) and ($tp == 0) and ($br == 0)),
+          ok: (($nc == 0) and ($mp == 0) and ($ms == 0) and ($tp == 0) and ($br == 0) and ($ba == 0)),
           bad_requires: $br,
+          bad_schema_approvals: $ba,
           requires_policy: "requires_names_known_acyclic",
           registry: $registry,
           total: ($apps | length),
@@ -4820,9 +4911,10 @@ validate_registry_cmd() {
       "\tsoak=" + (if .soak_ok then ((.resolved_soak_hours | tostring) + "h") else "MISSING" end) +
       "\tdepth=" + (if .probe_depth_ok then "ok" else "THIN" end) +
       "\trequires=" + (if (.requires | length) == 0 then "-" else (.requires | join(",")) end) +
-      (if (.requires_problems | length) > 0 then "\tREQUIRES-BAD" else "" end)'
+      (if (.requires_problems | length) > 0 then "\tREQUIRES-BAD" else "" end) +
+      (if (.approval_problems | length) > 0 then "\tSCHEMA-APPROVAL-BAD" else "" end)'
     if [ "$(printf '%s\n' "$report" | jq -r '.ok')" = "true" ]; then
-      printf 'ok: every app is artifact or exempt; artifact apps declare probes, soak (or a reason), and probe depth (or a waiver); every requires names a known app with no cycle\n'
+      printf 'ok: every app is artifact or exempt; artifact apps declare probes, soak (or a reason), and probe depth (or a waiver); every requires names a known app with no cycle; every approved_schema_registration is a list of schema names or {name, fields}\n'
     else
       if [ "$non_compliant" != "0" ]; then
         printf 'FAIL: %s app(s) are neither artifact nor exempt\n' "$non_compliant" >&2
@@ -4838,6 +4930,10 @@ validate_registry_cmd() {
       if [ "$(printf '%s\n' "$report" | jq -r '.bad_requires')" != "0" ]; then
         printf '%s\n' "$report" | jq -r '.apps[] | select((.requires_problems | length) > 0)
           | "FAIL: " + .app + ": " + (.requires_problems | join("; "))' >&2
+      fi
+      if [ "$(printf '%s\n' "$report" | jq -r '.bad_schema_approvals')" != "0" ]; then
+        printf '%s\n' "$report" | jq -r '.apps[] | select((.approval_problems | length) > 0)
+          | "FAIL: " + .app + ": " + (.approval_problems | join("; "))' >&2
       fi
       if [ "$(printf '%s\n' "$report" | jq -r '.thin_probes')" != "0" ]; then
         printf 'FAIL: %s artifact app(s) have <2 probes and no probe_waiver_reason\n' \
