@@ -5,7 +5,8 @@
 # the probes, while the old build is still `current`. soak-watch runs it again
 # when the soak window ends, right before the flip. A failure here (exit not 0)
 # fails the install: `current` stays on the last-known-good build and no stamp is
-# written. See docs/host-track.md, "Apps that need a post-install step".
+# written. host-track stops the hook after post_install_timeout_s (300).
+# See docs/host-track.md, "Apps that need a post-install step".
 #
 # WHY IT EXISTS. A situations build with the IndexEntry and NoticeHistory
 # schemas fails `situations put` and `situations notice` before any write
@@ -15,22 +16,29 @@
 # WHAT IT DOES.
 #   1. Reads the layout state with the candidate's `situations doctor` (read only).
 #      IndexEntry and NoticeHistory loaded and pinned: nothing to do, exit 0.
-#   2. Otherwise init is needed. `situations init` has no check mode: it
-#      declares every schema the node has not loaded (the node registers it in
-#      the Schema Service; a release node defaults to PROD), writes the config,
-#      and seeds the long-lived notices. So the hook first works out which
-#      schemas init would declare (the candidate's `situations schema` minus the
-#      node's GET /api/schemas) and refuses unless every one of them is in
-#      HOST_TRACK_APPROVED_SCHEMAS.
-#   3. Runs `situations init`, then checks the layout again.
+#   2. Otherwise init is needed. The hook refuses unless this is the real
+#      install and the host does not export EXEMEM_ENV=dev.
+#   3. `situations init` has no check mode. It declares every schema the node has
+#      not loaded (the node registers it in the Schema Service; a release node
+#      defaults to PROD), rewrites the config and seeds the long-lived notices.
+#      So the hook works out which schemas init would declare (the candidate's
+#      `situations schema` minus the node's GET /api/schemas) and refuses unless
+#      each one is in HOST_TRACK_APPROVED_SCHEMAS with the same field names.
+#   4. It copies the config, runs `situations init`, compares the three legacy
+#      pins and nodeSocketPath with the copy, and checks the layout again. On any
+#      failure after the copy it puts the copy back, so the old build, which is
+#      still `current`, reads the config it had.
 #
-# HOST_TRACK_APPROVED_SCHEMAS comes from the approved_schema_registration list
-# of the app entry in config/host-track/apps.json, never from the candidate
-# tree. host-track leaves it empty for a custom registry (a dev or fixture run).
+# HOST_TRACK_APPROVED_SCHEMAS is a JSON array. host-track builds it from the
+# approved_schema_registration list of the app entry in the default registry,
+# never from the candidate tree. For a custom registry (a dev or fixture run) it
+# is []. Each entry is {"name": ..., "fields": [...]}; an entry that is only a
+# name pins no shape, and this hook does not accept it.
 #
-# The node is the one under $HOME (~/.lastdb, else ~/.folddb). The hook pins the
-# candidate to that socket with FOLDDB_SOCKET_PATH, so a socket override
-# inherited from the caller cannot point it at another node.
+# The node is the one under $HOME (~/.lastdb, else ~/.folddb) and the config is
+# the one under $HOME (~/.situations, else ~/.fsituations). The hook pins the
+# candidate to both with FOLDDB_SOCKET_PATH and SITUATIONS_CONFIG, so an override
+# inherited from the caller cannot point it at another node or file.
 set -euo pipefail
 
 say() { printf 'situations post-install: %s\n' "$*" >&2; }
@@ -50,17 +58,107 @@ fi
 
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 command -v curl >/dev/null 2>&1 || fail "curl is required"
+[ -n "${HOME:-}" ] || fail "HOME is not set"
 
 bin="$version_dir/dist/situations"
 [ -x "$bin" ] || fail "candidate binary is missing or not executable: $bin"
 
 install_root="${HOST_TRACK_INSTALL_ROOT:-}"
-approved_csv="${HOST_TRACK_APPROVED_SCHEMAS:-}"
+approved_json="${HOST_TRACK_APPROVED_SCHEMAS:-[]}"
+printf '%s' "$approved_json" | jq -e 'type == "array"' >/dev/null 2>&1 \
+  || fail "HOST_TRACK_APPROVED_SCHEMAS is not a JSON array"
+
+# Limits in seconds. A hang in one of these would stall the serial refresh of
+# every app behind it. The variables exist so an operator can lengthen a limit on
+# a slow node; a value that is not a number is ignored.
+limit() {
+  case "$1" in
+    '' | *[!0-9]* | 0) printf '%s' "$2" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+DOCTOR_TIMEOUT_S="$(limit "${SITUATIONS_POST_INSTALL_DOCTOR_TIMEOUT_S:-}" 60)"
+SCHEMA_TIMEOUT_S="$(limit "${SITUATIONS_POST_INSTALL_SCHEMA_TIMEOUT_S:-}" 60)"
+INIT_TIMEOUT_S="$(limit "${SITUATIONS_POST_INSTALL_INIT_TIMEOUT_S:-}" 180)"
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/situations-post-install.XXXXXX")"
-trap 'rm -rf -- "$work"' EXIT
 
-# --- the node: the one under $HOME -------------------------------------------
+# --- config guard: put the copy back when anything fails after `init` starts --
+config_path=""
+had_config=0
+backup=""
+config_guard=0
+
+restore_config() {
+  local tmp
+  if [ "$had_config" = 1 ]; then
+    if tmp="$(mktemp "$config_path.restore.XXXXXX")" \
+      && cp -p "$backup" "$tmp" \
+      && mv -f "$tmp" "$config_path" \
+      && cmp -s "$backup" "$config_path"; then
+      say "put the situations config back from the copy ($config_path)"
+      rm -f -- "$backup"
+    else
+      [ -z "${tmp:-}" ] || rm -f -- "$tmp"
+      say "COULD NOT put the situations config back. The copy is at $backup. Run: cp -p $backup $config_path"
+    fi
+  else
+    rm -f -- "$config_path"
+    say "removed the config that init wrote (there was none before)"
+  fi
+}
+
+cleanup() {
+  local rc=$?
+  trap - EXIT
+  if [ "$config_guard" = 1 ] && [ "$rc" -ne 0 ]; then
+    restore_config
+  fi
+  rm -rf -- "$work"
+  exit "$rc"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# run_timeout SECONDS CMD...: output goes where the caller sent it. 124 on timeout.
+# The watcher polls instead of sleeping the whole limit, so it ends within 0.2
+# seconds of the command and no stray `sleep` outlives the hook.
+run_timeout() {
+  local secs="$1" pid watcher flag rc=0
+  shift
+  flag="$work/timed-out.$RANDOM"
+  "$@" &
+  pid=$!
+  (
+    ticks=0
+    while kill -0 "$pid" 2>/dev/null; do
+      if [ "$ticks" -ge $((secs * 5)) ]; then
+        : >"$flag"
+        kill -TERM "$pid" 2>/dev/null
+        ticks=0
+        while kill -0 "$pid" 2>/dev/null && [ "$ticks" -lt 15 ]; do
+          sleep 0.2
+          ticks=$((ticks + 1))
+        done
+        kill -KILL "$pid" 2>/dev/null
+        exit 0
+      fi
+      sleep 0.2
+      ticks=$((ticks + 1))
+    done
+  ) &
+  watcher=$!
+  wait "$pid" || rc=$?
+  wait "$watcher" 2>/dev/null || true
+  if [ -e "$flag" ]; then
+    rm -f -- "$flag"
+    return 124
+  fi
+  return "$rc"
+}
+
+# --- the node and the config: the ones under $HOME ---------------------------
 sock=""
 for candidate in "$HOME/.lastdb/data/folddb.sock" "$HOME/.folddb/data/folddb.sock"; do
   if [ -S "$candidate" ]; then
@@ -71,13 +169,21 @@ done
 [ -n "$sock" ] || fail "no LastDB node socket under $HOME/.lastdb or $HOME/.folddb (is the node running?)"
 export FOLDDB_SOCKET_PATH="$sock"
 
+config_path="$HOME/.situations/config.json"
+if [ ! -e "$config_path" ] && [ -e "$HOME/.fsituations/config.json" ]; then
+  config_path="$HOME/.fsituations/config.json"
+fi
+export SITUATIONS_CONFIG="$config_path"
+unset FSITUATIONS_CONFIG
+
 # --- step 1: is init needed? (read only) -------------------------------------
 # Both schema checks of `situations doctor` must read "ok": loaded on the node
 # and pinned in the config. Doctor can exit 1 for another reason (drift, an
 # unreadable entry); init does not fix that, so only the two schema checks count.
 layout_ready() {
   local tag="$1"
-  "$bin" doctor --json >"$work/doctor.$tag.json" 2>"$work/doctor.$tag.err" || true
+  run_timeout "$DOCTOR_TIMEOUT_S" "$bin" doctor --json \
+    >"$work/doctor.$tag.json" 2>"$work/doctor.$tag.err" || true
   jq -e '[.[] | select(.name == "schema IndexEntry" or .name == "schema NoticeHistory")
           | select(.status == "ok")] | length == 2' \
     "$work/doctor.$tag.json" >/dev/null 2>&1
@@ -89,8 +195,22 @@ if layout_ready before; then
 fi
 say "init is needed: IndexEntry or NoticeHistory is not loaded on the node, or the config does not pin it"
 
-# --- step 2: which schemas would init declare? -------------------------------
-"$bin" schema --type all --json >"$work/targets.json" 2>"$work/targets.err" \
+# --- step 2: only the real install, never a dev run --------------------------
+# These two checks come before anything that can write, so even an init that
+# registers nothing runs only on the real install.
+case "$install_root" in
+  "$HOME"/.host-track/apps/*) ;;
+  *) fail "init refused: this is not the real install (install root: ${install_root:-unset}, expected under $HOME/.host-track/apps)" ;;
+esac
+if [ "${EXEMEM_ENV:-}" = "dev" ]; then
+  # This reads the environment of this hook, not the environment of the node. It
+  # cannot see how the node was started.
+  fail "init refused: EXEMEM_ENV=dev is set in the environment of host-track, and the approval covers the real install only. Unset it for this command, for example: env -u EXEMEM_ENV host-track refresh situations"
+fi
+
+# --- step 3: which schemas would init declare? -------------------------------
+run_timeout "$SCHEMA_TIMEOUT_S" "$bin" schema --type all --json \
+  >"$work/targets.json" 2>"$work/targets.err" \
   || fail "the candidate could not print its schemas: $(head -c 300 "$work/targets.err")"
 jq -e 'type == "object" and length > 0' "$work/targets.json" >/dev/null 2>&1 \
   || fail "the candidate printed no schema list"
@@ -99,72 +219,126 @@ curl -sS --fail --max-time 30 --unix-socket "$sock" \
   -H 'X-LastDB-Client: host-track' http://localhost/api/schemas \
   -o "$work/loaded.json" 2>"$work/loaded.err" \
   || fail "could not read the loaded schemas from the node: $(head -c 300 "$work/loaded.err")"
-# A reply with no schema at all is a reply this hook cannot read. Fail closed:
-# every target would look missing, which would only widen the refusal.
+# A reply with no schema at all is a reply this hook cannot read. Fail closed.
 jq -e '(.schemas | type) == "array" and (.schemas | length) > 0' "$work/loaded.json" >/dev/null 2>&1 \
   || fail "the node returned no loaded schemas that this hook can read"
 
-# One line per schema init would declare: the descriptive names of the targets
-# that no loaded schema of the same owner carries.
-jq -r --slurpfile have "$work/loaded.json" '
-  [ .[] | .schema
-    | select(. as $s
-        | ($have[0].schemas
-           | any(.owner_app_id == $s.owner_app_id and .descriptive_name == $s.descriptive_name))
-        | not)
-    | .descriptive_name ] | .[]' "$work/targets.json" >"$work/missing.txt"
-
-is_approved() {
-  local name="$1" item
-  local IFS=','
-  for item in $approved_csv; do
-    [ "$item" = "$name" ] && return 0
-  done
-  return 1
-}
+# One line per target that no loaded schema of the same owner carries, with the
+# verdict of the allowlist: the name must be listed and the sorted field names
+# must be the same. A target without an owner, a name or fields is an error.
+jq -n -r --slurpfile want "$work/targets.json" --slurpfile have "$work/loaded.json" \
+  --argjson approved "$approved_json" '
+  def usable:
+    type == "object"
+    and ((.descriptive_name | type) == "string") and (.descriptive_name != "")
+    and ((.owner_app_id | type) == "string") and (.owner_app_id != "")
+    and ((.fields | type) == "array");
+  [ $want[0][] | .schema ] as $targets
+  | if ($targets | length) == 0 or ($targets | all(usable) | not)
+    then error("the candidate printed a schema without an owner, a name or fields")
+    else . end
+  | [ $targets[]
+      | select(. as $s
+          | ($have[0].schemas
+             | any(.owner_app_id == $s.owner_app_id and .descriptive_name == $s.descriptive_name))
+          | not) ] as $missing
+  | $missing[] as $t
+  | ($approved | map(select(type == "object" and .name == $t.descriptive_name)) | .[0]) as $a
+  | if $a == null then "UNAPPROVED \($t.descriptive_name) (no entry with a field pin)"
+    elif ((($a.fields // []) | sort) != ($t.fields | sort))
+    then "SHAPE \($t.descriptive_name) (approved fields: \(($a.fields // []) | sort | join(",")); candidate fields: \($t.fields | sort | join(",")))"
+    else "OK \($t.descriptive_name)" end' >"$work/compare.txt" 2>"$work/compare.err" \
+  || fail "could not compare the candidate schemas with the node and the approved list: $(head -c 300 "$work/compare.err")"
 
 missing=()
-unapproved=()
-while IFS= read -r name; do
-  [ -n "$name" ] || continue
-  missing+=("$name")
-  is_approved "$name" || unapproved+=("$name")
-done <"$work/missing.txt"
+problems=()
+while IFS= read -r line; do
+  [ -n "$line" ] || fail "empty line in the schema comparison; refusing"
+  case "$line" in
+    "OK "*) missing+=("${line#OK }") ;;
+    "UNAPPROVED "* | "SHAPE "*)
+      name="${line#* }"
+      missing+=("${name%% *}")
+      problems+=("$line")
+      ;;
+    *) fail "unreadable line in the schema comparison: $line" ;;
+  esac
+done <"$work/compare.txt"
 
 if [ "${#missing[@]}" -gt 0 ]; then
   say "init would register: ${missing[*]}"
-  say "approved for this app (approved_schema_registration): ${approved_csv:-none}"
-  case "$install_root" in
-    "$HOME"/.host-track/apps/*) ;;
-    *) fail "registration refused: this is not the real install (install root: ${install_root:-unset}, expected under $HOME/.host-track/apps)" ;;
-  esac
-  if [ "${EXEMEM_ENV:-}" = "dev" ]; then
-    fail "registration refused: EXEMEM_ENV=dev. The approval covers the real install only"
-  fi
-  if [ "${#unapproved[@]}" -gt 0 ]; then
-    fail "registration refused: not approved for situations: ${unapproved[*]}. To approve a schema, add its name to approved_schema_registration for this app in config/host-track/apps.json with a reviewed PR to EdgeVector/last-stack"
+  if [ "${#problems[@]}" -gt 0 ]; then
+    for line in "${problems[@]}"; do
+      say "not approved: $line"
+    done
+    fail "registration refused. To approve a schema, add {name, fields} to approved_schema_registration for this app in config/host-track/apps.json with a reviewed PR to EdgeVector/last-stack"
   fi
 else
   say "init would register no schema (the node has them all); it only writes the config"
 fi
 
-# --- step 3: run init, then check the layout again ---------------------------
+# --- step 4: copy the config, run init, compare, check -----------------------
+legacy_pins() {
+  jq -c '{situation: (.schemaHashes.situation // null), notice: (.schemaHashes.notice // null),
+          index: (.schemaHashes.index // null), nodeSocketPath: (.nodeSocketPath // null)}' "$1"
+}
+
+init_args=(init --json)
+if [ -e "$config_path" ]; then
+  jq -e 'type == "object"' "$config_path" >/dev/null 2>&1 \
+    || fail "the situations config is not a JSON object ($config_path); fix or remove it first. init would replace it"
+  had_config=1
+  backup="$(mktemp "$config_path.pre-init.XXXXXX")" || fail "could not create a copy of the config next to $config_path"
+  cp -p "$config_path" "$backup" || fail "could not copy the config to $backup"
+  before_pins="$(legacy_pins "$backup")"
+  # init rebuilds the file from the node listing. Hand it back what the file
+  # already says, so it does not repin or drop a field; the compare below is the
+  # check. The index pin has no flag: the compare decides.
+  for pair in "schema-hash:.schemaHashes.situation" "notice-schema-hash:.schemaHashes.notice" \
+    "user-hash:.userHash" "node-url:.nodeUrl" "node-socket-path:.nodeSocketPath" \
+    "schema-service-url:.schemaServiceUrl"; do
+    value="$(jq -r "${pair#*:} // empty" "$backup" 2>/dev/null || true)"
+    [ -z "$value" ] || init_args+=("--${pair%%:*}" "$value")
+  done
+fi
+config_guard=1
+
 say "running situations init"
 init_rc=0
-"$bin" init --json >"$work/init.json" 2>"$work/init.err" || init_rc=$?
-if [ "$init_rc" -ne 0 ]; then
+run_timeout "$INIT_TIMEOUT_S" "$bin" "${init_args[@]}" \
+  >"$work/init.json" 2>"$work/init.err" || init_rc=$?
+if [ "$init_rc" -eq 124 ]; then
+  fail "situations init timed out after ${INIT_TIMEOUT_S}s"
+elif [ "$init_rc" -ne 0 ]; then
   fail "situations init failed (exit $init_rc): $(head -c 500 "$work/init.err")"
 fi
 if [ -s "$work/init.err" ]; then
   # init prints its warnings (a schema it could not declare) on stderr.
   sed -n '1,10p' "$work/init.err" >&2
 fi
+# The install log gets the result without the user hash.
+if result="$(jq -c '{config, schemaHash, noticeSchemaHash, indexSchemaHash, indexEntrySchemaHash,
+                      noticeHistorySchemaHash, seededLongLivedNotices}' "$work/init.json" 2>/dev/null)"; then
+  say "init result: $result"
+else
+  say "init result: not JSON ($(head -c 200 "$work/init.json"))"
+fi
+
+if [ "$had_config" = 1 ]; then
+  after_pins="$(legacy_pins "$config_path" 2>/dev/null || true)"
+  if [ "$before_pins" != "$after_pins" ]; then
+    fail "init changed the legacy pins or nodeSocketPath of the situations config. Before: $before_pins After: ${after_pins:-unreadable}. The old build still reads this file, so the copy is put back"
+  fi
+fi
 
 if layout_ready after; then
+  config_guard=0
+  [ -z "$backup" ] || rm -f -- "$backup"
   say "init done; IndexEntry and NoticeHistory are loaded and pinned"
   exit 0
 fi
-if lines="$(jq -r '.[] | "  \(.status) \(.name): \(.detail)"' "$work/doctor.after.json" 2>/dev/null)"; then
+lines="$(jq -r '.[] | "  \(.status) \(.name): \(.detail)"' "$work/doctor.after.json" 2>/dev/null || true)"
+if [ -n "$lines" ]; then
   say "doctor after init:"
   printf '%s\n' "$lines" >&2
 fi

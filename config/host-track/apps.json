@@ -522,7 +522,7 @@
           "target": "$HOME/.local/bin/fsituations"
         }
       ],
-      "notes": "Situations artifact install from CI-published dist/* binaries (darwin-arm64). Gate of record is GitHub (EdgeVector/situations, since 2026-09-30). The ci-required workflow publish job builds the artifact on a macOS runner; host-track refresh runs last-stack-github-artifact-pull, which re-checks the ci-required check run, the run provenance and every digest before it promotes stable. Brain: design-github-artifact-publish-path, sop-github-artifact-app-migration. post_install runs the candidate's `situations init` through bin/last-stack-situations-host-track-post-install, only when IndexEntry or NoticeHistory is not loaded and pinned, and only for the schemas in approved_schema_registration (Tom, 2026-10-14). The last probe is `situations doctor` (read only). See docs/host-track.md, \"Apps that need a post-install step\".",
+      "notes": "Situations artifact install from CI-published dist/* binaries (darwin-arm64). Gate of record is GitHub (EdgeVector/situations, since 2026-09-30). The ci-required workflow publish job builds the artifact on a macOS runner; host-track refresh runs last-stack-github-artifact-pull, which re-checks the ci-required check run, the run provenance and every digest before it promotes stable. Brain: design-github-artifact-publish-path, sop-github-artifact-app-migration. post_install runs the candidate's `situations init` through bin/last-stack-situations-host-track-post-install, only when IndexEntry or NoticeHistory is not loaded and pinned, and only for the schemas in approved_schema_registration: the name and the exact field names must match (Tom, 2026-10-14). The hook copies the config first and puts it back on any failure; host-track stops it after post_install_timeout_s. `list` is the last probe on purpose: it is the latency probe, and the `list` before `doctor` repairs plain drift first. See docs/host-track.md, \"Apps that need a post-install step\".",
       "safe_upgrade": {
         "soak_hours": 1,
         "latency": true,
@@ -547,6 +547,13 @@
               "doctor"
             ],
             "timeout_s": 45
+          },
+          {
+            "argv": [
+              "dist/situations",
+              "list"
+            ],
+            "timeout_s": 45
           }
         ]
       },
@@ -555,9 +562,26 @@
       ],
       "post_install": "$HOME/.local/state/last-stack/artifacts/current/bin/last-stack-situations-host-track-post-install",
       "approved_schema_registration": [
-        "IndexEntry_hashrange_v1",
-        "NoticeHistory_hashrange_v1"
-      ]
+        {
+          "name": "IndexEntry_hashrange_v1",
+          "fields": [
+            "ie_h",
+            "ie_marker",
+            "ie_payload",
+            "ie_r"
+          ]
+        },
+        {
+          "name": "NoticeHistory_hashrange_v1",
+          "fields": [
+            "nh_h",
+            "nh_marker",
+            "nh_payload",
+            "nh_r"
+          ]
+        }
+      ],
+      "post_install_timeout_s": 300
     },
     {
       "app": "kanban",

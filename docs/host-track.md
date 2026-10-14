@@ -66,9 +66,13 @@ stale (no new stamp) and does not flip PATH.
 The hook gets these variables: `HOST_TRACK_APP`, `HOST_TRACK_INSTALL_ROOT`,
 `HOST_TRACK_MANIFEST_DIGEST`, `HOST_TRACK_VERSION_DIR` (the candidate tree;
 not set for a rollback or an after-cutover call), `LAST_STACK_ROOT` (the same
-tree) and `HOST_TRACK_APPROVED_SCHEMAS` (see "Apps that need a post-install
-step"). With a soak, host-track runs the hook again when it activates the
-canary, so a hook must be safe to run twice.
+tree) and `HOST_TRACK_APPROVED_SCHEMAS` (a JSON array; see "Apps that need a
+post-install step"). With a soak, host-track runs the hook again when it
+activates the canary, so a hook must be safe to run twice. An entry can set
+`post_install_timeout_s`: host-track then stops the hook after that many
+seconds and fails the install (exit 124). Without it the hook has no limit.
+A hook that the registry puts outside the app's own install root is resolved
+from exactly that path; the candidate tree cannot supply it.
 
 Every artifact app must declare `safe_upgrade.probes` — argv relative to the
 version tree. `host-track validate-registry` fails closed when an artifact
@@ -164,25 +168,34 @@ Tom approved on 2026-10-14 that the schemas below may register in PROD when the
 new builds install. Nothing else in the PROD catalog is approved. No
 exemem-infra or schema-infra deploy is approved.
 
-| App | Approved schema names (`approved_schema_registration`) | What enforces it |
-|-----|--------------------------------------------------------|------------------|
-| `situations` | `IndexEntry_hashrange_v1`, `NoticeHistory_hashrange_v1` | The `post_install` hook (below) |
-| `brain` | `TagMembership_hashrange_v1` | Nothing. The operator runs `brain init` by hand |
-| `state-machine` (`sm`) | `SmIndexEntry_hashrange_v1` | Nothing. `sm` declares the schema itself |
+| App | Approved schemas (`approved_schema_registration`) | What enforces it |
+|-----|---------------------------------------------------|------------------|
+| `situations` | `IndexEntry_hashrange_v1` with fields `ie_h`, `ie_marker`, `ie_payload`, `ie_r`; `NoticeHistory_hashrange_v1` with fields `nh_h`, `nh_marker`, `nh_payload`, `nh_r` | The `post_install` hook (below) |
+| `brain` | `TagMembership_hashrange_v1` (name only) | Nothing. The operator runs `brain init` by hand |
+| `state-machine` (`sm`) | `SmIndexEntry_hashrange_v1` (name only) | Nothing. `sm` declares the schema itself |
 
 The list sits on the app entry in `config/host-track/apps.json`. To change it,
 open a PR to EdgeVector/last-stack. A reviewer checks the list against this
-table. The `sm` name comes from EdgeVector/state-machine PR 4, which is not
-merged. Edit the list if the PR renames the schema.
-`host-track validate-registry` fails when an entry is not a list of schema
-names.
+table.
 
-host-track passes the list to the hook in `HOST_TRACK_APPROVED_SCHEMAS`
-(comma separated). The list comes from the registry of the running host-track,
-never from the candidate tree, so a build cannot approve itself. host-track
-sets the variable on every hook call, and a value from the caller never
-reaches the hook. For a custom registry (`HOST_TRACK_REGISTRY`: every dev and
-fixture run) the variable is empty, so the hook registers nothing.
+- An entry is a schema name, or `{"name": ..., "fields": [...]}`. A name with
+  `fields` pins the shape: the exact field names, sorted. The `situations` hook
+  accepts only `{name, fields}` entries and refuses on any difference, because
+  a later build with the same name and another body would register a new
+  identity.
+- `brain` and `state-machine` keep names only. A hook for them would need the
+  field names too. Add the field pins when their PRs merge (for `sm`, when
+  EdgeVector/state-machine PR 4 merges; the name comes from that PR and may
+  change, so edit the list then).
+- `host-track validate-registry` fails when an entry is not a name or a
+  `{name, fields}` with sorted field names.
+
+host-track passes the list to the hook in `HOST_TRACK_APPROVED_SCHEMAS`, as a
+JSON array. The list comes from the registry of the running host-track, never
+from the candidate tree, so a build cannot approve itself. host-track sets the
+variable on every hook call, and a value from the caller never reaches the
+hook. For a custom registry (`HOST_TRACK_REGISTRY`: every dev and fixture run)
+the variable is `[]`, so the hook registers nothing.
 
 ### situations
 
@@ -193,51 +206,93 @@ fails `situations put` and `situations notice` before any write
 build would go live after the soak and every notice would fail.
 
 The change: the `situations` entry has a `post_install`,
-`bin/last-stack-situations-host-track-post-install`, and a third probe,
-`situations doctor`.
+`bin/last-stack-situations-host-track-post-install`, with
+`post_install_timeout_s: 300`, and the probes `--help`, `list`, `doctor`,
+`list`.
 
 What the hook does, in order:
 
 1. It runs the candidate's `situations doctor --json` (read only). When
    `IndexEntry` and `NoticeHistory` are loaded on the node and pinned in the
    config, it exits 0. Nothing else happens.
-2. Otherwise it works out which schemas `situations init` would register.
-   `init` has no check mode. It registers every schema the node has not loaded,
-   writes `~/.situations/config.json` and writes the long-lived notices. So the
-   hook takes the candidate's `situations schema` and removes the schemas that
-   `GET /api/schemas` on the node already lists.
-3. It refuses, and fails the install, when any schema on that list is not in
-   `HOST_TRACK_APPROVED_SCHEMAS`. It also refuses when the install root is not
-   under `$HOME/.host-track/apps`, or when `EXEMEM_ENV=dev`. An empty list
-   refuses every registration. When `init` would register nothing (it only
-   writes the config), it runs.
-4. It runs `situations init`, then runs `doctor` again. Both schema checks must
-   read `ok`.
+2. Otherwise init is needed. It refuses, and fails the install, when the
+   install root is not under `$HOME/.host-track/apps`, or when `EXEMEM_ENV=dev`
+   is set. These two checks come before anything that can write, so even an
+   `init` that registers nothing runs only on the real install. The
+   `EXEMEM_ENV` check reads the environment of host-track. It cannot see how
+   the node was started. If the host exports `EXEMEM_ENV=dev`, run the command
+   with `env -u EXEMEM_ENV host-track refresh situations`.
+3. It works out which schemas `situations init` would register. `init` has no
+   check mode. It registers every schema the node has not loaded, rewrites the
+   config and writes the long-lived notices. So the hook takes the candidate's
+   `situations schema --type all` and removes the schemas that
+   `GET /api/schemas` on the node already lists. It refuses when any schema on
+   that list is not in `HOST_TRACK_APPROVED_SCHEMAS` with the same sorted field
+   names. A target with no owner, no name or no fields, an empty reply from the
+   node, and an empty list all refuse. When `init` would register nothing (it
+   only writes the config), it runs.
+4. It copies the config, then runs `situations init`. The copy is a file named
+   `config.json.pre-init.XXXXXX` next to the config (`mktemp`). `init` rebuilds
+   the config from the node listing and can repin the Situation, Notice and
+   Index schemas or drop `nodeSocketPath`, and the old build is still `current`
+   and reads that file. So the hook passes `init` the values the file already
+   holds (`--schema-hash`, `--notice-schema-hash`, `--user-hash`, `--node-url`,
+   `--node-socket-path`, `--schema-service-url`), then compares the three legacy
+   pins (situation, notice, index) and `nodeSocketPath` with the copy.
+5. It runs `doctor` again. Both schema checks must read `ok`.
 
-The node is the one under `$HOME` (`~/.lastdb`, else `~/.folddb`). The hook
-sets `FOLDDB_SOCKET_PATH` to that socket for the candidate, so a socket
-override in the caller cannot point it at another node. With no socket the
-hook fails.
+If any step after the copy fails (the `init` exit code, a pin that changed,
+`doctor`, a timeout, a signal), the hook puts the copy back and checks that the
+file equals the copy. It then removes the copy. If it cannot put the copy back,
+it keeps the copy and prints the command to run. When there was no config
+before, it removes the config that `init` wrote. On success it removes the
+copy. The `init` result goes to the install log without the user hash.
 
-On any failure the hook exits 1. host-track then fails the install: `current`
-stays on the last-known-good build, no stamp is written, and the next refresh
-tries again. The staged tree stays under `versions/<digest>`.
+The limits are 60 s for `doctor`, 60 s for `schema`, 180 s for `init` and 30 s
+for the node read, and host-track stops the whole hook after 300 s. A hang
+would stall the serial refresh of every app behind it.
 
-The probe: `situations doctor` is read only and exits 1 when a check fails.
-It runs after `list` so that a `list` can repair drift in the partitions it
-reads first. Three things
-to know:
+The node is the one under `$HOME` (`~/.lastdb`, else `~/.folddb`) and the
+config is the one under `$HOME` (`~/.situations`, else `~/.fsituations`). The
+hook sets `FOLDDB_SOCKET_PATH` and `SITUATIONS_CONFIG` for the candidate and
+unsets `FSITUATIONS_CONFIG`, so an override in the caller cannot point it at
+another node or file. With no socket the hook fails.
 
-- It is the last probe, so it is also the latency probe (host-track times the
-  last probe). The latency check measures `doctor` now, not `list`.
+On any failure the hook exits 1 (124 on a timeout). host-track then fails the
+install: `current` stays on the last-known-good build, no stamp is written, and
+the next refresh tries again. The staged tree stays under `versions/<digest>`.
+
+Who supplies the hook: host-track resolves a hook that the registry puts
+outside the app's own install root (the last-stack tree, `~/.local/bin`) from
+exactly that path. A candidate tree cannot supply it or shadow it with a file of
+the same name. A hook inside the app's own `current` tree (brain, search,
+reconciler) still comes from the candidate tree: it ships in the artifact.
+
+What runs when, for `host-track refresh situations`: host-track stages the
+candidate tree and the old build stays `current`. The hook runs. The probes
+run. host-track parks the candidate as `canary` for the soak (1 hour, 3 green
+checks; the refresh agent runs `soak-watch` every 20 minutes). When the window
+ends, host-track runs the hook again (it finds the layout ready and does
+nothing), runs the probes, and flips `current`.
+
+The probes. `situations doctor` is read only and exits 1 when a check fails.
+`list` is the last probe on purpose: host-track times the last probe for the
+latency check, so `list` stays the latency probe, and the first install is
+measurable because the old build has `list`. The first `list` runs before
+`doctor`, so it can repair drift in the partitions it reads first. Know this:
+
 - The first time, the old build has no `doctor`. A candidate failure is then
   INCONCLUSIVE (host-track holds the install and tries again), not RED. A
   failure that comes from node state (drift, an unreadable entry) is
   INCONCLUSIVE with any incumbent, because both builds see the same state.
   RED needs a candidate that fails while the incumbent passes.
-- During the soak the old build is `current`. A `put` by the old build after
-  the copy shows as drift until a `list` or `put` by the new build repairs it.
-  Run one build (`command -v situations`).
+- During the soak the old build is `current`. A `put` of an existing situation
+  by the old build after the copy is drift that a `list` cannot repair. The
+  canary then stays parked, and soak-watch reports the probe as inconclusive,
+  until the entry is put again with the candidate build
+  (`~/.host-track/apps/situations/canary/dist/situations put <file>`). The
+  Tom-only escape is `HOST_TRACK_PROBE_SKIP=1`. Run one build
+  (`command -v situations`).
 
 ### brain
 
@@ -303,20 +358,40 @@ on the `state-machine` entry for the reviewer. To run it at a time you choose,
 run `sm list --limit 1` once after the flip, before the routines that call
 `sm` start.
 
-### Upgrade order
+### Safe order for the first install of these builds
 
-For `situations` (the hook does steps 2 and 3):
+The registry that host-track reads comes from the last-stack tree it runs from
+(`ROOT` is resolved with `pwd -P`). Until last-stack's own flip (1 hour, 3
+checks), every run uses the OLD registry, which has no hook and no `doctor`
+probe. A `situations` build staged before then can flip with no `init`, and
+every `put` and `notice` would fail. So, in this order:
 
-1. `host-track refresh situations`. host-track stages the candidate tree.
-   The old build stays `current`.
-2. The hook runs on the candidate tree: `doctor`, the gate, `init`, `doctor`.
-3. The probes run: `--help`, `list`, `doctor`.
-4. host-track parks the candidate as `canary` for the soak (1 hour, 3 green
-   probe checks). The refresh agent runs `soak-watch` every 20 minutes.
-5. When the window ends, host-track runs the hook again (it finds the layout
-   ready and does nothing), runs the probes, and flips `current`.
-6. Admin steps: none for `situations`. Run `situations doctor` once and read
-   it. Do not leave two builds on one host.
+1. Merge this PR. Then run `host-track refresh last-stack` alone. If the
+   situations PR 14 is not merged yet, hold that merge until step 2 is done,
+   so no `situations` build reaches the `stable` channel early.
+2. Wait for the flip of last-stack. Check that the hook file
+   `~/.local/state/last-stack/artifacts/current/bin/last-stack-situations-host-track-post-install`
+   exists, and that the registry under that `current` has the `post_install`
+   and the `approved_schema_registration` lists.
+3. Back up the situations config (`~/.situations/config.json`). Read
+   `GET /api/schemas` and confirm that `Situation`, `Notice` and `Index` are
+   loaded. The hook refuses if one is missing: it would have to register it.
+4. Run without `EXEMEM_ENV` in the environment (`env -u EXEMEM_ENV`), then run
+   `host-track refresh situations` alone.
+5. After the soak, run `situations doctor` and confirm that one binary is in
+   use (`command -v situations`).
+
+A canary that was staged while the old registry was running was probed with no
+hook and no `doctor`. After step 2, run `host-track refresh --force situations`:
+`--force` always re-stages, so the new registry runs the hook and the new
+probes. Without it, a canary whose window ends under the old registry flips
+with no `init`.
+
+There is no guard in `bin/host-track` that closes this window, and none can be
+added here. A guard that refuses to flip a `situations` candidate whose registry
+has no `post_install` would ship in the same last-stack artifact as the
+registry. The old tree runs both until last-stack flips, so it has neither. The
+safe order above is the control.
 
 For `brain`: refresh, replace every binary, `brain init`, `reindex`, `doctor`
 (see above). For `sm`: refresh, the flip, then the first `sm` command.
