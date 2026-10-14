@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# Host Track post_install for the situations artifact.
+#
+# WHEN IT RUNS. host-track runs this hook on the CANDIDATE version tree, before
+# the probes, while the old build is still `current`. soak-watch runs it again
+# when the soak window ends, right before the flip. A failure here (exit not 0)
+# fails the install: `current` stays on the last-known-good build and no stamp is
+# written. See docs/host-track.md, "Apps that need a post-install step".
+#
+# WHY IT EXISTS. A situations build with the IndexEntry and NoticeHistory
+# schemas fails `situations put` and `situations notice` before any write
+# (index_layout_missing) until `situations init` has run on the node. Reads stay
+# correct. Without this hook the build would go live and every notice would fail.
+#
+# WHAT IT DOES.
+#   1. Reads the layout state with the candidate's `situations doctor` (read only).
+#      IndexEntry and NoticeHistory loaded and pinned: nothing to do, exit 0.
+#   2. Otherwise init is needed. `situations init` has no check mode: it
+#      declares every schema the node has not loaded (the node registers it in
+#      the Schema Service; a release node defaults to PROD), writes the config,
+#      and seeds the long-lived notices. So the hook first works out which
+#      schemas init would declare (the candidate's `situations schema` minus the
+#      node's GET /api/schemas) and refuses unless every one of them is in
+#      HOST_TRACK_APPROVED_SCHEMAS.
+#   3. Runs `situations init`, then checks the layout again.
+#
+# HOST_TRACK_APPROVED_SCHEMAS comes from the approved_schema_registration list
+# of the app entry in config/host-track/apps.json, never from the candidate
+# tree. host-track leaves it empty for a custom registry (a dev or fixture run).
+#
+# The node is the one under $HOME (~/.lastdb, else ~/.folddb). The hook pins the
+# candidate to that socket with FOLDDB_SOCKET_PATH, so a socket override
+# inherited from the caller cannot point it at another node.
+set -euo pipefail
+
+say() { printf 'situations post-install: %s\n' "$*" >&2; }
+fail() {
+  say "FAIL: $*"
+  say "The install stops here. current stays on the last-known-good build."
+  exit 1
+}
+
+version_dir="${HOST_TRACK_VERSION_DIR:-}"
+if [ -z "$version_dir" ]; then
+  # A rollback and an after-cutover call do not set the candidate tree. A
+  # rollback goes back to a build that does not need the new schemas.
+  say "no candidate tree (HOST_TRACK_VERSION_DIR is not set); nothing to do"
+  exit 0
+fi
+
+command -v jq >/dev/null 2>&1 || fail "jq is required"
+command -v curl >/dev/null 2>&1 || fail "curl is required"
+
+bin="$version_dir/dist/situations"
+[ -x "$bin" ] || fail "candidate binary is missing or not executable: $bin"
+
+install_root="${HOST_TRACK_INSTALL_ROOT:-}"
+approved_csv="${HOST_TRACK_APPROVED_SCHEMAS:-}"
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/situations-post-install.XXXXXX")"
+trap 'rm -rf -- "$work"' EXIT
+
+# --- the node: the one under $HOME -------------------------------------------
+sock=""
+for candidate in "$HOME/.lastdb/data/folddb.sock" "$HOME/.folddb/data/folddb.sock"; do
+  if [ -S "$candidate" ]; then
+    sock="$candidate"
+    break
+  fi
+done
+[ -n "$sock" ] || fail "no LastDB node socket under $HOME/.lastdb or $HOME/.folddb (is the node running?)"
+export FOLDDB_SOCKET_PATH="$sock"
+
+# --- step 1: is init needed? (read only) -------------------------------------
+# Both schema checks of `situations doctor` must read "ok": loaded on the node
+# and pinned in the config. Doctor can exit 1 for another reason (drift, an
+# unreadable entry); init does not fix that, so only the two schema checks count.
+layout_ready() {
+  local tag="$1"
+  "$bin" doctor --json >"$work/doctor.$tag.json" 2>"$work/doctor.$tag.err" || true
+  jq -e '[.[] | select(.name == "schema IndexEntry" or .name == "schema NoticeHistory")
+          | select(.status == "ok")] | length == 2' \
+    "$work/doctor.$tag.json" >/dev/null 2>&1
+}
+
+if layout_ready before; then
+  say "IndexEntry and NoticeHistory are loaded and pinned; init is not needed"
+  exit 0
+fi
+say "init is needed: IndexEntry or NoticeHistory is not loaded on the node, or the config does not pin it"
+
+# --- step 2: which schemas would init declare? -------------------------------
+"$bin" schema --type all --json >"$work/targets.json" 2>"$work/targets.err" \
+  || fail "the candidate could not print its schemas: $(head -c 300 "$work/targets.err")"
+jq -e 'type == "object" and length > 0' "$work/targets.json" >/dev/null 2>&1 \
+  || fail "the candidate printed no schema list"
+
+curl -sS --fail --max-time 30 --unix-socket "$sock" \
+  -H 'X-LastDB-Client: host-track' http://localhost/api/schemas \
+  -o "$work/loaded.json" 2>"$work/loaded.err" \
+  || fail "could not read the loaded schemas from the node: $(head -c 300 "$work/loaded.err")"
+# A reply with no schema at all is a reply this hook cannot read. Fail closed:
+# every target would look missing, which would only widen the refusal.
+jq -e '(.schemas | type) == "array" and (.schemas | length) > 0' "$work/loaded.json" >/dev/null 2>&1 \
+  || fail "the node returned no loaded schemas that this hook can read"
+
+# One line per schema init would declare: the descriptive names of the targets
+# that no loaded schema of the same owner carries.
+jq -r --slurpfile have "$work/loaded.json" '
+  [ .[] | .schema
+    | select(. as $s
+        | ($have[0].schemas
+           | any(.owner_app_id == $s.owner_app_id and .descriptive_name == $s.descriptive_name))
+        | not)
+    | .descriptive_name ] | .[]' "$work/targets.json" >"$work/missing.txt"
+
+is_approved() {
+  local name="$1" item
+  local IFS=','
+  for item in $approved_csv; do
+    [ "$item" = "$name" ] && return 0
+  done
+  return 1
+}
+
+missing=()
+unapproved=()
+while IFS= read -r name; do
+  [ -n "$name" ] || continue
+  missing+=("$name")
+  is_approved "$name" || unapproved+=("$name")
+done <"$work/missing.txt"
+
+if [ "${#missing[@]}" -gt 0 ]; then
+  say "init would register: ${missing[*]}"
+  say "approved for this app (approved_schema_registration): ${approved_csv:-none}"
+  case "$install_root" in
+    "$HOME"/.host-track/apps/*) ;;
+    *) fail "registration refused: this is not the real install (install root: ${install_root:-unset}, expected under $HOME/.host-track/apps)" ;;
+  esac
+  if [ "${EXEMEM_ENV:-}" = "dev" ]; then
+    fail "registration refused: EXEMEM_ENV=dev. The approval covers the real install only"
+  fi
+  if [ "${#unapproved[@]}" -gt 0 ]; then
+    fail "registration refused: not approved for situations: ${unapproved[*]}. To approve a schema, add its name to approved_schema_registration for this app in config/host-track/apps.json with a reviewed PR to EdgeVector/last-stack"
+  fi
+else
+  say "init would register no schema (the node has them all); it only writes the config"
+fi
+
+# --- step 3: run init, then check the layout again ---------------------------
+say "running situations init"
+init_rc=0
+"$bin" init --json >"$work/init.json" 2>"$work/init.err" || init_rc=$?
+if [ "$init_rc" -ne 0 ]; then
+  fail "situations init failed (exit $init_rc): $(head -c 500 "$work/init.err")"
+fi
+if [ -s "$work/init.err" ]; then
+  # init prints its warnings (a schema it could not declare) on stderr.
+  sed -n '1,10p' "$work/init.err" >&2
+fi
+
+if layout_ready after; then
+  say "init done; IndexEntry and NoticeHistory are loaded and pinned"
+  exit 0
+fi
+if lines="$(jq -r '.[] | "  \(.status) \(.name): \(.detail)"' "$work/doctor.after.json" 2>/dev/null)"; then
+  say "doctor after init:"
+  printf '%s\n' "$lines" >&2
+fi
+fail "init ran, but IndexEntry or NoticeHistory is still not loaded and pinned"

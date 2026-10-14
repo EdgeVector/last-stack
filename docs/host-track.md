@@ -63,6 +63,13 @@ When configured, `post_install` runs on the version tree **before the probe**
 which rewrites live links). A failed hook or a RED probe leaves the app
 stale (no new stamp) and does not flip PATH.
 
+The hook gets these variables: `HOST_TRACK_APP`, `HOST_TRACK_INSTALL_ROOT`,
+`HOST_TRACK_MANIFEST_DIGEST`, `HOST_TRACK_VERSION_DIR` (the candidate tree;
+not set for a rollback or an after-cutover call), `LAST_STACK_ROOT` (the same
+tree) and `HOST_TRACK_APPROVED_SCHEMAS` (see "Apps that need a post-install
+step"). With a soak, host-track runs the hook again when it activates the
+canary, so a hook must be safe to run twice.
+
 Every artifact app must declare `safe_upgrade.probes` — argv relative to the
 version tree. `host-track validate-registry` fails closed when an artifact
 app has none. Brain / kanban / situations also set `"latency": true` so a
@@ -141,6 +148,181 @@ runtime and must not be used to “heal” agent edits.
 **Develop:** worktrees only. Never `Write` product files under `~/.last-stack`.
 Runtime artifact state is intentionally outside the owner mirror so it cannot
 dirty that checkout.
+
+## Apps that need a post-install step
+
+Three apps changed how they store data. Each one needs one explicit step when
+a new build installs. Do not skip the step: the build fails or reads old data
+without it.
+
+### Approved schema registration
+
+A LastDB node registers a new schema in the Schema Service of its own
+environment. A node with no `EXEMEM_ENV=dev` registers in PROD (open papercut
+`papercut-atom-proof-node-registers-schemas-in-prod-schema-service-by-default-20261012`).
+Tom approved on 2026-10-14 that the schemas below may register in PROD when the
+new builds install. Nothing else in the PROD catalog is approved. No
+exemem-infra or schema-infra deploy is approved.
+
+| App | Approved schema names (`approved_schema_registration`) | What enforces it |
+|-----|--------------------------------------------------------|------------------|
+| `situations` | `IndexEntry_hashrange_v1`, `NoticeHistory_hashrange_v1` | The `post_install` hook (below) |
+| `brain` | `TagMembership_hashrange_v1` | Nothing. The operator runs `brain init` by hand |
+| `state-machine` (`sm`) | `SmIndexEntry_hashrange_v1` | Nothing. `sm` declares the schema itself |
+
+The list sits on the app entry in `config/host-track/apps.json`. To change it,
+open a PR to EdgeVector/last-stack. A reviewer checks the list against this
+table. The `sm` name comes from EdgeVector/state-machine PR 4, which is not
+merged. Edit the list if the PR renames the schema.
+`host-track validate-registry` fails when an entry is not a list of schema
+names.
+
+host-track passes the list to the hook in `HOST_TRACK_APPROVED_SCHEMAS`
+(comma separated). The list comes from the registry of the running host-track,
+never from the candidate tree, so a build cannot approve itself. host-track
+sets the variable on every hook call, and a value from the caller never
+reaches the hook. For a custom registry (`HOST_TRACK_REGISTRY`: every dev and
+fixture run) the variable is empty, so the hook registers nothing.
+
+### situations
+
+The current state: a build with the `IndexEntry` and `NoticeHistory` schemas
+fails `situations put` and `situations notice` before any write
+(`index_layout_missing`) until `situations init` has run on the node.
+`situations preflight` and `situations list` stay correct. Without a hook the
+build would go live after the soak and every notice would fail.
+
+The change: the `situations` entry has a `post_install`,
+`bin/last-stack-situations-host-track-post-install`, and a third probe,
+`situations doctor`.
+
+What the hook does, in order:
+
+1. It runs the candidate's `situations doctor --json` (read only). When
+   `IndexEntry` and `NoticeHistory` are loaded on the node and pinned in the
+   config, it exits 0. Nothing else happens.
+2. Otherwise it works out which schemas `situations init` would register.
+   `init` has no check mode. It registers every schema the node has not loaded,
+   writes `~/.situations/config.json` and writes the long-lived notices. So the
+   hook takes the candidate's `situations schema` and removes the schemas that
+   `GET /api/schemas` on the node already lists.
+3. It refuses, and fails the install, when any schema on that list is not in
+   `HOST_TRACK_APPROVED_SCHEMAS`. It also refuses when the install root is not
+   under `$HOME/.host-track/apps`, or when `EXEMEM_ENV=dev`. An empty list
+   refuses every registration. When `init` would register nothing (it only
+   writes the config), it runs.
+4. It runs `situations init`, then runs `doctor` again. Both schema checks must
+   read `ok`.
+
+The node is the one under `$HOME` (`~/.lastdb`, else `~/.folddb`). The hook
+sets `FOLDDB_SOCKET_PATH` to that socket for the candidate, so a socket
+override in the caller cannot point it at another node. With no socket the
+hook fails.
+
+On any failure the hook exits 1. host-track then fails the install: `current`
+stays on the last-known-good build, no stamp is written, and the next refresh
+tries again. The staged tree stays under `versions/<digest>`.
+
+The probe: `situations doctor` is read only and exits 1 when a check fails.
+It runs after `list` so that a `list` can repair drift in the partitions it
+reads first. Three things
+to know:
+
+- It is the last probe, so it is also the latency probe (host-track times the
+  last probe). The latency check measures `doctor` now, not `list`.
+- The first time, the old build has no `doctor`. A candidate failure is then
+  INCONCLUSIVE (host-track holds the install and tries again), not RED. A
+  failure that comes from node state (drift, an unreadable entry) is
+  INCONCLUSIVE with any incumbent, because both builds see the same state.
+  RED needs a candidate that fails while the incumbent passes.
+- During the soak the old build is `current`. A `put` by the old build after
+  the copy shows as drift until a `list` or `put` by the new build repairs it.
+  Run one build (`command -v situations`).
+
+### brain
+
+The current state: `brain init` registers `TagMembership_hashrange_v1`. Until
+then, tag reads use the legacy layout and print one warning per command, and
+tag and backlink writes are skipped.
+
+Decision: do not add `brain init` to `post_install`. The evidence is in
+`src/commands/init.ts` and `docs/tag-membership.md` of EdgeVector/brain:
+
+- `init` declares every schema in `UNIQUE_SCHEMAS`, not only the new one. It
+  has no check mode and no option to pick one schema. The approved list cannot
+  limit it from outside.
+- `init` also rewrites `~/.brain/config.json` (it writes the file twice), can
+  bootstrap an unprovisioned node, stamps the record-list partitions of every
+  type it registers for the first time, and can run the consent grant.
+- The brain entry already has a `post_install`
+  (`bin/brain-host-track-post-install`, `bun install`). It lives in the brain
+  artifact. One entry has one hook.
+- `reindex` must stay out of `post_install`. It is an admin step for a quiet
+  moment, one device at a time. It deletes rows that no record backs.
+- `brain doctor` is not a probe. It has no way to run one check, so it runs
+  every check, and any unrelated failure (the Schema Service, the embedding
+  runtime, a write capability) would hold every brain install.
+
+What the operator runs, in this order (from `docs/tag-membership.md`):
+
+1. `host-track refresh brain`. Wait until `host-track status brain` shows the
+   new digest as current.
+2. Replace every other brain binary on every device: restart each running
+   `brain-mcp` and each routine host. An old binary writes only the legacy
+   layout, and the new code never reads that layout again.
+3. Check the new build for other new schemas (`UNIQUE_SCHEMAS` in
+   `src/schemas.ts`). Only `TagMembership_hashrange_v1` is approved. If
+   another schema is new, stop and ask Tom.
+4. Run `brain init` once. Between steps 1 and 4 the new build skips tag and
+   backlink writes. Step 5 rebuilds them from the records, so nothing is lost.
+5. In a quiet moment, on one device: `brain reindex --tags`, then
+   `brain reindex --backlinks`.
+6. Run `brain doctor`. The `tag-index` check must pass.
+
+A change in the brain repo would let a hook do step 4 safely: an option such
+as `brain init --only <schema>`, or a check mode. Until then, the step stays by
+hand.
+
+### state-machine (`sm`)
+
+No post-install step, no new probe. In EdgeVector/state-machine PR 4 the
+first `sm` command that touches an index declares the index-entry schema and
+writes its hash to the config (`prepareClient` in `src/cli.ts`). The first
+run also copies the legacy lists. That takes seconds to minutes on a loaded
+node. After the copy, the new code never reads the legacy lists again.
+
+The existing probes, `sm --help` and `sm schema-json --type all`, never touch
+an index, so they register nothing. Do not add a probe that reaches the
+node. It would declare the schema and copy the lists while the old build is
+still `current` and still writes the legacy lists. Never run a flow definition
+as a probe.
+
+So the registration of `SmIndexEntry_hashrange_v1` happens when the first `sm`
+command runs after the flip. No host-track gate sees it. The approved name is
+on the `state-machine` entry for the reviewer. To run it at a time you choose,
+run `sm list --limit 1` once after the flip, before the routines that call
+`sm` start.
+
+### Upgrade order
+
+For `situations` (the hook does steps 2 and 3):
+
+1. `host-track refresh situations`. host-track stages the candidate tree.
+   The old build stays `current`.
+2. The hook runs on the candidate tree: `doctor`, the gate, `init`, `doctor`.
+3. The probes run: `--help`, `list`, `doctor`.
+4. host-track parks the candidate as `canary` for the soak (1 hour, 3 green
+   probe checks). The refresh agent runs `soak-watch` every 20 minutes.
+5. When the window ends, host-track runs the hook again (it finds the layout
+   ready and does nothing), runs the probes, and flips `current`.
+6. Admin steps: none for `situations`. Run `situations doctor` once and read
+   it. Do not leave two builds on one host.
+
+For `brain`: refresh, replace every binary, `brain init`, `reindex`, `doctor`
+(see above). For `sm`: refresh, the flip, then the first `sm` command.
+
+Dev and fixture runs cannot register anything: a custom registry gives an
+empty approved list, and a refusal fails the install.
 
 ## Status Shape
 
