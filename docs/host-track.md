@@ -207,8 +207,16 @@ build would go live after the soak and every notice would fail.
 
 The change: the `situations` entry has a `post_install`,
 `bin/last-stack-situations-host-track-post-install`, with
-`post_install_timeout_s: 300`, and the probes `--help`, `list`, `doctor`,
+`post_install_timeout_s: 480`, and the probes `--help`, `list`, `doctor`,
 `list`.
+
+Before step 1, the hook does two things:
+
+- It puts back a copy of the config that an unfinished run left (see below).
+- It refuses when the config has a `nodeUrl` that is not loopback (`127.0.0.1`,
+  `localhost` or `[::1]`, with an optional port). The candidate uses the node
+  socket only for a loopback URL, so `init` would declare on that other node,
+  and the hook read this node. The hook never passes such a URL on.
 
 What the hook does, in order:
 
@@ -228,8 +236,9 @@ What the hook does, in order:
    `situations schema --type all` and removes the schemas that
    `GET /api/schemas` on the node already lists. It refuses when any schema on
    that list is not in `HOST_TRACK_APPROVED_SCHEMAS` with the same sorted field
-   names. A target with no owner, no name or no fields, an empty reply from the
-   node, and an empty list all refuse. When `init` would register nothing (it
+   names. A target with no owner, no name or an empty field list, an empty
+   reply from the node, and an empty list all refuse. An approved entry with an
+   empty name, or with no field names, refuses at the start. When `init` would register nothing (it
    only writes the config), it runs.
 4. It copies the config, then runs `situations init`. The copy is a file named
    `config.json.pre-init.XXXXXX` next to the config (`mktemp`). `init` rebuilds
@@ -238,19 +247,37 @@ What the hook does, in order:
    and reads that file. So the hook passes `init` the values the file already
    holds (`--schema-hash`, `--notice-schema-hash`, `--user-hash`, `--node-url`,
    `--node-socket-path`, `--schema-service-url`), then compares the three legacy
-   pins (situation, notice, index) and `nodeSocketPath` with the copy.
+   pins (situation, notice, index) and `nodeSocketPath` with the copy. `init`
+   takes the user hash only as `--user-hash`, so it shows in `ps` while `init`
+   runs. The install log never prints it.
 5. It runs `doctor` again. Both schema checks must read `ok`.
 
 If any step after the copy fails (the `init` exit code, a pin that changed,
-`doctor`, a timeout, a signal), the hook puts the copy back and checks that the
-file equals the copy. It then removes the copy. If it cannot put the copy back,
-it keeps the copy and prints the command to run. When there was no config
-before, it removes the config that `init` wrote. On success it removes the
-copy. The `init` result goes to the install log without the user hash.
+`doctor`, a timeout, a TERM or INT signal), the hook first stops the `init`
+that still runs and waits for it, so that it cannot rewrite the config after the
+copy is back. It then puts the copy back and checks that the file equals the
+copy, and removes the copy. If it cannot put the copy back, it keeps the copy and
+prints the command to run. When there was no config before, it removes the config
+that `init` wrote. On success it removes the copy. The messages go to the hook's
+own stderr, which is the install log. The `init` result goes to the install log
+without the user hash.
 
-The limits are 60 s for `doctor`, 60 s for `schema`, 180 s for `init` and 30 s
-for the node read, and host-track stops the whole hook after 300 s. A hang
-would stall the serial refresh of every app behind it.
+A KILL runs no trap. host-track stops a hook that runs past its limit with
+SIGKILL, so the limit is 480 s, above the sum of the limits of the hook: `doctor`
+60 s, `schema` 60 s, node read 30 s, `init` 180 s and `doctor` again 60 s, which
+is 390 s. The limits of the hook fire first. If a KILL still happens, the copy
+stays next to the config. On its next start the hook finds the oldest copy
+(`config.json.pre-init.XXXXXX`), waits up to 60 s for an `init` of the
+unfinished run that still runs, puts the copy back, and only then goes on. A
+partial copy (`config.json.pre-init-partial.XXXXXX`, a run stopped inside the
+copy) is deleted, never used. A copy that is not a JSON object stops the hook:
+check both files by hand. A hang would stall the serial refresh of every app
+behind it, so each limit exists.
+
+`declare-schema` can take longer than the 30 s limit of the node client. The
+first run may fail with a timeout. The hook then leaves the config as it was,
+and a second `host-track refresh situations` retries. The node may already have
+registered the schemas; the retry finds them loaded.
 
 The node is the one under `$HOME` (`~/.lastdb`, else `~/.folddb`) and the
 config is the one under `$HOME` (`~/.situations`, else `~/.fsituations`). The
@@ -271,8 +298,9 @@ reconciler) still comes from the candidate tree: it ships in the artifact.
 What runs when, for `host-track refresh situations`: host-track stages the
 candidate tree and the old build stays `current`. The hook runs. The probes
 run. host-track parks the candidate as `canary` for the soak (1 hour, 3 green
-checks; the refresh agent runs `soak-watch` every 20 minutes). When the window
-ends, host-track runs the hook again (it finds the layout ready and does
+checks; the refresh agent, when it is loaded, runs `soak-watch` every 20
+minutes, and otherwise you run `host-track soak-watch situations`). When the
+window ends, host-track runs the hook again (it finds the layout ready and does
 nothing), runs the probes, and flips `current`.
 
 The probes. `situations doctor` is read only and exits 1 when a check fails.
@@ -292,7 +320,9 @@ measurable because the old build has `list`. The first `list` runs before
   until the entry is put again with the candidate build
   (`~/.host-track/apps/situations/canary/dist/situations put <file>`). The
   Tom-only escape is `HOST_TRACK_PROBE_SKIP=1`. Run one build
-  (`command -v situations`).
+  (`command -v situations`). To avoid the drift, pause `situations put` (the
+  writers of situations) during the soak. A `notice` by the old build does not
+  matter: the new build has not copied the notice partitions yet.
 
 ### brain
 
@@ -364,25 +394,42 @@ The registry that host-track reads comes from the last-stack tree it runs from
 (`ROOT` is resolved with `pwd -P`). Until last-stack's own flip (1 hour, 3
 checks), every run uses the OLD registry, which has no hook and no `doctor`
 probe. A `situations` build staged before then can flip with no `init`, and
-every `put` and `notice` would fail. So, in this order:
+every `put` and `notice` would fail. The situations PR 14 is already merged, so
+a `situations` build can reach the `stable` channel at any time.
 
-1. Merge this PR. Then run `host-track refresh last-stack` alone. If the
-   situations PR 14 is not merged yet, hold that merge until step 2 is done,
-   so no `situations` build reaches the `stable` channel early.
-2. Wait for the flip of last-stack. Check that the hook file
+Installs are deliberate. Nothing runs `host-track refresh --all` for you unless
+the refresh LaunchAgent is loaded (check with
+`launchctl print gui/$(id -u)/com.edgevector.host-track-refresh`). If it is not
+loaded, nothing ticks `soak-watch` either: every step below is a command that
+you run. Name one app in each command. Do not run `host-track refresh --all`
+before step 3.
+
+1. Merge this PR. Then run `host-track refresh last-stack` alone. This is the
+   only way to pick up the new registry. It stages the new last-stack tree and
+   parks it as a canary for the soak.
+2. Tick the soak of last-stack: `host-track soak-watch last-stack`. Each tick
+   is one probe check. The flip needs 3 green checks and a window of 1 hour, so
+   run it at least twice, and the last time at least 1 hour after step 1. The
+   tick that meets both prints `soak GREEN ... activating`. To see that the
+   soak ended: `host-track status last-stack` shows `stale=false` and `soak=-`,
+   and `readlink ~/.local/state/last-stack/artifacts/current` names the new
+   digest. While it still reads `soak=soaking:...`, the old registry is in use.
+3. Check the new registry. The hook file
    `~/.local/state/last-stack/artifacts/current/bin/last-stack-situations-host-track-post-install`
-   exists, and that the registry under that `current` has the `post_install`
-   and the `approved_schema_registration` lists.
-3. Back up the situations config (`~/.situations/config.json`). Read
+   must exist, and the registry in the same `current` tree
+   (`config/host-track/apps.json`) must have the `post_install` and the
+   `approved_schema_registration` lists of `situations`.
+4. Back up the situations config (`~/.situations/config.json`). Read
    `GET /api/schemas` and confirm that `Situation`, `Notice` and `Index` are
    loaded. The hook refuses if one is missing: it would have to register it.
-4. Run without `EXEMEM_ENV` in the environment (`env -u EXEMEM_ENV`), then run
-   `host-track refresh situations` alone.
-5. After the soak, run `situations doctor` and confirm that one binary is in
+5. Run without `EXEMEM_ENV` in the environment (`env -u EXEMEM_ENV`), then run
+   `host-track refresh situations` alone. Pause `situations put` during the
+   soak. Tick `host-track soak-watch situations` the same way as in step 2.
+6. After the soak, run `situations doctor` and confirm that one binary is in
    use (`command -v situations`).
 
 A canary that was staged while the old registry was running was probed with no
-hook and no `doctor`. After step 2, run `host-track refresh --force situations`:
+hook and no `doctor`. After step 3, run `host-track refresh --force situations`:
 `--force` always re-stages, so the new registry runs the hook and the new
 probes. Without it, a canary whose window ends under the old registry flips
 with no `init`.
@@ -391,7 +438,7 @@ There is no guard in `bin/host-track` that closes this window, and none can be
 added here. A guard that refuses to flip a `situations` candidate whose registry
 has no `post_install` would ship in the same last-stack artifact as the
 registry. The old tree runs both until last-stack flips, so it has neither. The
-safe order above is the control.
+safe order above closes the window.
 
 For `brain`: refresh, replace every binary, `brain init`, `reindex`, `doctor`
 (see above). For `sm`: refresh, the flip, then the first `sm` command.

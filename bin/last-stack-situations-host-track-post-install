@@ -5,7 +5,11 @@
 # the probes, while the old build is still `current`. soak-watch runs it again
 # when the soak window ends, right before the flip. A failure here (exit not 0)
 # fails the install: `current` stays on the last-known-good build and no stamp is
-# written. host-track stops the hook after post_install_timeout_s (300).
+# written. host-track stops the hook with SIGKILL after post_install_timeout_s
+# (480). That is above the sum of the limits below: doctor 60 + schema 60 + node
+# read 30 + init 180 + doctor 60 = 390, so the hook's own limits fire first and
+# its trap can put the config back. A SIGKILL runs no trap; the next start finds
+# the copy of the config and puts it back (see "a copy left by an unfinished run").
 # See docs/host-track.md, "Apps that need a post-install step".
 #
 # WHY IT EXISTS. A situations build with the IndexEntry and NoticeHistory
@@ -41,7 +45,11 @@
 # inherited from the caller cannot point it at another node or file.
 set -euo pipefail
 
-say() { printf 'situations post-install: %s\n' "$*" >&2; }
+# fd 3 is the hook's own stderr. `say` writes there, so a message printed from a
+# trap still reaches the install log: a trap runs with the redirections of the
+# call it interrupted, and those go to a file that the hook deletes.
+exec 3>&2
+say() { printf 'situations post-install: %s\n' "$*" >&3; }
 fail() {
   say "FAIL: $*"
   say "The install stops here. current stays on the last-known-good build."
@@ -67,6 +75,16 @@ install_root="${HOST_TRACK_INSTALL_ROOT:-}"
 approved_json="${HOST_TRACK_APPROVED_SCHEMAS:-[]}"
 printf '%s' "$approved_json" | jq -e 'type == "array"' >/dev/null 2>&1 \
   || fail "HOST_TRACK_APPROVED_SCHEMAS is not a JSON array"
+# Every pinned entry needs a name and a non-empty list of field names. An entry
+# with no fields would match a candidate schema with no fields. A bare name is
+# allowed in the list and never matches: this hook accepts only pinned entries.
+printf '%s' "$approved_json" | jq -e '
+  all(.[]; type == "string"
+    or (type == "object"
+        and ((.name | type) == "string") and (.name != "")
+        and ((.fields | type) == "array") and (.fields | length) > 0
+        and (.fields | all(type == "string" and length > 0))))' >/dev/null 2>&1 \
+  || fail "HOST_TRACK_APPROVED_SCHEMAS has an entry with an empty name or with no field names"
 
 # Limits in seconds. A hang in one of these would stall the serial refresh of
 # every app behind it. The variables exist so an operator can lengthen a limit on
@@ -88,19 +106,28 @@ config_path=""
 had_config=0
 backup=""
 config_guard=0
+child_pid=""
+
+# put_back COPY: replace the config with COPY and check that they are equal.
+put_back() {
+  local copy="$1" tmp=""
+  if tmp="$(mktemp "$config_path.restore.XXXXXX")" \
+    && cp -p "$copy" "$tmp" \
+    && mv -f "$tmp" "$config_path" \
+    && cmp -s "$copy" "$config_path"; then
+    return 0
+  fi
+  [ -z "$tmp" ] || rm -f -- "$tmp"
+  return 1
+}
 
 restore_config() {
-  local tmp
   if [ "$had_config" = 1 ]; then
-    if tmp="$(mktemp "$config_path.restore.XXXXXX")" \
-      && cp -p "$backup" "$tmp" \
-      && mv -f "$tmp" "$config_path" \
-      && cmp -s "$backup" "$config_path"; then
+    if put_back "$backup"; then
       say "put the situations config back from the copy ($config_path)"
       rm -f -- "$backup"
     else
-      [ -z "${tmp:-}" ] || rm -f -- "$tmp"
-      say "COULD NOT put the situations config back. The copy is at $backup. Run: cp -p $backup $config_path"
+      say "COULD NOT put the situations config back. The copy is kept at $backup. Run: cp -p $backup $config_path"
     fi
   else
     rm -f -- "$config_path"
@@ -108,9 +135,28 @@ restore_config() {
   fi
 }
 
+# Stop the command that run_timeout started, and wait for it, so that it cannot
+# rewrite the config after the copy is put back.
+stop_child() {
+  local ticks=0
+  [ -n "$child_pid" ] || return 0
+  if kill -0 "$child_pid" 2>/dev/null; then
+    say "stopping the running candidate command (pid $child_pid)"
+    kill -TERM "$child_pid" 2>/dev/null || true
+    while kill -0 "$child_pid" 2>/dev/null && [ "$ticks" -lt 25 ]; do
+      sleep 0.2
+      ticks=$((ticks + 1))
+    done
+    kill -KILL "$child_pid" 2>/dev/null || true
+  fi
+  { wait "$child_pid"; } 2>/dev/null || true
+  child_pid=""
+}
+
 cleanup() {
   local rc=$?
-  trap - EXIT
+  trap - EXIT INT TERM
+  stop_child
   if [ "$config_guard" = 1 ] && [ "$rc" -ne 0 ]; then
     restore_config
   fi
@@ -130,6 +176,7 @@ run_timeout() {
   flag="$work/timed-out.$RANDOM"
   "$@" &
   pid=$!
+  child_pid="$pid"
   (
     ticks=0
     while kill -0 "$pid" 2>/dev/null; do
@@ -150,6 +197,7 @@ run_timeout() {
   ) &
   watcher=$!
   wait "$pid" || rc=$?
+  child_pid=""
   wait "$watcher" 2>/dev/null || true
   if [ -e "$flag" ]; then
     rm -f -- "$flag"
@@ -175,6 +223,50 @@ if [ ! -e "$config_path" ] && [ -e "$HOME/.fsituations/config.json" ]; then
 fi
 export SITUATIONS_CONFIG="$config_path"
 unset FSITUATIONS_CONFIG
+
+# --- a copy left by an unfinished run: put it back before anything else ------
+# A run that was stopped with SIGKILL (the host-track limit) runs no trap, so its
+# copy of the config stays and its `init` may have run on. The copy is the
+# config the old build was reading. Partial copies (stopped inside `cp`) are
+# never complete, so they are deleted, not restored. The oldest copy is the
+# first one made, and `cp -p` keeps the time of the config it copied.
+rm -f -- "$config_path".pre-init-partial.* 2>/dev/null || true
+# shellcheck disable=SC2012 # the names are this hook's own mktemp names
+leftover="$(ls -1tr -- "$config_path".pre-init.* 2>/dev/null | head -n 1 || true)"
+if [ -n "$leftover" ]; then
+  say "found the copy of an unfinished run: $leftover"
+  if command -v pgrep >/dev/null 2>&1; then
+    waited=0
+    if pgrep -f "${install_root:-$HOME/.host-track/apps/situations}/versions/.*/dist/situations init" >/dev/null 2>&1; then
+      say "an init from the unfinished run is still running; waiting for it (up to 60 s)"
+    fi
+    while pgrep -f "${install_root:-$HOME/.host-track/apps/situations}/versions/.*/dist/situations init" >/dev/null 2>&1; do
+      [ "$waited" -lt 300 ] || fail "an init from the unfinished run is still running; wait for it or stop it, then run this command again"
+      sleep 0.2
+      waited=$((waited + 1))
+    done
+  fi
+  jq -e 'type == "object"' "$leftover" >/dev/null 2>&1 \
+    || fail "the copy $leftover is not a JSON object; the config was not touched. Check both files by hand"
+  put_back "$leftover" \
+    || fail "could not put the copy back. The copy is kept at $leftover. Run: cp -p $leftover $config_path"
+  rm -f -- "$leftover"
+  say "put the situations config back from the copy of the unfinished run"
+fi
+
+# --- the node must be the one the gate reads ---------------------------------
+# `init` talks to the node at the config's nodeUrl. The candidate uses the socket
+# only for a loopback URL, so any other URL is another node: the gate reads this
+# node and `init` would declare on that one. Refuse, and never pass such a URL on.
+loopback_re='^https?://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?(/[^@?#\\]*)?$'
+if [ -e "$config_path" ]; then
+  node_url="$(jq -r 'if type == "object" then (.nodeUrl // "") else "" end' "$config_path" 2>/dev/null || true)"
+  if [ -n "$node_url" ]; then
+    node_url_lc="$(printf '%s' "$node_url" | tr '[:upper:]' '[:lower:]')"
+    [[ "$node_url_lc" =~ $loopback_re ]] \
+      || fail "the situations config ($config_path) has nodeUrl $node_url, which is not a loopback URL (127.0.0.1, localhost, [::1]). init would declare on that node, not on the node this hook read. Fix the nodeUrl first"
+  fi
+fi
 
 # --- step 1: is init needed? (read only) -------------------------------------
 # Both schema checks of `situations doctor` must read "ok": loaded on the node
@@ -232,7 +324,8 @@ jq -n -r --slurpfile want "$work/targets.json" --slurpfile have "$work/loaded.js
     type == "object"
     and ((.descriptive_name | type) == "string") and (.descriptive_name != "")
     and ((.owner_app_id | type) == "string") and (.owner_app_id != "")
-    and ((.fields | type) == "array");
+    and ((.fields | type) == "array") and (.fields | length) > 0
+    and (.fields | all(type == "string" and length > 0));
   [ $want[0][] | .schema ] as $targets
   | if ($targets | length) == 0 or ($targets | all(usable) | not)
     then error("the candidate printed a schema without an owner, a name or fields")
@@ -243,7 +336,8 @@ jq -n -r --slurpfile want "$work/targets.json" --slurpfile have "$work/loaded.js
              | any(.owner_app_id == $s.owner_app_id and .descriptive_name == $s.descriptive_name))
           | not) ] as $missing
   | $missing[] as $t
-  | ($approved | map(select(type == "object" and .name == $t.descriptive_name)) | .[0]) as $a
+  | ($approved | map(select(type == "object" and .name == $t.descriptive_name
+                            and ((.fields | type) == "array") and (.fields | length) > 0)) | .[0]) as $a
   | if $a == null then "UNAPPROVED \($t.descriptive_name) (no entry with a field pin)"
     elif ((($a.fields // []) | sort) != ($t.fields | sort))
     then "SHAPE \($t.descriptive_name) (approved fields: \(($a.fields // []) | sort | join(",")); candidate fields: \($t.fields | sort | join(",")))"
@@ -288,12 +382,21 @@ if [ -e "$config_path" ]; then
   jq -e 'type == "object"' "$config_path" >/dev/null 2>&1 \
     || fail "the situations config is not a JSON object ($config_path); fix or remove it first. init would replace it"
   had_config=1
-  backup="$(mktemp "$config_path.pre-init.XXXXXX")" || fail "could not create a copy of the config next to $config_path"
-  cp -p "$config_path" "$backup" || fail "could not copy the config to $backup"
+  # The copy gets its final name only when it is complete, so a run stopped
+  # inside `cp` leaves no copy that a later run would trust.
+  partial="$(mktemp "$config_path.pre-init-partial.XXXXXX")" || fail "could not create a copy of the config next to $config_path"
+  cp -p "$config_path" "$partial" || { rm -f -- "$partial"; fail "could not copy the config to $partial"; }
+  backup="$config_path.pre-init.${partial##*.}"
+  [ ! -e "$backup" ] || { rm -f -- "$partial"; fail "the copy name $backup is taken"; }
+  mv "$partial" "$backup" || { rm -f -- "$partial"; fail "could not name the copy $backup"; }
   before_pins="$(legacy_pins "$backup")"
   # init rebuilds the file from the node listing. Hand it back what the file
   # already says, so it does not repin or drop a field; the compare below is the
   # check. The index pin has no flag: the compare decides.
+  # NOTE: init takes the user hash only as --user-hash (no environment variable,
+  # no stdin), so it is visible in `ps` while init runs. It is a node identity
+  # label, not a credential, and the node sees it in every request. The install
+  # log never prints it.
   for pair in "schema-hash:.schemaHashes.situation" "notice-schema-hash:.schemaHashes.notice" \
     "user-hash:.userHash" "node-url:.nodeUrl" "node-socket-path:.nodeSocketPath" \
     "schema-service-url:.schemaServiceUrl"; do

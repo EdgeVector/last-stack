@@ -581,7 +581,7 @@
           ]
         }
       ],
-      "post_install_timeout_s": 300
+      "post_install_timeout_s": 480
     },
     {
       "app": "kanban",
