@@ -84,9 +84,15 @@ stopped copy, not a copy for a first backup. The recovery point is:
   exact-integer decoder requires the published frontier to cover both the
   compatibility frontier and the separate local durable frontier in that sample.
   The sample does not cover later writes or writes that still wait for local flush.
+  The pre-stop and post-cutover gates require an exact positive integer `status.sampled_at`
+  no more than 300 seconds old. Missing, invalid, future, or stale samples refuse.
+  This bound also applies to the post-cutover status bar and cannot be waived
+  by a stale-backup decision. The soak can retry a stale sample within its
+  existing deadline; missing, invalid, and future timestamps are immediate RED.
   The strict stop remains a separate gate. If any sample requirement is
   false the driver exits RED and the primary is not stopped. The bounded
-  waiver below is the only exception.
+  waiver below covers cloud recovery predicates only, after sample freshness
+  passes.
 - the saved binary pair `lastdbd.bak-pre-*` and `lastdb.bak-pre-*`.
 
 `Idle`, `Dirty`, and `Syncing` are normal native phases. Each phase must pass

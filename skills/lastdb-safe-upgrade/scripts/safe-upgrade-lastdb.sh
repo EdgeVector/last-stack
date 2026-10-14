@@ -2530,6 +2530,8 @@ fi
 # Refuse the live section before that group approaches the cold-load cap.
 PRELIVE_METER_CAP_BYTES=1610612736
 PRELIVE_STATUS="$WORK/pre-live-status.json"
+(umask 077; set -C; : >"$PRELIVE_STATUS") \
+  || die "pre-live status path already exists or is unsafe; primary was not changed"
 curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
   -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
   http://x/api/status >"$PRELIVE_STATUS" \
@@ -2885,6 +2887,8 @@ esac
 SOAK_MAX_SECS=3600
 SOAK_START="$(date +%s)"
 SOAK_STATUS="$WORK/post-cutover-soak-status.json"
+(umask 077; set -C; : >"$SOAK_STATUS") \
+  || die "post-cutover status path already exists or is unsafe"
 SOAK_CONFIRMED=0
 while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
   SOAK_OUT="unavailable"

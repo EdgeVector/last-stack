@@ -4,7 +4,7 @@
 post_cutover_status_check() {
   # Args: status.json prelive_cloud_frontier require_cloud max_meter_bytes.
   local file="$1" minimum_frontier="$2" require_cloud="$3" max_meter_bytes="$4"
-  local verdict
+  local verdict sample_verdict
   verdict="$(jq -r \
     --argjson minimum_frontier "$minimum_frontier" \
     --argjson require_cloud "$require_cloud" \
@@ -23,12 +23,27 @@ post_cutover_status_check() {
       elif $require_cloud == 1 and .status.sync.mutation_log_frontier_f < $minimum_frontier then "cloud-frontier-regressed"
       else "GREEN" end
     ' "$file" 2>/dev/null)" || verdict="status-invalid"
+  # An unknown or future clock must not wait behind a retryable cloud failure.
+  # A stale clock leaves an existing health failure verdict in force.
+  if sample_verdict="$(python3 "$(dirname -- "${BASH_SOURCE[0]}")/cloud-recovery-status.py" \
+    --status "$file" --max-age-secs 300 --status-sample-only 2>/dev/null)"; then
+    [ "$sample_verdict" = status-sample-fresh ] || verdict="status-invalid"
+  else
+    case "$sample_verdict" in
+      status-sample-missing|status-sample-invalid|status-sample-future)
+        verdict="$sample_verdict" ;;
+      status-sample-stale)
+        [ "$verdict" != GREEN ] || verdict="$sample_verdict" ;;
+      *) verdict="status-invalid" ;;
+    esac
+  fi
   printf 'POST_CUTOVER_STATUS=%s\n' "$verdict"
   [ "$verdict" = GREEN ]
 }
 
 post_cutover_status_retryable() {
   case "$1" in
+    POST_CUTOVER_STATUS=status-sample-stale|\
     POST_CUTOVER_STATUS=cloud-capture-unregistered|\
     POST_CUTOVER_STATUS=cloud-degraded|\
     POST_CUTOVER_STATUS=cloud-frontier-unavailable|\

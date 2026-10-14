@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Validate one owned native cloud recovery status sample with exact integers.
 
-Default (strict gate): print "ok <published> <age>", or print "refused" and exit 1.
---report: print which checks fail. Exit 0 unless the sample itself is malformed.
+Default (strict gate): print "ok <published> <age>", or a fixed refusal and exit 1.
+--report: print which checks fail. A malformed or nonfresh sample still exits 1.
 Bounded waiver (all four --waiver/--candidate options together): a refused sample
 passes only when a Tom-approved decision record names this candidate's lastdbd
 sha256, is under 24 hours old, and the unpublished window is known and within the
@@ -11,6 +11,8 @@ published frontier (mutation_log_lag). It is the span of writes that the cloud
 backup does not hold. mutation_log_recovery_point_age_secs is not that span.
 Print "waived <published> <window secs> <failed,checks>". A refused waiver prints
 "waiver refused: <fixed reason>" and exits 1.
+Every mode first requires an exact native sampled_at at most 300 seconds old.
+--status-sample-only checks only that protected snapshot and its sample age.
 """
 import argparse
 from datetime import datetime, timedelta, timezone
@@ -21,10 +23,12 @@ from pathlib import Path
 import re
 import stat
 import sys
+import time
 
 CAP = 4 * 1024 * 1024
 DECISION_CAP = 256 * 1024
 U64_MAX = 18446744073709551615
+STATUS_SAMPLE_MAX_AGE_SECS = 300
 WAIVER_PROGRAM = "lastdb-safe-upgrade"
 WAIVER_GATE = "stale-recovery-point-cutover"
 WAIVER_APPROVER = "Tom"
@@ -36,6 +40,10 @@ CREATED = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([
 
 class Refusal(Exception):
     """A bounded waiver refusal. The message is a fixed string, never file text."""
+
+
+class StatusSampleRefusal(Exception):
+    """A fixed native snapshot freshness verdict; no captured values are printed."""
 
 
 def require(value):
@@ -110,11 +118,27 @@ def unsigned(value):
     return value
 
 
-def load_sync(path):
+def load_status(path):
     value = read_status(path)
     require(type(value) is dict and value.get("ok") is True)
     require(type(value.get("status")) is dict)
-    sync = value["status"].get("sync")
+    status = value["status"]
+    if "sampled_at" not in status:
+        raise StatusSampleRefusal("status-sample-missing")
+    sampled_at = status["sampled_at"]
+    if type(sampled_at) is not int or not 0 < sampled_at <= U64_MAX:
+        raise StatusSampleRefusal("status-sample-invalid")
+    now_ns = time.time_ns()
+    sampled_at_ns = sampled_at * 1_000_000_000
+    if sampled_at_ns > now_ns:
+        raise StatusSampleRefusal("status-sample-future")
+    if now_ns - sampled_at_ns > STATUS_SAMPLE_MAX_AGE_SECS * 1_000_000_000:
+        raise StatusSampleRefusal("status-sample-stale")
+    return status
+
+
+def load_sync(status):
+    sync = status.get("sync")
     require(type(sync) is dict)
     return sync
 
@@ -229,6 +253,7 @@ def main():
     parser.add_argument("--status", required=True, type=Path)
     parser.add_argument("--max-age-secs", required=True)
     parser.add_argument("--report", action="store_true")
+    parser.add_argument("--status-sample-only", action="store_true")
     parser.add_argument("--waiver-decision", type=Path)
     parser.add_argument("--waiver-slug")
     parser.add_argument("--candidate-sha256")
@@ -237,9 +262,16 @@ def main():
     require(re.fullmatch(r"[0-9]+", args.max_age_secs) is not None)
     require(len(args.max_age_secs) <= 20)
     max_age = unsigned(int(args.max_age_secs))
-    sync = load_sync(args.status)
+    # Freshness precedes report and waiver selection, so no backup waiver can
+    # authorize stale cached sync flags.
+    status = load_status(args.status)
     waiver = (args.waiver_decision, args.waiver_slug, args.candidate_sha256,
               args.waiver_max_window_secs)
+    if args.status_sample_only:
+        require(not args.report and not any(waiver))
+        print("status-sample-fresh")
+        return
+    sync = load_sync(status)
     if not args.report and not any(waiver):
         failed, published, age, _window = failed_checks(sync, max_age, lenient=False)
         require(not failed)
@@ -269,6 +301,9 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except StatusSampleRefusal as refusal:
+        print(refusal)
+        raise SystemExit(1)
     except Refusal as refusal:
         print("waiver refused: %s" % refusal)
         raise SystemExit(1)
