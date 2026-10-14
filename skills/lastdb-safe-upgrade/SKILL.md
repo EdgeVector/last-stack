@@ -6,9 +6,12 @@ description: |
   primary database and never runs a node on a copy of it (Tom, 2026-10-12). It
   requires keyed reads, read latency, memory and persist status checks, and a
   source-free restore of an exact DEV snapshot of the seed before a live
-  cutover. It then requires a current cloud backup (the recovery point), a
-  strict stopped flush receipt, supervised live health, and a cloud frontier
-  check. It makes no copy of the primary at any step. It does not run tests.
+  cutover. It then requires a recovery point. Case 1 requires a current cloud
+  backup. Case 2 requires only the saved binary pair. Case 2 applies when the
+  home lists zero schemas, its data directory is small, and Cloud Sync is off
+  (Tom, 2026-10-14). The skill then requires a strict stopped flush receipt and
+  supervised live health. It requires a cloud frontier check when Cloud Sync was
+  on. It makes no copy of the primary at any step. It does not run tests.
 ---
 
 # lastdb-safe-upgrade — never brick the primary; never take it down first
@@ -71,10 +74,20 @@ It also refuses the broad setup uninstaller. Nested setup inherits the flag.
 Artifact provenance, probes, command and skill links, compatibility layout,
 and instruction updates retain the normal path.
 
-## Recovery point: the cloud backup, never a copy (Tom, 2026-10-12)
+## Recovery point: the cloud backup or the binary pair, never a copy (Tom, 2026-10-12 and 2026-10-14)
 
 The live cutover makes no copy of the primary home. Not a rollback copy, not a
-stopped copy, not a copy for a first backup. The recovery point is:
+stopped copy, not a copy for a first backup.
+
+The recovery point protects data. The case depends on what the home holds. The
+driver picks the case from the live primary. It makes this read last, just
+before it stops the old daemon. It reads the Cloud Sync flag, the data directory
+size, and the schema list. A read that fails means Case 1.
+
+### Case 1: every home that is not Case 2
+
+The home lists at least one schema, or Cloud Sync is on, or the data directory is
+not small, or a read failed. The recovery point is:
 
 - the primary's own cloud backup, which must be CURRENT before the old daemon
   stops (Cloud Sync on and state `Idle`, `Dirty`, or `Syncing`, no failures,
@@ -108,6 +121,115 @@ primary fills the disk and slows the machine.
 The older one-off flow that stopped the daemon, made an APFS copy and ran
 `cloud backup-while-off` on it (`stopped-home-copy.sh`, `cleanup-stopped-copy.py`)
 is removed. The primary syncs to the cloud now; use that backup.
+
+### Case 2: zero schemas, a small data directory, and Cloud Sync off (Tom, 2026-10-14)
+
+Tom decided this in chat on 2026-10-14. He said: "yes, safe upgrade can run on
+empty primary with nothing backed up. cloud sync is turned off". He added:
+"safe upgrade uses synthetic data anyway".
+
+CAUTION: Zero listed schemas does not prove zero records. A schema drop removes
+only the schema list entry. The rows stay on disk, and they attach again when
+someone declares the schema again. The decision text says "a record needs a
+schema". The LastDB source shows that this premise is false. So the driver also
+reads the size of the data directory. Case 2 ends at the first schema.
+
+- The recovery point is the saved binary pair `lastdbd.bak-pre-*` and
+  `lastdb.bak-pre-*`. Cloud Sync is off, so no current cloud backup exists to
+  require.
+- The driver skips the cloud gate, the bounded waiver, and the cloud frontier
+  soak. If a waiver option is set, the driver logs one line and ignores it.
+- The driver prints `RECOVERY_POINT: binary pair only; the home holds no user data`.
+  It prints the line once after the strict stop, and again after
+  `VERDICT: GREEN`. A log line before the stop says that Case 2 is selected and
+  that the stop has not run yet.
+- The driver repeats the schema read after the cutover, up to 10 times. If no
+  read confirms the empty list, the verdict prints
+  `RECOVERY_POINT: binary pair only; the home listed zero schemas before the stop; NOT confirmed after`
+  instead. A RED verdict carries a `BACKUP:` line that names Case 2.
+- The driver skips the Situations notice. The notice is a write to the primary.
+  A write can register the first schema and so end Case 2.
+- The live post-check needs `/health`, the identity match, the version check,
+  the hash checks, and a fresh status sample. The sample must show zero persist
+  failures and write access. It must show a meter size within the cap, with the
+  one exception in the next item. The post-check does not need a schema or a
+  Board title. The driver skips the live latency re-time and the deferred-card
+  reopen pass, because the home holds no Board.
+- The meter check accepts an absent meter size in Case 2 in one shape only:
+  `status.sync.enabled` is exactly `false` and `status.sync.capture` is absent
+  or null. The LastDB source gives no capture object on a node with Cloud Sync
+  off until the first compaction cadence runs. A capture object with no size
+  stays RED. A size that is present is still compared with the 1.5 GiB cap.
+  Tom must confirm this relaxation. It rests on a source reading, not on a live
+  read.
+- The candidate probes and the DEV photograph use synthetic data, as in Case 1.
+  Nothing is copied from the primary.
+- Cloud Sync stays off. Case 2 does not turn it on.
+- After a bad cutover, recover the binary pair (see Rollback). No cloud backup
+  exists, so no data restore exists. The rows that a dropped schema left stay in
+  the home.
+
+The driver picks Case 2 only when ALL of these hold. Otherwise the run is
+Case 1:
+
+- The status sample is fresh. Its `sampled_at` is at most 300 seconds old.
+- `status.sync.enabled` is exactly `false`, and the sync snapshot is complete.
+- `status.data_dir_bytes` is a number at or below 16777216 bytes (16 MiB). An
+  absent or null size means Case 1.
+- `GET /api/schemas?include_system=true` answers with HTTP 200, `ok` true,
+  `ready` true, an empty `schemas` array, and `count` 0. The default route
+  hides system seed schemas. The `include_system` form lists them.
+
+These results all mean Case 1:
+
+- A read error, a timeout, or HTTP 503 (the schema list is not ready).
+- A body that is not one JSON document, a key that is absent, or a value of the
+  wrong type.
+- One schema or more.
+- Cloud Sync on, or a Cloud Sync state that is not known.
+- A data directory size that is absent or above the bound.
+
+No argument and no environment variable picks the case or changes the bound.
+The driver sets the case from the live primary and from nothing else.
+
+NOT MEASURED: the bound of 16 MiB is provisional. Nobody has read
+`data_dir_bytes` of a fresh empty home of the same binary. If a fresh empty home
+reads above the bound, Case 2 stays unused. The run is then Case 1, and the log
+shows the real size. Measure a fresh synthetic empty home with the same binary,
+then set the number from that measure. Do not copy the primary to measure it.
+
+To see which case would apply now, with no cutover, run two reads:
+
+```bash
+sock="$HOME/.lastdb/data/folddb.sock"
+curl -fsS --max-time 30 --unix-socket "$sock" \
+  -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+  'http://x/api/schemas?include_system=true' | jq '{ok, ready, count}'
+curl -fsS --max-time 30 --unix-socket "$sock" \
+  -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+  http://x/api/status | jq '{ok, sampled_at: .status.sampled_at, sync_enabled: .status.sync.enabled, snapshot_unavailable_reason: .status.sync.snapshot_unavailable_reason, data_dir_bytes: .status.data_dir_bytes}'
+```
+
+Case 2 needs `ok` true, `ready` true, `count` 0, `sync_enabled` false,
+`snapshot_unavailable_reason` null, a fresh `sampled_at`, and `data_dir_bytes`
+at or below 16777216. Both reads must agree.
+
+A live cutover in Case 2 still goes through Loom. Start
+`last-stack-safe-upgrade-loom` by hand. Loom keeps its state in a local journal,
+not in LastDB. The nightly `last-stack-canary-loom` path needs the Loom control
+plane. Nobody has proved that path on an empty primary.
+
+The Loom `CUTOVER` step reads the driver output. When the exact Case 2
+`RECOVERY_POINT` line follows `VERDICT: GREEN`, the step records
+`recovery_point` as `binary-pair-only` in the Loom context. The `VERIFY` step
+then checks `/health` only. It keeps `verify` as `live` and adds `verify_mode`
+as `health-only`. It does not run `kanban list`. Any other context keeps the
+`kanban list --column todo` read.
+
+CAUTION: Steps after GREEN can write to the primary. The launcher runs
+`loom reconcile-local` after a good run. That write can register the first
+schema. The next cutover is then Case 1. Run the check above before each
+install. The driver decides again each time.
 
 ## Bounded waiver for a stale cloud backup (Tom, 2026-10-13)
 
@@ -299,21 +421,23 @@ live post-check and the soak. Tom accepted this trade on 2026-10-09 and again
 on 2026-10-12.
 
 The live cutover has no rollback copy of the primary. See
-[Recovery point](#recovery-point-the-cloud-backup-never-a-copy-tom-2026-10-12).
+[Recovery point](#recovery-point-the-cloud-backup-or-the-binary-pair-never-a-copy-tom-2026-10-12-and-2026-10-14).
 
 ## Hard rules (never skip)
 
 0. **Never copy the primary home and never boot a node on a copy of it** (Tom,
    2026-10-12). Not for a probe, not for the DEV photograph, not for a cloud
    backup test, not for a rollback point, not with `cp -cR`. There is no
-   exception. Use the synthetic seed and the cloud backup.
+   exception. Use the synthetic seed and the recovery point (see Recovery point).
 1. **Never** run a candidate `lastdbd` with `--data-dir` pointing at the **live**
    `~/.lastdb` until the candidate passes on a copy of the synthetic seed.
 2. **Always** prepare a fresh trial home from the seed under the system temp
    directory before the candidate check. This rule also applies to a probe-only
    run. The trial home is not a rollback point; no rollback copy of the primary
-   exists. For a live cutover, require a current cloud backup first, then strictly
-   stop and flush the old primary.
+   exists. For a live cutover, require the recovery point first, then strictly
+   stop and flush the old primary. The recovery point is a current cloud backup
+   in Case 1. It is the saved binary pair in Case 2: the home lists zero schemas
+   and Cloud Sync is off (Tom, 2026-10-14).
 3. **Never** restart/upgrade on a RED probe.
 3b. **A read that answers fast with ZERO rows is RED, not GREEN.** The
    **row-count bar** counts the rows the Board point-read and the `kanban list
@@ -327,6 +451,7 @@ The live cutover has no rollback copy of the primary. See
 4. **Never** kill the primary unattended outside this skill's live step; if live
    post-check fails after upgrade, **stop and restore** (binary bak, then
    `lastdb restore` of the cloud backup if the data is damaged) — do not improvise.
+   In Case 2 restore the binary pair only. No cloud backup exists.
 5. **Deployment check on the seed:** the candidate loads schemas, serves a keyed
    `Board` title, and serves a keyed `BoardCards` list on its own copy of the
    seed. The title and list must be non-empty. The primary process must not change.
@@ -371,7 +496,7 @@ The live cutover has no rollback copy of the primary. See
    (`LASTDB_PROBE_LAT_CORR_SKIP=1`) requires Tom's explicit clearance. Live
    post-check re-times **hot point-read and the hot batch read** vs the
    candidate's own hot probe numbers (`LASTDB_LIVE_LAT_ENFORCE=1` makes
-   either RED). The bar also checks correlated hot-operation regressions and
+   either RED). Case 2 skips the re-time, because the home holds no Board. The bar also checks correlated hot-operation regressions and
    avoids a cold sub-floor baseline as a raw ratio denominator.
 7c. **Candidate persist status:** the candidate serves `/api/status` on
    the real copy. The driver requires both persist failure gauges to exist
@@ -401,8 +526,10 @@ The live cutover has no rollback copy of the primary. See
     installed live CLI/daemon pair is skewed.
 11. Do not claim “primary stopped” unless this script actually stopped the
    supervisor for that venue.
-12. **Cloud recovery point and stopped flush:** before the old daemon stops, the
-    driver requires a current cloud backup (see Recovery point) and writes
+12. **Recovery point and stopped flush:** before the old daemon stops, the
+    driver sets the case (see Recovery point). Case 1 requires a current cloud
+    backup. Case 2 requires only the saved binary pair, which the driver has
+    already saved and compared. The driver writes
     `restart-intent.json` for the exact old session. The daemon must stop
     without a forced kill and write its exact flush receipt. The driver checks
     that receipt and the clean session. It makes no copy of the primary. The
@@ -613,6 +740,9 @@ For a candidate that fixes the primary's own sync defect while the cloud backup 
 stale, Tom can approve a bounded waiver. Add
 `--accept-stale-recovery-point <decision-slug>` to this command. See
 [Bounded waiver](#bounded-waiver-for-a-stale-cloud-backup-tom-2026-10-13).
+A Case 2 cutover (the home lists zero schemas and Cloud Sync is off) uses the
+same command. It needs no waiver option. The driver picks the case. See
+[Case 2](#case-2-the-home-lists-zero-schemas-and-cloud-sync-is-off-tom-2026-10-14).
 
 For the one-client rescue, Tom approved the explicit `--zero-live-soak` option.
 Add it to this command only for that cutover. The option removes the 300-second
@@ -704,11 +834,11 @@ The script:
 | Detect venue | sidebin vs brew |
 | **2c. DEV photograph proof** | The exact pair clones the trial copy, scrubs production state, connects the copied identity to DEV, and publishes a snapshot. The exact CLI restores that manifest from DEV into a source-free home. The fresh v3 receipt must match this Loom execution, this run's trial copy, and the retained restore report. |
 | **2d. Meter restart bar** | Read live status before restart. Refuse a `keep_small` plane above 1.5 GiB or a failed persist lane. The 2 GiB cold-group cap can prevent both new and old binaries from booting. |
-| **3. Live** | Refuse brew. For sidebin, write the boot-ledger restart intent. Stage and check both candidate files. Require a current cloud backup. Stop the old daemon without a forced kill. Require its exact flush receipt and clean session. No copy of the primary is made. Then replace the saved binary pair and reload the LaunchAgent job. |
-| **4. Post-check** | Exact installed pair hashes, live `/health`, schemas > 0, Board title, **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **live peak RSS** vs guard, **live point-read + batch-read latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency in notice |
-| **4a. Live soak** | Keep checking for at least five minutes by default. `--zero-live-soak` removes only that minimum. At least one fresh GREEN status sample remains required. Check persist failures, write access, and meter size on each status sample. If Cloud Sync was on before cutover, require the cloud frontier to stay at or beyond its pre-live value. A failed or stale bar is RED. |
+| **3. Live** | Refuse brew. For sidebin, write the boot-ledger restart intent. Stage and check both candidate files. Require the recovery point. Case 1: a current cloud backup. Case 2: the saved binary pair, when the home lists zero schemas, its data directory is small, and Cloud Sync is off (the driver prints `RECOVERY_POINT: binary pair only; the home holds no user data`). Stop the old daemon without a forced kill. Require its exact flush receipt and clean session. No copy of the primary is made. Then replace the saved binary pair and reload the LaunchAgent job. |
+| **4. Post-check** | Exact installed pair hashes, live `/health`, then (Case 1 only) schemas > 0 and a Board title; Case 2 needs neither, **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **live peak RSS** vs guard, **live point-read + batch-read latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED; Case 2 skips it, because the home holds no Board); cutover_s + latency in notice |
+| **4a. Live soak** | Keep checking for at least five minutes by default. `--zero-live-soak` removes only that minimum. At least one fresh GREEN status sample remains required. Check persist failures, write access, and meter size on each status sample. If Cloud Sync was on before cutover, require the cloud frontier to stay at or beyond its pre-live value. Case 2 has Cloud Sync off, so it runs no cloud frontier check. A failed or stale bar is RED. |
 | **4b. Release** | The exact owned seed and trial stay through all Loom, proof, and recovery consumers. After consumer closure and driver exit, the operator preserves the public proof and uses the exact-container cleanup route. No sibling sweep runs. |
-| RED | Exit 1. No copy of the primary exists; recovery is the saved binary pair, then `lastdb restore` of the cloud backup. A class, probe or cloud-recovery-point failure leaves the primary unchanged. |
+| RED | Exit 1. No copy of the primary exists; recovery is the saved binary pair, then `lastdb restore` of the cloud backup. In Case 2 no cloud backup exists, so recovery is the saved binary pair only. A class, probe or cloud-recovery-point failure leaves the primary unchanged. |
 
 ### Search receipts in a probe copy (history)
 
@@ -761,12 +891,12 @@ Always print:
 - Current version → candidate version  
 - Venue (sidebin / brew)  
 - Candidate data: `PROBE_DATA: synthetic`, a copy of the cached seed (never the primary)
-- Recovery point: cloud `published_through` before the stop (no copy of the primary exists)
+- Recovery point: Case 1 prints cloud `published_through` before the stop. Case 2 prints `RECOVERY_POINT: binary pair only; the home holds no user data` after the strict stop. No copy of the primary exists.
 - Probe GREEN/RED (+ first Board title if green)  
 - **Probe peak RSS MiB vs memory-guard limit / fail_at**  
 - **Latency: cold Board/column reads and hot Board/batch reads, candidate vs baseline (ms) + boot seconds.** The hot batch uses the receipt key `lat_hot_scan_ms`. A `nothot` pair is dropped.
 - Whether live upgrade ran + cutover seconds + live peak RSS + live point-read ms  
-- Recovery commands (the script prints them): binary pair, then `lastdb restore`
+- Recovery commands (the script prints them): the saved binary pair. In Case 1, also `lastdb restore` of the cloud backup.
 
 Optional: append a one-liner to brain reference `lastdb-safe-upgrade-log` via
 `brain append` (non-secret metadata only).
@@ -784,7 +914,9 @@ This driver does not create host-track registry rows. App installs may wait for 
 | `VERDICT: GREEN` | Probe + live cutover + live post-check passed | Done |
 | `VERDICT: GREEN_PROBE_ONLY` | Probe passed; primary still on old version | Start `last-stack-safe-upgrade-loom` with the candidate and source commit if Tom wants the upgrade |
 | `VERDICT: ALREADY_CURRENT` | Already on candidate/stable | Nothing to do |
-| `VERDICT: RED` | A candidate, DEV restore, cloud recovery point, stopped flush, live health, or cloud check failed. | Stop the upgrade. Recover with the saved binary pair, then `lastdb restore` if the data is damaged. |
+| `RECOVERY_POINT: binary pair only; the home holds no user data` | Case 2 ran. The home listed zero schemas, held a small data directory, and had Cloud Sync off. The driver prints the line after the strict stop and after `VERDICT: GREEN`. A RED verdict carries a `BACKUP:` line that names Case 2. | On a bad cutover, recover the saved binary pair. No data restore exists. |
+| `RECOVERY_POINT: binary pair only; the home listed zero schemas before the stop; NOT confirmed after` | Case 2 ran, but no post-cutover read confirmed the empty schema list. A schema may exist now. | Check the schema list. Treat the home as Case 1 from now on. |
+| `VERDICT: RED` | A candidate, DEV restore, cloud recovery point, stopped flush, live health, or cloud check failed. | Stop the upgrade. Recover with the saved binary pair, then `lastdb restore` if the data is damaged. In Case 2 only the binary pair applies. |
 
 
 ## Rollback
@@ -804,6 +936,9 @@ mv -f $B/.lastdbd.rollback.tmp $B/lastdbd
 launchctl kickstart -k gui/$(id -u)/com.REPLACE.lastdbd-primary-506
 kanban list
 ```
+
+In Case 2 the home lists zero schemas, so `kanban list` fails on a healthy
+primary. Check `/health` and `/api/status` instead.
 
 > **Never `cp -a` straight onto the live `lastdbd` path.** An in-place copy keeps
 > the destination **inode**, macOS still has the cached code signature for that
@@ -829,6 +964,8 @@ kanban list
 **Data (only if the home is corrupted and the run is RED).** No copy of the
 primary exists. Restore the latest cloud backup into a fresh home, check it, then
 swap the homes. Keep the broken home until the restored node serves real cards.
+In Case 2 no copy and no cloud backup exists. Restore the binary pair only. Ask
+Tom before you move or replace the home.
 
 ```bash
 # stop the primary supervisor first
@@ -878,6 +1015,10 @@ kanban list   # must show real cards
   `~/.lastdb-test-copies`, sibling `.bak` homes). Existing legacy trees are a
   separate human-owned cleanup decision; the driver neither uses nor sweeps
   them.
+- Pick Case 2 with an argument, an environment variable, or an edit of the
+  driver. The driver picks the case from the live primary. Case 2 is only for a
+  home that lists zero schemas, holds a small data directory, and has Cloud
+  Sync off. Do not treat zero listed schemas alone as proof of an empty home.
 - Restart/kill primary on RED.
 - Call `brew upgrade` when formula is not installed and primary is sidebin.
 - Assume the skill lives only under `~/.claude/skills` — Codex/Grok/Factory use their own skills dirs; last-stack setup keeps them in sync.

@@ -36,10 +36,16 @@
 #      CAS-flipped backup/latest. Never point the candidate at live ~/.lastdb
 #      for that upload. The exact DEV manifest must restore into a new home
 #      with no local database data. A mock object store is not DEV.
-#   4. Require a CURRENT cloud backup (the recovery point), then strictly stop
-#      and flush the old primary and install the sidebin pair and reload the
-#      LaunchAgent. NO copy of the primary is made (Tom, 2026-10-12): the
-#      recovery point is the cloud backup plus the saved binary pair.
+#   4. Require the recovery point, then strictly stop and flush the old primary
+#      and install the sidebin pair and reload the LaunchAgent. NO copy of the
+#      primary is made (Tom, 2026-10-12). Case 1: the recovery point is a
+#      CURRENT cloud backup plus the saved binary pair. Case 2 (Tom,
+#      2026-10-14): the home lists zero schemas (system schemas included), its
+#      data directory is at or below a small bound, and Cloud Sync is off, so
+#      the recovery point is the saved binary pair only. A dropped schema
+#      leaves its rows, so a schema count alone is not enough; see the Case 2
+#      comment above cloud_recovery_point_preflight. The driver picks the case
+#      from the live primary.
 #   5. Post-check the LIVE home (incl. lastdb/lastdbd version parity and live
 #      RSS vs guard); print rollback if wrong
 #
@@ -147,6 +153,15 @@ LAUNCHD_PLIST="${LASTDB_LAUNCHD_PLIST:-$HOME/Library/LaunchAgents/${LAUNCHD_LABE
 PROBE_ONLY=0
 ASSUME_YES=0
 CHECK_DEV_STAMP=0
+# Recovery point mode (Tom, 2026-10-14). The run starts in Case 1 (cloud-backup).
+# Only cloud_recovery_point_preflight can set binary-pair-only (Case 2), and only
+# after it reads zero schemas, a small data directory and Cloud Sync off from
+# the live primary (see empty_home_case_holds). No
+# argument and no environment variable sets it: this plain assignment replaces
+# any value the caller exports, and the argument parser has no flag for it.
+RECOVERY_POINT_MODE="cloud-backup"
+EMPTY_HOME_RECOVERY_POINT_LINE="RECOVERY_POINT: binary pair only; the home holds no user data"
+EMPTY_HOME_WHY=""
 # Bounded waiver for a stale cloud recovery point (Tom, 2026-10-13). The Loom
 # execution input owns it; see cloud_recovery_point_preflight.
 STALE_RECOVERY_WAIVER="${LASTDB_SAFE_UPGRADE_STALE_RECOVERY_WAIVER:-}"
@@ -359,9 +374,11 @@ release_rollback_point() {
 
 # The BACKUP line of a RED verdict. The driver makes no copy of the primary
 # (Tom, 2026-10-12). The recovery point is the cloud backup and the saved binary
-# pair.
+# pair. In Case 2 (Tom, 2026-10-14) it is the saved binary pair only.
 backup_red_note() {
-  if [ -n "${CLOUD_RECOVERY_FRONTIER:-}" ]; then
+  if [ "${RECOVERY_POINT_MODE:-cloud-backup}" = "binary-pair-only" ]; then
+    printf 'BACKUP: none  (no copy of the primary is made; Case 2: the home listed zero schemas and Cloud Sync was off before the stop; recovery = the saved binary pair only)\n'
+  elif [ -n "${CLOUD_RECOVERY_FRONTIER:-}" ]; then
     printf 'BACKUP: none  (no copy of the primary is made; recovery point = cloud published_through=%s and the saved binary pair; data restore = lastdb restore)%s\n' "$CLOUD_RECOVERY_FRONTIER" "${CLOUD_RECOVERY_WAIVER_NOTE:+ STALE: $CLOUD_RECOVERY_WAIVER_NOTE}"
   else
     printf 'BACKUP: none  (no copy of the primary is made; failure occurred before the cloud recovery point was recorded)\n'
@@ -1625,10 +1642,12 @@ strict_prestop_old_primary() {
   write_cutover_recovery_state "sidebin-stopped" true
 }
 
-# CLOUD RECOVERY POINT (Tom, 2026-10-12): the live cutover makes NO copy of the
-# primary home. The recovery point is the primary's own cloud backup plus the
-# saved binary pair. Before the old daemon stops, the cloud backup must be
-# current: Cloud Sync on and healthy, the mutation log published through the local
+# CLOUD RECOVERY POINT, Case 1 (Tom, 2026-10-12): the live cutover makes NO copy
+# of the primary home. Case 2 (Tom, 2026-10-14) is described below, above
+# cloud_recovery_point_preflight. In Case 1 the recovery point is the primary's
+# own cloud backup plus the saved binary pair. Before the old daemon stops, the
+# cloud backup must be current: Cloud Sync on and healthy, the mutation log
+# published through the local
 # frontier, no upload backlog, and a recovery point younger than the limit. The
 # `mutation_log_lag` field is a duration in nanoseconds between the durable and the
 # published frontier; a busy primary shows seconds of it, so only the node's own
@@ -1648,6 +1667,132 @@ CLOUD_RECOVERY_MAX_AGE_SECS="${LASTDB_CLOUD_RECOVERY_MAX_AGE_SECS:-300}"
 CLOUD_RECOVERY_WAIVER_MAX_WINDOW_SECS="${LASTDB_CLOUD_RECOVERY_WAIVER_MAX_WINDOW_SECS:-86400}"
 CLOUD_RECOVERY_WAIVER_NOTE=""
 
+# CASE 2: THE HOME LISTS ZERO SCHEMAS AND ITS DATA DIRECTORY IS TINY (Tom,
+# 2026-10-14, in chat: "yes, safe upgrade can run on empty primary with nothing
+# backed up. cloud sync is turned off"). With Cloud Sync off there is no cloud
+# backup to require. The recovery point is then the saved binary pair only. Case 2
+# skips the cloud gate, the bounded waiver and the cloud-frontier soak. It ends at
+# the first schema.
+#
+# CAUTION: zero listed schemas does NOT prove zero records. A schema drop removes
+# only the schema list entry. The product rows stay on disk ("ACK is catalog
+# absence. Product rows stay." in lastdb_node/src/exec/schema_routes.rs), and they
+# attach again when the schema is declared again. The decision text says "a
+# record needs a schema". That premise is false in the source. So the driver
+# reads a second, independent signal: the size of the data directory. Large
+# leftover rows put the size above the bound below, and a size that is not known
+# is refused. Both results mean Case 1. The bound does NOT detect leftover rows
+# that are smaller than the bound.
+#
+# The driver picks the case from the live primary and from nothing else. No
+# argument and no environment variable picks it. Case 2 holds only when ALL of
+# these hold:
+#   - the status sample is fresh (an exact sampled_at, at most 300 s old);
+#   - status.sync.enabled is exactly false and the sync snapshot is complete;
+#   - status.data_dir_bytes is a number at or below
+#     EMPTY_HOME_DATA_DIR_MAX_BYTES (an absent or null size is Case 1);
+#   - GET /api/schemas?include_system=true answered HTTP 200 with ok true, ready
+#     true, a schemas array of length 0, and count 0. The default route hides
+#     system seed schemas; the include_system form does not.
+# Every other result is Case 1: a curl error, a timeout, HTTP 503 (catalog not
+# ready), a body that is not one JSON document, a missing key, a wrong type, one
+# schema or more, Cloud Sync on, a Cloud Sync state that is not known, or a data
+# directory size that is absent or above the bound. Do not read the schema list
+# with the idiom `curl -sS ... | jq '.schemas|length // 0'`. That idiom reads an
+# error as zero schemas.
+#
+# The bound is a plain constant. No environment variable changes it. NOT
+# MEASURED: nobody has read data_dir_bytes of a fresh empty home of the same
+# binary yet. The value is provisional. A bound that is too low leaves Case 2
+# unused: the run is Case 1 and the log shows the real size. Measure a fresh
+# synthetic empty home with the same binary, then set the number from that
+# measure. Do not copy the primary to measure it.
+EMPTY_HOME_DATA_DIR_MAX_BYTES=16777216
+EMPTY_HOME_DATA_DIR_BYTES=""
+EMPTY_HOME_CONFIRMED_AFTER=1
+EMPTY_HOME_UNCONFIRMED_LINE="RECOVERY_POINT: binary pair only; the home listed zero schemas before the stop; NOT confirmed after"
+
+empty_home_case_active() {
+  [ "${RECOVERY_POINT_MODE:-cloud-backup}" = "binary-pair-only" ]
+}
+
+# Print $1 in Case 1 (the existing text, unchanged) and $2 in Case 2.
+case_text() {
+  if empty_home_case_active; then printf '%s' "$2"; else printf '%s' "$1"; fi
+}
+
+# The RECOVERY_POINT line for the verdict. The exact Case 2 line only when the
+# post-cutover re-read confirmed the empty schema list. Otherwise the line says
+# the empty list was not confirmed. The Loom VERIFY step keys on the exact line.
+empty_home_verdict_line() {
+  if [ "${EMPTY_HOME_CONFIRMED_AFTER:-1}" -eq 1 ]; then
+    printf '%s\n' "$EMPTY_HOME_RECOVERY_POINT_LINE"
+  else
+    printf '%s\n' "$EMPTY_HOME_UNCONFIRMED_LINE"
+  fi
+}
+
+# Return 0 only when /api/schemas is a complete answer that lists zero schemas.
+# The include_system form also lists system seed schemas. Arg: a fresh path for
+# the answer. Every failure returns 1. The caller can run this inside an `if`,
+# where errexit is off, so each step ends in `|| return 1`. The jq filter reads
+# the whole file as a list, so a body with two JSON documents is not accepted.
+primary_schema_list_is_empty() {
+  local file="$1"
+  (umask 077; set -C; : >"$file") || return 1
+  curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
+    -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+    'http://x/api/schemas?include_system=true' >"$file" 2>/dev/null || return 1
+  jq -es '
+    length == 1 and (.[0] | type) == "object"
+    and (.[0] | .ok == true and .ready == true
+      and (.schemas | type) == "array" and (.schemas | length) == 0
+      and (.count | type) == "number" and .count == 0)
+  ' "$file" >/dev/null 2>&1 || return 1
+  return 0
+}
+
+# Return 0 only for Case 2. Args: a status file that is already fetched, and a
+# fresh path for the schema answer. On any other result return 1 and set
+# EMPTY_HOME_WHY. Nothing here reads an argument or an environment variable.
+empty_home_case_holds() {
+  local status="$1" schemas="$2" sample=""
+  EMPTY_HOME_WHY=""
+  EMPTY_HOME_DATA_DIR_BYTES=""
+  sample="$(python3 "$_SCRIPT_DIR/cloud-recovery-status.py" --status "$status" \
+    --max-age-secs 300 --status-sample-only 2>/dev/null)" || sample=""
+  if [ "$sample" != "status-sample-fresh" ]; then
+    EMPTY_HOME_WHY="the status sample is not fresh"
+    return 1
+  fi
+  if ! jq -e '.ok == true and .status.sync.enabled == false
+      and ((.status.sync.snapshot_unavailable_reason // null) == null)' \
+      "$status" >/dev/null 2>&1; then
+    EMPTY_HOME_WHY="Cloud Sync is on, or its state is not known"
+    return 1
+  fi
+  EMPTY_HOME_DATA_DIR_BYTES="$(jq -r '.status.data_dir_bytes
+    | if type == "number" then tostring else "absent" end' "$status" 2>/dev/null)" \
+    || EMPTY_HOME_DATA_DIR_BYTES="absent"
+  [ -n "$EMPTY_HOME_DATA_DIR_BYTES" ] || EMPTY_HOME_DATA_DIR_BYTES="absent"
+  if ! jq -e --argjson cap "$EMPTY_HOME_DATA_DIR_MAX_BYTES" '
+      (.status.data_dir_bytes | type) == "number"
+      and .status.data_dir_bytes >= 0 and .status.data_dir_bytes <= $cap' \
+      "$status" >/dev/null 2>&1; then
+    if [ "$EMPTY_HOME_DATA_DIR_BYTES" = "absent" ]; then
+      EMPTY_HOME_WHY="the data directory size is absent or not a number (an absent size is not accepted)"
+    else
+      EMPTY_HOME_WHY="the data directory size is ${EMPTY_HOME_DATA_DIR_BYTES} bytes, outside the range 0 to ${EMPTY_HOME_DATA_DIR_MAX_BYTES} (a dropped schema leaves rows)"
+    fi
+    return 1
+  fi
+  if ! primary_schema_list_is_empty "$schemas"; then
+    EMPTY_HOME_WHY="the home lists a schema, or the schema list is not a complete answer"
+    return 1
+  fi
+  return 0
+}
+
 cloud_recovery_point_preflight() {
   local status="$WORK/pre-stop-cloud-status.json" decision="$WORK/stale-recovery-decision.json"
   local result reason age_or_window report failed candidate_sha window_h window_m
@@ -1659,6 +1804,23 @@ cloud_recovery_point_preflight() {
     -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
     http://x/api/status >"$status" 2>/dev/null \
     || die "cloud recovery point: primary status is unavailable; the primary was not stopped"
+  # Case 2 (Tom, 2026-10-14). This is the last read before the stop. It skips
+  # the strict gate, the report, the waiver and the cloud-frontier soak. Any
+  # other result continues into the unchanged Case 1 gate below. The bare
+  # RECOVERY_POINT line prints later, in record_cloud_recovery_point, after the
+  # strict stop proved the old daemon. A die in strict_prestop_old_primary
+  # then leaves no such line in the log.
+  if empty_home_case_holds "$status" "$WORK/pre-stop-schemas.json"; then
+    RECOVERY_POINT_MODE="binary-pair-only"
+    SOAK_REQUIRE_CLOUD=0
+    PRELIVE_CLOUD_FRONTIER=0
+    if [ -n "$STALE_RECOVERY_WAIVER" ]; then
+      log "bounded waiver $STALE_RECOVERY_WAIVER is not used in Case 2"
+    fi
+    log "recovery point: Case 2 selected (zero listed schemas, Cloud Sync off, data directory ${EMPTY_HOME_DATA_DIR_BYTES} bytes, bound ${EMPTY_HOME_DATA_DIR_MAX_BYTES}); not yet confirmed by the stop"
+    return 0
+  fi
+  log "recovery point: Case 1, a current cloud backup is required (${EMPTY_HOME_WHY})"
   if ! result="$(python3 "$_SCRIPT_DIR/cloud-recovery-status.py" --status "$status" \
     --max-age-secs "$CLOUD_RECOVERY_MAX_AGE_SECS" 2>/dev/null)"; then
     report="$(python3 "$_SCRIPT_DIR/cloud-recovery-status.py" --status "$status" \
@@ -1705,7 +1867,14 @@ cloud_recovery_point_preflight() {
 # cloud frontier recorded before the stop are the recovery point.
 record_cloud_recovery_point() {
   write_cutover_recovery_state "sidebin-rollback-ready" true
-  log "recovery point (no copy of the primary): cloud published_through=$CLOUD_RECOVERY_FRONTIER${CLOUD_RECOVERY_WAIVER_NOTE:+ (STALE, ${CLOUD_RECOVERY_WAIVER_NOTE})}; saved binary pair $(basename -- "$SIDEBIN_BACKUP_DAEMON") + $(basename -- "$SIDEBIN_BACKUP_CLI")"
+  if empty_home_case_active; then
+    # The old daemon is stopped and proved by now. Print the exact line once,
+    # bare, then the detail.
+    echo "$EMPTY_HOME_RECOVERY_POINT_LINE"
+    log "recovery point (no copy of the primary): saved binary pair $(basename -- "$SIDEBIN_BACKUP_DAEMON") + $(basename -- "$SIDEBIN_BACKUP_CLI"); no cloud backup is required (zero listed schemas and Cloud Sync off before the stop)"
+  else
+    log "recovery point (no copy of the primary): cloud published_through=$CLOUD_RECOVERY_FRONTIER${CLOUD_RECOVERY_WAIVER_NOTE:+ (STALE, ${CLOUD_RECOVERY_WAIVER_NOTE})}; saved binary pair $(basename -- "$SIDEBIN_BACKUP_DAEMON") + $(basename -- "$SIDEBIN_BACKUP_CLI")"
+  fi
 }
 
 # Version parity cannot detect replacement bytes that report the same version.
@@ -2536,7 +2705,16 @@ curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
   -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
   http://x/api/status >"$PRELIVE_STATUS" \
   || die "pre-live status unavailable; cannot prove the meter group is safe to restart"
-PRELIVE_STATUS_OUT="$(post_cutover_status_check "$PRELIVE_STATUS" 0 0 "$PRELIVE_METER_CAP_BYTES")" \
+# Case 2 candidate (Tom, 2026-10-14): the home lists zero schemas, its data dir
+# is small, and Cloud Sync is off. The bar then accepts an absent meter size,
+# but only for a node with Cloud Sync off and no capture object (see
+# post_cutover_status_check). The preflight reads again before the stop and
+# decides the case. Any failed read here leaves this at 0 (Case 1).
+PRELIVE_EMPTY_HOME=0
+if empty_home_case_holds "$PRELIVE_STATUS" "$WORK/pre-live-schemas.json"; then
+  PRELIVE_EMPTY_HOME=1
+fi
+PRELIVE_STATUS_OUT="$(post_cutover_status_check "$PRELIVE_STATUS" 0 0 "$PRELIVE_METER_CAP_BYTES" "$PRELIVE_EMPTY_HOME")" \
   || die "pre-live status bar failed: $PRELIVE_STATUS_OUT; primary was not changed"
 jq -e '.status.sync.enabled | type == "boolean"' "$PRELIVE_STATUS" >/dev/null \
   || die "pre-live status cannot determine whether Cloud Sync is enabled"
@@ -2549,7 +2727,11 @@ if [ "$SOAK_REQUIRE_CLOUD" -eq 1 ]; then
   ' "$PRELIVE_STATUS")" \
     || die "pre-live status has no numeric cloud frontier; primary was not changed"
 fi
-log "pre-live status bar $PRELIVE_STATUS_OUT (meter plane below 1.5 GiB)"
+if [ "$PRELIVE_EMPTY_HOME" -eq 1 ]; then
+  log "pre-live status bar $PRELIVE_STATUS_OUT (meter plane below 1.5 GiB; the home lists zero schemas, its data directory is small, and Cloud Sync is off: Case 2 candidate)"
+else
+  log "pre-live status bar $PRELIVE_STATUS_OUT (meter plane below 1.5 GiB)"
+fi
 
 detect_live_venue
 assert_exact_candidate_live_venue
@@ -2568,9 +2750,17 @@ if [ "$ASSUME_YES" -eq 0 ]; then
     echo "  brew upgrade edgevector/lastdb/lastdb"
     echo "  brew services restart lastdb"
   fi
-  echo "  post-check live /health + Board title"
+  if [ "$PRELIVE_EMPTY_HOME" -eq 1 ]; then
+    echo "  post-check live /health (the home lists zero schemas, so no Board title)"
+  else
+    echo "  post-check live /health + Board title"
+  fi
   echo "Candidate trial copy: $TRIAL_COPY (retained until all Loom/proof/recovery consumers close, including an operator abort)"
-  echo "No copy of the primary is made. Recovery point: current cloud backup + saved binary pair."
+  if [ "$PRELIVE_EMPTY_HOME" -eq 1 ]; then
+    echo "No copy of the primary is made. Recovery point: saved binary pair only (the home lists zero schemas, its data directory is small, and Cloud Sync is off; the final check runs before the stop)."
+  else
+    echo "No copy of the primary is made. Recovery point: current cloud backup + saved binary pair."
+  fi
   printf "Proceed with LIVE upgrade? [y/N] "
   read -r ans
   case "$ans" in
@@ -2644,7 +2834,7 @@ for i in $(seq 1 120); do
   fi
   sleep 1
 done
-[ "$LIVE_OK" -eq 1 ] || die "live /health not ok after cutover — STOP. Binary rollback: restore $SIDEBIN_DIR/lastdbd.bak-pre-* if sidebin; data: no copy of the primary exists; lastdb restore of the cloud backup"
+[ "$LIVE_OK" -eq 1 ] || die "live /health not ok after cutover — STOP. Binary rollback: restore $SIDEBIN_DIR/lastdbd.bak-pre-* if sidebin; $(case_text 'data: no copy of the primary exists; lastdb restore of the cloud backup' 'recovery = saved binary pair only; Case 2: the home listed zero schemas before the stop')"
 
 # THE cutover assertion: the RUNNING daemon must report the candidate version.
 #
@@ -2729,14 +2919,40 @@ fi
 
 # Live data check (same keyed Board read as the deployment check)
 UH="$(curl -sS --max-time 5 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/system/auto-identity 2>/dev/null | jq -r '.user_hash // empty')"
-[ -n "$UH" ] || die "live auto-identity empty after cutover — treat as RED; recovery = saved binary pair, then lastdb restore of the cloud backup (no copy of the primary exists)"
-NSCHEMAS="$(curl -sS --max-time 30 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/schemas 2>/dev/null | jq -r '.schemas|length // 0')"
-[ "${NSCHEMAS:-0}" -gt 0 ] || die "live /api/schemas empty after cutover — treat as RED; recovery = saved binary pair, then lastdb restore of the cloud backup (no copy of the primary exists)"
-QRES="$(curl -sS --max-time 30 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' -H 'Content-Type: application/json' \
-  --data '{"schema_name":"Board","fields":["title"],"filter":{"HashKey":"default"}}' http://x/api/query 2>/dev/null || true)"
-QOK="$(echo "$QRES" | jq -r '.ok // empty' 2>/dev/null || true)"
-QVAL="$(echo "$QRES" | jq -r '.results[0].fields.title // .results[0].title // empty' 2>/dev/null || true)"
-[ "$QOK" = "true" ] && [ -n "$QVAL" ] || die "live Board query failed after cutover — treat as RED; recovery = saved binary pair, then lastdb restore of the cloud backup (no copy of the primary exists)"
+[ -n "$UH" ] || die "live auto-identity empty after cutover — treat as RED; $(case_text 'recovery = saved binary pair, then lastdb restore of the cloud backup (no copy of the primary exists)' 'recovery = saved binary pair only; Case 2: the home listed zero schemas before the stop')"
+if empty_home_case_active; then
+  # Case 2 (Tom, 2026-10-14): the home held zero schemas before the stop, so it
+  # holds no Board to read. The identity check above, the hash checks, the
+  # version check and the status bar still apply. This read only reports whether
+  # the home is still empty. It never fails the run: the stop already happened.
+  # The route answers HTTP 503 until the schema list is ready, so read up to 10
+  # times. Each try needs its own path, because the helper uses noclobber.
+  # When no try confirms the empty list, the verdict prints the NOT confirmed
+  # line instead of the exact Case 2 line.
+  EMPTY_HOME_CONFIRMED_AFTER=0
+  for schema_try in $(seq 1 10); do
+    if primary_schema_list_is_empty "$WORK/post-cutover-schemas-${schema_try}.json"; then
+      EMPTY_HOME_CONFIRMED_AFTER=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "$EMPTY_HOME_CONFIRMED_AFTER" -eq 1 ]; then
+    LIVE_DATA_NOTE="schemas and Board title not required (Case 2: the home lists zero schemas)"
+  else
+    LIVE_DATA_NOTE="schemas and Board title not required (Case 2); the empty schema list was NOT confirmed after the cutover"
+    warn "Case 2: the empty schema list was not confirmed after the cutover (a schema exists, or the schema list was not ready). The saved binary pair is the only recovery point. The verdict does not say the home holds no user data."
+  fi
+else
+  NSCHEMAS="$(curl -sS --max-time 30 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/schemas 2>/dev/null | jq -r '.schemas|length // 0')"
+  [ "${NSCHEMAS:-0}" -gt 0 ] || die "live /api/schemas empty after cutover — treat as RED; recovery = saved binary pair, then lastdb restore of the cloud backup (no copy of the primary exists)"
+  QRES="$(curl -sS --max-time 30 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' -H 'Content-Type: application/json' \
+    --data '{"schema_name":"Board","fields":["title"],"filter":{"HashKey":"default"}}' http://x/api/query 2>/dev/null || true)"
+  QOK="$(echo "$QRES" | jq -r '.ok // empty' 2>/dev/null || true)"
+  QVAL="$(echo "$QRES" | jq -r '.results[0].fields.title // .results[0].title // empty' 2>/dev/null || true)"
+  [ "$QOK" = "true" ] && [ -n "$QVAL" ] || die "live Board query failed after cutover — treat as RED; recovery = saved binary pair, then lastdb restore of the cloud backup (no copy of the primary exists)"
+  LIVE_DATA_NOTE="schemas=$NSCHEMAS first Board title=\"$QVAL\""
+fi
 
 # Live RSS vs memory-guard (settle briefly — embeddings may still be loading).
 log "live RSS settle ${RSS_SETTLE_SECS}s then sample ${RSS_SAMPLE_SECS}s..."
@@ -2808,7 +3024,15 @@ live_lat_check_op() {
     log "live $label latency: ${live_ms}ms (candidate probe: ${cand_ms}ms)"
   fi
 }
-if [ "$LAT_SKIP" != "1" ]; then
+if empty_home_case_active; then
+  # Case 2 (Tom, 2026-10-14): the home holds no Board to time. The re-time would
+  # also run the kanban CLI against the empty primary.
+  log "live latency re-time skipped: Case 2, the home listed zero schemas and holds no Board to read"
+  # Empty, so the STEP 4/4 line and the LATENCY line print "unmeasured" and "?"
+  # instead of the -1 placeholder.
+  LIVE_LAT_POINT_MS=""
+  LIVE_LAT_SCAN_MS=""
+elif [ "$LAT_SKIP" != "1" ]; then
   # The live point read must already have run once. Time only a later sample
   # that does not open files. The receipt still records this as live scan.
   if run_op_with_deadline "$LAT_OP_TIMEOUT_SECS" op_lat_point "$PRIMARY_SOCK"; then
@@ -2890,12 +3114,25 @@ SOAK_STATUS="$WORK/post-cutover-soak-status.json"
 (umask 077; set -C; : >"$SOAK_STATUS") \
   || die "post-cutover status path already exists or is unsafe"
 SOAK_CONFIRMED=0
+# Case 2 (Tom, 2026-10-14): no cloud frontier check, and an absent meter size is
+# accepted only for a node with Cloud Sync off and no capture object (see
+# post_cutover_status_check). The persist gauges, write access, sample freshness
+# and a present meter size are still checked on every sample. The relaxation
+# stays on even when the post-cutover schema re-read did not confirm the empty
+# list: the data directory was at or below the bound before the stop, so the
+# meter group cannot reach the cap in the minutes of a soak. A strict meter
+# check here would turn a healthy cutover into RED because an app registered
+# its first schema.
+SOAK_EMPTY_HOME=0
+if empty_home_case_active; then
+  SOAK_EMPTY_HOME=1
+fi
 while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
   SOAK_OUT="unavailable"
   if curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
     -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
     http://x/api/status >"$SOAK_STATUS" 2>/dev/null; then
-    SOAK_OUT="$(post_cutover_status_check "$SOAK_STATUS" "$PRELIVE_CLOUD_FRONTIER" "$SOAK_REQUIRE_CLOUD" "$PRELIVE_METER_CAP_BYTES")" \
+    SOAK_OUT="$(post_cutover_status_check "$SOAK_STATUS" "$PRELIVE_CLOUD_FRONTIER" "$SOAK_REQUIRE_CLOUD" "$PRELIVE_METER_CAP_BYTES" "$SOAK_EMPTY_HOME")" \
       || true
     case "$SOAK_OUT" in
       POST_CUTOVER_STATUS=GREEN)
@@ -2904,7 +3141,7 @@ while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
         if post_cutover_status_retryable "$SOAK_OUT"; then
           SOAK_CONFIRMED=0
         else
-          die "post-cutover status bar failed: $SOAK_OUT; recovery = saved binary pair and the cloud backup (no copy of the primary exists)"
+          die "post-cutover status bar failed: $SOAK_OUT; $(case_text 'recovery = saved binary pair and the cloud backup (no copy of the primary exists)' 'recovery = saved binary pair only; Case 2: the home listed zero schemas before the stop')"
         fi ;;
     esac
   else
@@ -2912,7 +3149,7 @@ while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
     log "post-cutover soak: status unavailable; retrying"
   fi
   SOAK_ELAPSED="$(( $(date +%s) - SOAK_START ))"
-  log "post-cutover soak: elapsed=${SOAK_ELAPSED}s minimum=${SOAK_MIN_SECS}s cloud_confirmed=${SOAK_CONFIRMED} status=${SOAK_OUT:-unavailable}"
+  log "post-cutover soak: elapsed=${SOAK_ELAPSED}s minimum=${SOAK_MIN_SECS}s $(case_text 'cloud_confirmed' 'status_confirmed')=${SOAK_CONFIRMED} status=${SOAK_OUT:-unavailable}"
   if post_cutover_soak_green_in_bounds "$SOAK_ELAPSED" "$SOAK_MIN_SECS" "$SOAK_MAX_SECS" "$SOAK_CONFIRMED"; then
     break
   fi
@@ -2920,7 +3157,7 @@ while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
   sleep 15
 done
 post_cutover_soak_green_in_bounds "$SOAK_ELAPSED" "$SOAK_MIN_SECS" "$SOAK_MAX_SECS" "$SOAK_CONFIRMED" \
-  || die "post-cutover status did not confirm cloud health within ${SOAK_MAX_SECS}s; recovery = saved binary pair and the cloud backup (no copy of the primary exists)"
+  || die "post-cutover status did not confirm $(case_text 'cloud health' 'status health') within ${SOAK_MAX_SECS}s; $(case_text 'recovery = saved binary pair and the cloud backup (no copy of the primary exists)' 'recovery = saved binary pair only; Case 2: the home listed zero schemas before the stop')"
 
 # After this point the driver proved the live primary healthy and supervised.
 # A later wrapper timeout must not restart that already-green primary.
@@ -2928,7 +3165,7 @@ write_cutover_recovery_state "cutover-green" false
 
 CUTOVER_T1="$(date +%s)"
 CUTOVER_SECS=$((CUTOVER_T1 - CUTOVER_T0))
-log "STEP 4/4: live post-check GREEN (schemas=$NSCHEMAS first Board title=\"$QVAL\" cutover_s=$CUTOVER_SECS venue=$VENUE peak_rss_mb=${LIVE_RSS_MB:-unknown} live_point_ms=${LIVE_LAT_POINT_MS:-unmeasured} live_scan_ms=${LIVE_LAT_SCAN_MS:-unmeasured} cloud_frontier=${PRELIVE_CLOUD_FRONTIER})"
+log "STEP 4/4: live post-check GREEN ($LIVE_DATA_NOTE cutover_s=$CUTOVER_SECS venue=$VENUE peak_rss_mb=${LIVE_RSS_MB:-unknown} live_point_ms=${LIVE_LAT_POINT_MS:-unmeasured} live_scan_ms=${LIVE_LAT_SCAN_MS:-unmeasured} cloud_frontier=${PRELIVE_CLOUD_FRONTIER})"
 
 # Post a Situations notice so other agents attribute post-upgrade flapping.
 POST_NOTICE=""
@@ -2940,7 +3177,12 @@ do
 done
 NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} with lastdb=${INSTALLED_CLI:-?} venue=${VENUE} cutover_s=${CUTOVER_SECS}; synthetic seed reads, exact DEV restore and live status passed; no copy of the primary; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone.${CLOUD_RECOVERY_WAIVER_NOTE:+ The cloud backup was STALE at cutover: $CLOUD_RECOVERY_WAIVER_NOTE.}"
 
-if [ -n "$POST_NOTICE" ]; then
+if empty_home_case_active; then
+  # Case 2 (Tom, 2026-10-14): the notice is a write to the primary. A write
+  # registers the first schema and ends Case 2, and with Cloud Sync off the next
+  # cutover would then die at the cloud gate. Log the line here instead.
+  log "situations notice skipped: Case 2, a write would end the empty-home case ($(empty_home_verdict_line))"
+elif [ -n "$POST_NOTICE" ]; then
   if "$POST_NOTICE" \
     --title "LastDB upgraded to ${INSTALLED}" \
     --kind upgrade \
@@ -2983,7 +3225,9 @@ release_rollback_point
 
 last_stack_root="$(printenv LAST_STACK_ROOT || printf '%s' "$HOME/.last-stack")"
 reopen_deferred_cards="$last_stack_root/bin/last-stack-kanban-reopen-deferred"
-if [ -x "$reopen_deferred_cards" ]; then
+if empty_home_case_active; then
+  log "deferred-card reopen pass skipped: Case 2, the home holds no board"
+elif [ -x "$reopen_deferred_cards" ]; then
   "$reopen_deferred_cards" --trigger lastdb-safe-upgrade >/dev/null 2>&1 || \
     warn "deferred-card reopen pass failed after GREEN cutover; next activation retries"
 fi
@@ -2992,10 +3236,13 @@ fi
 
 echo ""
 echo "VERDICT: GREEN"
+if empty_home_case_active; then
+  empty_home_verdict_line
+fi
 if [ -n "$CLOUD_RECOVERY_WAIVER_NOTE" ]; then
   echo "RECOVERY_POINT_WAIVER: $CLOUD_RECOVERY_WAIVER_NOTE"
 fi
-echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED and lastdb → ${INSTALLED_CLI:-?}; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + live Board read OK; probe_rss_mb=${PROBE_RSS_MB:-?} live_rss_mb=${LIVE_RSS_MB:-?} limit_mb=$(resolve_rss_limit_mb); trial retained for closed-consumer cleanup"
+echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED and lastdb → ${INSTALLED_CLI:-?}; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + $(case_text 'live Board read' 'live status') OK; probe_rss_mb=${PROBE_RSS_MB:-?} live_rss_mb=${LIVE_RSS_MB:-?} limit_mb=$(resolve_rss_limit_mb); trial retained for closed-consumer cleanup"
 echo "LATENCY: probe point/scan=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}ms baseline=${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}ms live_point=${LIVE_LAT_POINT_MS:-?}ms live_scan=${LIVE_LAT_SCAN_MS:-?}ms"
 echo ""
 echo "ROLLBACK (binary only, if new binary misbehaves but data is fine):"
@@ -3029,6 +3276,11 @@ else
   echo "  brew services start lastdb"
 fi
 echo ""
-echo "DATA ROLLBACK: no copy of the primary exists (Tom, 2026-10-12). Data recovery is lastdb restore of the"
-echo "latest cloud backup into a fresh home; binary recovery uses the saved .bak-pre pair."
+if empty_home_case_active; then
+  echo "DATA ROLLBACK: none. No copy and no cloud backup exists (Case 2, Tom, 2026-10-14). Binary recovery"
+  echo "uses the saved .bak-pre pair."
+else
+  echo "DATA ROLLBACK: no copy of the primary exists (Tom, 2026-10-12). Data recovery is lastdb restore of the"
+  echo "latest cloud backup into a fresh home; binary recovery uses the saved .bak-pre pair."
+fi
 exit 0

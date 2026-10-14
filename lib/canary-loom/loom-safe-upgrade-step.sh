@@ -971,10 +971,55 @@ if step == "CUTOVER":
         write_evidence_file("cutover", evidence, p.returncode)
         sys.exit(p.returncode)
     print('LOOM_EFFECT_DONE:{"kind":"deploy","target":"lastdb-safe-upgrade"}')
-    emit({"cutover": "live", "verdict": "green"}, "su CUTOVER live")
+    # Case 2 (Tom, 2026-10-14): the driver ran with the home listing zero
+    # schemas, so the home holds no Board for VERIFY to read. Only the exact
+    # RECOVERY_POINT line AFTER the "VERDICT: GREEN" line counts. The driver
+    # prints a different line there when the post-cutover schema re-read did
+    # not confirm the empty list. Anything else is the cloud-backup mode, and
+    # VERIFY then keeps the Board read.
+    driver_lines = [ln.strip() for ln in (p.stdout or "").splitlines()]
+    case2_line = "RECOVERY_POINT: binary pair only; the home holds no user data"
+    recovery_point = "cloud-backup"
+    if "VERDICT: GREEN" in driver_lines:
+        after_verdict = driver_lines[driver_lines.index("VERDICT: GREEN") + 1:]
+        if case2_line in after_verdict:
+            recovery_point = "binary-pair-only"
+    emit(
+        {"cutover": "live", "verdict": "green", "recovery_point": recovery_point},
+        "su CUTOVER live",
+    )
     raise SystemExit(0)
 
 if step == "VERIFY":
+    if ctx.get("recovery_point") == "binary-pair-only":
+        # Case 2 (Tom, 2026-10-14): the home listed zero schemas, so it holds
+        # no Board and `kanban list` would fail on a healthy primary. Check
+        # /health only. The driver already checked the version, the hashes and
+        # the status gauges. Any other recovery_point value, or none, keeps the
+        # Board read below.
+        home = os.environ.get("LASTDB_HOME") or os.path.join(os.path.expanduser("~"), ".lastdb")
+        sock = os.path.join(home, "data", "folddb.sock")
+        p = subprocess.run(
+            [
+                "curl", "-fsS", "--max-time", "30", "--unix-socket", sock,
+                "-H", "Host: localhost", "-H", "X-LastDB-Client: lastdb-safe-upgrade",
+                "http://x/health",
+            ],
+            capture_output=True, text=True, timeout=60,
+        )
+        if p.returncode != 0:
+            sys.stderr.write(p.stderr or "")
+            sys.exit(p.returncode)
+        try:
+            health = json.loads(p.stdout or "")
+        except json.JSONDecodeError:
+            health = None
+        if not isinstance(health, dict) or health.get("status") != "ok":
+            sys.stderr.write("su VERIFY Case 2: /health is not ok\n")
+            sys.exit(1)
+        # The value stays "live": bin/last-stack-canary-loom requires it.
+        emit({"verify": "live", "verify_mode": "health-only"}, "su VERIFY live (Case 2: health only)")
+        raise SystemExit(0)
     p = subprocess.run(["kanban", "list", "--column", "todo"], capture_output=True, text=True, timeout=120)
     if p.returncode != 0:
         sys.stderr.write(p.stderr or "")
