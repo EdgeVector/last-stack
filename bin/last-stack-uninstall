@@ -66,6 +66,7 @@ remove_harness_instruction_blocks() {
   remove_managed_instruction_block "$1" "$2" "asd-ste100"
   remove_managed_instruction_block "$1" "$2" "user-vocabulary"
   remove_managed_instruction_block "$1" "$2" "tom-vocabulary"
+  remove_managed_instruction_block "$1" "$2" "generated-evidence"
 }
 
 real_home_matches() {

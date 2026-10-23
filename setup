@@ -426,6 +426,8 @@ NT_LEGACY_START='<!-- last-stack:no-tests:start -->'
 NT_END='<!-- last-stack:no-tests:end -->'
 LB_START='<!-- last-stack:lastdb-batching:start (managed by last-stack setup; edits inside are overwritten) -->'
 LB_END='<!-- last-stack:lastdb-batching:end -->'
+GE_START='<!-- last-stack:generated-evidence:start (managed by last-stack setup; edits inside are overwritten) -->'
+GE_END='<!-- last-stack:generated-evidence:end -->'
 
 strip_managed_md_block() {
   # $1 file  $2 start  $3 end
@@ -501,6 +503,7 @@ upsert_harness_instruction_blocks() {
   strip_managed_md_block "$file" "$NT_START" "$NT_END"
   strip_managed_md_block "$file" "$NT_LEGACY_START" "$NT_END"
   strip_managed_md_block "$file" "$LB_START" "$LB_END"
+  strip_managed_md_block "$file" "$GE_START" "$GE_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/brain-kanban.md" "$BK_START" "$BK_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/asd-ste100.md" "$STE_START" "$STE_END"
   local vocab_src
@@ -514,7 +517,8 @@ upsert_harness_instruction_blocks() {
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/routine-shell.md" "$RS_START" "$RS_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/lastdb-batching.md" "$LB_START" "$LB_END"
   prepend_managed_md_block "$file" "$SOURCE_ROOT/instructions/no-tests.md" "$NT_START" "$NT_END"
-  echo "  ${label} instructions: no-tests + brain-kanban + asd-ste100 + user-vocabulary + no-home-root-scan + bin-authoring + safe-json-capture + routine-shell + lastdb-batching -> $file"
+  prepend_managed_md_block "$file" "$SOURCE_ROOT/instructions/generated-evidence.md" "$GE_START" "$GE_END"
+  echo "  ${label} instructions: generated-evidence + no-tests + brain-kanban + asd-ste100 + user-vocabulary + no-home-root-scan + bin-authoring + safe-json-capture + routine-shell + lastdb-batching -> $file"
 }
 
 # ── Codex routine shell: zsh -lc -> bash ─────────────────────────────────────
