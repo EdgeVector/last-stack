@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""Install only the generated-evidence rule into explicit agent instruction files."""
+
+import argparse
+from pathlib import Path
+import re
+
+
+START = "<!-- last-stack:generated-evidence:start (managed by last-stack setup; edits inside are overwritten) -->"
+END = "<!-- last-stack:generated-evidence:end -->"
+
+
+def install(target, body):
+    current = target.read_text() if target.is_file() else ""
+    pattern = re.escape(START) + r".*?" + re.escape(END) + r"\n*"
+    current = re.sub(pattern, "", current, flags=re.S)
+    updated = START + "\n" + body.rstrip() + "\n" + END + "\n\n" + current.lstrip("\n")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.is_file() or target.read_text() != updated:
+        target.write_text(updated)
+    print("Evidence policy: " + str(target))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--target", type=Path, action="append", required=True)
+    args = parser.parse_args()
+    body = (Path(__file__).resolve().parent.parent / "instructions/generated-evidence.md").read_text()
+    for target in args.target:
+        install(target.expanduser(), body)
+
+
+if __name__ == "__main__":
+    main()
