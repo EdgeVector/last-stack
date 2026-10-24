@@ -105,8 +105,8 @@ The live accepted V2 recovery point must be no more than 300 seconds old before 
 `capture_started_at` precedes the first capture attempt and therefore gives a conservative age.
 A fresh status observation does not refresh that age.
 
-An explicit approval can instead bind `recovery.live_freshness` to this exact object:
-`{"policy":"exact_current","current_path":"/Users/tomtang/.lastdb/data/disk-pack/CURRENT"}`.
+An explicit approval can instead bind `recovery.live_freshness` to `policy=exact_current`.
+Its `current_path` must name the expanded canonical `<primary>/data/disk-pack/CURRENT` path.
 An absent field keeps the 300-second rule; an unknown policy or field refuses.
 The new policy keeps the original capture timestamp and checks that it is not in the future.
 It reads only the 4096-byte CURRENT metadata from one owner-controlled file descriptor.
