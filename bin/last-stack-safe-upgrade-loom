@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start or resume the Loom lastdb-safe-upgrade graph. No soak. No promotion.
+# Start or resume the Loom lastdb-safe-upgrade graph with bound candidate bytes.
 set -euo pipefail
 
 # Resolve the file symlink chain before dirname: the PATH link
@@ -25,6 +25,11 @@ DRY_RUN=0
 AS_JSON=0
 ZERO_LIVE_SOAK=0
 ACCEPT_STALE_RECOVERY=""
+NATIVE_APPROVAL=""
+NATIVE_APPROVAL_SHA256=""
+UPGRADE_MODE="legacy-cloud"
+NATIVE_REOPEN=0
+NATIVE_PROBE_ONLY=0
 SAFE_UPGRADE_PROTOCOL_VERSION="7"
 LOCAL_RECOVERY_DIR="${LAST_STACK_LOOM_LOCAL_RECOVERY_DIR:-$HOME/.local/state/last-stack/loom/recovery}"
 CONTROL_PLANE="local-recovery"
@@ -34,6 +39,8 @@ usage() {
 Usage:
   last-stack-safe-upgrade-loom --candidate PATH [--source-git-oid OID] [--zero-live-soak]
       [--accept-stale-recovery-point DECISION_SLUG] [--json]
+  last-stack-safe-upgrade-loom --candidate PATH --native-cloud-off-approval FILE [--json]
+      [--native-probe-only | --native-reopen]
   last-stack-safe-upgrade-loom --dry-run --candidate PATH [--source-git-oid OID] [--json]
   last-stack-safe-upgrade-loom --candidate PATH --retry N [--json]
 
@@ -57,6 +64,13 @@ backup lacks is printed and posted in the Situations notice.
 outside the candidate (for example a DEV photograph 500). Without it the
 pair's key resumes the failed execution. The attempt number is in the input
 and in the --json receipt.
+
+--native-cloud-off-approval FILE selects the candidate-bound native in-place
+route. Tom must explicitly approve this route and Cloud-Off for the named pair.
+The private approval file binds both program hashes, source, primary home and
+LaunchAgent. This route retains strict stop and a five-minute supervised soak.
+It never copies primary data, enables cloud, or calls retired apps. Its Loom
+journal stays local; it does not reconcile into LastDB.
 EOF
 }
 
@@ -74,6 +88,9 @@ while [ "$#" -gt 0 ]; do
     --dry-run) DRY_RUN=1; shift ;;
     --zero-live-soak) ZERO_LIVE_SOAK=1; shift ;;
     --accept-stale-recovery-point) ACCEPT_STALE_RECOVERY="${2:-}"; shift 2 ;;
+    --native-cloud-off-approval) NATIVE_APPROVAL="${2:-}"; shift 2 ;;
+    --native-reopen) NATIVE_REOPEN=1; shift ;;
+    --native-probe-only) NATIVE_PROBE_ONLY=1; shift ;;
     --json) AS_JSON=1; shift ;;
     --no-heal|--stand-in) STAND_IN=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -198,7 +215,24 @@ candidate_artifact_digest="$(printf '%s\0%s\0%s\0%s\0%s\0%s\0%s' \
 printf '%s\n' "$candidate_artifact_digest" | grep -Eq '^[0-9a-f]{64}$' \
   || die "candidate artifact digest calculation failed"
 
+if [ -n "$NATIVE_APPROVAL" ]; then
+  [ "$STAND_IN" -eq 0 ] && [ "$ZERO_LIVE_SOAK" -eq 0 ] && [ -z "$ACCEPT_STALE_RECOVERY" ] \
+    || die "native mode refuses stand-ins, zero soak, and legacy cloud waivers"
+  [ -f "$NATIVE_APPROVAL" ] && [ ! -L "$NATIVE_APPROVAL" ] || die "native approval must be a regular file"
+  NATIVE_APPROVAL="$(canonical_file "$NATIVE_APPROVAL")"
+  NATIVE_APPROVAL_SHA256="$(sha256_file "$NATIVE_APPROVAL")"
+  UPGRADE_MODE="native-inplace-cloud-off"
+  SAFE_UPGRADE_PROTOCOL_VERSION="8"
+elif [ "$NATIVE_REOPEN" -eq 1 ] || [ "$NATIVE_PROBE_ONLY" -eq 1 ]; then
+  die "native reopen and probe-only require the native approval"
+fi
+
 expected_key="safe-upgrade-v${SAFE_UPGRADE_PROTOCOL_VERSION}-${candidate_artifact_digest}"
+if [ -n "$NATIVE_APPROVAL" ]; then
+  expected_key="${expected_key}-native-${NATIVE_APPROVAL_SHA256}"
+  [ "$NATIVE_REOPEN" -eq 0 ] || expected_key="${expected_key}-reopen"
+  [ "$NATIVE_PROBE_ONLY" -eq 0 ] || expected_key="${expected_key}-probe-only"
+fi
 if [ "$ZERO_LIVE_SOAK" -eq 1 ]; then
   expected_key="${expected_key}-zero-live-soak"
 fi
@@ -238,7 +272,12 @@ input="$(jq -cn \
   --argjson attempt "$ATTEMPT" \
   --argjson zero_live_soak "$ZERO_LIVE_SOAK" \
   --arg accept_stale_recovery_point "$ACCEPT_STALE_RECOVERY" \
-  '{candidate:$candidate,candidate_cli:$candidate_cli,version:$version,lastdbd_version:$lastdbd_version,lastdb_version:$lastdb_version,lastdbd_sha256:$lastdbd_sha256,lastdb_sha256:$lastdb_sha256,source_git_oid:$source_git_oid,candidate_artifact_digest:$candidate_artifact_digest,safe_upgrade_protocol_version:$safe_upgrade_protocol_version} + (if $attempt > 1 then {attempt:$attempt} else {} end) + (if $zero_live_soak == 1 then {zero_live_soak:true} else {} end) + (if $accept_stale_recovery_point != "" then {accept_stale_recovery_point:$accept_stale_recovery_point} else {} end)')"
+  --arg upgrade_mode "$UPGRADE_MODE" \
+  --arg native_approval "$NATIVE_APPROVAL" \
+  --arg native_approval_sha256 "$NATIVE_APPROVAL_SHA256" \
+  --argjson native_reopen "$NATIVE_REOPEN" \
+  --argjson native_probe_only "$NATIVE_PROBE_ONLY" \
+  '{candidate:$candidate,candidate_cli:$candidate_cli,version:$version,lastdbd_version:$lastdbd_version,lastdb_version:$lastdb_version,lastdbd_sha256:$lastdbd_sha256,lastdb_sha256:$lastdb_sha256,source_git_oid:$source_git_oid,candidate_artifact_digest:$candidate_artifact_digest,safe_upgrade_protocol_version:$safe_upgrade_protocol_version,upgrade_mode:$upgrade_mode} + (if $native_approval != "" then {native_approval:$native_approval,native_approval_sha256:$native_approval_sha256,native_reopen:($native_reopen == 1),native_probe_only:($native_probe_only == 1)} else {} end) + (if $attempt > 1 then {attempt:$attempt} else {} end) + (if $zero_live_soak == 1 then {zero_live_soak:true} else {} end) + (if $accept_stale_recovery_point != "" then {accept_stale_recovery_point:$accept_stale_recovery_point} else {} end)')"
 
 emit_json() {
   local outcome="$1" status="$2" state="$3" execution="$4"
@@ -259,10 +298,13 @@ emit_json() {
     --arg candidate_artifact_digest "$candidate_artifact_digest" \
     --arg safe_upgrade_protocol_version "$SAFE_UPGRADE_PROTOCOL_VERSION" \
     --arg control_plane "$CONTROL_PLANE" \
+    --arg upgrade_mode "$UPGRADE_MODE" \
+    --argjson native_probe_only "$NATIVE_PROBE_ONLY" \
+    --argjson native_reopen "$NATIVE_REOPEN" \
     --argjson attempt "$ATTEMPT" \
     --argjson zero_live_soak "$ZERO_LIVE_SOAK" \
     --arg accept_stale_recovery_point "$ACCEPT_STALE_RECOVERY" \
-    '{attempt:$attempt,outcome:$outcome,status:$status,state:$state,execution:$execution,key:$key,candidate:$candidate,candidate_cli:$candidate_cli,version:$version,lastdbd_version:$lastdbd_version,lastdb_version:$lastdb_version,lastdbd_sha256:$lastdbd_sha256,lastdb_sha256:$lastdb_sha256,source_git_oid:$source_git_oid,candidate_artifact_digest:$candidate_artifact_digest,safe_upgrade_protocol_version:$safe_upgrade_protocol_version,control_plane:$control_plane,graph:"lastdb-safe-upgrade",zero_live_soak:($zero_live_soak == 1),accept_stale_recovery_point:$accept_stale_recovery_point}'
+    '{attempt:$attempt,outcome:$outcome,status:$status,state:$state,execution:$execution,key:$key,candidate:$candidate,candidate_cli:$candidate_cli,version:$version,lastdbd_version:$lastdbd_version,lastdb_version:$lastdb_version,lastdbd_sha256:$lastdbd_sha256,lastdb_sha256:$lastdb_sha256,source_git_oid:$source_git_oid,candidate_artifact_digest:$candidate_artifact_digest,safe_upgrade_protocol_version:$safe_upgrade_protocol_version,control_plane:$control_plane,upgrade_mode:$upgrade_mode,native_probe_only:($native_probe_only == 1),native_reopen:($native_reopen == 1),graph:"lastdb-safe-upgrade",zero_live_soak:($zero_live_soak == 1),accept_stale_recovery_point:$accept_stale_recovery_point}'
 }
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -366,7 +408,7 @@ fi
 # Project the journal into LastDB so Loom readers see the run. This is a
 # report, not a gate: a slow or down node leaves the receipt pending in the
 # journal, and the next reconcile picks it up.
-if [ "$outcome" = "ok" ]; then
+if [ "$outcome" = "ok" ] && [ -z "$NATIVE_APPROVAL" ]; then
   if ! loom reconcile-local "$LOCAL_RECOVERY_DIR/executions.jsonl" --json >/dev/null 2>&1; then
     printf 'last-stack-safe-upgrade-loom: local receipt remains pending reconciliation\n' >&2
   fi

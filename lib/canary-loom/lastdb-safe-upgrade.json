@@ -1,6 +1,6 @@
 {
   "name": "lastdb-safe-upgrade",
-  "version": "7",
+  "version": "8",
   "start_at": "PROBE",
   "max_depth": 1,
   "node_budget": 20,
@@ -17,6 +17,11 @@
       "source_git_oid": { "type": "string" },
       "candidate_artifact_digest": { "type": "string" },
       "safe_upgrade_protocol_version": { "type": "string" },
+      "upgrade_mode": { "type": "string", "enum": ["legacy-cloud", "native-inplace-cloud-off"] },
+      "native_approval": { "type": "string" },
+      "native_approval_sha256": { "type": "string" },
+      "native_reopen": { "type": "boolean" },
+      "native_probe_only": { "type": "boolean" },
       "zero_live_soak": { "type": "boolean" },
       "accept_stale_recovery_point": { "type": "string" },
       "attempt": { "type": "integer", "minimum": 1 },
@@ -49,6 +54,7 @@
       "path": "verdict",
       "map": {
         "green": "CUTOVER",
+        "probed": "DONE",
         "current": "DONE",
         "red": "FAILED",
         "blocked": "FAILED"
@@ -66,7 +72,7 @@
       ],
       "timeout_sec": 10800,
       "next": "VERIFY",
-      "on_error": "FAILED"
+      "on_error": "RECOVERY_ROUTE"
     },
     "VERIFY": {
       "type": "agent",
@@ -74,6 +80,21 @@
       "effects": "none",
       "timeout_sec": 180,
       "next": "DONE",
+      "on_error": "RECOVERY_ROUTE"
+    },
+    "RECOVERY_ROUTE": {
+      "type": "choice",
+      "path": "upgrade_mode",
+      "map": { "native-inplace-cloud-off": "RECOVER" },
+      "default": "FAILED"
+    },
+    "RECOVER": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"${LOOM_SCRIPTS:-$HOME/.last-stack/lib/canary-loom}/loom-safe-upgrade-step.sh\" RECOVER"],
+      "effects": "checked",
+      "check": ["/bin/bash", "-c", "exec python3 \"${LOOM_SCRIPTS:-$HOME/.last-stack/lib/canary-loom}/native_upgrade.py\" RECOVERY_CHECK"],
+      "timeout_sec": 1200,
+      "next": "FAILED",
       "on_error": "FAILED"
     },
     "DONE": { "type": "succeed" },
