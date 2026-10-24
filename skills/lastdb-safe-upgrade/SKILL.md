@@ -108,6 +108,11 @@ A synthetic compatibility check cannot prove that all primary data is readable.
    Native writer, maintenance, reclaim, persist status, and fresh status samples must pass.
    The retired LastStore `keep_small` meter does not describe native files.
    Native status replaces that meter gate on this route only.
+   The old primary can retain a past maintenance failure count after a successful
+   pack clears its current error. The route records that count with the exact old
+   session. It refuses any later increase before stop or during recovery of the
+   old session. Reclaim failures remain blocked. Generated nodes, the candidate,
+   the soak, and restarted recovery still require zero failure counts.
 6. Before stop, the route rechecks the exact primary session, program pair,
    home identities, identity file, cloud config, source ancestry, and LaunchAgent config.
    It saves only the program pair. It stages and verifies both new programs.
