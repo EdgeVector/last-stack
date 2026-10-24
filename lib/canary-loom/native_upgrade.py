@@ -14,6 +14,8 @@ import sys
 import time
 import uuid
 
+sys.dont_write_bytecode = True
+
 from native_upgrade_common import (alive, health,
     load, memory, pair, private_dir, regular, require, run, save, session, sha, stopped, sync_dir, wait_health)
 from native_upgrade_probe import probe

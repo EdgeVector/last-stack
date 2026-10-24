@@ -61,7 +61,7 @@ def save(path, value):
     if path.exists() or path.is_symlink():
         regular(path, True)
     stage = path.with_name(path.name + ".tmp." + str(os.getpid()))
-    with stage.open("x", opener=lambda p, flags: os.open(p, flags, 0o600)) as stream:
+    with os.fdopen(os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
         json.dump(value, stream, indent=2, sort_keys=True)
         stream.write("\n")
         stream.flush()
