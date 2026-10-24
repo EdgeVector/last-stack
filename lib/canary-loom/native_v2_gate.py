@@ -6,11 +6,11 @@ from pathlib import Path
 import re
 import stat
 import os
-import subprocess
 import time
 
 from native_upgrade_common import regular, require, sha
 from native_v2_artifact import verify as verify_archive
+from native_v2_release import accepted_release, command_json, git
 from native_v2_source import root as native_root
 
 BASELINE = "0a9d8cf48470c21f0b7b9fef250a2d5598ca2b09"
@@ -92,24 +92,9 @@ def private_json(path, maximum=1024 * 1024, expected_sha256=None):
         os.close(fd)
 
 
-def command_json(argv):
-    result = subprocess.run(argv, capture_output=True, timeout=30, check=False)
-    require(result.returncode == 0 and len(result.stdout) <= 2 * 1024 * 1024,
-            "Bounded provenance command failed; details withheld")
-    return json.loads(result.stdout)
-
-
 def ci(candidate, evidence):
     source = evidence["source_git_oid"]
-    accepted = evidence["accepted_main_commit"]
-    require(re.fullmatch(r"[0-9a-f]{40}", accepted) is not None, "Accepted main commit is absent")
-    commit = command_json(["gh", "api", "repos/EdgeVector/lastdb/commits/" + accepted])
-    relation = command_json(["gh", "api", "repos/EdgeVector/lastdb/compare/" + accepted + "...main?per_page=1"])
-    require(commit["sha"] == accepted and relation["status"] in ("ahead", "identical")
-            and relation["merge_base_commit"]["sha"] == accepted
-            and commit["commit"]["tree"]["sha"] ==
-            git(evidence["source_repository"], "rev-parse", source + "^{tree}").decode().strip(),
-            "CI candidate is not the exact accepted main tree")
+    release = accepted_release(evidence)
     value = command_json(["gh", "api", "repos/EdgeVector/lastdb/commits/" + source
                           + "/check-runs?filter=latest&per_page=100"])
     require(value["total_count"] <= 100, "CI check set exceeds its bound")
@@ -140,6 +125,7 @@ def ci(candidate, evidence):
     require(Path(receipt["bin_dir"]) == Path(candidate["lastdb"]["path"]).parent,
             "Candidate is not the verified CI pair")
     verify_archive(evidence["artifact_archive"], source, candidate)
+    return release
 
 
 def development(candidate, evidence):
@@ -199,13 +185,6 @@ def development(candidate, evidence):
             "native_bytes": restored["native_bytes"], "accepted_sha256": accepted["commit_sha256"]}
 
 
-def git(repo, *args):
-    result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, timeout=30)
-    require(result.returncode == 0 and len(result.stdout) <= 4 * 1024 * 1024,
-            "Source compatibility Git read failed")
-    return result.stdout
-
-
 def tree(repo, source):
     result = {}
     for record in git(repo, "ls-tree", "-r", "-z", source).split(b"\0"):
@@ -245,6 +224,5 @@ def compatibility(evidence, baseline_source):
 def check(candidate, evidence, baseline_source):
     require(re.fullmatch(r"[0-9a-f]{40}", evidence["source_git_oid"]) is not None,
             "Evidence requires the full candidate source")
-    ci(candidate, evidence)
-    return {"development": development(candidate, evidence),
+    return {"release_acceptance": ci(candidate, evidence), "development": development(candidate, evidence),
             "compatibility": compatibility(evidence, baseline_source), "checked_at": int(time.time())}

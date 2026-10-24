@@ -3,11 +3,11 @@
 import os
 from itertools import islice
 from pathlib import Path
-import plistlib
 
 from native_upgrade import check_old_session_health, helper, job_pid, service, unloaded
 from native_upgrade_common import regular, require, run, session, sha, stopped, sync_dir
 from native_v2_primary import record
+from native_v2_plist import read_agent
 from native_v2_source import accepted
 
 
@@ -20,10 +20,12 @@ def consumers(program, primary_target, pid):
     for path in entries:
         if path.suffix != ".plist":
             continue
-        regular(path, maximum=1024 * 1024)
-        require(not path.stat().st_mode & 0o022, "A LaunchAgent is writable by another user")
-        value = plistlib.loads(path.read_bytes())
+        value, plist_sha256 = read_agent(path)
         args = value.get("ProgramArguments", [])
+        require(isinstance(args, list) and all(isinstance(v, str) for v in args),
+                "LaunchAgent ProgramArguments must contain only strings")
+        require("Program" not in value or isinstance(value["Program"], str),
+                "LaunchAgent Program must be a string")
         executable = value.get("Program", args[0] if args else "")
         refs = [str(v) for v in args if isinstance(v, str)] + [str(executable)]
         direct = bool(executable) and Path(executable).is_absolute() and Path(executable).resolve() == program
@@ -38,7 +40,7 @@ def consumers(program, primary_target, pid):
             require(observed.returncode == 0 and job_pid(target) == pid, "The exact primary consumer changed")
         else:
             require(observed.returncode == 113, "Another shared-executable consumer is loaded or unknown")
-        found.append({"label": label, "plist_sha256": sha(path), "primary": target == primary_target})
+        found.append({"label": label, "plist_sha256": plist_sha256, "primary": target == primary_target})
     require(sum(v["primary"] for v in found) == 1, "The primary executable consumer is not uniquely inventoried")
     opened = run(["/usr/sbin/lsof", "-nP", "-t", str(program)], check=False)
     require(opened.returncode == 0 and set(opened.stdout.split()) == {str(pid)},
