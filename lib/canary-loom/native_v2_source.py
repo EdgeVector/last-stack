@@ -8,6 +8,8 @@ import time
 import uuid
 
 from native_upgrade_common import require, run
+from native_v2_freshness import (configuration as freshness_configuration,
+                                 observe as observe_freshness, validate as validate_freshness)
 
 
 def root(value):
@@ -49,7 +51,16 @@ def invoke(approval, candidate, action, request_id=None):
     return json.loads(result.stdout)
 
 
-def accepted(approval, report, request_id, at=None, stopped_since=None):
+def live_recovery(approval, candidate, identity, report=None):
+    if report is None:
+        report = invoke(approval, candidate, "status")
+    proof = observe_freshness(approval, report, identity)
+    accepted(approval, report, approval["recovery"]["live_request_id"],
+             live_proof=proof, live_session=identity)
+    return report, proof
+
+
+def accepted(approval, report, request_id, at=None, stopped_since=None, live_proof=None, live_session=None):
     recovery = approval["recovery"]
     captured = root(report["captured_native_root"])
     backup = report["accepted_backup"]
@@ -66,7 +77,7 @@ def accepted(approval, report, request_id, at=None, stopped_since=None):
     require(type(captured_at) is int and 0 <= now - captured_at,
             "Recovery point age is absent or future")
     if stopped_since is None:
-        require(now - captured_at <= 300, "Live recovery point is older than five minutes")
+        validate_freshness(approval, report, live_proof, live_session, now)
     else:
         # Final uploads may exceed five minutes. No writer runs, and the caller
         # independently requires the complete CURRENT identity to remain equal.
@@ -82,6 +93,7 @@ def accepted(approval, report, request_id, at=None, stopped_since=None):
 
 def validate_configuration(approval):
     recovery = approval["recovery"]
+    freshness_configuration(approval)
     require(recovery["environment"] == "prod", "Primary upgrade requires the explicit PROD V2 endpoint")
     require(re.fullmatch(r"[0-9a-f]{32}", recovery["account_id"]) is not None,
             "Recovery account identity differs")
