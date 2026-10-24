@@ -98,6 +98,7 @@ class PrivateTarget:
 
 
 def generated_probe(baseline, candidate, tools, output, ceiling, tuning):
+    output = private_dir(output)
     source, target = GeneratedNode(output / "source", ceiling, tuning), GeneratedNode(output / "target", ceiling, tuning)
     result = {"passed": False, "generated_only": True, "primary_copy": False,
               "baseline": baseline, "candidate": candidate, "tools": tools}
