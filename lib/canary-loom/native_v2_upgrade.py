@@ -19,7 +19,7 @@ from native_upgrade_common import (pair, private_dir, require, session, sha,
 from native_v2_gate import check as evidence_check, git, private_json
 from native_v2_primary import initial, live, prepare, preserved, record, select, start
 from native_v2_read import observe as keyed_read, specification as read_specification, verify as verify_read
-from native_v2_source import accepted, boundary, invoke, validate_configuration
+from native_v2_source import accepted, boundary, invoke, live_recovery, validate_configuration
 from native_v2_stop import restore_hold, stop
 
 MODE = "native-v2-ci"
@@ -114,6 +114,10 @@ def probe(ctx, candidate, approval, evidence, path):
         state = read_state(path, ctx)
         require(state["phase"] not in ("rolled-back", "old-retained"),
                 "A recovered failure needs a newly reviewed approval and job identities")
+        if not state.get("effect_started_at"):
+            current = initial_snapshot(approval, state)
+            report, proof = live_recovery(approval, candidate, current["session"])
+            record(path, state, state["phase"], live_recovery_report=report, live_recovery_freshness=proof)
         return
     baseline = initial(approval, candidate, path)
     for value in baseline["baseline"]["pair"].values():
@@ -124,11 +128,10 @@ def probe(ctx, candidate, approval, evidence, path):
         approval["baseline_source_git_oid"], ctx["source_git_oid"])
     require(approval["baseline_source_git_oid"] != ctx["source_git_oid"], "Upgrade candidate is already installed")
     gates = evidence_check(candidate, evidence, approval["baseline_source_git_oid"])
-    report = invoke(approval, candidate, "status")
-    accepted(approval, report, approval["recovery"]["live_request_id"])
+    report, proof = live_recovery(approval, candidate, baseline["baseline"]["session"])
     state = {"schema": "lastdb.native-v2-ci-upgrade.v1", "binding": {k: ctx[k] for k in IMMUTABLE},
              "execution": os.environ["LOOM_EXEC_ID"], **baseline, "gates": gates,
-             "live_recovery_report": report}
+             "live_recovery_report": report, "live_recovery_freshness": proof}
     record(path, state, "probed")
 
 
@@ -144,7 +147,8 @@ def final_recovery(approval, candidate, state, path):
         if not report["terminal_clean"]:
             report = invoke(approval, candidate, "resume")
     else:
-        accepted(approval, report, approval["recovery"]["live_request_id"], at=state["effect_started_at"])
+        accepted(approval, report, approval["recovery"]["live_request_id"], at=state["effect_started_at"],
+                 live_proof=state["live_recovery_freshness"], live_session=state["baseline"]["session"])
         report = invoke(approval, candidate, "start", request_id)
     captured = accepted(approval, report, request_id, stopped_since=state["stopped_at"])
     unloaded(target)
@@ -165,13 +169,12 @@ def cutover(ctx, candidate, approval, evidence, path, state):
         preserved(approval, state)
         current = initial_snapshot(approval, state)
         evidence_check(candidate, evidence, approval["baseline_source_git_oid"])
-        live_report = invoke(approval, candidate, "status")
-        accepted(approval, live_report, approval["recovery"]["live_request_id"])
+        live_report, _ = live_recovery(approval, candidate, current["session"])
         prepare(approval, state, path)
         observed_read = keyed_read(approval)
-        accepted(approval, live_report, approval["recovery"]["live_request_id"])
+        live_report, proof = live_recovery(approval, candidate, current["session"], live_report)
         record(path, state, "prepared", keyed_read=observed_read, live_recovery_report=live_report,
-               effect_started_at=int(time.time()))
+               live_recovery_freshness=proof)
         print('LOOM_EFFECT_INTENT:{"kind":"deploy","target":"native-v2-ci"}', flush=True)
         stop(approval, state, path, current["session"], current["pair"]["lastdbd"], "stop")
         record(path, state, "stopped", stopped_at=int(time.time()))

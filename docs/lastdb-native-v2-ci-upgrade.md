@@ -105,6 +105,22 @@ The live accepted V2 recovery point must be no more than 300 seconds old before 
 `capture_started_at` precedes the first capture attempt and therefore gives a conservative age.
 A fresh status observation does not refresh that age.
 
+An explicit approval can instead bind `recovery.live_freshness` to `policy=exact_current`.
+Its `current_path` must name the expanded canonical `<primary>/data/disk-pack/CURRENT` path.
+An absent field keeps the 300-second rule; an unknown policy or field refuses.
+The new policy keeps the original capture timestamp and checks that it is not in the future.
+It reads only the 4096-byte CURRENT metadata from one owner-controlled file descriptor.
+The canonical home, data, and native directories and the file must remain unchanged through that read.
+The file hash must equal the accepted job's full captured CURRENT hash.
+The gate makes a new observation at probe, before effects, and immediately before strict stop.
+It records the last observation, original capture time, exact job, native root, and old session separately.
+The stop intent binds that observation to `effect_started_at` in the durable local journal.
+After stop, predecessor validation uses that saved observation at the effect time.
+It does not read the CURRENT that the final flush can change.
+This metadata observation proves the current durable cut only.
+It does not prove empty memory or prevent a later write.
+The strict session, health, flush, and final stopped-source checks remain mandatory.
+
 After the strict stop, the final standalone job captures the stopped source with its fixed UUID.
 The source command uses no daemon, writer, primary copy, or V1 bootstrap.
 The launcher enables V2 only in that child CLI environment.

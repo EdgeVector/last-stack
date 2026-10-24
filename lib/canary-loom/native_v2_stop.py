@@ -1,6 +1,7 @@
 """Reuse strict supervised stop only after exact shared-executable consumer checks."""
 
 import os
+import time
 from itertools import islice
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from native_upgrade_common import regular, require, run, session, sha, stopped, 
 from native_v2_primary import record
 from native_v2_plist import read_agent
 from native_v2_source import accepted
+from native_v2_freshness import observe as observe_freshness
 
 
 def consumers(program, primary_target, pid):
@@ -77,11 +79,16 @@ def stop(approval, state, path, identity, expected_program, phase):
     proof = consumers(program, target, identity["pid"])
     require(job_pid(target) == identity["pid"] and session(home) == identity,
             "The stop session changed after consumer inventory")
+    live_check = {}
     if identity == state["baseline"]["session"]:
         check_old_session_health(home, state["baseline"])
-        accepted(approval, state["live_recovery_report"], approval["recovery"]["live_request_id"])
+        freshness = observe_freshness(approval, state["live_recovery_report"], identity)
+        checked_at = freshness["observed_at"] if freshness else int(time.time())
+        accepted(approval, state["live_recovery_report"], approval["recovery"]["live_request_id"],
+                 at=checked_at, live_proof=freshness, live_session=identity)
+        live_check = {"live_recovery_freshness": freshness, "effect_started_at": checked_at}
     record(path, state, phase + "-requested", executable_consumers=proof,
-           stop_program={**expected_program, "inode": inode}, stopping_session=identity)
+           stop_program={**expected_program, "inode": inode}, stopping_session=identity, **live_check)
     try:
         output = helper("launchd-job-checks.sh", "lastdb_launchd_graceful_prestop",
                         "/bin/launchctl", target, program, "300", "150", "1", timeout=510).stdout
