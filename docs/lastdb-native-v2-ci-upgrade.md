@@ -40,7 +40,15 @@ The gate reads the original CI artifact and operational outputs; it creates no d
 
 The source requires successful `ci-required` and `benchmark-complete` checks for the exact commit.
 GitHub must confirm that the accepted commit remains an ancestor of main.
-Its complete tree must equal the CI candidate tree, including after a squash merge.
+The gate first accepts an identical complete candidate and accepted tree, including after a squash merge.
+If concurrent main changes produce a different tree, the evidence must also bind `accepted_pull_request`.
+That same-repository PR must merge the exact CI source into main at the named accepted commit.
+GitHub and the local repository must agree on its tree and single squash parent.
+A clean independent `git merge-tree --write-tree <parent> <candidate>` must produce that exact accepted tree.
+Conflicts, missing objects, custom merge drivers, or inherited Git graph overrides refuse the operation.
+The operator fetches any missing immutable Git objects without a checkout or rebuild of main.
+The journal records the artifact source and tree separately from the accepted merge commit, tree, parent, and merge base.
+The binary, CI, DEV proof, and protected-source comparison still use the exact reviewed artifact source.
 The Mac artifact must come from the normal `native-dev-artifact.yml` workflow for that commit.
 The gate verifies its GitHub digest, original archive, target, and both program byte hashes.
 The actual DEV proof must use those exact programs.
@@ -81,6 +89,11 @@ The transaction retains its exact pair and recovery state if a clean stop cannot
 The existing strict helper temporarily holds the old executable to prevent its supervised respawn.
 That path is allowed only after the exact consumer gate passes.
 The gate reads at most 512 user LaunchAgent entries, without recursion.
+Each plist read uses one unchanged owner-controlled file snapshot.
+The parser accepts XML and binary plists directly.
+For other valid macOS plist formats, it converts the same bytes through bounded `plutil` stdin and anonymous output.
+It does not rewrite a LaunchAgent file.
+Malformed, unsupported, oversized, or changed files refuse before stop.
 Every other same-executable consumer must be unloaded.
 The executable open-file check must identify only the exact primary PID.
 An unknown or active other consumer refuses before SIGTERM.
@@ -151,7 +164,9 @@ After the candidate starts, the same query must return the same digest and count
 The original program must pass that comparison after program recovery, including when the original process remains active.
 Health does not replace this data read.
 
-Run the accepted installed launcher with `--candidate <lastdbd> --native-v2-ci-approval <private-file> --json`.
+Run the accepted launcher with `--candidate <lastdbd> --native-v2-ci-approval <private-file> --json`.
+An absolute clean accepted worktree path uses its matching graph and scripts with the installed Loom engine.
+This supported source path requires no setup or routine change.
 The mode refuses stand-ins, other native modes, stale-backup waivers, zero soak, and alternate graph bundles.
 The source PR and CI establish code validation only.
 Deployment, installation, and the primary restart remain separate authorized operations.
