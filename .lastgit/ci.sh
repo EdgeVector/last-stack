@@ -31,7 +31,9 @@ for script in lib/canary-loom/*.sh skills/lastdb-safe-upgrade/scripts/*.sh; do
   bash -n "$script"
 done
 python3 -m py_compile lib/canary-loom/native_upgrade.py \
-  lib/canary-loom/native_upgrade_common.py lib/canary-loom/native_upgrade_probe.py
+  lib/canary-loom/native_upgrade_common.py lib/canary-loom/native_upgrade_probe.py \
+  lib/canary-loom/native_migration.py lib/canary-loom/native_migration_io.py \
+  lib/canary-loom/native_migration_effects.py
 
 bin/last-stack-lint-machine-leaks --ci
 # No unbounded workspace walk in a helper, no new bash->python heredoc

@@ -136,7 +136,61 @@ If a clean stop is impossible, recovery refuses and retains its exact state.
 The run stays RED after a successful program recovery.
 Keep the saved pair and local receipts until review and recovery no longer need them.
 
-## Recovery point: the cloud backup, never a copy (Tom, 2026-10-12)
+## Two-home native migration with Cloud Off (Tom, 2026-10-23)
+
+Tom selected this path and authorized the separate target database in chat:
+"We open both old and new and migrate data over."
+He then requested the live operation: "Try it. Get it upgraded and migrate the data over."
+This route creates its target through a record transfer, without a filesystem clone of the primary.
+The legacy cloud route and native protocol 8 remain separate.
+
+1. Obtain accepted CI artifacts for the exact candidate pair and both transport workers.
+   The source worker uses the installed engine source plus its transport adapter.
+   Verify hashes, executable signatures, source revisions, and the complete CI result.
+   CI must prove full record parity, target durable writes, compaction, target reopen, and retained-source reopen.
+2. Create an owner-only verification file with `schema`, two receipt `fields`, and bounded known `keys`.
+   Use existing migration-owned records. Do not select real secret values for operator-visible checks.
+3. Record the exact approval with `lib/canary-loom/native_migration.py approve`.
+   Supply the candidate, full source and baseline source, both workers, verification file,
+   exact human quote, primary plist, CI run, and a fresh output path.
+4. Run the same `last-stack-safe-upgrade-loom` launcher with that native approval.
+   The approval selects `native-logical-migration-cloud-off`, protocol 9, and an isolated execution key.
+   `--native-probe-only` performs the generated operational migration without a primary stop.
+5. The generated check writes through the installed baseline, transfers to a separate empty target,
+   uses the candidate on that target, checks durable updates and compaction, and reopens both homes.
+   The candidate never opens the generated source as a writer.
+   Retain the normal memory guard, settle interval, and five-minute live soak.
+6. Before the primary stop, recheck the exact source session, files, identity, configuration, and latest main.
+   Save the old program pair, stage the candidate, and reserve target space.
+   Use the strict supervised stop and its exact successful flush receipt.
+7. The old reader streams every supported native stored record from the original stopped data.
+   The new writer creates independent files in a fresh target.
+   Compare the complete ordered record digest, counts, versions, and physical deletion records.
+   Target preparation validates the account marker and uses the native identity service.
+   Cloud stays off on both nodes; there is no cloud restore dependency.
+8. Run the candidate privately on that target. Check migrated keys, a durable receipt write,
+   actual compaction, and a clean reopen. Stop the private candidate cleanly.
+9. While the primary supervisor is absent, retain the original data directory by atomic rename.
+   Select the target data at the canonical primary path, install the exact candidate pair,
+   and keep the primary home, identity, apps, and configuration in place.
+   File and directory barriers precede each journal phase.
+10. Record that target app writes may start before the public primary starts.
+    Check live migrated reads, durable writes, compaction, a strict same-pair reopen,
+    and the five-minute supervised soak.
+
+CAUTION: The retained source lacks app writes accepted after target activation.
+
+Before that activation boundary, recovery can restore the exact source data and saved programs.
+After it, recovery retains the exact target and repairs forward.
+It never resumes the old data as current and discards new acknowledged writes.
+The original data stays retained until a separate retention review permits cleanup.
+
+The initial transfer supports compatible native record codecs and no external data files.
+It preserves encrypted stored values; it does not claim conversion of every historical format.
+An interrupted transfer requires a fresh target and approval.
+No test suite, local build, local benchmark, retired app call, or source-home clone forms part of this route.
+
+## Legacy recovery point: the cloud backup, never a copy (Tom, 2026-10-12)
 
 The live cutover makes no copy of the primary home. Not a rollback copy, not a
 stopped copy, not a copy for a first backup. The recovery point is:

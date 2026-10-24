@@ -6,6 +6,10 @@ set -euo pipefail
 native_input="${LOOM_INPUT:-}"
 [ -n "$native_input" ] || native_input='{}'
 if printf '%s' "$native_input" | jq -e \
+  '.upgrade_mode == "native-logical-migration-cloud-off" or .item.upgrade_mode == "native-logical-migration-cloud-off"' >/dev/null; then
+  exec python3 "$(dirname -- "$0")/native_migration.py" CHECK
+fi
+if printf '%s' "$native_input" | jq -e \
   '.upgrade_mode == "native-inplace-cloud-off" or .item.upgrade_mode == "native-inplace-cloud-off"' >/dev/null; then
   exec python3 "$(dirname -- "$0")/native_upgrade.py" CHECK
 fi
