@@ -83,6 +83,13 @@
       "artifact_app": "lastdb-browser",
       "install_name": "lastdb-browser",
       "description": "Read-only local data browser."
+    },
+    "lastseek": {
+      "github": "https://github.com/EdgeVector/lastseek.git",
+      "public": "https://github.com/EdgeVector/lastseek.git",
+      "artifact_app": "lastseek",
+      "install_name": "lastseek",
+      "description": "Local semantic search plane (Rust successor to search)."
     }
   },
   "brew_apps": {
@@ -92,10 +99,6 @@
         "routines"
       ],
       "description": "Durable agent-graph runner."
-    },
-    "lastseek": {
-      "formula": "edgevector/lastdb/lastseek",
-      "description": "Local semantic search plane (Rust successor to search)."
     }
   }
 }

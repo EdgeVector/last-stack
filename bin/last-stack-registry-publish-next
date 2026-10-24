@@ -62,7 +62,7 @@ RUN_ID=""
 LASTDB_BIN_OVERRIDE=""
 STRICT_GREEN=0
 # The real roster shared by the candidate set and install producer.
-KNOWN_APPS="brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser"
+KNOWN_APPS="brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser lastseek"
 
 usage() {
   cat <<'USAGE'
@@ -315,7 +315,7 @@ mkdir -p "$TAP_DIR/registry/proofs"
 
 api_version="$(jq -r '.lastdb.api_version // empty' "$CANDIDATE_SET")"
 count=0
-while IFS=$'\t' read -r app sha app_version source description; do
+while IFS=$'\t' read -r app sha app_version source description lastdb_semver; do
   [ -n "$app" ] || continue
   if [ "$PARTIAL" -eq 1 ]; then
     case " $PASSED_APPS " in
@@ -328,9 +328,10 @@ while IFS=$'\t' read -r app sha app_version source description; do
         --proved-at "$proved_at" --proof-run "$PROOF_RUN")
   [ -z "$description" ] || args+=(--description "$description")
   [ -z "$api_version" ] || args+=(--lastdb-api-version "$api_version")
+  [ -z "$lastdb_semver" ] || args+=(--lastdb-semver-range "$lastdb_semver")
   "$ROOT/bin/last-stack-registry-index" "${args[@]}"
   count=$((count + 1))
-done < <(jq -r '.apps | to_entries[] | [.key, .value.sha, (.value.app_version // "0.0.0"), .value.source, (.value.description // "")] | @tsv' "$CANDIDATE_SET")
+done < <(jq -r '.apps | to_entries[] | [.key, .value.sha, (.value.app_version // "0.0.0"), .value.source, (.value.description // ""), (.value.lastdb // "")] | @tsv' "$CANDIDATE_SET")
 [ "$count" -gt 0 ] || die "candidate set has no apps that passed their own checks"
 
 # The proof record: what was proved, with what, by which run. On a partial
