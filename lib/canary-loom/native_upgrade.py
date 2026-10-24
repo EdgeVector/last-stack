@@ -188,7 +188,8 @@ def snapshot(approval):
 
 
 def baseline_snapshot(approval, baseline=None):
-    require(approval.get("mode") == MODE, "Baseline history is only for native in-place upgrades")
+    require(approval.get("mode") in (MODE, "native-v2-ci"),
+            "Baseline history is only for the reviewed native upgrade policies")
     return _snapshot(approval, baseline, baseline_history=True)
 
 

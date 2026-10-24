@@ -1,0 +1,157 @@
+# Native V2 upgrade through Loom
+
+The explicit `native-v2-ci` policy uses protocol 10 in the existing safe-upgrade graph.
+Protocols 7, 8, and 9 keep their current behavior.
+The local Loom journal remains outside LastDB.
+This policy does not reconcile that journal into retired apps.
+It does not use brain, kanban, situations, local benchmarks, or a primary copy.
+
+## Required evidence
+
+The private approval file uses schema `lastdb.native-v2-ci-approval.v1`.
+It contains the actual human approval quote, approver `Tom`, and Unix `approved_at`.
+The quote must correspond to an existing human instruction.
+The file binds these fields:
+
+- `mode`: `native-v2-ci`.
+- `source_git_oid`: the full candidate commit.
+- `candidate`: exact `lastdb` and `lastdbd` path, SHA256, and version objects.
+- `baseline_source_git_oid`: the full actual installed source.
+- `baseline_programs_sha256`: both actual installed program hashes.
+- `primary_home` and `launchd_plist`: the canonical primary and its exact user LaunchAgent.
+- `target_program_dir`: `<primary>/native-v2-programs/<full-candidate-source>`.
+- `primary_data_copy`: false.
+- `primary_restore_or_migration`: false.
+- `evidence_path` and `evidence_sha256`: the private evidence input and its exact hash.
+- `recovery`: the fields below.
+- `keyed_read`: the private input path and its exact SHA256.
+
+The recovery object binds `environment=prod`, `account_id`, and decimal-string `account_generation`.
+It also binds `identity_public_key`, native `home_id`, and `home_digest`.
+It names canonical `credentials_home` and external `state_dir` paths.
+It contains distinct canonical UUIDs `live_request_id` and `final_request_id`.
+The caller first completes the live V2 job through the supported standalone command.
+The approval cannot replace an unfinished job with a fresh UUID.
+
+The evidence input binds `source_git_oid`, `source_repository`, `accepted_main_commit`, and the verified `artifact_archive`.
+It names the original `artifact_receipt`, `dev_proof_root`, `compatibility_record`, and `compatibility_sha256`.
+All evidence inputs remain private and bounded.
+The gate reads the original CI artifact and operational outputs; it creates no duplicate CI report.
+
+The source requires successful `ci-required` and `benchmark-complete` checks for the exact commit.
+GitHub must confirm that the accepted commit remains an ancestor of main.
+Its complete tree must equal the CI candidate tree, including after a squash merge.
+The Mac artifact must come from the normal `native-dev-artifact.yml` workflow for that commit.
+The gate verifies its GitHub digest, original archive, target, and both program byte hashes.
+The actual DEV proof must use those exact programs.
+It must prove one foreground standalone Start while the source runs, zero Resume requests, and accepted publication.
+It also requires packed files, the exact stopped boundary, source-free restore, and two restored boots.
+The accepted result, frozen manifest, restore selector, native file count, and byte count must agree.
+All source and restored daemons must be stopped, with zero retained source bytes.
+The gate reads the original `standalone-terminal-report.json`, `expected-native-files.json`, and `source-stopped-boundary.stdout`.
+It also reads `source-free-restore.stdout`, `source-free-selection.json`, and the operator's original `run-state.json`.
+It does not convert these outputs into a second proof report.
+
+## Source compatibility and program recovery
+
+The closed baseline is `0a9d8cf48470c21f0b7b9fef250a2d5598ca2b09`.
+A different installed source requires a fresh source review and policy change.
+The private compatibility record uses schema `lastdb.native-source-compatibility.v1`.
+Its `baseline` and `candidate` must equal the exact approved sources.
+Its `reviewed_format_neutral_changes` maps each protected changed path to exact `before` and `after` Git blobs.
+A missing blob uses JSON null.
+The record requires `source_reviewed`, `no_native_format_change`, and `restore_migration_disallowed`, all true.
+These fields record the source review; they do not claim an executed backward reopen.
+
+The gate reads both Git trees and compares the whole protected change set with that record.
+The closed path list includes read-only export changes and separately reviewed guard and restore changes from main.
+It does not classify those guard changes as read-only.
+The native encoders, feature bits, and dependency versions remain unchanged.
+The new inactive restore guard refuses a serving target.
+This policy permits no restore or migration of the primary.
+An unknown writer, codec, feature, or dependency change refuses the operation.
+
+Program recovery retains candidate acknowledged writes in the same native home.
+The source compatibility basis permits the original program to read those normal writes.
+A failed or unclean candidate stop does not authorize an automatic program downgrade.
+The transaction retains its exact pair and recovery state if a clean stop cannot be proved.
+
+## Stop and final recovery point
+
+The existing strict helper temporarily holds the old executable to prevent its supervised respawn.
+That path is allowed only after the exact consumer gate passes.
+The gate reads at most 512 user LaunchAgent entries, without recursion.
+Every other same-executable consumer must be unloaded.
+The executable open-file check must identify only the exact primary PID.
+An unknown or active other consumer refuses before SIGTERM.
+The helper applies no forced kill and requires the exact old session's flush receipt and clean ledger record.
+The helper then unloads the primary and restores the original shared executable inode and hash.
+It does not change another service's program, plist, or job.
+
+The live accepted V2 recovery point must be no more than 300 seconds old before stop.
+`capture_started_at` precedes the first capture attempt and therefore gives a conservative age.
+A fresh status observation does not refresh that age.
+
+After the strict stop, the final standalone job captures the stopped source with its fixed UUID.
+The source command uses no daemon, writer, primary copy, or V1 bootstrap.
+The launcher enables V2 only in that child CLI environment.
+It does not change the primary plist's cloud flags.
+The exact Begin, cut, transfer IDs, and holds survive an unknown result.
+A retry resumes that exact saved job.
+The final job must reach accepted publication, terminal cleanup, and zero retained source bytes.
+The full captured native root must equal the supported stopped boundary before and after the final upload.
+It must still equal that boundary immediately before program selection.
+Frontier equality alone is insufficient.
+
+The final upload can take more than 300 seconds while the source remains stopped.
+It must start after the proved stop and cover the exact unchanged CURRENT.
+This rule uses full stopped-source identity instead of a file-size cap or a weaker live freshness claim.
+
+## Primary-only installation
+
+The transaction saves the original program pair and exact primary plist outside the data files.
+It stages both candidate programs in the new primary-only directory.
+The original shared executable bytes and inodes stay unchanged after strict stop.
+The stable CLI and daemon links must both use the canonical primary `current` pointer.
+
+While the primary remains unloaded, the transaction changes only its program argument and current pointer.
+Every other plist field remains the same.
+File and directory barriers protect the saved pair, staged pair, plist, pointer, and transaction phases.
+An interrupted selection accepts only the exact original or candidate components.
+It never selects an unrelated program.
+
+The same supervisor starts the selected pair.
+The gate checks exact program hashes, versions, socket session, environment, native health, and memory size.
+It requires a five-minute supervised health interval, with no local latency measurements.
+Legacy cloud sync stays off; V2 source work is a separate protocol.
+The operation does not create Ready or permanent Hold authority.
+
+The unchanged old session uses the accepted baseline maintenance-history policy.
+A recovered historical maintenance count needs a successful publication and no current error.
+That exact old session's failure counters must not increase before stop or during old-retained recovery.
+Reclaim failures remain blocked.
+The candidate, restarted original program, and supervised interval require zero failure counts.
+
+## Ordinary data read
+
+The approval binds `keyed_read.input_path` and `keyed_read.input_sha256`.
+The input must be a canonical private file, at most 16384 bytes.
+Its schema is `lastdb.native-keyed-read.v1`.
+It contains `application`, `schema_name`, `fields`, and `keys`.
+Each key contains an explicit string `hash` and string `range`; a hash-only key uses an empty range.
+The input permits 1 to 16 distinct keys and 1 to 16 distinct fields.
+The application and schema names must exclude brain, kanban, and situations namespaces.
+The operator selects existing stable records from an allowed application before cutover.
+The policy creates no schema, app, or record.
+
+Immediately before stop, one batch query must return every approved key and field without unresolved or deleted records.
+The private journal retains only the input hash, returned record count, and canonical value digest.
+The response values remain in memory; the policy writes no response dump.
+After the candidate starts, the same query must return the same digest and count.
+The original program must pass that comparison after program recovery, including when the original process remains active.
+Health does not replace this data read.
+
+Run the accepted installed launcher with `--candidate <lastdbd> --native-v2-ci-approval <private-file> --json`.
+The mode refuses stand-ins, other native modes, stale-backup waivers, zero soak, and alternate graph bundles.
+The source PR and CI establish code validation only.
+Deployment, installation, and the primary restart remain separate authorized operations.
