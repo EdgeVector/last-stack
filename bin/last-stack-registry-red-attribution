@@ -35,7 +35,7 @@
 set -euo pipefail
 
 PROOF_JSON=""
-KNOWN_APPS="${LAST_STACK_REGISTRY_KNOWN_APPS:-brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser}"
+KNOWN_APPS="${LAST_STACK_REGISTRY_KNOWN_APPS:-brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser lastseek}"
 
 usage() {
   cat <<'USAGE'

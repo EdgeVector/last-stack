@@ -130,6 +130,8 @@ def cmd_add_row(args: argparse.Namespace) -> int:
         row["artifact"] = args.artifact
     if args.lastdb_api_version is not None:
         row["lastdb_api_version"] = args.lastdb_api_version
+    if args.lastdb_semver_range:
+        row["lastdb"] = args.lastdb_semver_range
     validate_row(row)
 
     app = find_app(index, args.app)
@@ -344,6 +346,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--artifact")
     p.add_argument("--lastdb-version", required=True, help="node build string, e.g. 0.23.3-2117-gffb8eb6c4")
     p.add_argument("--lastdb-api-version", type=int)
+    p.add_argument("--lastdb-semver-range", help="optional lastdb semver range requirement from the app's manifest")
     p.add_argument("--proved-at", help="RFC 3339 UTC (default: now)")
     p.add_argument("--proof-run", required=True)
     p.add_argument("--max-rows", type=int, default=DEFAULT_MAX_ROWS)
