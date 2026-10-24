@@ -71,6 +71,35 @@ It also refuses the broad setup uninstaller. Nested setup inherits the flag.
 Artifact provenance, probes, command and skill links, compatibility layout,
 and instruction updates retain the normal path.
 
+## Native V2 upgrade with CI evidence (Tom, 2026-10-24)
+
+Use explicit `--native-v2-ci-approval <private-file>` for the reviewed V2 operation.
+This route selects protocol 10 in the same local-recovery Loom graph.
+The full contract is [Native V2 upgrade through Loom](../../docs/lastdb-native-v2-ci-upgrade.md).
+The route replaces the retired app seed and local benchmark procedure with exact CI and actual DEV evidence.
+It does not call brain, kanban, situations, or local benchmarks.
+It keeps the local journal and never reconciles it into those apps.
+
+The exact candidate pair needs successful source CI, benchmark-complete, and the verified Mac artifact.
+Its actual DEV backup, automatic completion, source-free restore, and restored restart must pass.
+A closed source-compatibility gate binds the actual baseline and final candidate Git blobs.
+It does not claim an executed backward reopen.
+It refuses unknown writer, codec, feature, or dependency changes.
+
+Before stop, require a fresh accepted V2 recovery point for the exact source identity, account, and home.
+Keep the existing strict graceful stop, matching flush receipt, and clean session.
+The temporary executable hold requires proof that all other consumers are unloaded.
+Restore the exact shared executable inode and hash immediately after the primary unload.
+Keep all candidate programs in a separate primary-only directory.
+Change only the primary LaunchAgent program argument and canonical current pointer.
+
+After stop, the supported standalone source uploads the final exact native cut.
+No second node, writer, primary copy, V1 Ready, or permanent Hold participates.
+The complete accepted root must equal the still-stopped CURRENT before installation.
+Unknown results retain the exact job and source hold.
+The saved pair, atomic component recovery, supervised restart, and five-minute health interval remain required.
+The route does not permit a primary restore or migration.
+
 ## Native in-place upgrade with Cloud Off (Tom, 2026-10-23)
 
 Tom explicitly approved this route for the named CI candidate in chat.

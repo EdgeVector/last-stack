@@ -27,6 +27,7 @@ ZERO_LIVE_SOAK=0
 ACCEPT_STALE_RECOVERY=""
 NATIVE_APPROVAL=""
 NATIVE_APPROVAL_SHA256=""
+NATIVE_POLICY_FLAG=""
 UPGRADE_MODE="legacy-cloud"
 NATIVE_REOPEN=0
 NATIVE_PROBE_ONLY=0
@@ -41,6 +42,7 @@ Usage:
       [--accept-stale-recovery-point DECISION_SLUG] [--json]
   last-stack-safe-upgrade-loom --candidate PATH --native-cloud-off-approval FILE [--json]
       [--native-probe-only | --native-reopen]
+  last-stack-safe-upgrade-loom --candidate PATH --native-v2-ci-approval FILE [--json]
   last-stack-safe-upgrade-loom --dry-run --candidate PATH [--source-git-oid OID] [--json]
   last-stack-safe-upgrade-loom --candidate PATH --retry N [--json]
 
@@ -72,6 +74,12 @@ The private approval file binds both program hashes, source, primary home and
 LaunchAgent. This route retains strict stop and a five-minute supervised soak.
 It never copies primary data, enables cloud, or calls retired apps. Its Loom
 journal stays local; it does not reconcile into LastDB.
+
+--native-v2-ci-approval FILE selects protocol 10. Exact CI, benchmark, DEV
+backup/restore, native source compatibility, and a current V2 recovery point
+replace the retired app and local benchmark procedure. Strict stop, the clean
+session, the final stopped V2 cut, isolated pair installation, program recovery,
+and five-minute supervised health remain required. No primary data copy occurs.
 EOF
 }
 
@@ -89,7 +97,9 @@ while [ "$#" -gt 0 ]; do
     --dry-run) DRY_RUN=1; shift ;;
     --zero-live-soak) ZERO_LIVE_SOAK=1; shift ;;
     --accept-stale-recovery-point) ACCEPT_STALE_RECOVERY="${2:-}"; shift 2 ;;
-    --native-cloud-off-approval) NATIVE_APPROVAL="${2:-}"; shift 2 ;;
+    --native-cloud-off-approval|--native-v2-ci-approval)
+      [ -z "$NATIVE_APPROVAL" ] || die "select exactly one native approval policy"
+      NATIVE_POLICY_FLAG="$1"; NATIVE_APPROVAL="${2:-}"; shift 2 ;;
     --native-reopen) NATIVE_REOPEN=1; shift ;;
     --native-probe-only) NATIVE_PROBE_ONLY=1; shift ;;
     --json) AS_JSON=1; shift ;;
@@ -224,10 +234,18 @@ if [ -n "$NATIVE_APPROVAL" ]; then
   NATIVE_APPROVAL_SHA256="$(sha256_file "$NATIVE_APPROVAL")"
   UPGRADE_MODE="$(jq -r '.mode // empty' "$NATIVE_APPROVAL")"
   case "$UPGRADE_MODE" in
-    native-inplace-cloud-off) SAFE_UPGRADE_PROTOCOL_VERSION="8" ;;
+    native-inplace-cloud-off)
+      [ "$NATIVE_POLICY_FLAG" = --native-cloud-off-approval ] || die "approval policy flag differs"
+      SAFE_UPGRADE_PROTOCOL_VERSION="8" ;;
     native-logical-migration-cloud-off)
+      [ "$NATIVE_POLICY_FLAG" = --native-cloud-off-approval ] || die "approval policy flag differs"
       [ "$NATIVE_REOPEN" -eq 0 ] || die "a two-home migration cannot select in-place reopen"
       SAFE_UPGRADE_PROTOCOL_VERSION="9"
+      ;;
+    native-v2-ci)
+      [ "$NATIVE_POLICY_FLAG" = --native-v2-ci-approval ] || die "native V2 requires its explicit policy flag"
+      [ "$NATIVE_REOPEN" -eq 0 ] && [ "$NATIVE_PROBE_ONLY" -eq 0 ] || die "native V2 refuses other native modes"
+      SAFE_UPGRADE_PROTOCOL_VERSION="10"
       ;;
     *) die "unknown native approval mode" ;;
   esac
@@ -331,10 +349,20 @@ real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$exe")
 install_root="$(dirname "$(dirname "$real")")"
 defs=""
 scripts=""
+if [ "$UPGRADE_MODE" = native-v2-ci ]; then
+  for override in "${LOOM_DEFS:-}" "${LOOM_SCRIPTS:-}"; do
+    [ -z "$override" ] || [ "$(canonical_file "$override")" = "$ROOT/lib/canary-loom" ] \
+      || die "native V2 refuses a different graph or script bundle"
+  done
+  defs="$ROOT/lib/canary-loom"
+  scripts="$ROOT/lib/canary-loom"
+fi
 for candidate in "${LOOM_DEFS:-}" "$ROOT/lib/canary-loom" "$install_root/definitions"; do
+  [ -z "$defs" ] || break
   [ -n "$candidate" ] && [ -f "$candidate/lastdb-safe-upgrade.json" ] && defs="$candidate" && break
 done
 for candidate in "${LOOM_SCRIPTS:-}" "$ROOT/lib/canary-loom" "$install_root/scripts"; do
+  [ -z "$scripts" ] || break
   [ -n "$candidate" ] && [ -f "$candidate/loom-safe-upgrade-step.sh" ] && scripts="$candidate" && break
 done
 [ -n "$defs" ] && [ -n "$scripts" ] || die "lastdb-safe-upgrade graph files are missing"
