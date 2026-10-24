@@ -66,7 +66,8 @@ pair's key resumes the failed execution. The attempt number is in the input
 and in the --json receipt.
 
 --native-cloud-off-approval FILE selects the candidate-bound native in-place
-route. Tom must explicitly approve this route and Cloud-Off for the named pair.
+route, or the two-home migration route named by that approval.
+Tom must explicitly approve the selected route and Cloud-Off for the named pair.
 The private approval file binds both program hashes, source, primary home and
 LaunchAgent. This route retains strict stop and a five-minute supervised soak.
 It never copies primary data, enables cloud, or calls retired apps. Its Loom
@@ -221,8 +222,15 @@ if [ -n "$NATIVE_APPROVAL" ]; then
   [ -f "$NATIVE_APPROVAL" ] && [ ! -L "$NATIVE_APPROVAL" ] || die "native approval must be a regular file"
   NATIVE_APPROVAL="$(canonical_file "$NATIVE_APPROVAL")"
   NATIVE_APPROVAL_SHA256="$(sha256_file "$NATIVE_APPROVAL")"
-  UPGRADE_MODE="native-inplace-cloud-off"
-  SAFE_UPGRADE_PROTOCOL_VERSION="8"
+  UPGRADE_MODE="$(jq -r '.mode // empty' "$NATIVE_APPROVAL")"
+  case "$UPGRADE_MODE" in
+    native-inplace-cloud-off) SAFE_UPGRADE_PROTOCOL_VERSION="8" ;;
+    native-logical-migration-cloud-off)
+      [ "$NATIVE_REOPEN" -eq 0 ] || die "a two-home migration cannot select in-place reopen"
+      SAFE_UPGRADE_PROTOCOL_VERSION="9"
+      ;;
+    *) die "unknown native approval mode" ;;
+  esac
 elif [ "$NATIVE_REOPEN" -eq 1 ] || [ "$NATIVE_PROBE_ONLY" -eq 1 ]; then
   die "native reopen and probe-only require the native approval"
 fi

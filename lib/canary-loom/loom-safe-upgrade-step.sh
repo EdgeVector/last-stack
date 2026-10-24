@@ -11,6 +11,10 @@ export LOOM_SAFE_UPGRADE_GRAPH="${LOOM_SAFE_UPGRADE_GRAPH:-$SCRIPT_DIR/lastdb-sa
 native_input="${LOOM_INPUT:-}"
 [ -n "$native_input" ] || native_input='{}'
 if printf '%s' "$native_input" | jq -e \
+  '.upgrade_mode == "native-logical-migration-cloud-off" or .item.upgrade_mode == "native-logical-migration-cloud-off"' >/dev/null; then
+  exec python3 "$SCRIPT_DIR/native_migration.py" "$step"
+fi
+if printf '%s' "$native_input" | jq -e \
   '.upgrade_mode == "native-inplace-cloud-off" or .item.upgrade_mode == "native-inplace-cloud-off"' >/dev/null; then
   exec python3 "$SCRIPT_DIR/native_upgrade.py" "$step"
 fi
