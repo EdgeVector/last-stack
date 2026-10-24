@@ -16,7 +16,7 @@ import uuid
 
 sys.dont_write_bytecode = True
 
-from native_upgrade_common import (alive, health,
+from native_upgrade_common import (alive, baseline_health, health,
     load, memory, pair, private_dir, regular, require, run, save, session, sha, stopped, sync_dir, wait_health)
 from native_upgrade_probe import probe
 
@@ -184,6 +184,15 @@ def check_environment(pid, plist):
 
 
 def snapshot(approval):
+    return _snapshot(approval)
+
+
+def baseline_snapshot(approval, baseline=None):
+    require(approval.get("mode") == MODE, "Baseline history is only for native in-place upgrades")
+    return _snapshot(approval, baseline, baseline_history=True)
+
+
+def _snapshot(approval, baseline=None, *, baseline_history=False):
     home, plist_path, plist, program, target = service(approval)
     pid = job_pid(target)
     require(pid is not None, "The primary LaunchAgent is not active")
@@ -191,7 +200,13 @@ def snapshot(approval):
     require(identity["pid"] == pid, "Primary session differs from supervision")
     check_environment(pid, plist)
     programs = pair(program.parent)
-    current = health(home / "data/folddb.sock", programs["lastdbd"]["version"], pid)
+    require(baseline is None or identity == baseline["session"], "The baseline session changed")
+    if baseline_history:
+        current = (baseline_health(home / "data/folddb.sock", programs["lastdbd"]["version"], identity)
+                   if baseline is None else check_old_session_health(home, baseline))
+    else:
+        current = health(home / "data/folddb.sock", programs["lastdbd"]["version"], pid)
+    require(session(home) == identity, "The baseline session changed during its health check")
     ceiling = memory_limit(plist)
     current["memory_bytes"] = memory(pid, ceiling)
     require(not (home / ".shutdown_flush_ready").exists(), "A stale shutdown receipt exists")
@@ -199,6 +214,24 @@ def snapshot(approval):
             "memory_limit_mb": ceiling,
             "session": identity, "health": current,
             "process_start": run(["/bin/ps", "-p", str(pid), "-o", "lstart="]).stdout.strip()}
+
+
+def check_old_session_health(home, baseline):
+    identity = baseline["session"]
+    require(session(home) == identity, "The old primary session changed")
+    value = baseline_health(home / "data/folddb.sock", baseline["pair"]["lastdbd"]["version"], identity)
+    current, original = value["maintenance_history"], baseline["health"]["maintenance_history"]
+    require(isinstance(original, dict) and set(original) == set(current)
+            and all(type(original.get(name)) is int and original[name] >= 0
+                    for name in ("maintenance_failures", "reclaim_failures", "maintenance_runs")),
+            "The saved baseline maintenance history is invalid")
+    require(all(current[name] == original[name]
+                for name in ("session", "maintenance_failures", "reclaim_failures")),
+            "The baseline maintenance failure counters or session changed")
+    require(current["maintenance_runs"] >= original["maintenance_runs"],
+            "The baseline maintenance publication count decreased")
+    require(session(home) == identity, "The old primary session changed during its health check")
+    return value
 
 
 def freshness(candidate, baseline, source):
@@ -269,6 +302,15 @@ def prepare_pair(candidate, program, path, state):
 
 
 def strict_stop(approval, state, path):
+    return _strict_stop(approval, state, path)
+
+
+def baseline_strict_stop(approval, state, path):
+    require(approval.get("mode") == MODE, "Baseline history is only for native in-place upgrades")
+    return _strict_stop(approval, state, path, baseline_history=True)
+
+
+def _strict_stop(approval, state, path, *, baseline_history=False):
     home, _, _, program, target = service(approval)
     identity = state["baseline"]["session"]
     require(job_pid(target) == identity["pid"] and session(home) == identity,
@@ -276,6 +318,10 @@ def strict_stop(approval, state, path):
     require(run(["/bin/ps", "-p", str(identity["pid"]), "-o", "lstart="]).stdout.strip()
             == state["baseline"]["process_start"], "Primary PID identity changed")
     require(not (home / ".shutdown_flush_ready").exists(), "A stale shutdown receipt exists before stop")
+    if baseline_history:
+        check_old_session_health(home, state["baseline"])
+    else:
+        health(home / "data/folddb.sock", state["baseline"]["pair"]["lastdbd"]["version"], identity["pid"])
     record(path, state, "stop-requested", effect_started_at=int(time.time()))
     output = helper("launchd-job-checks.sh", "lastdb_launchd_graceful_prestop",
                     "/bin/launchctl", target, program, "300", "150", "1", timeout=510).stdout
@@ -346,7 +392,7 @@ def recover(ctx, approval, candidate, path, state):
         require(pair(program.parent) == state["baseline"]["pair"], "The still-active old pair differs")
         # Do not send a second stop to an old process that still drains. Its
         # health can fail here; the recovery record then stays incomplete.
-        health(home / "data/folddb.sock", state["baseline"]["pair"]["lastdbd"]["version"], old["pid"])
+        check_old_session_health(home, state["baseline"])
         record(path, state, "old-retained", recovery={"old_pid_untouched": old["pid"]})
         return
 
@@ -439,7 +485,7 @@ def cutover(ctx, approval, candidate, path, state):
         approval_fresh(approval)
         require(0 <= int(time.time()) - state["probe"]["completed_at"] <= 3600,
                 "The exact-candidate operational check is older than one hour")
-        current = snapshot(approval)
+        current = baseline_snapshot(approval, state["baseline"])
         require(all(current[key] == state["baseline"][key] for key in
                     ("stable", "plist_sha256", "pair", "session", "process_start")),
                 "The primary changed after the synthetic check")
@@ -447,7 +493,7 @@ def cutover(ctx, approval, candidate, path, state):
         stage = prepare_pair(candidate, program, path, state)
         record(path, state, "prepared", stage_directory=str(stage))
         print('LOOM_EFFECT_INTENT:{"kind":"deploy","target":"native-inplace-cloud-off"}', flush=True)
-        strict_stop(approval, state, path)
+        baseline_strict_stop(approval, state, path)
     else:
         # A retry can resume this exact transaction. It cannot invent a stop
         # receipt, choose another pair, or act on another primary session.
@@ -543,7 +589,7 @@ def step_main(step):
                 emit({"verdict": "probed" if ctx["native_probe_only"] else "green", "native_state": str(path)})
                 return
             approval_fresh(approval)
-            baseline = snapshot(approval)
+            baseline = baseline_snapshot(approval)
             relation = freshness(candidate, baseline["pair"], ctx["source_git_oid"])
             require(relation["relation"] == ("current" if ctx["native_reopen"] else "forward"),
                     "Native source relation differs from upgrade or reopen mode")
@@ -592,7 +638,11 @@ def step_main(step):
             require(pair(program.parent) == state["baseline"]["pair"], "The recovered pair differs")
             identity = state.get("recovery", {}).get("session") or state["baseline"]["session"]
             require(session(home) == identity and job_pid(target) == identity["pid"], "Recovery session differs")
-            health(home / "data/folddb.sock", state["baseline"]["pair"]["lastdbd"]["version"], identity["pid"])
+            if state["phase"] == "old-retained":
+                require(identity == state["baseline"]["session"], "The retained old session differs")
+                check_old_session_health(home, state["baseline"])
+            else:
+                health(home / "data/folddb.sock", state["baseline"]["pair"]["lastdbd"]["version"], identity["pid"])
             check_environment(identity["pid"], plist)
         elif step == "VERIFY":
             state = check(ctx)

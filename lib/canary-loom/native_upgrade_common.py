@@ -114,7 +114,7 @@ def call(sock, route, body=None, timeout=30):
         connection.close()
 
 
-def health(sock, version=None, pid=None):
+def _current_health(sock, version=None, pid=None):
     value = call(sock, "/health")
     require(value.get("status") == "ok", "Daemon health is not green")
     if pid:
@@ -136,10 +136,39 @@ def health(sock, version=None, pid=None):
     parts = native["parts"]
     require(native["writer_failed"] is False, "The native writer failure mark is set")
     require(parts["auto_maintenance"] is True, "Automatic maintenance is off")
-    require(parts["maintenance_failures"] == 0 and parts["reclaim_failures"] == 0
-            and parts["maintenance_last_error"] is None and parts["reclaim_last_error"] is None,
+    require(all(type(parts.get(name)) is int and parts[name] >= 0
+                for name in ("maintenance_failures", "reclaim_failures")),
+            "Native maintenance failure counters are absent or invalid")
+    require(parts["maintenance_last_error"] is None and parts["reclaim_last_error"] is None,
             "Native maintenance reports a failure")
     return {"version": build, "native": native, "cloud_off": True}
+
+
+def health(sock, version=None, pid=None):
+    value = _current_health(sock, version, pid)
+    parts = value["native"]["parts"]
+    require(parts["maintenance_failures"] == 0 and parts["reclaim_failures"] == 0,
+            "Native maintenance reports a failure")
+    return value
+
+
+def baseline_health(sock, version, identity):
+    require(isinstance(identity, dict) and set(identity) == {"pid", "start_ts"}
+            and all(type(identity[name]) is int and identity[name] > 0 for name in identity),
+            "The baseline session identity is invalid")
+    value = _current_health(sock, version, identity["pid"])
+    parts = value["native"]["parts"]
+    require(type(parts.get("maintenance_runs")) is int and parts["maintenance_runs"] >= 0,
+            "Baseline maintenance publication count is absent or invalid")
+    # A successful publication clears last_error, not the process-lifetime
+    # failure counter. Only the unchanged old session can retain that history.
+    require(parts["reclaim_failures"] == 0, "Baseline reclaim reports a failure")
+    require(parts["maintenance_failures"] == 0 or parts["maintenance_runs"] > 0,
+            "Baseline maintenance history lacks a successful publication")
+    history = {"session": dict(identity), "maintenance_failures": parts["maintenance_failures"],
+               "reclaim_failures": parts["reclaim_failures"], "maintenance_runs": parts["maintenance_runs"]}
+    value["maintenance_history"] = history
+    return value
 
 
 def memory(pid, limit_mb):
