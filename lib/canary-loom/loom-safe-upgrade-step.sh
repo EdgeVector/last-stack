@@ -6,6 +6,15 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 export LOOM_LASTDB_FRESHNESS_SCRIPT="${LOOM_LASTDB_FRESHNESS_SCRIPT:-$SCRIPT_DIR/lastdb-candidate-freshness.py}"
 export LOOM_SAFE_UPGRADE_GRAPH="${LOOM_SAFE_UPGRADE_GRAPH:-$SCRIPT_DIR/lastdb-safe-upgrade.json}"
 
+# Native mode has its own candidate-bound, Cloud-Off contract. Do not enter the
+# legacy driver: it requires retired app schemas and a cloud recovery point.
+native_input="${LOOM_INPUT:-}"
+[ -n "$native_input" ] || native_input='{}'
+if printf '%s' "$native_input" | jq -e \
+  '.upgrade_mode == "native-inplace-cloud-off" or .item.upgrade_mode == "native-inplace-cloud-off"' >/dev/null; then
+  exec python3 "$SCRIPT_DIR/native_upgrade.py" "$step"
+fi
+
 exec python3 - "$step" <<'PY'
 import hashlib, json, os, re, signal, stat, subprocess, sys, tempfile, time
 from pathlib import Path
@@ -32,6 +41,9 @@ if isinstance(item, dict):
         "safe_upgrade_protocol_version",
         "zero_live_soak",
         "accept_stale_recovery_point",
+        "upgrade_mode",
+        "native_approval",
+        "native_approval_sha256",
     )
     conflicts = [
         key for key in immutable

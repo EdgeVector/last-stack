@@ -71,6 +71,71 @@ It also refuses the broad setup uninstaller. Nested setup inherits the flag.
 Artifact provenance, probes, command and skill links, compatibility layout,
 and instruction updates retain the normal path.
 
+## Native in-place upgrade with Cloud Off (Tom, 2026-10-23)
+
+Tom explicitly approved this route for the named CI candidate in chat.
+Use this route for a native primary with cloud off and retired app stores.
+The legacy app and cloud procedure below does not describe this route.
+Its gates remain unchanged for legacy upgrades.
+
+CAUTION: This route creates no cloud recovery point or primary data copy.
+Recovery uses the saved program pair and the existing native files.
+A synthetic compatibility check cannot prove that all primary data is readable.
+
+1. Verify the accepted source and CI artifact, both program hashes, signatures,
+   architecture, and versions. Keep the artifact outside Git.
+2. Record Tom's explicit approval for this candidate and Cloud Off.
+   Use `lib/canary-loom/native_upgrade.py approve` with the candidate path,
+   full source OID, exact quote, primary LaunchAgent path, CI run, and output path.
+   The output is private and expires for a new cutover after 24 hours.
+   Never create an approval record without the corresponding human instruction.
+3. Run `last-stack-safe-upgrade-loom --candidate <lastdbd>
+   --native-cloud-off-approval <approval.json> --json`.
+   The same local-recovery graph selects native protocol 8.
+   Legacy callers retain protocol 7 and separate execution keys.
+   `--native-probe-only` ends after the generated check, without a primary stop.
+   `--native-reopen` uses the exact installed pair for a later strict clean reopen.
+   A reopen has a separate execution and transaction key.
+4. The installed baseline creates a fresh generated native home and two records.
+   The exact candidate reads them, updates one, deletes one, and compacts.
+   The saved baseline then reopens that output and checks both keys.
+   The candidate reopens it again and checks both keys.
+   Each stop requires the exact session's successful flush receipt and clean ledger.
+   No primary identity or data enters the generated home.
+5. The candidate must pass the memory guard with ten percent headroom.
+   The check retains the 45-second settle and 15-second memory observation.
+   The live memory guard and five-minute status soak remain required.
+   Native writer, maintenance, reclaim, persist status, and fresh status samples must pass.
+   The retired LastStore `keep_small` meter does not describe native files.
+   Native status replaces that meter gate on this route only.
+6. Before stop, the route rechecks the exact primary session, program pair,
+   home identities, identity file, cloud config, source ancestry, and LaunchAgent config.
+   It saves only the program pair. It stages and verifies both new programs.
+7. The strict supervisor helper stops the primary without a forced kill.
+   Its exact flush receipt and clean session must pass before either program changes.
+   The LaunchAgent must be absent before each program rename.
+   File and directory barriers precede each durable recovery phase.
+8. The route starts the same supervised primary with the same config and home.
+   It checks the exact installed pair, socket session, process config, native health,
+   Cloud Off, and memory size for at least five minutes.
+   Keep the local recovery journal outside LastDB. Do not reconcile into retired apps.
+
+LastDB builds, latency comparisons, and benchmarks run in CI only.
+Use the accepted PR's CI summary and artifacts for the speed gate.
+The generated native check above is a small operational upgrade check.
+It collects no latency samples and creates no test suite.
+
+The native transaction lives under the local safe-upgrade state directory.
+It binds the approval digest, source, both programs, baseline, and operational proof.
+An exact-pair retry can reconcile an interrupted phase.
+It cannot choose another candidate or invent a stopped flush receipt.
+On cutover failure, the route restores both saved programs through new files.
+It first requires a clean stopped native home and an absent LaunchAgent.
+It never forces a candidate stop, resets data, or edits cloud configuration.
+If a clean stop is impossible, recovery refuses and retains its exact state.
+The run stays RED after a successful program recovery.
+Keep the saved pair and local receipts until review and recovery no longer need them.
+
 ## Recovery point: the cloud backup, never a copy (Tom, 2026-10-12)
 
 The live cutover makes no copy of the primary home. Not a rollback copy, not a

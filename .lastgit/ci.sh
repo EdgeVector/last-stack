@@ -25,6 +25,14 @@ for script in setup bin/* lib/*.sh hooks/*.sh .lastgit/ci.sh; do
   esac
 done
 
+# The graph executes nested shell and Python workers. Check their actual
+# source syntax without a daemon, test, or primary operation.
+for script in lib/canary-loom/*.sh skills/lastdb-safe-upgrade/scripts/*.sh; do
+  bash -n "$script"
+done
+python3 -m py_compile lib/canary-loom/native_upgrade.py \
+  lib/canary-loom/native_upgrade_common.py lib/canary-loom/native_upgrade_probe.py
+
 bin/last-stack-lint-machine-leaks --ci
 # No unbounded workspace walk in a helper, no new bash->python heredoc
 # nest in bin/ (papercut-agent-zero-llm-cli-bash-python-heredoc-rglob).
