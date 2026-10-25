@@ -2,7 +2,8 @@
 
 # These are source policy identities, not generated CI evidence.
 # Baseline: 96f32b2ade27927019179fb57dc60f9c00a0ae68
-# Reviewed native5 source: 4c67d497bba752c4417f88932e34cfb4a9e61757
+# Reviewed native5 source: 877eed74913c37e183ec57a2ca587a51617f7c6a
+# Config-store removal tree: d1c111dd37c30dc40c47a7af3fd70f348f53f7ce
 EXACT_BLOBS = {
     'fold_db/crates/core/src/backup_progress/mod.rs': (
         ('100644', 'blob', '329ef97fa71f59cd310d00886558d0bf2a2c8899'),
@@ -47,6 +48,22 @@ EXACT_BLOBS = {
     'fold_db/crates/core/src/db_operations/schema_store/retired_replay.rs': (
         ('100644', 'blob', 'cef662f3ae55bfce2c52eaac46ef1ee56064ef70'),
         ('100644', 'blob', 'dd1be96d9718520aee18511cbc56a9fe6182639b'),
+    ),
+    'fold_db/crates/core/src/fold_db_core/factory/local.rs': (
+        ('100644', 'blob', '2245276bb8d476033b95a891b47209e61f3a2fc1'),
+        ('100644', 'blob', '769141429d8235c6893b496cfd77fd006a06c3b2'),
+    ),
+    'fold_db/crates/core/src/fold_db_core/fold_db.rs': (
+        ('100644', 'blob', 'e3df158aecdcd49e034cdc4d1262b79869146a2d'),
+        ('100644', 'blob', '65e14dcd2bf89caf8a9a827ca34e73dbf43e0dcd'),
+    ),
+    'fold_db/crates/core/src/fold_db_core/fold_db/accessors.rs': (
+        ('100644', 'blob', '08290bba44898c089c53234254909746a2b13a63'),
+        ('100644', 'blob', '48a53f32354cc385220ef2dca9d2ee084decdbf1'),
+    ),
+    'fold_db/crates/core/src/fold_db_core/fold_db/init.rs': (
+        ('100644', 'blob', '43cf7b8207990c9e26e4eed89e7cb29fecc9dd85'),
+        ('100644', 'blob', '622140a5ab90dffd3c2d8a956fb922d3d4364a93'),
     ),
     'fold_db/crates/core/src/fold_db_core/mutation_manager/aggregate/validate.rs': (
         ('100644', 'blob', 'bb48e958dbbfc0c9966e3ec1f2752021b0191653'),

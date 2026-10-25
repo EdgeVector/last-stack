@@ -116,6 +116,9 @@ Three executable lint scripts also require closed pairs. Their limits and remain
 Each pair includes the exact Git modes. Native source stays `100644`; the three lint scripts stay `100755`.
 The counter-writer allowlist requires one complete `100644` pair, with only the reviewed retired entries removed.
 The retired fixture's source must also be absent. The exact Cargo stanza check remains required.
+Four further `100644` pairs remove the unused config-store field, initializer, accessors, and local factory attachment.
+They bind the exact `96` blobs to the reviewed four-file candidate tree.
+The native5 namespace export, storage implementation, crypto, and restore path remain unchanged.
 These paths do not receive general modification permission.
 The fresh full compatibility record must also include those exact blob pairs.
 An unknown protected path, a protected source mode change, or a different blob map refuses the operation.
