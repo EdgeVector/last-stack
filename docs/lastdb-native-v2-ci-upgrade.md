@@ -38,7 +38,8 @@ It names the original `artifact_receipt`, `dev_proof_root`, `compatibility_recor
 All evidence inputs remain private and bounded.
 The gate reads the original CI artifact and operational outputs; it creates no duplicate CI report.
 
-The source requires successful `ci-required` and `benchmark-complete` checks for the exact commit.
+The original `0a9` path requires successful `ci-required` and `benchmark-complete` checks for the exact commit.
+The exact `96` maintenance path uses the separate source and accepted-main checks below.
 GitHub must confirm that the accepted commit remains an ancestor of main.
 The gate first accepts an identical complete candidate and accepted tree, including after a squash merge.
 If concurrent main changes produce a different tree, the evidence must also bind `accepted_pull_request`.
@@ -52,7 +53,7 @@ The binary, CI, DEV proof, and protected-source comparison still use the exact r
 The Mac artifact must come from the normal `native-dev-artifact.yml` workflow for that commit.
 The gate verifies its GitHub digest, original archive, target, and both program byte hashes.
 The actual DEV proof must use those exact programs.
-It must prove one foreground standalone Start while the source runs, zero Resume requests, and accepted publication.
+It must prove one foreground standalone Start, zero Resume requests, and accepted publication.
 It also requires packed files, the exact stopped boundary, source-free restore, and two restored boots.
 The accepted result, frozen manifest, restore selector, native file count, and byte count must agree.
 All source and restored daemons must be stopped, with zero retained source bytes.
@@ -62,8 +63,10 @@ It does not convert these outputs into a second proof report.
 
 ## Source compatibility and program recovery
 
-The closed baseline is `0a9d8cf48470c21f0b7b9fef250a2d5598ca2b09`.
-A different installed source requires a fresh source review and policy change.
+The original closed baseline is `0a9d8cf48470c21f0b7b9fef250a2d5598ca2b09`.
+Its source, CI, and acceptance behavior remain unchanged.
+The separate maintenance path accepts only the exact `96` baseline below.
+Every other installed source requires a fresh source review and policy change.
 The private compatibility record uses schema `lastdb.native-source-compatibility.v1`.
 Its `baseline` and `candidate` must equal the exact approved sources.
 Its `reviewed_format_neutral_changes` maps each protected changed path to exact `before` and `after` Git blobs.
@@ -83,6 +86,72 @@ Program recovery retains candidate acknowledged writes in the same native home.
 The source compatibility basis permits the original program to read those normal writes.
 A failed or unclean candidate stop does not authorize an automatic program downgrade.
 The transaction retains its exact pair and recovery state if a clean stop cannot be proved.
+
+## Exact native5 maintenance path
+
+This path accepts only baseline `96f32b2ade27927019179fb57dc60f9c00a0ae68`.
+The evidence must set `maintenance_profile` to `native5-cloud-retirement-v1`.
+It must supply `baseline_provenance` with schema `lastdb.completed-native-v2-baseline.v1`.
+The fields are `journal_path`, `journal_sha256`, `approval_path`, and `approval_sha256`.
+The gate requires the original completed mode10 journal and approval, with their closed reviewed hashes.
+It checks the original journal location, exact candidate pair, completed phase, native identity, and selected primary configuration.
+The fresh installed pair must match that prior candidate at its isolated installed directory.
+The prior approval is historical proof. The new cutover still requires its own fresh exact approval.
+The gate performs no primary read through these historical evidence files.
+
+The new compatibility record must compare the full `96` tree with the exact candidate H tree.
+It must use the same `profile` value and the existing format-neutral review flags.
+It must contain every protected changed path and exact before/after blob pair.
+The old `0a9` compatibility record cannot satisfy this check.
+Only the closed retirement path list permits changes, additions, or deletions in Core.
+Native codecs, native5 identity, file formats, crypto, protocol, dependencies, and CI workflows remain unchanged.
+The only Cargo exception removes the exact retired `csync_e2e_write` binary stanza and its source file.
+Every other Cargo byte, feature, dependency, and build setting must remain unchanged.
+Two further exceptions permit only exact source byte changes from `96`.
+They add the direct `BTreeSet` import in the query-slice builder and remove two unused atom-store re-exports.
+Every other byte in those files must remain unchanged.
+The callerless writer cleanup adds 29 closed Git blob pairs for sensitive store, progress, and helper paths.
+Each pair binds the exact `96` blob to the reviewed native5 cleanup blob.
+Three executable lint scripts also require closed pairs. Their limits and remaining bans stay unchanged.
+Each pair includes the exact Git modes. Native source stays `100644`; the three lint scripts stay `100755`.
+The counter-writer allowlist requires one complete `100644` pair, with only the reviewed retired entries removed.
+The retired fixture's source must also be absent. The exact Cargo stanza check remains required.
+These paths do not receive general modification permission.
+The fresh full compatibility record must also include those exact blob pairs.
+An unknown protected path, a protected source mode change, or a different blob map refuses the operation.
+Ordinary Node and host application source remains outside the native compatibility scope.
+The exact H CI, artifact, DEV, approval, and merged PR gates still bind that application code.
+
+The evidence must supply `required_ci_run` for a successful H `ci-required.yml` workflow dispatch.
+The exact required job and its GitHub Actions check must both name H.
+The Mac archive, both programs, and the fresh DEV backup/restore proof must also name H.
+The accepted main merge M requires its normal `ci-required` and `benchmark-complete` checks.
+The exact merged PR and independent clean merge calculation must bind H to M.
+M can retain main's newer native format. The transaction installs only H, with the unchanged native5 format.
+The journal records `benchmark_source=M` separately from the artifact source H.
+The evidence must supply `accepted_main_benchmark_run` for M's successful main-push `bench.yml` run.
+That exact run must contain the successful normal `benchmark-complete` check and real measurements.
+Its measurement, resource, summary, upload, and receipt steps must all succeed.
+This excludes a documentation-only PR check that skips measurements.
+
+The evidence must also supply `candidate_benchmark_run` for a successful `bench-compare.yml` dispatch at H.
+Use explicit baseline `96`, candidate H, driver H, profile `standard`, and `resource_only=false`.
+This comparison supplements the normal main gate. It cannot replace `benchmark-complete`.
+The original CI archives must remain in protected external files.
+Their evidence fields are `candidate_benchmark_archive` and `candidate_benchmark_receipt_archive`.
+The gate binds the exact run attempt, artifact names, API digests, expiration, original receipt, and ZIP bytes.
+Both original manifests must identify H, baseline `96`, driver H, and two complete pairs.
+The candidate must use a fresh CI build. Both ordinary and resource measurements must complete.
+Archive bounds protect the evidence reader. They do not limit backup data or native files.
+
+The optional `github_metadata_transport=public_https` uses fixed public LastDB HTTPS GET routes when the CLI credentials are unavailable.
+It verifies that the fixed repository is public before other metadata reads.
+It uses no credentials, proxy, netrc, redirects, archive download, or write API.
+It bounds request count, time, and response size. Rate limits or missing metadata refuse the operation.
+The private verified archive remains required because public artifact download can require authentication.
+The artifact digest, size, source, workflow, and expiration checks remain mandatory.
+An absent transport field keeps the existing GitHub CLI metadata path.
+This option does not change private repository behavior.
 
 ## Stop and final recovery point
 

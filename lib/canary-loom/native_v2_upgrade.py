@@ -127,7 +127,7 @@ def probe(ctx, candidate, approval, evidence, path):
     git(evidence["source_repository"], "merge-base", "--is-ancestor",
         approval["baseline_source_git_oid"], ctx["source_git_oid"])
     require(approval["baseline_source_git_oid"] != ctx["source_git_oid"], "Upgrade candidate is already installed")
-    gates = evidence_check(candidate, evidence, approval["baseline_source_git_oid"])
+    gates = evidence_check(candidate, evidence, approval["baseline_source_git_oid"], baseline["baseline"], approval)
     report, proof = live_recovery(approval, candidate, baseline["baseline"]["session"])
     state = {"schema": "lastdb.native-v2-ci-upgrade.v1", "binding": {k: ctx[k] for k in IMMUTABLE},
              "execution": os.environ["LOOM_EXEC_ID"], **baseline, "gates": gates,
@@ -168,7 +168,7 @@ def cutover(ctx, candidate, approval, evidence, path, state):
         fresh(approval)
         preserved(approval, state)
         current = initial_snapshot(approval, state)
-        evidence_check(candidate, evidence, approval["baseline_source_git_oid"])
+        evidence_check(candidate, evidence, approval["baseline_source_git_oid"], current, approval)
         live_report, _ = live_recovery(approval, candidate, current["session"])
         prepare(approval, state, path)
         observed_read = keyed_read(approval)
