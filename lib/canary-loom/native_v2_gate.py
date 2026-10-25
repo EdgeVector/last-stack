@@ -221,8 +221,11 @@ def compatibility(evidence, baseline_source):
             "record_sha256": sha(evidence["compatibility_record"]), "backward_reopen_exercised": False}
 
 
-def check(candidate, evidence, baseline_source):
+def check(candidate, evidence, baseline_source, current=None, approval=None):
     require(re.fullmatch(r"[0-9a-f]{40}", evidence["source_git_oid"]) is not None,
             "Evidence requires the full candidate source")
+    if baseline_source == "96f32b2ade27927019179fb57dc60f9c00a0ae68":
+        from native_v2_maintenance import check as maintenance_check
+        return maintenance_check(candidate, evidence, current, approval)
     return {"release_acceptance": ci(candidate, evidence), "development": development(candidate, evidence),
             "compatibility": compatibility(evidence, baseline_source), "checked_at": int(time.time())}

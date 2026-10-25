@@ -28,11 +28,16 @@ def git(repo, *args):
     return result.stdout
 
 
-def merged_release(evidence, commit, result):
+def github_metadata(path):
+    return command_json(["gh", "api", "repos/EdgeVector/lastdb" + path])
+
+
+def merged_release(evidence, commit, result, metadata=None):
     source, accepted, repo = evidence["source_git_oid"], evidence["accepted_main_commit"], evidence["source_repository"]
     number = evidence["accepted_pull_request"]
     require(type(number) is int and 0 < number < 2**31, "An exact accepted PR number is required")
-    pull = command_json(["gh", "api", "repos/EdgeVector/lastdb/pulls/" + str(number)])
+    read = metadata or github_metadata
+    pull = read("/pulls/" + str(number))
     require(pull["merged"] is True and pull["state"] == "closed" and pull["head"]["sha"] == source
             and pull["base"]["ref"] == "main" and pull["base"]["repo"]["full_name"] == "EdgeVector/lastdb"
             and pull["head"]["repo"]["full_name"] == "EdgeVector/lastdb"
@@ -54,11 +59,12 @@ def merged_release(evidence, commit, result):
             "squash_parent": parent, "merge_base": base}
 
 
-def accepted_release(evidence):
+def accepted_release(evidence, metadata=None):
     source, accepted = evidence["source_git_oid"], evidence["accepted_main_commit"]
     require(re.fullmatch(r"[0-9a-f]{40}", accepted) is not None, "Accepted main commit is absent")
-    commit = command_json(["gh", "api", "repos/EdgeVector/lastdb/commits/" + accepted])
-    relation = command_json(["gh", "api", "repos/EdgeVector/lastdb/compare/" + accepted + "...main?per_page=1"])
+    read = metadata or github_metadata
+    commit = read("/commits/" + accepted)
+    relation = read("/compare/" + accepted + "...main?per_page=1")
     require(commit["sha"] == accepted and relation["status"] in ("ahead", "identical")
             and relation["merge_base_commit"]["sha"] == accepted, "The accepted commit is not an ancestor of main")
     result = {"artifact_source": source, "artifact_tree": git(
@@ -66,4 +72,4 @@ def accepted_release(evidence):
         "acceptance_commit": accepted, "acceptance_tree": commit["commit"]["tree"]["sha"]}
     if result["artifact_tree"] == result["acceptance_tree"]:
         return {**result, "method": "identical_accepted_tree"}
-    return merged_release(evidence, commit, result)
+    return merged_release(evidence, commit, result, metadata=read)
