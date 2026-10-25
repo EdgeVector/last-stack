@@ -30,10 +30,6 @@ EXACT_TRANSFORMS = {
          b"    RetiredIntentRetentionGuard, RetiredIntentRetentionProof,\n};\n",
          b"pub(crate) use retired_intent_retention::RetiredIntentRetentionProof;\n"),
     ),
-    RETIRED_BIN_ALLOW: (
-        (b"lastdb_node/src/bin/csync_e2e_write.rs|main|T B|cloud sync end-to-end proof tool; "
-         b"it opens an exclusive synthetic home\n", b""),
-    ),
 }
 
 
@@ -132,7 +128,7 @@ def fixture_stanza_only(repo, source, old, new):
             "Cargo changes exceed the exact retired fixture stanza deletion")
 
 
-def exact_source_change(repo, source, name, old, new):
+def exact_source_change(repo, source, name):
     before = git(repo, "show", baseline.SOURCE + ":" + name)
     after = git(repo, "show", source + ":" + name)
     expected = before
@@ -140,9 +136,6 @@ def exact_source_change(repo, source, name, old, new):
         require(expected.count(original) == 1, "An exact maintenance source transform is absent or duplicated")
         expected = expected.replace(original, replacement, 1)
     require(after == expected, "A maintenance source change exceeds its exact byte transform")
-    if name == RETIRED_BIN_ALLOW:
-        require(RETIRED_BIN in old and RETIRED_BIN not in new,
-                "The retired fixture lint entry requires deletion of its exact source")
 
 
 def compatibility(evidence):
@@ -168,6 +161,9 @@ def compatibility(evidence):
         if name in EXACT_BLOBS:
             require((before, after) == EXACT_BLOBS[name],
                     "A sensitive maintenance source differs from its exact reviewed Git blobs: " + name)
+            if name == RETIRED_BIN_ALLOW:
+                require(RETIRED_BIN in old and RETIRED_BIN not in new,
+                        "The retired fixture lint entry requires deletion of its exact source")
         elif before is None:
             require(name in ADDED and after[:2] == ("100644", "blob"), "Unreviewed maintenance source addition: " + name)
         elif after is None:
@@ -179,7 +175,7 @@ def compatibility(evidence):
             if name == "lastdb_node/Cargo.toml":
                 fixture_stanza_only(evidence["source_repository"], source, old, new)
             elif name in EXACT_TRANSFORMS:
-                exact_source_change(evidence["source_repository"], source, name, old, new)
+                exact_source_change(evidence["source_repository"], source, name)
         changes[name] = {"before": before[2] if before else None, "after": after[2] if after else None}
     require(proof.get("reviewed_format_neutral_changes") == changes, "Fresh exact96 reviewed source blobs differ")
     return {"baseline": baseline.SOURCE, "candidate": source, "profile": PROFILE,

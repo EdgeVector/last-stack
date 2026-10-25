@@ -107,14 +107,15 @@ Only the closed retirement path list permits changes, additions, or deletions in
 Native codecs, native5 identity, file formats, crypto, protocol, dependencies, and CI workflows remain unchanged.
 The only Cargo exception removes the exact retired `csync_e2e_write` binary stanza and its source file.
 Every other Cargo byte, feature, dependency, and build setting must remain unchanged.
-Three further exceptions permit only exact source byte changes from `96`.
+Two further exceptions permit only exact source byte changes from `96`.
 They add the direct `BTreeSet` import in the query-slice builder and remove two unused atom-store re-exports.
-They remove the retired fixture's exact counter-writer allow entry only when its source file is also absent.
 Every other byte in those files must remain unchanged.
 The callerless writer cleanup adds 29 closed Git blob pairs for sensitive store, progress, and helper paths.
 Each pair binds the exact `96` blob to the reviewed native5 cleanup blob.
 Three executable lint scripts also require closed pairs. Their limits and remaining bans stay unchanged.
 Each pair includes the exact Git modes. Native source stays `100644`; the three lint scripts stay `100755`.
+The counter-writer allowlist requires one complete `100644` pair, with only the reviewed retired entries removed.
+The retired fixture's source must also be absent. The exact Cargo stanza check remains required.
 These paths do not receive general modification permission.
 The fresh full compatibility record must also include those exact blob pairs.
 An unknown protected path, a protected source mode change, or a different blob map refuses the operation.

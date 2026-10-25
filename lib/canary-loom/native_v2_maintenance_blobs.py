@@ -2,7 +2,7 @@
 
 # These are source policy identities, not generated CI evidence.
 # Baseline: 96f32b2ade27927019179fb57dc60f9c00a0ae68
-# Reviewed native5 source: 2223fe6078c3950c107290fd3ce380b1f3768309
+# Reviewed native5 source: 4c67d497bba752c4417f88932e34cfb4a9e61757
 EXACT_BLOBS = {
     'fold_db/crates/core/src/backup_progress/mod.rs': (
         ('100644', 'blob', '329ef97fa71f59cd310d00886558d0bf2a2c8899'),
@@ -131,5 +131,9 @@ EXACT_BLOBS = {
     'scripts/lints/lint-diff-fn-size.py': (
         ('100755', 'blob', '4c6772c114497129c90876f39c9b88ed4c4bf926'),
         ('100755', 'blob', '1c0aad966427ae11317e2e57c65dc04608629a71'),
+    ),
+    'scripts/lints/atom-counter-writers.allow': (
+        ('100644', 'blob', '3d2bbfdd69fcc2d1334191585ee1a341ec815b2a'),
+        ('100644', 'blob', '7245c06bf10771810d4b204af458bc06a23a7050'),
     ),
 }
