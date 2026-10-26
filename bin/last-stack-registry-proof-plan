@@ -6,9 +6,10 @@ answers these questions from explicit files:
 
   select-build   Which lastdb build does the proof target?
                  The override target in config/registry/proof-builds.json when
-                 it is set, else the build of the NEWEST row in the `next`
-                 index (the build the registry already pins for the Mac). No
-                 Mac state is read (design D4).
+                 it is set. Else the public lastdb main build, when the caller
+                 passes it and the index has no row for that build. Else the
+                 build of the NEWEST row in the `next` index. No Mac state is
+                 read (design D4).
   moved          Did any app head move past the pin that `next` holds for that
                  build? Prints the moved apps and a fingerprint of the whole
                  head set. An app with no row for the build counts as moved.
@@ -93,6 +94,11 @@ def fingerprint_of(build: str, shas: dict[str, str]) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def known_build(index: dict, build: str) -> bool:
+    """True when any row already names this lastdb build."""
+    return any(str(row.get("lastdb_version") or "") == build for _app, row in index_rows(index))
+
+
 def cmd_select_build(args: argparse.Namespace) -> int:
     index = load_json(args.index, "index")
     build, source, fold_oid = "", "", ""
@@ -102,6 +108,18 @@ def cmd_select_build(args: argparse.Namespace) -> int:
             build = str(target["build"]).strip()
             fold_oid = str(target.get("fold_oid") or "").strip().lower()
             source = "override"
+    main_build = str(args.lastdb_main_build or "").strip()
+    main_oid = str(args.lastdb_main_oid or "").strip().lower()
+    if not build and main_build:
+        if not valid_build(main_build):
+            die(f"lastdb main build {main_build!r} is not a git describe string (<tag>-<n>-g<hex>)", 2)
+        if main_oid and (len(main_oid) != 40 or any(c not in "0123456789abcdef" for c in main_oid)):
+            die(f"lastdb main oid {main_oid!r} is not a 40-hex oid", 2)
+        abbrev = main_build.rpartition("-g")[2]
+        if main_oid and not main_oid.startswith(abbrev):
+            die(f"lastdb main oid does not start with the build abbrev {abbrev}", 2)
+        if not known_build(index, main_build):
+            build, fold_oid, source = main_build, main_oid, "lastdb-main"
     if not build:
         build = newest_build(index)
         source = "next-newest"
@@ -110,7 +128,7 @@ def cmd_select_build(args: argparse.Namespace) -> int:
     if not valid_build(build):
         die(f"build {build!r} is not a git describe string (<tag>-<n>-g<hex>)", 2)
     if fold_oid and (len(fold_oid) != 40 or any(c not in "0123456789abcdef" for c in fold_oid)):
-        die(f"override fold_oid {fold_oid!r} is not a 40-hex oid", 2)
+        die(f"fold oid {fold_oid!r} is not a 40-hex oid", 2)
     print(json.dumps({"build": build, "source": source, "fold_oid": fold_oid}))
     return 0
 
@@ -217,6 +235,8 @@ def main(argv: list[str]) -> int:
     p = sub.add_parser("select-build", help="the lastdb build the proof targets")
     p.add_argument("--index", type=Path, required=True, help="registry/next.json")
     p.add_argument("--override", type=Path, default=None, help="config/registry/proof-builds.json")
+    p.add_argument("--lastdb-main-build", default="", help="git describe of public lastdb main, leading v removed")
+    p.add_argument("--lastdb-main-oid", default="", help="full 40-hex oid of public lastdb main")
     p.set_defaults(fn=cmd_select_build)
 
     p = sub.add_parser("moved", help="apps whose head moved past the pin next holds for the build")
