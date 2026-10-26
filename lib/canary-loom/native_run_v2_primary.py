@@ -148,7 +148,7 @@ def select(approval, state, path, candidate=True):
     record(path, state, "selected" if candidate else "rollback-selected")
 
 
-def live(approval, state, candidate=True):
+def selected_session(approval, state, candidate=True):
     preserved(approval, state)
     home, _, plist, program, target = service(approval)
     wanted = state["candidate"] if candidate else state["baseline"]["pair"]
@@ -162,10 +162,19 @@ def live(approval, state, candidate=True):
     identity = session(home)
     require(identity["pid"] == pid, "The primary socket session and supervisor differ")
     check_environment(pid, plist)
-    checked = health(home / "data/folddb.sock", wanted["lastdbd"]["version"], pid)
+    require(job_pid(target) == pid and session(home) == identity,
+            "The selected Run V2 session changed during its identity check")
+    return identity
+
+
+def live(approval, state, candidate=True):
+    identity = selected_session(approval, state, candidate)
+    home = Path(approval["primary_home"])
+    wanted = state["candidate"] if candidate else state["baseline"]["pair"]
+    checked = health(home / "data/folddb.sock", wanted["lastdbd"]["version"], identity["pid"])
     require(session(home) == identity, "The selected Run V2 session changed during its health check")
     return {"session": identity, "health": checked,
-            "memory_bytes": memory(pid, state["baseline"]["memory_limit_mb"])}
+            "memory_bytes": memory(identity["pid"], state["baseline"]["memory_limit_mb"])}
 
 
 def checked_startup(home, target, binding):

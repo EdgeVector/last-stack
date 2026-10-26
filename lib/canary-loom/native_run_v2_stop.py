@@ -6,10 +6,11 @@ import time
 from native_upgrade import helper, job_pid, service, unloaded
 from native_upgrade_common import require, run, session, sha, stopped
 from native_v2_stop import consumers, restore_hold
-from native_run_v2_primary import live, record
+from native_run_v2_primary import live, record, selected_session
 
 
 def stop(approval, state, path, identity, expected_program, phase):
+    require(phase in ("stop", "rollback-stop"), "Unknown RunV2 stop policy")
     home, _, _, program, target = service(approval)
     require(program == Path(expected_program["path"]) and sha(program) == expected_program["sha256"],
             "The stop executable is not the exact bound program")
@@ -22,7 +23,12 @@ def stop(approval, state, path, identity, expected_program, phase):
     require(not (home / ".shutdown_flush_ready").exists(), "A stale shutdown receipt exists before stop")
     inode = program.stat().st_ino
     proof = consumers(program, target, identity["pid"])
-    require(live(approval, state, identity != state["baseline"]["session"])["session"] == identity,
+    # Recovery must be able to stop an unhealthy candidate. It retains every
+    # identity guard; only the initial baseline stop requires health admission.
+    observed = (selected_session(approval, state, True) if phase == "rollback-stop"
+                else live(approval, state, False)["session"])
+    require(observed == identity
+            and run(["/bin/ps", "-p", str(identity["pid"]), "-o", "lstart="]).stdout.strip() == expected_start,
             "The stop session changed after consumer inventory")
     require(state.get("effect_started_at") or 0 <= time.time() - approval["approved_at"] <= 86400,
             "The candidate approval expired before the first stop")

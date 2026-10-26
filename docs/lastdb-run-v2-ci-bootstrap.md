@@ -177,6 +177,9 @@ The same supervised home must pass strict health and the memory guard for five m
 The same candidate session must remain active through that interval and the final check.
 Recovery changes only program selection through the saved transaction.
 It requires a clean candidate stop before a program downgrade.
+The rollback stop retains exact program, session, process, environment, and consumer checks.
+It does not require the failed candidate to pass health or memory admission before that graceful stop.
+The initial baseline stop still requires those health and memory gates.
 An unclean or unbound candidate session causes refusal and retains the journal.
 It does not force a kill, reset data, restore data, or change cloud configuration.
 
