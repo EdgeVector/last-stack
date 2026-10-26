@@ -192,3 +192,58 @@ last-stack-safe-upgrade-loom --candidate <verified-H-lastdbd> --source-git-oid <
 
 Source, syntax, and format checks do not prove an executed upgrade.
 Only the completed supported operation and its exact receipts prove that result.
+
+## Closed accepted integration: profile v2
+
+The separate profile `run-v2-ci-bootstrap-v2` admits one exact accepted integration.
+The original v1 profile and its same-tree requirement remain unchanged.
+Protocol 11, its primary safeguards, and its recovery transaction remain unchanged.
+
+The selected package remains the tested PR head H:
+`ee8a5b78f4d337c26542fea5e38543ef523587f7`.
+Its tree is `9d82065b4afbe58a312db64ba12a6ee85fc576f7`.
+The accepted squash M is `54337df4199e78a72c65ad08bf9ddde147ea9b51`.
+Its only parent is `0b0a79d4c10949e2f0570e82d9bc4fdb9513a285`.
+Its tree is `49bd0c89df992749aaf74c70ce4d86727a961988`.
+
+CAUTION: The selected H package is not an M binary.
+H retains legacy tools, adapter, compaction, and admin code removed from M.
+The source review found no omitted active RunV2 security or file-format fix in this exact difference.
+That conclusion is a scoped source review, not a general security assurance.
+The raw RunV2 readers, capture, restore, protocol, and encryption primitives match.
+The offline range-conversion inspection change in M does not publish a conversion or select a native format.
+
+The existing accepted-release proof remains mandatory.
+It binds merged PR 434, exact head H, exact squash M, and its one parent.
+It refuses custom merge drivers and requires a clean `merge-tree(parent, H)` equal to M's tree.
+The merge base must be `24f2844b2efe8b8f39349a5c5c9dfedb65599d04`.
+M must remain an ancestor of current main.
+The new acceptance check compares every changed path, including documents and removed files.
+Each of its 184 entries binds both complete Git mode, type, and object tuples.
+No general path exception or source classifier admits another change.
+
+The canonical acceptance map uses JSON with sorted keys and compact separators, without a final newline.
+Its SHA256 is `38086d231dac74149fa5d7285374929b6ee21fe845b08ef82f46a8fd19fdea0a`.
+The private source-review record uses schema `lastdb.run-v2-accepted-integration-review.v1`.
+Its exact raw SHA256 is `7b23892880e8578438755b8005813980f2db1702e76d52523c65240eea43d305`.
+It contains the same complete map and the source-review limits above.
+Its bytes remain outside Git under the canonical artifact root.
+
+V2 requires approval schema `lastdb.run-v2-ci-bootstrap-approval.v2` and evidence schema `lastdb.run-v2-ci-evidence.v2`.
+Both inputs require `profile=run-v2-ci-bootstrap-v2`.
+Unknown or mixed schema/profile pairs refuse the operation.
+Both inputs bind H, `artifact_tree`, M, `accepted_parent`, `accepted_tree`, and `accepted_pull_request=434`.
+All original named-approval fields and the four original proof hashes remain required.
+The approval's exact `proofs` map also includes `acceptance_delta_sha256` and `acceptance_review_sha256`.
+Those two evidence hashes must equal the fixed values above.
+Evidence also names the private `acceptance_review_record` path.
+
+The unchanged 96-entry baseline-to-H compatibility record keeps its v1 source-review schema and profile.
+It proves the exact baseline-to-H change; the acceptance map does not replace or widen that policy.
+The original Mac archive and both program hashes must still belong to H.
+The actual DEV restore, two starts, 16 records, 8 MiB file, and baseline reopen proofs remain required.
+Both H and M require successful required and `benchmark-complete` checks.
+H's benchmark check covers the PR integration; it is not a claim of direct raw-H measurements.
+M additionally requires its exact successful main-push measurement job and verified artifact uploads.
+A pending, skipped, failed, expired, or mismatched required proof refuses the operation.
+No source gate creates approval, changes proof timestamps, or selects an M binary instead of H.
