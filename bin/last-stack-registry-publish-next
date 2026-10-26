@@ -8,6 +8,11 @@
 # index, and arms auto-merge. The tap's CI checks the digest and the proof
 # record, then merges; the GitHub mirror serves the file to `lastdb app resolve`.
 #
+# The generated-evidence check reads product-data exceptions from the accepted
+# base only. A new registry/proofs/<proof_run>.json is raw output until main
+# names that exact path. This script merges that exception first, then opens
+# the row pull request on top of it.
+#
 # Venue: since 2026-09-30 the tap's gate of record is GitHub
 # (EdgeVector/homebrew-lastdb, decision-2026-09-29-retire-lastgit-all-repos-to-github).
 # The LastGit and Forgejo copies are frozen: a row merged there never reaches
@@ -168,6 +173,83 @@ lastdb_for_sign="${LASTDB_BIN:-$(command -v lastdb || true)}"
 [ -n "$lastdb_for_sign" ] || die "no lastdb binary to sign with (set LASTDB_BIN)"
 "$lastdb_for_sign" app index sign --help >/dev/null 2>&1 || die "$lastdb_for_sign has no \`app index sign\`; point LASTDB_BIN at a build that does"
 
+# The evidence check refuses registry/proofs/<proof_run>.json unless the
+# accepted base names that exact path. Merge the exception, then fast-forward
+# this worktree so the row commit's parent carries it.
+wait_policy_merged() {
+  local number="$1" deadline state view
+  deadline=$((SECONDS + 480))
+  while true; do
+    view="$("$GH_BIN" pr view "$number" -R "$TAP_REPO" --json state,statusCheckRollup)"
+    state="$(printf '%s' "$view" | jq -r '.state')"
+    if [ "$state" = "MERGED" ]; then
+      return 0
+    fi
+    if [ "$state" = "CLOSED" ]; then
+      die "the proof-policy pull request ${TAP_REPO}#${number} closed before merge"
+    fi
+    if printf '%s' "$view" | jq -e 'any(.statusCheckRollup[]?; .conclusion == "FAILURE" or .conclusion == "CANCELLED")' >/dev/null; then
+      die "the proof-policy pull request ${TAP_REPO}#${number} has a failed check"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      die "the proof-policy pull request ${TAP_REPO}#${number} did not merge within 480 seconds"
+    fi
+    sleep 20
+  done
+}
+
+ensure_proof_record_policy() {
+  local proof_path policy start_branch policy_branch tmp reason number pr_url body_file
+  proof_path="registry/proofs/${PROOF_RUN}.json"
+  policy="$TAP_DIR/.github/generated-evidence-policy.json"
+  if [ -f "$policy" ] && jq -e --arg p "$proof_path" 'any(.product_data[]?; .path == $p)' "$policy" >/dev/null; then
+    return 0
+  fi
+  command -v "$GH_BIN" >/dev/null 2>&1 || die "gh CLI not found ($GH_BIN); set GH_BIN"
+  reason="Registry proof record named by a compat row. The tap gate requires this file."
+  start_branch="$(git -C "$TAP_DIR" branch --show-current)"
+  [ -n "$start_branch" ] || die "the publication worktree has no branch for the proof-policy pull request"
+  policy_branch="registry/evidence-policy-$(printf '%s' "$PROOF_RUN" | tr -c 'A-Za-z0-9.-' '_')-$$"
+  git -C "$TAP_DIR" checkout --quiet -b "$policy_branch"
+  tmp="$(mktemp "${TMPDIR:-/tmp}/registry-evidence-policy.XXXXXX")"
+  if [ -f "$policy" ]; then
+    jq --arg p "$proof_path" --arg r "$reason" '.product_data += [{"path": $p, "reason": $r}]' "$policy" >"$tmp"
+  else
+    jq -n --arg p "$proof_path" --arg r "$reason" '{product_data: [{path: $p, reason: $r}]}' >"$tmp"
+  fi
+  mv "$tmp" "$policy"
+  git -C "$TAP_DIR" add .github/generated-evidence-policy.json
+  git -C "$TAP_DIR" -c user.name="last-stack canary" -c user.email="canary@edgevector.local" commit --quiet -F - <<EOF
+Allow registry proof record ${PROOF_RUN}
+
+The tap gate requires registry/proofs/<proof_run>.json for each row.
+The generated-evidence check reads the exact path from the accepted base.
+EOF
+  git -C "$TAP_DIR" push --quiet origin "$policy_branch:$policy_branch"
+  body_file="$(mktemp "${TMPDIR:-/tmp}/registry-evidence-policy-body.XXXXXX")"
+  cat >"$body_file" <<EOF
+## What
+
+The path \`${proof_path}\` is the registry proof record for this run.
+The tap gate requires the file. The generated-evidence check requires this exact path on main before the row pull request.
+
+## Validation
+
+This pull request changes only the product-data policy.
+EOF
+  pr_url="$("$GH_BIN" pr create --repo "$TAP_REPO" --base main --head "$policy_branch" --title "Allow registry proof record ${PROOF_RUN}" --body-file "$body_file")" \
+    || die "gh pr create failed for the proof-policy branch"
+  number="${pr_url##*/}"
+  case "$number" in ''|*[!0-9]*) die "gh pr create returned no PR number: $pr_url" ;; esac
+  "$GH_BIN" pr merge "$number" --repo "$TAP_REPO" --squash --auto --delete-branch >/dev/null \
+    || die "auto-merge was not armed for ${TAP_REPO}#${number}"
+  wait_policy_merged "$number"
+  git -C "$TAP_DIR" checkout --quiet "$start_branch"
+  git -C "$TAP_DIR" fetch --quiet origin main
+  git -C "$TAP_DIR" merge --ff-only --quiet origin/main
+  [ "$(git -C "$TAP_DIR" rev-parse HEAD)" = "$(git -C "$TAP_DIR" rev-parse origin/main)" ] || die "the publication worktree did not fast-forward to the proof-policy merge"
+}
+
 # Use an explicit clean DEV worktree. Never reset a shared STATE checkout.
 #
 # LAST_STACK_REGISTRY_TAP_DIR names one when the caller prepared it. When it is
@@ -217,6 +299,7 @@ else
   [ "$(head -n1 "$TAP_DIR/.last-stack/pr-venue" 2>/dev/null || true)" = github ] || die "the registry source must declare the GitHub venue"
   git -C "$TAP_DIR" fetch --quiet origin main
   [ "$(git -C "$TAP_DIR" rev-parse HEAD)" = "$(git -C "$TAP_DIR" rev-parse origin/main)" ] || die "the publication worktree must start at current accepted main"
+  ensure_proof_record_policy
 fi
 # The process id keeps two publishes of one build in the same second on distinct
 # branches (the second push was refused non-fast-forward).
