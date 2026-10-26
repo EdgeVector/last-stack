@@ -18,7 +18,7 @@ from native_upgrade_common import pair, private_dir, require, run, session, stop
 from native_v2_primary import record
 from native_v2_stop import restore_hold
 from native_run_v2_compatibility import BASELINE, BASELINE_PROGRAMS
-from native_run_v2_gate import check as evidence_check
+from native_run_v2_profiles import check as evidence_check, selected as selected_profile
 from native_run_v2_inputs import digest, read, uint
 from native_run_v2_primary import (baseline_snapshot, initial, live, prepare, preserved,
                                    select, start, stopped_boundary)
@@ -75,8 +75,8 @@ def binding(ctx):
     require(identity == ctx["candidate_artifact_digest"]
             and re.fullmatch(r"[0-9a-f]{40}", ctx["source_git_oid"]), "Candidate binding differs")
     approval = read(ctx["native_approval"], 65536, digest(ctx["native_approval_sha256"]))
-    require(approval.get("schema") == "lastdb.run-v2-ci-bootstrap-approval.v1"
-            and approval.get("mode") == MODE and approval.get("profile") == PROFILE
+    selected_profile(approval)
+    require(approval.get("mode") == MODE
             and approval.get("approved_by") == "Tom"
             and isinstance(approval.get("quote"), str) and bool(approval["quote"].strip())
             and approval.get("source_git_oid") == ctx["source_git_oid"]
