@@ -43,6 +43,7 @@ Usage:
   last-stack-safe-upgrade-loom --candidate PATH --native-cloud-off-approval FILE [--json]
       [--native-probe-only | --native-reopen]
   last-stack-safe-upgrade-loom --candidate PATH --native-v2-ci-approval FILE [--json]
+  last-stack-safe-upgrade-loom --candidate PATH --native-run-v2-ci-approval FILE [--json]
   last-stack-safe-upgrade-loom --dry-run --candidate PATH [--source-git-oid OID] [--json]
   last-stack-safe-upgrade-loom --candidate PATH --retry N [--json]
 
@@ -80,6 +81,12 @@ backup/restore, native source compatibility, and a current V2 recovery point
 replace the retired app and local benchmark procedure. Strict stop, the clean
 session, the final stopped V2 cut, isolated pair installation, program recovery,
 and five-minute supervised health remain required. No primary data copy occurs.
+
+--native-run-v2-ci-approval FILE selects the separate protocol 11 bootstrap.
+It requires the closed RunV2 baseline, exact CI pair, accepted PR tree, and DEV
+backup/restore/restart plus ordinary baseline reopen evidence. The named approval
+keeps cloud off during the upgrade. Recovery uses the saved pair and the same
+native homes. It creates no cloud recovery point, primary copy, or migration.
 EOF
 }
 
@@ -97,7 +104,7 @@ while [ "$#" -gt 0 ]; do
     --dry-run) DRY_RUN=1; shift ;;
     --zero-live-soak) ZERO_LIVE_SOAK=1; shift ;;
     --accept-stale-recovery-point) ACCEPT_STALE_RECOVERY="${2:-}"; shift 2 ;;
-    --native-cloud-off-approval|--native-v2-ci-approval)
+    --native-cloud-off-approval|--native-v2-ci-approval|--native-run-v2-ci-approval)
       [ -z "$NATIVE_APPROVAL" ] || die "select exactly one native approval policy"
       NATIVE_POLICY_FLAG="$1"; NATIVE_APPROVAL="${2:-}"; shift 2 ;;
     --native-reopen) NATIVE_REOPEN=1; shift ;;
@@ -247,6 +254,11 @@ if [ -n "$NATIVE_APPROVAL" ]; then
       [ "$NATIVE_REOPEN" -eq 0 ] && [ "$NATIVE_PROBE_ONLY" -eq 0 ] || die "native V2 refuses other native modes"
       SAFE_UPGRADE_PROTOCOL_VERSION="10"
       ;;
+    native-run-v2-ci-cloud-off)
+      [ "$NATIVE_POLICY_FLAG" = --native-run-v2-ci-approval ] || die "RunV2 requires its explicit policy flag"
+      [ "$NATIVE_REOPEN" -eq 0 ] && [ "$NATIVE_PROBE_ONLY" -eq 0 ] || die "RunV2 refuses other native modes"
+      SAFE_UPGRADE_PROTOCOL_VERSION="11"
+      ;;
     *) die "unknown native approval mode" ;;
   esac
 elif [ "$NATIVE_REOPEN" -eq 1 ] || [ "$NATIVE_PROBE_ONLY" -eq 1 ]; then
@@ -349,7 +361,7 @@ real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$exe")
 install_root="$(dirname "$(dirname "$real")")"
 defs=""
 scripts=""
-if [ "$UPGRADE_MODE" = native-v2-ci ]; then
+if [ "$UPGRADE_MODE" = native-v2-ci ] || [ "$UPGRADE_MODE" = native-run-v2-ci-cloud-off ]; then
   for override in "${LOOM_DEFS:-}" "${LOOM_SCRIPTS:-}"; do
     [ -z "$override" ] || [ "$(canonical_file "$override")" = "$ROOT/lib/canary-loom" ] \
       || die "native V2 refuses a different graph or script bundle"
