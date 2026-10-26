@@ -4,10 +4,12 @@
 #
 # Shape (phase 3):
 #   plan    ubuntu, seconds. Reads the `next` index, picks the target lastdb
-#           build, reads the app heads (green ci-required + published
-#           artifact), and decides whether any head moved past the pin that
-#           `next` holds for that build. Nothing moved, or this exact head set
-#           was already proved: stop here (the cheap no-op path).
+#           build (public lastdb main when that build has no row yet, else the
+#           newest row, unless proof-builds.json names an override), reads the
+#           app heads (green ci-required + published artifact), and decides
+#           whether any head moved past the pin that `next` holds for that
+#           build. Nothing moved, or this exact head set was already proved:
+#           stop here (the cheap no-op path).
 #   proof   macOS arm64. Builds the exact lastdb oid inside this public repo
 #           (the org GH_PAT only reads declared pre-cutover builds from archived fold), asserts the
 #           build string, runs the isolated install smoke, and uploads ONE
@@ -156,8 +158,41 @@ jobs:
           # The contents API, not raw.githubusercontent.com: no CDN delay.
           gh api repos/EdgeVector/homebrew-lastdb/contents/registry/next.json \
             -H 'Accept: application/vnd.github.raw' > "$RUNNER_TEMP/next.json"
+          # git describe --tags --long --abbrev=9 of public lastdb main, with
+          # one leading v removed. Closest ancestor tag wins. A describe miss
+          # falls back to the newest index row; it does not stop the plan.
+          main_oid="$(gh api repos/EdgeVector/lastdb/commits/main --jq .sha)"
+          best_ahead=""
+          best_name=""
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            meta="$(gh api "repos/EdgeVector/lastdb/compare/${tag}...${main_oid}" --jq '[.status, .ahead_by, .behind_by] | @tsv')"
+            behind="${meta##*$'\t'}"
+            rest="${meta%$'\t'*}"
+            ahead="${rest##*$'\t'}"
+            case "$behind" in
+              0) ;;
+              *) continue ;;
+            esac
+            case "$ahead" in
+              ''|*[!0-9]*) continue ;;
+            esac
+            if [ -z "$best_ahead" ] || [ "$ahead" -lt "$best_ahead" ]; then
+              best_ahead="$ahead"
+              best_name="${tag#v}"
+            fi
+          done < <(gh api "repos/EdgeVector/lastdb/tags?per_page=100" --jq '.[].name')
+          main_args=()
+          if [ -n "$best_name" ] && [ "${#main_oid}" -eq 40 ]; then
+            main_build="${best_name}-${best_ahead}-g${main_oid:0:9}"
+            echo "lastdb main: $main_build $main_oid"
+            main_args=(--lastdb-main-build "$main_build" --lastdb-main-oid "$main_oid")
+          else
+            echo "lastdb main describe unavailable; the newest index row stays the target"
+          fi
           bin/last-stack-registry-proof-plan select-build --index "$RUNNER_TEMP/next.json" \
-            --override config/registry/proof-builds.json > "$RUNNER_TEMP/target.json"
+            --override config/registry/proof-builds.json \
+            "${main_args[@]}" > "$RUNNER_TEMP/target.json"
           cat "$RUNNER_TEMP/target.json"
           {
             echo "PLAN_BUILD=$(jq -r .build "$RUNNER_TEMP/target.json")"
