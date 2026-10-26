@@ -71,6 +71,25 @@ It also refuses the broad setup uninstaller. Nested setup inherits the flag.
 Artifact provenance, probes, command and skill links, compatibility layout,
 and instruction updates retain the normal path.
 
+## RunV2 Cloud-Off bootstrap with CI evidence
+
+The separate `--native-run-v2-ci-approval <private-file>` route selects protocol 11.
+Use it only for the closed `58752` RunV2 baseline and the exact approved PR434 CI pair.
+The full contract is [RunV2 Cloud-Off bootstrap through Loom](../../docs/lastdb-run-v2-ci-bootstrap.md).
+Existing protocols keep their behavior.
+
+CAUTION: This bootstrap creates no primary copy or new cloud recovery point.
+Tom must approve the named candidate and the saved-pair recovery policy before activation.
+The exact DEV evidence requires 16 records, one 8MiB logical file, source-free restore,
+two restored read passes, and an ordinary baseline reopen of that restored home.
+CI supplies all Rust builds and benchmark evidence.
+The route creates no schema or generated mutation probe.
+It retains the existing strict stop, clean flush proof, isolated pair, local journal, rollback, and five-minute health interval.
+It keeps Cloud Off and changes no native file format or encryption.
+The primary gate proves metadata and health continuity; it reads no primary records or record keys.
+Full primary logical backup validation occurs after the upgrade through the new manual backup.
+PROD connection and a new backup remain separate operations after successful completion.
+
 ## Native V2 upgrade with CI evidence (Tom, 2026-10-24)
 
 Use explicit `--native-v2-ci-approval <private-file>` for the reviewed V2 operation.
