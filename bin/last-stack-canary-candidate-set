@@ -94,9 +94,13 @@ def forge_git_env() -> dict[str, str]:
     The candidate set reads Forge repos unattended; there is no keychain
     prompt to answer, so the token rides in the environment the same way
     last-stack-forge-git passes it on the command line."""
+    import sys
+    print("forge_git_env(): ENTRY", file=sys.stderr, flush=True)
     global _FORGE_GIT_ENV
     if _FORGE_GIT_ENV is not None:
+        print("forge_git_env(): returning cached env", file=sys.stderr, flush=True)
         return _FORGE_GIT_ENV
+    print("forge_git_env(): building new env", file=sys.stderr, flush=True)
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "RUST_LOG": "off"}
     # lib/forge-token.sh is the one place that names the token sources
     # ($FORGE_TOKEN, keychain, lastsecrets); a python helper sources it
