@@ -108,6 +108,23 @@ def forge_git_env() -> dict[str, str]:
         env["GIT_CONFIG_COUNT"] = str(n + 1)
         env[f"GIT_CONFIG_KEY_{n}"] = "http.http://localhost:3300/.extraHeader"
         env[f"GIT_CONFIG_VALUE_{n}"] = f"Authorization: token {token}"
+    
+    # GitHub private repos (e.g. lastseek): inject token as Basic auth with
+    # x-access-token, base64-encoded. Pattern matches install-apps. The workflow
+    # sets GITHUB_TOKEN or APP_REPOS_TOKEN.
+    gh_token = os.environ.get("APP_REPOS_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
+    if gh_token:
+        import base64
+        auth_string = f"x-access-token:{gh_token}"
+        auth_b64 = base64.b64encode(auth_string.encode()).decode()
+        try:
+            n = int(env.get("GIT_CONFIG_COUNT") or "0")
+        except ValueError:
+            n = 0
+        env["GIT_CONFIG_COUNT"] = str(n + 1)
+        env[f"GIT_CONFIG_KEY_{n}"] = "http.https://github.com/.extraheader"
+        env[f"GIT_CONFIG_VALUE_{n}"] = f"Authorization: Basic {auth_b64}"
+    
     _FORGE_GIT_ENV = env
     return env
 
