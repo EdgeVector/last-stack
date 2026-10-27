@@ -449,13 +449,6 @@ def main(argv: list[str]) -> int:
             sha_source = "github-ci-main"
             if not sha:
                 print(f"last-stack-canary-candidate-set: {app}: {why}", file=sys.stderr)
-                # Fallback to main branch head when github-ci fails (e.g., private repo without CI)
-                for url, venue in candidates:
-                    sha = main_oid(url)
-                    if sha:
-                        sha_source = f"{venue}-main-fallback"
-                        print(f"last-stack-canary-candidate-set: {app}: falling back to {venue} main: {sha[:8]}", file=sys.stderr)
-                        break
         else:
             sha = artifact_channel_oid(args.artifact_root, cfg.get("artifact_app"), args.artifact_channel)
             sha_source = f"artifact-channel:{args.artifact_channel}"
