@@ -112,12 +112,17 @@ def forge_git_env() -> dict[str, str]:
     # GitHub private repos (e.g. lastseek): inject token as Basic auth with
     # x-access-token, base64-encoded. Pattern matches install-apps. The workflow
     # sets GITHUB_TOKEN or APP_REPOS_TOKEN.
+    # Diagnostic: check what env vars are available (print to stdout, visible in logs)
+    import sys
+    has_app_token = bool(os.environ.get("APP_REPOS_TOKEN"))
+    has_github_token = bool(os.environ.get("GITHUB_TOKEN"))
+    gh_token_len = len(os.environ.get("GITHUB_TOKEN", ""))
+    print(f"canary-candidate-set env check: APP_REPOS_TOKEN={has_app_token}, GITHUB_TOKEN={has_github_token} (len={gh_token_len})", 
+          flush=True)
+    
     gh_token = os.environ.get("APP_REPOS_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
     if gh_token:
-        # Diagnostic: print token presence and length, never the value
-        import sys
-        print(f"GitHub token found (length: {len(gh_token)}, source: {'APP_REPOS_TOKEN' if os.environ.get('APP_REPOS_TOKEN') else 'GITHUB_TOKEN'})", 
-              file=sys.stderr)
+        print(f"canary-candidate-set: Injecting GitHub auth (token length: {len(gh_token)})", flush=True)
         import base64
         auth_string = f"x-access-token:{gh_token}"
         auth_b64 = base64.b64encode(auth_string.encode()).decode()
