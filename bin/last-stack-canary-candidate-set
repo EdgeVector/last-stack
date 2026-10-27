@@ -108,6 +108,23 @@ def forge_git_env() -> dict[str, str]:
         env["GIT_CONFIG_COUNT"] = str(n + 1)
         env[f"GIT_CONFIG_KEY_{n}"] = "http.http://localhost:3300/.extraHeader"
         env[f"GIT_CONFIG_VALUE_{n}"] = f"Authorization: token {token}"
+    
+    # GitHub private repos (e.g. lastseek): inject token as Basic auth with
+    # x-access-token, base64-encoded. Pattern matches install-apps. The workflow
+    # sets GITHUB_TOKEN or APP_REPOS_TOKEN.
+    gh_token = os.environ.get("APP_REPOS_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
+    if gh_token:
+        import base64
+        auth_string = f"x-access-token:{gh_token}"
+        auth_b64 = base64.b64encode(auth_string.encode()).decode()
+        try:
+            n = int(env.get("GIT_CONFIG_COUNT") or "0")
+        except ValueError:
+            n = 0
+        env["GIT_CONFIG_COUNT"] = str(n + 1)
+        env[f"GIT_CONFIG_KEY_{n}"] = "http.https://github.com/.extraheader"
+        env[f"GIT_CONFIG_VALUE_{n}"] = f"Authorization: Basic {auth_b64}"
+    
     _FORGE_GIT_ENV = env
     return env
 
@@ -208,6 +225,19 @@ def gh_json(path: str, jq: str) -> object:
     """`gh api <path> --jq <jq>` parsed as JSON, or None on any failure."""
     proc = subprocess.run([gh_bin(), "api", path, "--jq", jq], capture_output=True, text=True,
                           timeout=60, check=False)
+    # Diagnostic for lastseek API calls
+    if "lastseek" in path:
+        import sys
+        api_type = "check-runs" if "check-runs" in path else "status" if "/status" in path else "other"
+        print(f"gh_json: {api_type} path={path.split('/')[-2:]}", file=sys.stderr, flush=True)
+        print(f"gh_json: returncode={proc.returncode}", file=sys.stderr, flush=True)
+        if proc.returncode != 0:
+            # Redact tokens from stderr
+            stderr = proc.stderr.replace(os.environ.get("GITHUB_TOKEN", ""), "[REDACTED]")
+            stderr = stderr.replace(os.environ.get("GH_TOKEN", ""), "[REDACTED]")
+            print(f"gh_json: stderr={stderr[:200]}", file=sys.stderr, flush=True)
+        else:
+            print(f"gh_json: success, output_length={len(proc.stdout)}", file=sys.stderr, flush=True)
     if proc.returncode != 0:
         return None
     try:
@@ -237,8 +267,21 @@ def github_ci_head(cfg: dict) -> tuple[str, str]:
     if not isinstance(commits, list) or not commits:
         return "", f"could not list main commits of {slug}"
     for sha in commits[:GH_CI_WINDOW]:
+        # Try check-runs first (GitHub Actions check runs)
         runs = gh_json(f"repos/{slug}/commits/{sha}/check-runs?per_page=100",
                        '[.check_runs[] | select(.name == "ci-required" or (.name | endswith("/ ci-required"))) | .conclusion]')
+        # Fallback to commit statuses if check-runs fails (403 or other error)
+        if runs is None or not isinstance(runs, list):
+            # Try statuses API which may have different permissions
+            statuses = gh_json(f"repos/{slug}/commits/{sha}/status",
+                             '[.statuses[] | select(.context == "ci-required" or (.context | endswith("/ ci-required"))) | .state]')
+            if slug == "EdgeVector/lastseek" and sha[:8] == "14b695ac":
+                import sys
+                print(f"github_ci_head: lastseek {sha[:8]} check-runs failed, trying statuses: {statuses}", file=sys.stderr, flush=True)
+            if isinstance(statuses, list) and "success" in statuses:
+                runs = statuses
+            else:
+                runs = []
         if not isinstance(runs, list) or "success" not in runs:
             continue
         if needs_artifact:

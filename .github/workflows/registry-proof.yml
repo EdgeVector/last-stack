@@ -37,6 +37,14 @@ name: registry-proof
 on:
   schedule:
     - cron: "7,37 * * * *"
+  pull_request:
+    branches: [main]
+    paths:
+      - 'bin/last-stack-install-apps'
+      - 'bin/last-stack-canary-candidate-set'
+      - 'config/registry/**'
+      - 'skills/llms-txt-install-smoke/**'
+      - '.github/workflows/registry-proof.yml'
   workflow_dispatch:
     inputs:
       lastdb_release:
@@ -202,9 +210,19 @@ jobs:
       - name: App heads (green ci-required and a published artifact)
         if: ${{ env.PLAN_MODE == 'auto' }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_PAT_AVAILABLE: ${{ secrets.GH_PAT != '' }}
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || github.token }}
         run: |
           set -euo pipefail
+          # Diagnostic: verify token source and fail loudly if GH_PAT is missing
+          if [ "${GH_PAT_AVAILABLE}" != "true" ]; then
+            echo "::error::GH_PAT secret is not set or not visible to EdgeVector/last-stack"
+            echo "::error::Falling back to github.token, which cannot access private repos"
+            echo "::error::Add last-stack to the org-level GH_PAT secret's repository access"
+            exit 1
+          fi
+          echo "GH_PAT is available (GH_TOKEN length: ${#GH_TOKEN}, GITHUB_TOKEN length: ${#GITHUB_TOKEN})"
           # No lastdbd on this runner: the build string stands in for it. No
           # package.json fetch and no clone probe: heads only.
           bin/last-stack-canary-candidate-set \
@@ -539,10 +557,18 @@ jobs:
         env:
           FOLD_OID: ${{ needs.plan.outputs.fold_oid }}
           # Built-in job token: reads the public app repos' check runs and artifacts.
-          GH_TOKEN: ${{ github.token }}
+          GH_PAT_AVAILABLE: ${{ secrets.GH_PAT != '' }}
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || github.token }}
           ORG_OID: ${{ needs.plan.outputs.org_oid }}
         run: |
           set -euo pipefail
+          # Diagnostic: verify GH_PAT is available for private repos
+          if [ "${GH_PAT_AVAILABLE}" != "true" ]; then
+            echo "::warning::GH_PAT secret not available, using github.token (no private repo access)"
+          else
+            echo "GH_PAT is available (GH_TOKEN length: ${#GH_TOKEN}, GITHUB_TOKEN length: ${#GITHUB_TOKEN})"
+          fi
           t0=$SECONDS; rc=0
           # The real source oid of the lastdb build: the fold commit that was
           # built, or the release manifest's source_git_oid.
@@ -603,6 +629,8 @@ jobs:
 
       - name: Actual app install and startup
         if: ${{ needs.plan.outputs.probe_only != 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || github.token }}
         run: |
           set -u
           set +e   # a RED smoke exits 1; keep going so the bundle is written
