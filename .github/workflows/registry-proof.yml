@@ -37,6 +37,14 @@ name: registry-proof
 on:
   schedule:
     - cron: "7,37 * * * *"
+  pull_request:
+    branches: [main]
+    paths:
+      - 'bin/last-stack-install-apps'
+      - 'bin/last-stack-canary-candidate-set'
+      - 'config/registry/**'
+      - 'skills/llms-txt-install-smoke/**'
+      - '.github/workflows/registry-proof.yml'
   workflow_dispatch:
     inputs:
       lastdb_release:
@@ -203,6 +211,7 @@ jobs:
         if: ${{ env.PLAN_MODE == 'auto' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || github.token }}
         run: |
           set -euo pipefail
           # No lastdbd on this runner: the build string stands in for it. No
@@ -540,6 +549,7 @@ jobs:
           FOLD_OID: ${{ needs.plan.outputs.fold_oid }}
           # Built-in job token: reads the public app repos' check runs and artifacts.
           GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || github.token }}
           ORG_OID: ${{ needs.plan.outputs.org_oid }}
         run: |
           set -euo pipefail

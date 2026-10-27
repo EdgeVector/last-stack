@@ -162,8 +162,8 @@ clone_or_update() {
 # GitHub private repos (e.g. lastseek) need authentication. Inject the token
 # through GIT_CONFIG_* so git can clone them. The credential is never written
 # to disk or argv (both `ps aux` leaks). The caller (smoke test, CI workflow)
-# sets GITHUB_TOKEN or APP_REPOS_TOKEN; we inject it as an HTTP extraheader.
-# Pattern matches the Forge token setup (never rely on gh CLI or ~/.config/gh).
+# sets GITHUB_TOKEN or APP_REPOS_TOKEN; we inject it as Basic auth with
+# x-access-token, base64-encoded. Pattern matches authenticated GitHub clones.
 GITHUB_AUTH_READY=""
 prepare_github_auth() {
   [ -z "$GITHUB_AUTH_READY" ] || return 0
@@ -173,11 +173,15 @@ prepare_github_auth() {
   if [ -z "$token" ]; then
     return 0  # No token available; public-only installs still work
   fi
+  # Basic auth: x-access-token:<token>, base64-encoded. Never print the token.
+  local auth_string="x-access-token:$token"
+  local auth_b64
+  auth_b64="$(printf '%s' "$auth_string" | base64 | tr -d '\n')"
   # Append to existing GIT_CONFIG_* entries. Never replace caller's config.
   local n="${GIT_CONFIG_COUNT:-0}"
   export GIT_CONFIG_COUNT=$((n + 1))
   export "GIT_CONFIG_KEY_$n=http.https://github.com/.extraheader"
-  export "GIT_CONFIG_VALUE_$n=Authorization: token $token"
+  export "GIT_CONFIG_VALUE_$n=Authorization: Basic $auth_b64"
   GITHUB_AUTH_READY=1
   return 0
 }
@@ -411,10 +415,25 @@ build_or_fetch_lastseek() {
     *" lastseek "*) return 0 ;;
   esac
   echo "==> building lastseek binary"
-  # Prefer an existing bin/lastseek or target/release/lastseek.
-  [ -x "$dest/bin/lastseek" ] && return 0
-  [ -x "$dest/target/release/lastseek" ] && return 0
-  # Check for a pre-built binary or build script.
+  
+  # Check if an existing binary matches the current source SHA. If the source
+  # was updated or pinned to a different commit, rebuild to deliver the actual
+  # proved version. Cargo's incremental build avoids unnecessary work.
+  local current_sha bin_sha=""
+  current_sha="$(git -C "$dest" rev-parse HEAD 2>/dev/null || echo unknown)"
+  if [ -f "$dest/.lastseek-build-sha" ]; then
+    bin_sha="$(cat "$dest/.lastseek-build-sha" 2>/dev/null || true)"
+  fi
+  
+  # If binary exists and matches current source, reuse it
+  if [ -x "$dest/bin/lastseek" ] && [ "$bin_sha" = "$current_sha" ]; then
+    return 0
+  fi
+  if [ -x "$dest/target/release/lastseek" ] && [ "$bin_sha" = "$current_sha" ]; then
+    return 0
+  fi
+  
+  # Build from source
   if [ -f "$dest/bin/build-lastseek.sh" ]; then
     (cd "$dest" && bash bin/build-lastseek.sh) || return 1
   elif [ -f "$dest/Cargo.toml" ]; then
@@ -428,10 +447,16 @@ build_or_fetch_lastseek() {
       echo "lastseek requires cargo to build; install Rust or use --no-link with manual setup" >&2
       return 1
     fi
+  elif [ -x "$dest/bin/lastseek" ]; then
+    # Pre-built binary exists but no build method; accept it
+    return 0
   else
     echo "lastseek checkout has no bin/lastseek, target/release/lastseek, or build method" >&2
     return 1
   fi
+  
+  # Record the source SHA this binary was built from
+  printf '%s\n' "$current_sha" > "$dest/.lastseek-build-sha"
 }
 
 ensure_user_bin() {
@@ -646,7 +671,7 @@ if [ -n "$PINS_FILE" ]; then
   echo "==> candidate set: $PINS_FILE (lastdb $(jq -r '.lastdb.build // "?"' "$PINS_FILE"))"
 fi
 
-BUNDLE_APPS="brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser lastseek"
+BUNDLE_APPS="brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser"
 FAILED_APPS=""      # "<app>:<stage>" words, in install order
 app_failed() {
   case " $FAILED_APPS " in
@@ -682,6 +707,16 @@ for app in $BUNDLE_APPS; do
     record_failure "$app" source
   fi
 done
+
+# lastseek: private GitHub repo, installed from source only when a token is
+# available (CI workflow) or when explicitly needed (--no-brew). Public installs
+# use the Homebrew binary; this source install is for smoke tests and proof.
+if [ "$INSTALL_LASTDB" -eq 0 ] || [ -n "${GITHUB_TOKEN:-}${APP_REPOS_TOKEN:-}" ]; then
+  if ! install_app_source lastseek "https://github.com/EdgeVector/lastseek.git"; then
+    record_failure lastseek source
+  fi
+fi
+
 # Optional UI: animated live theater for the board (Node; no package install).
 # Soft-fail so a private/unreachable mirror never blocks the core stack. It is
 # not part of the proved set, so it always tracks main.
@@ -699,11 +734,6 @@ for app in $BUNDLE_APPS; do
       record_failure "$app" dependencies
       continue
     fi
-  elif [ "$app" = "lastseek" ]; then
-    if ! build_or_fetch_lastseek; then
-      record_failure "$app" dependencies
-      continue
-    fi
   elif ! run_bun_install "$app"; then
     record_failure "$app" dependencies
     continue
@@ -712,6 +742,15 @@ for app in $BUNDLE_APPS; do
     record_failure "$app" link
   fi
 done
+
+# lastseek build and link: only if source was installed above
+if [ -d "$TARGET_DIR/lastseek" ] && ! app_failed lastseek && [ "$SOURCE_ONLY" -ne 1 ]; then
+  if ! build_or_fetch_lastseek; then
+    record_failure lastseek dependencies
+  elif ! link_cli lastseek; then
+    record_failure lastseek link
+  fi
+fi
 
 # Report every declared `requires` edge that this bundle leaves unmet: the app
 # is installed, the app it needs is neither in the bundle nor on PATH. The
@@ -741,6 +780,8 @@ INSTALLED_APPS=""
 for app in $BUNDLE_APPS; do
   app_failed "$app" || INSTALLED_APPS="$INSTALLED_APPS $app"
 done
+# Add lastseek if it was installed from source (not in BUNDLE_APPS)
+[ -d "$TARGET_DIR/lastseek" ] && ! app_failed lastseek && INSTALLED_APPS="$INSTALLED_APPS lastseek"
 report_unmet_requires "$INSTALL_APPS_ROOT/config/registry/apps.json" \
   "$(printf '%s\n' $INSTALLED_APPS $BREW_APPS_INSTALLED | jq -R . | jq -sc 'map(select(length > 0))')"
 
