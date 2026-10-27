@@ -34,7 +34,7 @@ Env (defaults):
   LOAD_MON_ALERT_CPU_CONSEC    5
   LOAD_MON_ALERT_FOOTPRINT_MB  13107  lastdbd phys_footprint (guard ceiling 16384)
   LOAD_MON_ALERT_FOOTPRINT_CONSEC 3
-  LOAD_MON_ALERT_LANES_CONSEC  2      passes with an unhealthy or quarantined persist lane
+  LOAD_MON_ALERT_LANES_CONSEC  2       passes with an unhealthy or quarantined persist lane
   LOAD_MON_ALERT_GOV_CONSEC    3       passes with the memory governor latched purge-failed
                                        (independent of footprint — fires even when phys_
                                        footprint stays under the footprint-high gate)
@@ -1110,7 +1110,7 @@ ALERT_SCOPE = {
     "lastdb_governor_purge_failed":    (("lastdbd",),   "other",   "warn"),
     "node_unresponsive":               (("lastdbd",),   "other",   "warn"),
     "lastdbd_restarted":               (("lastdbd",),   "restart", "info"),
-    "lastdb_cold_group_near_cap":     (("lastdbd",),   "other",   "info"),
+    "lastdb_cold_group_near_cap":      (("lastdbd",),   "other",   "info"),
     "lastdbd_footprint_high":          (("lastdbd",),   "other",   "info"),
     "lastdbd_cpu_high":                (("lastdbd",),   "other",   "info"),
     "host_swap_high":                  (("host",),      "other",   "info"),
