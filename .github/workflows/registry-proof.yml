@@ -210,8 +210,8 @@ jobs:
       - name: App heads (green ci-required and a published artifact)
         if: ${{ env.PLAN_MODE == 'auto' }}
         env:
-          GH_TOKEN: ${{ github.token }}
           GH_PAT_AVAILABLE: ${{ secrets.GH_PAT != '' }}
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT || github.token }}
         run: |
           set -euo pipefail
@@ -222,7 +222,7 @@ jobs:
             echo "::error::Add last-stack to the org-level GH_PAT secret's repository access"
             exit 1
           fi
-          echo "GH_PAT is available (token length: ${#GITHUB_TOKEN})"
+          echo "GH_PAT is available (GH_TOKEN length: ${#GH_TOKEN}, GITHUB_TOKEN length: ${#GITHUB_TOKEN})"
           # No lastdbd on this runner: the build string stands in for it. No
           # package.json fetch and no clone probe: heads only.
           bin/last-stack-canary-candidate-set \
@@ -557,8 +557,8 @@ jobs:
         env:
           FOLD_OID: ${{ needs.plan.outputs.fold_oid }}
           # Built-in job token: reads the public app repos' check runs and artifacts.
-          GH_TOKEN: ${{ github.token }}
           GH_PAT_AVAILABLE: ${{ secrets.GH_PAT != '' }}
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT || github.token }}
           ORG_OID: ${{ needs.plan.outputs.org_oid }}
         run: |
@@ -567,7 +567,7 @@ jobs:
           if [ "${GH_PAT_AVAILABLE}" != "true" ]; then
             echo "::warning::GH_PAT secret not available, using github.token (no private repo access)"
           else
-            echo "GH_PAT is available (token length: ${#GITHUB_TOKEN})"
+            echo "GH_PAT is available (GH_TOKEN length: ${#GH_TOKEN}, GITHUB_TOKEN length: ${#GITHUB_TOKEN})"
           fi
           t0=$SECONDS; rc=0
           # The real source oid of the lastdb build: the fold commit that was
