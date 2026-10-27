@@ -375,6 +375,36 @@ install_lastdb_browser() {
   }
 }
 
+build_or_fetch_lastseek() {
+  local dest="$TARGET_DIR/lastseek"
+  # With brew, BREW_APPS_INSTALLED already has lastseek; skip.
+  case " $BREW_APPS_INSTALLED " in
+    *" lastseek "*) return 0 ;;
+  esac
+  echo "==> building lastseek binary"
+  # Prefer an existing bin/lastseek or target/release/lastseek.
+  [ -x "$dest/bin/lastseek" ] && return 0
+  [ -x "$dest/target/release/lastseek" ] && return 0
+  # Check for a pre-built binary or build script.
+  if [ -f "$dest/bin/build-lastseek.sh" ]; then
+    (cd "$dest" && bash bin/build-lastseek.sh) || return 1
+  elif [ -f "$dest/Cargo.toml" ]; then
+    if command -v cargo >/dev/null 2>&1; then
+      (cd "$dest" && cargo build --release) || return 1
+      [ -x "$dest/target/release/lastseek" ] || {
+        echo "lastseek build did not produce target/release/lastseek" >&2
+        return 1
+      }
+    else
+      echo "lastseek requires cargo to build; install Rust or use --no-link with manual setup" >&2
+      return 1
+    fi
+  else
+    echo "lastseek checkout has no bin/lastseek, target/release/lastseek, or build method" >&2
+    return 1
+  fi
+}
+
 ensure_user_bin() {
   mkdir -p "$HOME/.local/bin"
   export PATH="$HOME/.local/bin:${PATH:-}"
@@ -523,6 +553,24 @@ link_cli() {
       echo "==> linking lastdb-browser launcher"
       link_existing_cli "$dest/bin/lastdb-browser" lastdb-browser
       ;;
+    lastseek)
+      # With brew: binary is already on PATH from the Homebrew install.
+      # Without brew: link from the checkout (bin/lastseek or target/release/lastseek).
+      case " $BREW_APPS_INSTALLED " in
+        *" lastseek "*) ;; # brew installed it; skip
+        *)
+          echo "==> linking lastseek CLI"
+          if [ -x "$dest/bin/lastseek" ]; then
+            link_existing_cli "$dest/bin/lastseek" lastseek
+          elif [ -x "$dest/target/release/lastseek" ]; then
+            link_existing_cli "$dest/target/release/lastseek" lastseek
+          else
+            echo "    warning: lastseek binary not found in $dest; link skipped" >&2
+            return 1
+          fi
+          ;;
+      esac
+      ;;
   esac
 }
 
@@ -565,7 +613,7 @@ if [ -n "$PINS_FILE" ]; then
   echo "==> candidate set: $PINS_FILE (lastdb $(jq -r '.lastdb.build // "?"' "$PINS_FILE"))"
 fi
 
-BUNDLE_APPS="brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser"
+BUNDLE_APPS="brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser lastseek"
 FAILED_APPS=""      # "<app>:<stage>" words, in install order
 app_failed() {
   case " $FAILED_APPS " in
@@ -615,6 +663,11 @@ for app in $BUNDLE_APPS; do
   app_failed "$app" && continue
   if [ "$app" = "lastdb-browser" ]; then
     if ! install_lastdb_browser; then
+      record_failure "$app" dependencies
+      continue
+    fi
+  elif [ "$app" = "lastseek" ]; then
+    if ! build_or_fetch_lastseek; then
       record_failure "$app" dependencies
       continue
     fi

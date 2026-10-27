@@ -62,7 +62,7 @@ RUN_ID=""
 LASTDB_BIN_OVERRIDE=""
 STRICT_GREEN=0
 # The real roster shared by the candidate set and install producer.
-KNOWN_APPS="brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser"
+KNOWN_APPS="brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser lastseek"
 
 usage() {
   cat <<'USAGE'
@@ -315,7 +315,9 @@ mkdir -p "$TAP_DIR/registry/proofs"
 
 api_version="$(jq -r '.lastdb.api_version // empty' "$CANDIDATE_SET")"
 count=0
-while IFS=$'\t' read -r app sha app_version source description; do
+while IFS= read -r app_json; do
+  [ -n "$app_json" ] || continue
+  app="$(printf '%s' "$app_json" | jq -r '.app')"
   [ -n "$app" ] || continue
   if [ "$PARTIAL" -eq 1 ]; then
     case " $PASSED_APPS " in
@@ -323,14 +325,20 @@ while IFS=$'\t' read -r app sha app_version source description; do
       *) continue ;;  # this app's own check failed; no row for it
     esac
   fi
+  sha="$(printf '%s' "$app_json" | jq -r '.sha')"
+  app_version="$(printf '%s' "$app_json" | jq -r '.app_version')"
+  source="$(printf '%s' "$app_json" | jq -r '.source')"
+  description="$(printf '%s' "$app_json" | jq -r '.description')"
+  lastdb_semver="$(printf '%s' "$app_json" | jq -r '.lastdb_semver')"
   args=(add-row --index "$index" --channel "$CHANNEL" --app "$app" --source "$source"
         --app-version "$app_version" --sha "$sha" --lastdb-version "$build"
         --proved-at "$proved_at" --proof-run "$PROOF_RUN")
   [ -z "$description" ] || args+=(--description "$description")
   [ -z "$api_version" ] || args+=(--lastdb-api-version "$api_version")
+  [ -z "$lastdb_semver" ] || args+=(--lastdb-semver-range "$lastdb_semver")
   "$ROOT/bin/last-stack-registry-index" "${args[@]}"
   count=$((count + 1))
-done < <(jq -r '.apps | to_entries[] | [.key, .value.sha, (.value.app_version // "0.0.0"), .value.source, (.value.description // "")] | @tsv' "$CANDIDATE_SET")
+done < <(jq -c '.apps | to_entries[] | {app: .key, sha: .value.sha, app_version: (.value.app_version // "0.0.0"), source: .value.source, description: (.value.description // ""), lastdb_semver: (.value.lastdb // "")}' "$CANDIDATE_SET")
 [ "$count" -gt 0 ] || die "candidate set has no apps that passed their own checks"
 
 # The proof record: what was proved, with what, by which run. On a partial

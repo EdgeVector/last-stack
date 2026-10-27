@@ -308,6 +308,28 @@ def app_version_at(cache_root: Path, app: str, url: str, sha: str) -> str:
     return version or "0.0.0"
 
 
+def app_manifest_at(cache_root: Path, app: str, url: str, sha: str, manifest_name: str) -> dict:
+    """Read manifest at `sha`, through a bounded per-app bare cache. Returns empty dict if not found."""
+    cache = cache_root / f"{app}.git"
+    if not cache.is_dir():
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        init = run(["git", "init", "--quiet", "--bare", str(cache)], timeout=30)
+        if init.returncode != 0:
+            return {}
+    show = run(["git", "-C", str(cache), "show", f"{sha}:{manifest_name}"], timeout=30)
+    if show.returncode != 0:
+        fetch = run(["git", "-C", str(cache), "fetch", "--quiet", "--depth", "1", url, sha], timeout=180)
+        if fetch.returncode != 0:
+            return {}
+        show = run(["git", "-C", str(cache), "show", f"{sha}:{manifest_name}"], timeout=30)
+        if show.returncode != 0:
+            return {}
+    try:
+        return json.loads(show.stdout)
+    except json.JSONDecodeError:
+        return {}
+
+
 def parse_pins(values: list[str]) -> dict[str, str]:
     pins: dict[str, str] = {}
     for value in values:
@@ -441,6 +463,15 @@ def main(argv: list[str]) -> int:
                 file=sys.stderr,
             )
         version = "0.0.0" if args.no_version_lookup else app_version_at(args.cache_root, app, source, sha)
+        lastdb_semver = ""
+        if not args.no_version_lookup:
+            # Try common manifest names for the lastdb semver range field
+            for manifest_name in (f"{app}.app.json", "manifest.json"):
+                manifest = app_manifest_at(args.cache_root, app, source, sha, manifest_name)
+                if manifest:
+                    lastdb_semver = str(manifest.get("lastdb") or "").strip()
+                    if lastdb_semver:
+                        break
         row = {
             "sha": sha,
             "sha_source": sha_source,
@@ -453,6 +484,8 @@ def main(argv: list[str]) -> int:
             "install_name": str(cfg.get("install_name") or app),
             "description": str(cfg.get("description") or ""),
         }
+        if lastdb_semver:
+            row["lastdb"] = lastdb_semver
         if fallback_from:
             row["source_fallback_from"] = fallback_from
         apps_out[app] = row
