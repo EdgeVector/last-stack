@@ -930,12 +930,12 @@ confirm_over_limit() {
 # One observation of how far a shutting-down node has got.
 #
 # There is no shutdown-state field on the status route, so the drain is read
-# from what a draining node still reports: whether the socket answers at all,
-# how many requests are still in flight on it, and how many sync uploads are
-# still pending. `uds.in_flight` is scoped to its own object here rather than
-# taken from the flat key, because `local_retention.in_flight` shares the name.
+# from what a draining node still reports: whether the socket answers at all
+# and how many requests are still in flight on it. `uds.in_flight` is scoped to
+# its own object here rather than taken from the flat key, because
+# `local_retention.in_flight` shares the name.
 drain_snapshot() {
-  local blob in_flight pending
+  local blob in_flight
   blob=$(unix_get "http://localhost/api/status")
   if ! split_http_body "$blob" \
     || [ "$IDENTITY_HTTP_CODE" != "200" ] \
@@ -945,9 +945,7 @@ drain_snapshot() {
   fi
   in_flight=$(printf '%s' "$IDENTITY_BODY" \
     | sed -n 's/.*"uds":{[^}]*"in_flight":\([0-9][0-9]*\).*/\1/p' | head -1)
-  pending=$(status_field "$IDENTITY_BODY" pending_count)
-  printf 'socket=answering uds_in_flight=%s sync_pending=%s\n' \
-    "${in_flight:-unknown}" "${pending:-unknown}"
+  printf 'socket=answering uds_in_flight=%s\n' "${in_flight:-unknown}"
 }
 
 restart_primary() {

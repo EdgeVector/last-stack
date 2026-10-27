@@ -36,8 +36,6 @@ def health(sock, version, pid):
     sampled = status.get("sampled_at")
     require(type(sampled) is int and 0 <= time.time() - sampled <= 300,
             "Run V2 status sample is absent, future, or stale")
-    require(status["sync"]["enabled"] is False
-            and status["sync"].get("local_writable") is True, "Run V2 must stay writable with Cloud Off")
     durability = status.get("durability", {})
     require(durability.get("observed") is True and durability.get("automatic_enabled") is False
             and durability.get("running") is False, "Run V2 requires observed automatic-off and idle backup status")

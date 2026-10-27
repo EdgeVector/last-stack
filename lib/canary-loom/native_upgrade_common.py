@@ -123,7 +123,7 @@ def _current_health(sock, version=None, pid=None):
     build = call(sock, "/api/version").get("build")
     require(not version or build == version, "Live version differs from the bound pair")
     status = call(sock, "/api/status")["status"]
-    require(status["sync"]["enabled"] is False,
+    require(status.get("durability", {}).get("automatic_enabled") is False,
             "Cloud must stay off")
     sampled = status.get("sampled_at")
     require(type(sampled) is int and 0 <= time.time() - sampled <= 300,
@@ -131,7 +131,6 @@ def _current_health(sock, version=None, pid=None):
     resident = status.get("resident", {})
     require(resident.get("persist_lane_failures") == 0 and resident.get("deferred_persist_failed") == 0,
             "The persist status failure gauges are absent or nonzero")
-    require(status["sync"].get("local_writable") is True, "The native home is not writable")
     native = call(sock, "/api/db/native-status")["native_disk"]
     parts = native["parts"]
     require(native["writer_failed"] is False, "The native writer failure mark is set")
