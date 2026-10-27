@@ -225,6 +225,18 @@ def gh_json(path: str, jq: str) -> object:
     """`gh api <path> --jq <jq>` parsed as JSON, or None on any failure."""
     proc = subprocess.run([gh_bin(), "api", path, "--jq", jq], capture_output=True, text=True,
                           timeout=60, check=False)
+    # Diagnostic for lastseek check-runs lookup
+    if "lastseek" in path and "check-runs" in path:
+        import sys
+        print(f"gh_json: path={path}", file=sys.stderr, flush=True)
+        print(f"gh_json: returncode={proc.returncode}", file=sys.stderr, flush=True)
+        if proc.returncode != 0:
+            # Redact tokens from stderr
+            stderr = proc.stderr.replace(os.environ.get("GITHUB_TOKEN", ""), "[REDACTED]")
+            stderr = stderr.replace(os.environ.get("GH_TOKEN", ""), "[REDACTED]")
+            print(f"gh_json: stderr={stderr[:500]}", file=sys.stderr, flush=True)
+        else:
+            print(f"gh_json: stdout_length={len(proc.stdout)}", file=sys.stderr, flush=True)
     if proc.returncode != 0:
         return None
     try:
@@ -254,8 +266,18 @@ def github_ci_head(cfg: dict) -> tuple[str, str]:
     if not isinstance(commits, list) or not commits:
         return "", f"could not list main commits of {slug}"
     for sha in commits[:GH_CI_WINDOW]:
+        # Diagnostic for lastseek: show ALL check-run names for first commit
+        if slug == "EdgeVector/lastseek":
+            import sys
+            all_checks = gh_json(f"repos/{slug}/commits/{sha}/check-runs?per_page=100",
+                                '[.check_runs[] | {name: .name, conclusion: .conclusion}]')
+            if sha[:8] == "14b695ac":
+                print(f"github_ci_head: lastseek {sha[:8]} all_checks={all_checks}", file=sys.stderr, flush=True)
         runs = gh_json(f"repos/{slug}/commits/{sha}/check-runs?per_page=100",
                        '[.check_runs[] | select(.name == "ci-required" or (.name | endswith("/ ci-required"))) | .conclusion]')
+        # Diagnostic for lastseek: show filtered results
+        if slug == "EdgeVector/lastseek" and sha[:8] == "14b695ac":
+            print(f"github_ci_head: lastseek {sha[:8]} filtered_runs={runs}", file=sys.stderr, flush=True)
         if not isinstance(runs, list) or "success" not in runs:
             continue
         if needs_artifact:
