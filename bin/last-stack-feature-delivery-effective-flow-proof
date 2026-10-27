@@ -358,6 +358,20 @@ def sample_number(sample: dict[str, Any], field: str) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def warm_limit_bytes(sample: dict[str, Any]) -> int | None:
+    """The warm set limit that one LastDB sample enforces.
+
+    `core_warm_limit_bytes` (LASTDB_CORE_WARM_BYTES) is the limit the warm set
+    purge enforces. `warm_budget_bytes` (LASTDB_HASH_GROUP_WARM_BYTES) is only a
+    process projection input; an older log line without the core field falls
+    back to it.
+    """
+    core = sample_number(sample, "core_warm_limit_bytes")
+    if core is not None and core > 0:
+        return core
+    return sample_number(sample, "warm_budget_bytes")
+
+
 def evaluate_soak(soak: dict[str, Any]) -> dict[str, Any]:
     started = now()
     if not soak.get("fixed_build"):
@@ -406,7 +420,7 @@ def evaluate_soak(soak: dict[str, Any]) -> dict[str, Any]:
     violations: list[str] = []
     for sample in valid:
         resident = sample_number(sample, "warm_resident_bytes")
-        budget = sample_number(sample, "warm_budget_bytes")
+        budget = warm_limit_bytes(sample)
         rss = sample_number(sample, "rss_bytes")
         limit = sample_number(sample, "memory_limit_bytes")
         at = sample.get("sampled_at", "unknown")
@@ -415,7 +429,7 @@ def evaluate_soak(soak: dict[str, Any]) -> dict[str, Any]:
         else:
             if budget > WARM_CACHE_LIMIT_BYTES:
                 violations.append(
-                    f"sample {at} warm budget {budget} exceeds hard limit {WARM_CACHE_LIMIT_BYTES}"
+                    f"sample {at} warm limit {budget} exceeds hard limit {WARM_CACHE_LIMIT_BYTES}"
                 )
             if resident > WARM_CACHE_LIMIT_BYTES:
                 violations.append(
@@ -467,6 +481,7 @@ def evaluate_soak(soak: dict[str, Any]) -> dict[str, Any]:
         "max_warm_resident_bytes": max(int(sample["warm_resident_bytes"]) for sample in valid),
         "max_warm_budget_bytes": max(int(sample["warm_budget_bytes"]) for sample in valid),
         "warm_budget_bytes": min(int(sample["warm_budget_bytes"]) for sample in valid),
+        "max_warm_set_limit_bytes": max(int(warm_limit_bytes(sample) or 0) for sample in valid),
         "warm_limit_bytes": WARM_CACHE_LIMIT_BYTES,
         "build": soak.get("build", ""),
     }
