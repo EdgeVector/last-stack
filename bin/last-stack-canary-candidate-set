@@ -114,6 +114,10 @@ def forge_git_env() -> dict[str, str]:
     # sets GITHUB_TOKEN or APP_REPOS_TOKEN.
     gh_token = os.environ.get("APP_REPOS_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
     if gh_token:
+        # Diagnostic: print token presence and length, never the value
+        import sys
+        print(f"GitHub token found (length: {len(gh_token)}, source: {'APP_REPOS_TOKEN' if os.environ.get('APP_REPOS_TOKEN') else 'GITHUB_TOKEN'})", 
+              file=sys.stderr)
         import base64
         auth_string = f"x-access-token:{gh_token}"
         auth_b64 = base64.b64encode(auth_string.encode()).decode()
