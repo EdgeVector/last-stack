@@ -46,11 +46,6 @@ MAX_QOS_SHEDS="${LASTSTACK_PRESSURE_MAX_QOS_SHEDS:-1}"
 MAX_WARM_PCT="${LASTSTACK_PRESSURE_MAX_WARM_PCT:-95}"
 # If lastdb status fails, treat as hot only when --hot-on-unknown=1
 HOT_ON_UNKNOWN="${LASTSTACK_PRESSURE_HOT_ON_UNKNOWN:-0}"
-# Sync liveness is NOT a load signal. Cloud sync can be deliberately paused for
-# containment while the node serves reads and writes normally, so `degraded`
-# alone must not shed the work generators. Opt back in with =1 if a caller
-# genuinely wants the old behaviour.
-HOT_ON_SYNC_DEGRADED="${LASTSTACK_PRESSURE_HOT_ON_SYNC_DEGRADED:-0}"
 
 if ! command -v lastdb >/dev/null 2>&1 && ! command -v lastdbd >/dev/null 2>&1; then
   log "lastdb CLI missing"
@@ -76,14 +71,12 @@ rejects="$(printf '%s\n' "$status_txt" | sed -n 's/.*rejects=\([0-9][0-9]*\).*/\
 sheds_i="$(printf '%s\n' "$status_txt" | sed -n 's/.*sheds_i=\([0-9][0-9]*\).*/\1/p' | head -1)"
 sheds_b="$(printf '%s\n' "$status_txt" | sed -n 's/.*sheds_b=\([0-9][0-9]*\).*/\1/p' | head -1)"
 warm_pct="$(printf '%s\n' "$status_txt" | sed -n 's/.*warm=[^/]*\/[^ ]* (\([0-9.][0-9.]*\)%).*/\1/p' | head -1)"
-degraded="$(printf '%s\n' "$status_txt" | grep -c 'degraded=true' || true)"
 
 in_flight="${in_flight:-0}"
 rejects="${rejects:-0}"
 sheds_i="${sheds_i:-0}"
 sheds_b="${sheds_b:-0}"
 warm_pct="${warm_pct:-0}"
-degraded="${degraded:-0}"
 
 reasons=()
 level="cool"
@@ -114,19 +107,6 @@ if num_gt "$warm_pct" "$MAX_WARM_PCT"; then
   reasons+=("warm_pct=$warm_pct>$MAX_WARM_PCT")
   level="hot"
 fi
-if [ "$degraded" -gt 0 ]; then
-  # Every other trigger above is a threshold on a load measurement. This one is
-  # a liveness flag, and a deliberate pause holds it for as long as containment
-  # is correctly held — which would keep work generation off indefinitely for a
-  # node that is not busy. Report it; do not gate on it by default.
-  if [ "$HOT_ON_SYNC_DEGRADED" = "1" ]; then
-    reasons+=("sync_degraded")
-    level="hot"
-  else
-    reasons+=("sync_degraded_info")
-  fi
-fi
-
 reason_str="$(IFS=,; echo "${reasons[*]:-}")"
 [ -n "$reason_str" ] || reason_str="ok"
 

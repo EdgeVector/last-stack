@@ -34,7 +34,6 @@ Env (defaults):
   LOAD_MON_ALERT_CPU_CONSEC    5
   LOAD_MON_ALERT_FOOTPRINT_MB  13107  lastdbd phys_footprint (guard ceiling 16384)
   LOAD_MON_ALERT_FOOTPRINT_CONSEC 3
-  LOAD_MON_ALERT_SYNC_CONSEC   10      passes with sync degraded_reasons set
   LOAD_MON_ALERT_LANES_CONSEC  2       passes with an unhealthy or quarantined persist lane
   LOAD_MON_ALERT_GOV_CONSEC    3       passes with the memory governor latched purge-failed
                                        (independent of footprint — fires even when phys_
@@ -150,7 +149,6 @@ CPU_PCT = envf("LOAD_MON_ALERT_CPU_PCT", 100)
 CPU_CONSEC = int(envf("LOAD_MON_ALERT_CPU_CONSEC", 5))
 FP_MB = envf("LOAD_MON_ALERT_FOOTPRINT_MB", 13107)  # 80% of the 16 GiB guard
 FP_CONSEC = int(envf("LOAD_MON_ALERT_FOOTPRINT_CONSEC", 3))
-SYNC_CONSEC = int(envf("LOAD_MON_ALERT_SYNC_CONSEC", 10))
 LANES_CONSEC = int(envf("LOAD_MON_ALERT_LANES_CONSEC", 2))
 GOV_CONSEC = int(envf("LOAD_MON_ALERT_GOV_CONSEC", 3))
 SWAP_MB = envf("LOAD_MON_ALERT_SWAP_MB", 20480)
@@ -437,7 +435,6 @@ def status_vitals(buf):
         mb = st.get("memory_budget") or {}
         qos = st.get("qos") or {}
         uds = st.get("uds") or {}
-        sy = st.get("sync") or {}
         lanes = (st.get("request_ops") or {}).get("persist_lanes") or []
         res = st.get("resident") or {}
         return {
@@ -457,15 +454,6 @@ def status_vitals(buf):
             "sheds": (qos.get("bulk_sheds") or 0) + (qos.get("interactive_sheds") or 0),
             "uds_in": uds.get("in_flight"),
             "uds_rej": uds.get("queue_full_rejects"),
-            "sync": sy.get("state"),
-            "sync_why": sy.get("degraded_reasons"),
-            # mutation_log_lag is nanoseconds; store seconds so the trend reads as an RPO
-            "mlog_lag_s": int(sy["mutation_log_lag"] / 1e9) if isinstance(sy.get("mutation_log_lag"), (int, float)) else None,
-            "rp_age_s": sy.get("mutation_log_recovery_point_age_secs"),
-            # the cause of a sync lag: the cloud error text, its age, and the download backlog
-            "sync_err": (sy.get("last_error") or "")[:160] or None,
-            "sync_err_at": sy.get("last_error_at"),
-            "dl_deferred": (sy.get("last_download") or {}).get("entries_deferred"),
         }
     except Exception as e:  # a parse failure must not cost the sample
         return {"error": type(e).__name__}
@@ -1122,7 +1110,6 @@ ALERT_SCOPE = {
     "lastdb_governor_purge_failed":    (("lastdbd",),   "other",   "warn"),
     "node_unresponsive":               (("lastdbd",),   "other",   "warn"),
     "lastdbd_restarted":               (("lastdbd",),   "restart", "info"),
-    "lastdb_sync_degraded":            (("lastdbd",),   "other",   "info"),
     "lastdb_cold_group_near_cap":      (("lastdbd",),   "other",   "info"),
     "lastdbd_footprint_high":          (("lastdbd",),   "other",   "info"),
     "lastdbd_cpu_high":                (("lastdbd",),   "other",   "info"),
@@ -1189,19 +1176,6 @@ def fire(name, msg, now):
                       ["/usr/bin/perl", "-e", "alarm 5; exec @ARGV"] + notice_argv(sit, name, msg))
 
 
-def sync_cause(v, now):
-    """Alert suffix naming why sync lags: cloud error (if recent), recovery-point age, backlog."""
-    parts = []
-    err_at = v.get("sync_err_at")
-    if v.get("sync_err") and isinstance(err_at, (int, float)) and now - err_at < 900:
-        parts.append("last error %ds ago: %s" % (now - err_at, v["sync_err"]))
-    if v.get("mlog_lag_s") is not None:
-        parts.append("recovery point %ss old" % v["mlog_lag_s"])
-    if v.get("dl_deferred"):
-        parts.append("%s download entries deferred" % v["dl_deferred"])
-    return " (%s)" % "; ".join(parts) if parts else ""
-
-
 def evaluate_alerts(rec, now):
     st = load_state()
     st["node_bad"] = st.get("node_bad", 0) + 1 if rec["node"]["status"]["state"] != "ok" else 0
@@ -1210,7 +1184,6 @@ def evaluate_alerts(rec, now):
     st["cpu_hot"] = st.get("cpu_hot", 0) + 1 if hot else 0
     v = rec["node"]["status"].get("vitals") or {}
     st["fp_hot"] = st.get("fp_hot", 0) + 1 if (v.get("fp_mb") or 0) >= FP_MB else 0
-    st["sync_bad"] = st.get("sync_bad", 0) + 1 if v.get("sync_why") else 0
     lanes_bad = bool(v.get("pl_unhealthy") or v.get("pl_quarantined"))
     st["lanes_bad"] = st.get("lanes_bad", 0) + 1 if lanes_bad else 0
     # Gated on the STATE, not a duration field (the collector has none from
@@ -1289,8 +1262,6 @@ def evaluate_alerts(rec, now):
          "LastDB persist lanes refuse writes for %d passes: unhealthy=%s quarantined=%s breaker_trips=%s failures=%s "
          "(status can still read ok; this is the write path)"
          % (st["lanes_bad"], v.get("pl_unhealthy"), v.get("pl_quarantined"), v.get("pl_breaker"), v.get("pl_fail"))),
-        ("lastdb_sync_degraded", st["sync_bad"] >= SYNC_CONSEC,
-         "LastDB sync degraded for %d passes: %s%s" % (st["sync_bad"], v.get("sync_why"), sync_cause(v, now))),
         ("node_unresponsive", st["node_bad"] >= NODE_CONSEC,
          "LastDB node %s (%s) for %d passes"
          % (rec["node"]["status"]["state"], rec["node"]["status"].get("reason", ""), st["node_bad"])),
@@ -1621,10 +1592,6 @@ def report(minutes, as_json):
     vs = [r["node"]["status"]["vitals"] for r in recs if isinstance(r["node"]["status"].get("vitals"), dict) and "error" not in r["node"]["status"]["vitals"]]
     if vs:
         ev = [x["evict"] for x in vs if x.get("evict") is not None]
-        sync = {}
-        for x in vs:
-            k = "%s%s" % (x.get("sync"), " (%s)" % x["sync_why"] if x.get("sync_why") else "")
-            sync[k] = sync.get(k, 0) + 1
         out["vitals"] = {
             "fp_mb_max": max((x.get("fp_mb") or 0) for x in vs),
             "evictions": (ev[-1] - ev[0]) if ev and ev[-1] >= ev[0] else None,
@@ -1632,10 +1599,6 @@ def report(minutes, as_json):
             "slow_ms_max": max((x.get("slow_ms") or 0) for x in vs),
             "uds_rej_max": max((x.get("uds_rej") or 0) for x in vs),
             "gov": sorted({str(x.get("gov")) for x in vs}),
-            "sync": sync,
-            "mlog_lag_s_max": max([x["mlog_lag_s"] for x in vs if x.get("mlog_lag_s") is not None] or [None], key=lambda v: -1 if v is None else v),
-            "mlog_lag_s_last": vs[-1].get("mlog_lag_s"),
-            "rp_age_s_max": max([x["rp_age_s"] for x in vs if x.get("rp_age_s") is not None] or [None], key=lambda v: -1 if v is None else v),
         }
     out["delivery"] = read_delivery(minutes)
     out["writes"] = write_report(read_writes(minutes))
