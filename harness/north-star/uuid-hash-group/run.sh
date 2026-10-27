@@ -79,14 +79,14 @@ if [ "$MODE" = live ]; then
   printf '%s\n' "$policy" | grep -Eiq 'cloud_sync\.json restored|re-enabled' || \
     fail "cloud-sync checkpoint does not record the later re-enable"
 
-  sync_line="$(lastdb status | grep '^Sync:' | head -n 1)"
-  [ -n "$sync_line" ] || fail "primary status did not expose a Sync line"
+  # `lastdb status` prints no Sync line once the sync object is removed.
+  sync_line="$(lastdb status | grep '^Sync:' | head -n 1 || true)"
   sync_after="$(sync_config_state)"
   [ "$sync_before" = "$sync_after" ] || \
     fail "the live proof changed the primary cloud-sync configuration"
 
   source_evidence="source contracts and the immutable real-data copy evidence remained available"
-  sync_evidence="the Tom-authorized sync configuration remained byte-identical; status exposed: $sync_line"
+  sync_evidence="the Tom-authorized sync configuration remained byte-identical; status exposed: ${sync_line:-no Sync line}"
 fi
 
 body="$(cat <<EOF
