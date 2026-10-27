@@ -60,6 +60,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Diagnostic at script startup: check if GITHUB_TOKEN is in environment
+# This prints immediately when the script loads, before any functions run
+_startup_github_token = os.environ.get("GITHUB_TOKEN", "")
+_startup_app_token = os.environ.get("APP_REPOS_TOKEN", "")
+print(f"STARTUP: canary-candidate-set GITHUB_TOKEN={'SET' if _startup_github_token else 'UNSET'} (len={len(_startup_github_token)}), "
+      f"APP_REPOS_TOKEN={'SET' if _startup_app_token else 'UNSET'}", 
+      file=sys.stderr, flush=True)
+
 ROOT = Path(__file__).resolve().parents[1]
 HOME = Path.home()
 DEFAULT_APPS_CONFIG = ROOT / "config" / "registry" / "apps.json"
