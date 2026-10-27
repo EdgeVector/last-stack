@@ -419,7 +419,7 @@ if [ -x "$HOME/.last-stack/bin/last-stack-install-apps" ]; then
     want_mode=proved
     [ -z "$SMOKE_CANDIDATE_SET" ] || want_mode=pinned
     receipts="$HOME/lastdb-apps/.lastdb-app-receipts"
-    for app in brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser; do
+    for app in brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser lastseek; do
       mode="$(jq -r '.mode // "missing"' "$receipts/$app.json" 2>/dev/null || echo missing)"
       if [ "$mode" = "$want_mode" ]; then
         receipt_sha="$(jq -r '.sha // empty' "$receipts/$app.json" 2>/dev/null || true)"
@@ -452,7 +452,7 @@ if [ -x "$HOME/lastdb-apps/brain/bin/brain" ]; then
   export PATH="$HOME/lastdb-apps/brain/bin:$PATH"
 fi
 
-for cli in brain kanban situations routines org lastsecrets search lastdb-browser; do
+for cli in brain kanban situations routines org lastsecrets search lastdb-browser lastseek; do
   if command -v "$cli" >/dev/null 2>&1; then
     cli_path="$(command -v "$cli")"
     case "$cli_path" in

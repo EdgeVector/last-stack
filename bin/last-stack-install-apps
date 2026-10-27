@@ -565,7 +565,7 @@ if [ -n "$PINS_FILE" ]; then
   echo "==> candidate set: $PINS_FILE (lastdb $(jq -r '.lastdb.build // "?"' "$PINS_FILE"))"
 fi
 
-BUNDLE_APPS="brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser lastseek"
+BUNDLE_APPS="brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser"
 FAILED_APPS=""      # "<app>:<stage>" words, in install order
 app_failed() {
   case " $FAILED_APPS " in
