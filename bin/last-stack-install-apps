@@ -126,6 +126,11 @@ clone_or_update() {
   local dest="$TARGET_DIR/$name"
   local optional="${3:-}"
 
+  # Prepare GitHub auth for private repos before any git operation.
+  case "$url" in
+    https://github.com/*|git@github.com:*) prepare_github_auth ;;
+  esac
+
   if [ -d "$dest/.git" ]; then
     echo "==> updating $name"
     if ! git -C "$dest" pull --ff-only; then
@@ -152,6 +157,42 @@ clone_or_update() {
     fi
     return 0
   fi
+}
+
+# GitHub private repos (e.g. lastseek) need authentication. Inject `gh` CLI
+# credentials through GIT_CONFIG_* so git can clone them. The credential is
+# never written to disk or argv (both `ps aux` leaks). The smoke test runs
+# under a throwaway HOME and has no ~/.config/gh, so check the login user's
+# gh config by temporarily restoring the real HOME for the auth check.
+GITHUB_AUTH_READY=""
+prepare_github_auth() {
+  [ -z "$GITHUB_AUTH_READY" ] || return 0
+  if ! command -v gh >/dev/null 2>&1; then
+    return 0  # No gh CLI available; public-only installs still work
+  fi
+  # The smoke test runs under a throwaway HOME, but gh needs the real HOME
+  # to find ~/.config/gh. Check auth status under the login user's HOME.
+  local real_home login_home="${REAL_HOME:-}"
+  if [ -z "$login_home" ]; then
+    login_home="$(login_home 2>/dev/null || true)"
+  fi
+  if [ -n "$login_home" ] && [ "${HOME:-}" != "$login_home" ]; then
+    if ! HOME="$login_home" gh auth status >/dev/null 2>&1; then
+      return 0  # Not authenticated; public-only installs still work
+    fi
+    # Found auth under login HOME. Point GH_CONFIG_DIR at it so `gh auth
+    # git-credential` (invoked by git through the helper below) finds the token.
+    export GH_CONFIG_DIR="$login_home/.config/gh"
+  elif ! gh auth status >/dev/null 2>&1; then
+    return 0  # Not authenticated; public-only installs still work
+  fi
+  # Append to existing GIT_CONFIG_* entries. Never replace caller's config.
+  local n="${GIT_CONFIG_COUNT:-0}"
+  export GIT_CONFIG_COUNT=$((n + 1))
+  export "GIT_CONFIG_KEY_$n=credential.https://github.com.helper"
+  export "GIT_CONFIG_VALUE_$n=!gh auth git-credential"
+  GITHUB_AUTH_READY=1
+  return 0
 }
 
 # An old candidate set can name a LastGit source (lastdb:///<repo>). LastGit is
@@ -193,6 +234,7 @@ install_pinned() {
   local dest="$TARGET_DIR/$name" head origin
   case "$url" in
     lastdb://*) prepare_lastgit_transport "$name" || return 1 ;;
+    https://github.com/*|git@github.com:*) prepare_github_auth ;;
   esac
   if [ -d "$dest/.git" ]; then
     echo "==> pinning $name to ${sha:0:12} ($why)"
@@ -580,6 +622,10 @@ if [ "$SOURCE_ONLY" -ne 1 ]; then
   need bun
   need npm
 fi
+
+# Prepare GitHub authentication for private repos (e.g. lastseek).
+# This sets up GIT_CONFIG_* once for all subsequent git operations.
+prepare_github_auth
 
 if [ "$INSTALL_LASTDB" -eq 1 ]; then
   install_lastdb_formula
