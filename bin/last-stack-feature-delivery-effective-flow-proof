@@ -358,17 +358,32 @@ def sample_number(sample: dict[str, Any], field: str) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def warm_limit_bytes(sample: dict[str, Any]) -> int | None:
+def warm_set_bytes(sample: dict[str, Any]) -> int | None:
+    """The warm set bytes that one LastDB sample measured.
+
+    `core_warm_used_bytes` is the charged warm set gauge. `warm_resident_bytes`
+    carries the same value from EdgeVector/lastdb PR 529 on and was a constant
+    0 before it, so the larger of the two is the measured value.
+    """
+    resident = sample_number(sample, "warm_resident_bytes")
+    core = sample_number(sample, "core_warm_used_bytes")
+    if resident is None or core is None:
+        return core if resident is None else resident
+    return max(resident, core)
+
+
+def warm_set_limit_bytes(sample: dict[str, Any]) -> int | None:
     """The warm set limit that one LastDB sample enforces.
 
     `core_warm_limit_bytes` (LASTDB_CORE_WARM_BYTES) is the limit the warm set
     purge enforces. `warm_budget_bytes` (LASTDB_HASH_GROUP_WARM_BYTES) is only a
-    process projection input; an older log line without the core field falls
-    back to it.
+    process projection input; a log line from a build without the core field
+    falls back to it. A core field that is present but not a positive int gives
+    None, so the sample fails the byte contract instead of using the projection.
     """
-    core = sample_number(sample, "core_warm_limit_bytes")
-    if core is not None and core > 0:
-        return core
+    if "core_warm_limit_bytes" in sample:
+        core = sample_number(sample, "core_warm_limit_bytes")
+        return core if core is not None and core > 0 else None
     return sample_number(sample, "warm_budget_bytes")
 
 
@@ -419,8 +434,8 @@ def evaluate_soak(soak: dict[str, Any]) -> dict[str, Any]:
     span = last - first
     violations: list[str] = []
     for sample in valid:
-        resident = sample_number(sample, "warm_resident_bytes")
-        budget = warm_limit_bytes(sample)
+        resident = warm_set_bytes(sample)
+        budget = warm_set_limit_bytes(sample)
         rss = sample_number(sample, "rss_bytes")
         limit = sample_number(sample, "memory_limit_bytes")
         at = sample.get("sampled_at", "unknown")
@@ -478,10 +493,11 @@ def evaluate_soak(soak: dict[str, Any]) -> dict[str, Any]:
         "sample_count": len(valid),
         "span_seconds": span,
         "process_start_ts": next(iter(process_starts)),
-        "max_warm_resident_bytes": max(int(sample["warm_resident_bytes"]) for sample in valid),
-        "max_warm_budget_bytes": max(int(sample["warm_budget_bytes"]) for sample in valid),
-        "warm_budget_bytes": min(int(sample["warm_budget_bytes"]) for sample in valid),
-        "max_warm_set_limit_bytes": max(int(warm_limit_bytes(sample) or 0) for sample in valid),
+        "max_warm_resident_bytes": max(warm_set_bytes(sample) or 0 for sample in valid),
+        "max_warm_budget_bytes": max(sample_number(sample, "warm_budget_bytes") or 0 for sample in valid),
+        "warm_budget_bytes": min(sample_number(sample, "warm_budget_bytes") or 0 for sample in valid),
+        "min_warm_set_limit_bytes": min(warm_set_limit_bytes(sample) or 0 for sample in valid),
+        "max_warm_set_limit_bytes": max(warm_set_limit_bytes(sample) or 0 for sample in valid),
         "warm_limit_bytes": WARM_CACHE_LIMIT_BYTES,
         "build": soak.get("build", ""),
     }
