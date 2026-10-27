@@ -603,6 +603,8 @@ jobs:
 
       - name: Actual app install and startup
         if: ${{ needs.plan.outputs.probe_only != 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || github.token }}
         run: |
           set -u
           set +e   # a RED smoke exits 1; keep going so the bundle is written

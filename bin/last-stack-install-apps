@@ -159,38 +159,25 @@ clone_or_update() {
   fi
 }
 
-# GitHub private repos (e.g. lastseek) need authentication. Inject `gh` CLI
-# credentials through GIT_CONFIG_* so git can clone them. The credential is
-# never written to disk or argv (both `ps aux` leaks). The smoke test runs
-# under a throwaway HOME and has no ~/.config/gh, so check the login user's
-# gh config by temporarily restoring the real HOME for the auth check.
+# GitHub private repos (e.g. lastseek) need authentication. Inject the token
+# through GIT_CONFIG_* so git can clone them. The credential is never written
+# to disk or argv (both `ps aux` leaks). The caller (smoke test, CI workflow)
+# sets GITHUB_TOKEN or APP_REPOS_TOKEN; we inject it as an HTTP extraheader.
+# Pattern matches the Forge token setup (never rely on gh CLI or ~/.config/gh).
 GITHUB_AUTH_READY=""
 prepare_github_auth() {
   [ -z "$GITHUB_AUTH_READY" ] || return 0
-  if ! command -v gh >/dev/null 2>&1; then
-    return 0  # No gh CLI available; public-only installs still work
-  fi
-  # The smoke test runs under a throwaway HOME, but gh needs the real HOME
-  # to find ~/.config/gh. Check auth status under the login user's HOME.
-  local real_home login_home="${REAL_HOME:-}"
-  if [ -z "$login_home" ]; then
-    login_home="$(login_home 2>/dev/null || true)"
-  fi
-  if [ -n "$login_home" ] && [ "${HOME:-}" != "$login_home" ]; then
-    if ! HOME="$login_home" gh auth status >/dev/null 2>&1; then
-      return 0  # Not authenticated; public-only installs still work
-    fi
-    # Found auth under login HOME. Point GH_CONFIG_DIR at it so `gh auth
-    # git-credential` (invoked by git through the helper below) finds the token.
-    export GH_CONFIG_DIR="$login_home/.config/gh"
-  elif ! gh auth status >/dev/null 2>&1; then
-    return 0  # Not authenticated; public-only installs still work
+  # Prefer APP_REPOS_TOKEN (dedicated private-repos secret), then GITHUB_TOKEN
+  # (workflow default, has access to same-org private repos in Actions context).
+  local token="${APP_REPOS_TOKEN:-${GITHUB_TOKEN:-}}"
+  if [ -z "$token" ]; then
+    return 0  # No token available; public-only installs still work
   fi
   # Append to existing GIT_CONFIG_* entries. Never replace caller's config.
   local n="${GIT_CONFIG_COUNT:-0}"
   export GIT_CONFIG_COUNT=$((n + 1))
-  export "GIT_CONFIG_KEY_$n=credential.https://github.com.helper"
-  export "GIT_CONFIG_VALUE_$n=!gh auth git-credential"
+  export "GIT_CONFIG_KEY_$n=http.https://github.com/.extraheader"
+  export "GIT_CONFIG_VALUE_$n=Authorization: token $token"
   GITHUB_AUTH_READY=1
   return 0
 }
