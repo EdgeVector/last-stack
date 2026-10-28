@@ -1,0 +1,13 @@
+# RunV2 maintenance with a current V2 backup
+
+The primary already uses RunV2. This route changes only the CLI and daemon pair. It does not change the native format, restore the primary, copy its data, or use the retired apps. The route uses a separate approval schema and Loom protocol. The older bootstrap profiles stay closed.
+
+The source policy names the exact baseline pair and candidate source. It checks every changed native, writer, crypto, dependency, feature, and build input against reviewed Git objects. GitHub must report the candidate PR merged, its exact source CI successful, and the accepted main CI and benchmark-complete successful. The retained Mac artifact must match GitHub and both selected programs.
+
+The exact candidate first operates on fresh DEV data from the baseline. The operation checks an automatic snapshot, native mutation-log uploads, the same request after a restart, a later snapshot after an interval change, and a source-free restore. Ordinary reads check updates, deletions, and complete file bytes after two restored starts. The baseline must also read ordinary candidate-written data. The primary stays unchanged throughout this operation.
+
+Before the primary stop, a fresh manual V2 snapshot must finish on both providers. Its exact accepted receipt, full native file list, source profile, native home identities, and live frontiers bind the recovery point. The route requires no upload backlog, no source retention, no writer failure, and a fresh status sample. It then uses the existing strict supervised stop and flush receipt. Before any pair selection, a read-only check holds both native owner locks and hashes every file in the accepted snapshot. Both stopped CURRENT files must equal the accepted snapshot. A changed cut refuses the upgrade and restores the baseline supervisor. No stale-backup waiver applies.
+
+The route saves the old programs, stages the exact candidate pair, and uses the existing primary-only current pointer and LaunchAgent reload. It checks the supervised session, identity, native format, configuration, failure counters, memory, and ordinary keyed reads. The minimum observation period is five minutes. A failure uses the saved pair on the same compatible home through the recorded recovery transaction.
+
+Automatic backup stays off during the pair change. After the upgrade completes, a separate owner-authorized action enables minute log uploads and daily snapshots. The final check requires an actual published primary backup, the correct provider routes, released local source files, and correct account counters. Both intervals remain configurable.

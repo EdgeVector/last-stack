@@ -82,7 +82,11 @@ replace the retired app and local benchmark procedure. Strict stop, the clean
 session, the final stopped V2 cut, isolated pair installation, program recovery,
 and five-minute supervised health remain required. No primary data copy occurs.
 
---native-run-v2-ci-approval FILE selects the separate protocol 11 bootstrap.
+--native-run-v2-ci-approval FILE selects protocol 11 bootstrap or protocol 12
+ordinary maintenance, as the exact approval schema specifies. Protocol 12 requires
+a current accepted V2 snapshot, exact stopped native bytes, and known-key reads.
+Its full design is docs/lastdb-run-v2-maintenance.md. Protocol 11 retains its
+closed bootstrap policy below.
 It requires the closed RunV2 baseline, exact CI pair, accepted PR tree, and DEV
 backup/restore/restart plus ordinary baseline reopen evidence. The named approval
 keeps cloud off during the upgrade. Recovery uses the saved pair and the same
@@ -254,6 +258,11 @@ if [ -n "$NATIVE_APPROVAL" ]; then
       [ "$NATIVE_REOPEN" -eq 0 ] && [ "$NATIVE_PROBE_ONLY" -eq 0 ] || die "native V2 refuses other native modes"
       SAFE_UPGRADE_PROTOCOL_VERSION="10"
       ;;
+    native-run-v2-ci)
+      [ "$NATIVE_POLICY_FLAG" = --native-run-v2-ci-approval ] || die "RunV2 maintenance requires its explicit policy flag"
+      [ "$NATIVE_REOPEN" -eq 0 ] && [ "$NATIVE_PROBE_ONLY" -eq 0 ] || die "RunV2 maintenance refuses other modes"
+      SAFE_UPGRADE_PROTOCOL_VERSION="12"
+      ;;
     native-run-v2-ci-cloud-off)
       [ "$NATIVE_POLICY_FLAG" = --native-run-v2-ci-approval ] || die "RunV2 requires its explicit policy flag"
       [ "$NATIVE_REOPEN" -eq 0 ] && [ "$NATIVE_PROBE_ONLY" -eq 0 ] || die "RunV2 refuses other native modes"
@@ -361,7 +370,7 @@ real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$exe")
 install_root="$(dirname "$(dirname "$real")")"
 defs=""
 scripts=""
-if [ "$UPGRADE_MODE" = native-v2-ci ] || [ "$UPGRADE_MODE" = native-run-v2-ci-cloud-off ]; then
+if [ "$UPGRADE_MODE" = native-v2-ci ] || [ "$UPGRADE_MODE" = native-run-v2-ci-cloud-off ] || [ "$UPGRADE_MODE" = native-run-v2-ci ]; then
   for override in "${LOOM_DEFS:-}" "${LOOM_SCRIPTS:-}"; do
     [ -z "$override" ] || [ "$(canonical_file "$override")" = "$ROOT/lib/canary-loom" ] \
       || die "native V2 refuses a different graph or script bundle"

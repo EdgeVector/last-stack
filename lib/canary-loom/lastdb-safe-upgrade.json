@@ -17,7 +17,7 @@
       "source_git_oid": { "type": "string" },
       "candidate_artifact_digest": { "type": "string" },
       "safe_upgrade_protocol_version": { "type": "string" },
-      "upgrade_mode": { "type": "string", "enum": ["legacy-cloud", "native-inplace-cloud-off", "native-logical-migration-cloud-off", "native-v2-ci", "native-run-v2-ci-cloud-off"] },
+      "upgrade_mode": { "type": "string", "enum": ["legacy-cloud", "native-inplace-cloud-off", "native-logical-migration-cloud-off", "native-v2-ci", "native-run-v2-ci-cloud-off", "native-run-v2-ci"] },
       "native_approval": { "type": "string" },
       "native_approval_sha256": { "type": "string" },
       "native_reopen": { "type": "boolean" },
@@ -85,7 +85,7 @@
     "RECOVERY_ROUTE": {
       "type": "choice",
       "path": "upgrade_mode",
-      "map": { "native-inplace-cloud-off": "RECOVER", "native-logical-migration-cloud-off": "RECOVER", "native-v2-ci": "RECOVER", "native-run-v2-ci-cloud-off": "RECOVER" },
+      "map": { "native-inplace-cloud-off": "RECOVER", "native-logical-migration-cloud-off": "RECOVER", "native-v2-ci": "RECOVER", "native-run-v2-ci-cloud-off": "RECOVER", "native-run-v2-ci": "RECOVER" },
       "default": "FAILED"
     },
     "RECOVER": {
