@@ -70,6 +70,10 @@ def memory_guard(proof, summary, programs, operation, limit):
             and owner.get("programs") == programs and owner.get("home") == str(Path(summary["homes"]) / "r")
             and owner.get("operation_sha256") == operation and value.get("memory_limit_mb") == limit,
             "The candidate memory observation belongs to another operation or limit")
+    require(value.get("persist_failures") == {"persist_lane_failures":0, "deferred_persist_failed":0}
+            and value.get("native_health", {}).get("version") == owner.get("version", proof["candidate_version"])
+            and value["native_health"].get("native", {}).get("writer_failed") is False,
+            "The restored candidate persist or native writer health is absent or failed")
     samples = value.get("samples_bytes")
     require(isinstance(samples, list) and 15 <= len(samples) <= 120
             and all(type(n) is int and 0 < n < limit * 1048576 * 0.9 for n in samples)
