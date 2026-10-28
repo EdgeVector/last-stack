@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Loom RunV2 policies: closed bootstrap or backup-protected ordinary maintenance."""
+"""Loom RunV2 policy: backup-protected ordinary maintenance."""
 
 import hashlib
 import json
@@ -17,15 +17,13 @@ from native_upgrade import IMMUTABLE, helper, job_pid, service, unloaded
 from native_upgrade_common import pair, private_dir, require, run, session, stopped
 from native_v2_primary import record
 from native_v2_stop import restore_hold
-from native_run_v2_compatibility import BASELINE, BASELINE_PROGRAMS
 from native_run_v2_profiles import check as evidence_check, selected as selected_profile
 from native_run_v2_inputs import digest, read, uint
 from native_run_v2_primary import (baseline_snapshot, initial, live, prepare, preserved,
                                    select, start, stopped_boundary)
 from native_run_v2_stop import stop
 
-MODE = "native-run-v2-ci-cloud-off"
-PROFILE = "run-v2-ci-bootstrap-v1"
+MODE = "native-run-v2-ci"
 BINDING = (*IMMUTABLE, "native_probe_only", "zero_live_soak", "accept_stale_recovery_point")
 
 
@@ -52,7 +50,7 @@ def context():
             "Immutable Loom item/context conflict")
     ctx = {**item, **{k: v for k, v in raw.items() if k != "item"}}
     require((ctx.get("upgrade_mode"), ctx.get("safe_upgrade_protocol_version"))
-            in ((MODE, "11"), ("native-run-v2-ci", "12"), ("native-run-v2-ci", "13"))
+            in ((MODE, "12"), (MODE, "13"))
             and ctx.get("native_reopen") is False and ctx.get("native_probe_only") is False
             and ctx.get("zero_live_soak", False) is False
             and ctx.get("accept_stale_recovery_point", "") == "",
@@ -77,33 +75,26 @@ def binding(ctx):
             and re.fullmatch(r"[0-9a-f]{40}", ctx["source_git_oid"]), "Candidate binding differs")
     approval = read(ctx["native_approval"], 65536, digest(ctx["native_approval_sha256"]))
     _, profile = selected_profile(approval)
-    ordinary = approval.get("schema") in ("lastdb.run-v2-maintenance-approval.v1", "lastdb.run-v2-maintenance-approval.v2")
-    require(ordinary
-            == (ctx["upgrade_mode"] == "native-run-v2-ci"), "The RunV2 mode and profile differ")
     require(ctx["safe_upgrade_protocol_version"] == ("13" if approval.get("schema") == "lastdb.run-v2-maintenance-approval.v2"
-            else "12" if ordinary else "11"), "The exact RunV2 approval protocol differs")
+            else "12"), "The exact RunV2 approval protocol differs")
     require(approval.get("mode") == ctx["upgrade_mode"]
             and approval.get("approved_by") == "Tom"
             and isinstance(approval.get("quote"), str) and bool(approval["quote"].strip())
             and approval.get("source_git_oid") == ctx["source_git_oid"]
             and approval.get("candidate") == candidate
-            and approval.get("baseline_source_git_oid") == getattr(profile, "BASELINE", BASELINE)
-            and approval.get("baseline_programs_sha256") == getattr(profile, "BASELINE_PROGRAMS", BASELINE_PROGRAMS)
+            and approval.get("baseline_source_git_oid") == profile.BASELINE
+            and approval.get("baseline_programs_sha256") == profile.BASELINE_PROGRAMS
             and approval.get("cloud_off") is True and approval.get("primary_data_copy") is False
             and approval.get("primary_restore_or_migration") is False
-            and approval.get("primary_validation") == ("keyed-data-health-continuity"
-                if ctx["upgrade_mode"] == "native-run-v2-ci" else "metadata-health-continuity")
-            and approval.get("recovery_policy") == ("accepted-stopped-native-cut-and-saved-pair"
-                if ctx["upgrade_mode"] == "native-run-v2-ci" else "saved-pair-same-run-v2-home"),
+            and approval.get("primary_validation") == "keyed-data-health-continuity"
+            and approval.get("recovery_policy") == "accepted-stopped-native-cut-and-saved-pair",
             "An exact named RunV2 approval for the selected policy is required")
     evidence = read(approval["evidence_path"], 65536, digest(approval["evidence_sha256"]))
     return candidate, approval, evidence
 
 
 def state_path(ctx):
-    root = private_dir(Path.home() / ".local/state/last-stack/lastdb-safe-upgrade" /
-                       ("native-run-v2-maintenance" if ctx["upgrade_mode"] == "native-run-v2-ci"
-                        else "native-run-v2-ci-bootstrap"))
+    root = private_dir(Path.home() / ".local/state/last-stack/lastdb-safe-upgrade/native-run-v2-maintenance")
     key = hashlib.sha256((ctx["candidate_artifact_digest"] + ctx["native_approval_sha256"]).encode()).hexdigest()
     return private_dir(root / key) / "state.json"
 
@@ -111,8 +102,7 @@ def state_path(ctx):
 def state_schema(ctx):
     if ctx["safe_upgrade_protocol_version"] == "13":
         return "lastdb.run-v2-maintenance-upgrade.v2"
-    return ("lastdb.run-v2-maintenance-upgrade.v1" if ctx["upgrade_mode"] == "native-run-v2-ci"
-            else "lastdb.run-v2-ci-bootstrap-upgrade.v1")
+    return "lastdb.run-v2-maintenance-upgrade.v1"
 
 
 def read_state(path, ctx):
@@ -157,9 +147,8 @@ def probe(ctx, candidate, approval, evidence, path):
     for value in baseline["baseline"]["pair"].values():
         source = re.search(r"-g([0-9a-f]{7,40})(?:\b|-dirty\b)", value["version"])
         require(source is not None and approval["baseline_source_git_oid"].startswith(source[1]), "Actual baseline embeds another source")
-    if ctx["upgrade_mode"] == "native-run-v2-ci":
-        require(approval.get("memory_limit_mb") == baseline["baseline"]["memory_limit_mb"],
-                "The DEV memory guard differs from the actual primary memory limit")
+    require(approval.get("memory_limit_mb") == baseline["baseline"]["memory_limit_mb"],
+            "The DEV memory guard differs from the actual primary memory limit")
     gates = evidence_check(candidate, evidence, approval)
     state = {"schema": state_schema(ctx),
              "binding": {k: ctx.get(k) for k in BINDING}, "execution": os.environ["LOOM_EXEC_ID"],
@@ -181,9 +170,8 @@ def cutover(ctx, candidate, approval, evidence, path, state):
         prepare(approval, state, path)
         initial_snapshot(approval, state)
         fresh(approval)
-        if ctx["upgrade_mode"] == "native-run-v2-ci":
-            from native_run_v2_recovery import before_stop
-            record(path, state, "prepared", recovery_point=before_stop(approval, state))
+        from native_run_v2_recovery import before_stop
+        record(path, state, "prepared", recovery_point=before_stop(approval, state))
         record(path, state, "prepared", gates=gates)
         print("LOOM_EFFECT_INTENT:" + json.dumps({"kind":"deploy","target":ctx["upgrade_mode"]}), flush=True)
         stop(approval, state, path, state["baseline"]["session"], state["baseline"]["pair"]["lastdbd"], "stop")
@@ -193,13 +181,12 @@ def cutover(ctx, candidate, approval, evidence, path, state):
     if state["phase"] in ("stopped", "install-requested"):
         require(stopped_boundary(approval, state) == state["stopped_native_roots"],
                 "The exact stopped RunV2 CURRENT pair changed before installation")
-        if ctx["upgrade_mode"] == "native-run-v2-ci":
-            if ctx["safe_upgrade_protocol_version"] == "13":
-                from native_run_v2_final_recovery import complete
-                complete(approval, state, path)
-            else:
-                from native_run_v2_recovery import stopped_cut
-                stopped_cut(approval, state)
+        if ctx["safe_upgrade_protocol_version"] == "13":
+            from native_run_v2_final_recovery import complete
+            complete(approval, state, path)
+        else:
+            from native_run_v2_recovery import stopped_cut
+            stopped_cut(approval, state)
         select(approval, state, path)
     if state["phase"] in ("selected", "start-requested"):
         start(approval, state, path)
@@ -289,7 +276,7 @@ def main():
         elif step in ("CHECK", "VERIFY"):
             state = read_state(path, ctx)
             require(state["phase"] == "complete" and live(approval, state)["session"] == state["live"]["session"],
-                    "RunV2 bootstrap is not the exact verified supervised session")
+                    "RunV2 maintenance is not the exact verified supervised session")
             emit(path, verdict="green")
         elif step == "RECOVERY_CHECK":
             state = read_state(path, ctx)
@@ -298,12 +285,12 @@ def main():
             require(live(approval, state, False)["session"] == expected, "The recovered baseline session changed")
             emit(path, verdict="red")
         else:
-            raise RuntimeError("Unknown RunV2 bootstrap step")
+            raise RuntimeError("Unknown RunV2 maintenance step")
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        print("RunV2 bootstrap refused: " + str(error), file=sys.stderr)
+        print("RunV2 maintenance refused: " + str(error), file=sys.stderr)
         sys.exit(1)

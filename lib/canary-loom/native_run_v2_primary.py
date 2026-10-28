@@ -1,4 +1,4 @@
-"""Protocol 11: primary-only Run V2 pair selection with Cloud Off."""
+"""Protocols 12 and 13: primary-only Run V2 pair selection with Cloud Off."""
 
 import os
 from pathlib import Path
@@ -12,17 +12,11 @@ from native_upgrade_common import (memory, pair, private_dir, regular, require,
                                    run, save, session, sha, stopped, sync_dir)
 from native_v2_primary import bytes_save, record
 from native_run_v2_health import health, wait_health
-from native_run_v2_state import NODE, TYPED_NODE, bounded_file, stable, stopped_pair
-
-MODE = "native-run-v2-ci-cloud-off"
-
-
-def marker(approval):
-    return TYPED_NODE if approval.get("mode") == "native-run-v2-ci" else NODE
+from native_run_v2_state import bounded_file, stable, stopped_pair
 
 
 def baseline_snapshot(approval, baseline=None):
-    require(approval.get("mode") in (MODE, "native-run-v2-ci"), "Run V2 primary policy differs")
+    require(approval.get("mode") == "native-run-v2-ci", "Run V2 primary policy differs")
     home, plist_path, plist, program, target = service(approval)
     pid = job_pid(target)
     require(pid is not None, "The Run V2 primary LaunchAgent is not active")
@@ -36,11 +30,8 @@ def baseline_snapshot(approval, baseline=None):
     ceiling = memory_limit(plist)
     checked["memory_bytes"] = memory(pid, ceiling)
     require(not (home / ".shutdown_flush_ready").exists(), "A stale shutdown receipt exists")
-    keyed = {}
-    if approval.get("mode") == "native-run-v2-ci":
-        from native_v2_read import observe
-        keyed = {"keyed_read": observe(approval)}
-    return {**keyed, "stable": stable(home, node=marker(approval)), "plist_sha256": sha(plist_path), "pair": programs,
+    from native_v2_read import observe
+    return {"keyed_read": observe(approval), "stable": stable(home), "plist_sha256": sha(plist_path), "pair": programs,
             "memory_limit_mb": ceiling, "session": identity, "health": checked,
             "process_start": run(["/bin/ps", "-p", str(pid), "-o", "lstart="]).stdout.strip()}
 
@@ -78,7 +69,7 @@ def initial(approval, candidate, path):
 
 def preserved(approval, state):
     home = Path(approval["primary_home"])
-    observed = stable(home, node=marker(approval))
+    observed = stable(home)
     if approval.get("schema") == "lastdb.run-v2-maintenance-approval.v2":
         from native_run_v2_final_links import normalize
         observed = normalize(approval, state, observed)
@@ -184,9 +175,8 @@ def live(approval, state, candidate=True):
     home = Path(approval["primary_home"])
     wanted = state["candidate"] if candidate else state["baseline"]["pair"]
     checked = health(home / "data/folddb.sock", wanted["lastdbd"]["version"], identity["pid"])
-    if approval.get("mode") == "native-run-v2-ci":
-        from native_v2_read import verify
-        checked["keyed_read"] = verify(approval, state["baseline"]["keyed_read"])
+    from native_v2_read import verify
+    checked["keyed_read"] = verify(approval, state["baseline"]["keyed_read"])
     require(session(home) == identity, "The selected Run V2 session changed during its health check")
     return {"session": identity, "health": checked,
             "memory_bytes": memory(identity["pid"], state["baseline"]["memory_limit_mb"])}
@@ -271,7 +261,7 @@ def stopped_boundary(approval, state):
     unloaded(target)
     require(stopped(home, identity) == state["stop_proof"], "Run V2 exact clean stop proof differs")
     preserved(approval, state)
-    result = stopped_pair(home, state["baseline"]["stable"], node=marker(approval))
+    result = stopped_pair(home, state["baseline"]["stable"])
     preserved(approval, state)
     unloaded(target)
     require(stopped(home, identity) == state["stop_proof"], "Run V2 stopped session changed")

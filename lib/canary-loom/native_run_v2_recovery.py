@@ -10,7 +10,7 @@ import uuid
 
 from native_upgrade_common import call, require, session
 from native_run_v2_inputs import reference
-from native_run_v2_state import TYPED_NODE, Metadata, current_hash, stable
+from native_run_v2_state import NODE, Metadata, current_hash, stable
 
 FILE = re.compile(r"disk-(run|cas)/(?:CURRENT|laststore-run-home-v2|runs/[0-9a-f-]{36}\.ldrun)")
 
@@ -61,7 +61,7 @@ def selectors(home, profile, stopped=False):
     try:
         data = metadata.directory(home / "data", private=False)
         if stopped:
-            metadata.lock(data, "laststore-pack-node-v1", len(TYPED_NODE), private=False)
+            metadata.lock(data, "laststore-pack-node-v1", len(NODE), private=False)
         result = {}
         for name, label in (("disk-run", "main"), ("disk-cas", "cas")):
             directory = metadata.directory(home / "data" / name, data, name, private=False)
@@ -144,7 +144,7 @@ def stopped_cut(approval, state):
     metadata, roots = selectors(home, core["run"], stopped=True)
     try:
         require(roots == state["recovery_point"]["selectors"]
-                and stable(home, node=TYPED_NODE) == state["baseline"]["stable"], "The stopped recovery identities differ")
+                and stable(home) == state["baseline"]["stable"], "The stopped recovery identities differ")
         manifest = recovery_manifest(approval, core)
         files = {}
         for item in manifest["native_files"]:

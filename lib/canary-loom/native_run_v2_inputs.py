@@ -1,4 +1,4 @@
-"""Bounded private inputs for the separate RunV2 bootstrap policy."""
+"""Bounded private inputs for the RunV2 maintenance policy."""
 
 import hashlib
 import json
@@ -15,7 +15,6 @@ def external(path):
     require(path.is_absolute() and ".." not in path.parts and len(path.parts) <= 64
             and path.parent.resolve() == path.parent, "An external input path is not canonical")
     roots = (Path.home() / ".local/state/last-stack/artifacts",
-             Path.home() / ".local/state/last-stack/lastdb-safe-upgrade/native-run-v2-ci-bootstrap",
              Path.home() / ".local/state/last-stack/lastdb-safe-upgrade/native-run-v2-maintenance")
     require(any(root.resolve() == root and (path == root or root in path.parents) for root in roots),
             "RunV2 inputs require the exact canonical artifact or profile-journal root")

@@ -6,7 +6,7 @@ from pathlib import Path
 from native_upgrade_common import require, save, sha
 from native_run_v2_inputs import digest, reference, uint
 from native_run_v2_recovery import FILE, local, native_hash, selectors
-from native_run_v2_state import TYPED_NODE, stable
+from native_run_v2_state import stable
 
 
 def canonical(value):
@@ -62,7 +62,7 @@ def verify(approval, state, report, manifest):
     metadata, roots = selectors(home, profile, stopped=True)
     try:
         require(roots == state["stopped_native_roots"]
-                and stable(home, node=TYPED_NODE) == state["baseline"]["stable"],
+                and stable(home) == state["baseline"]["stable"],
                 "The final stopped native roots or stable home changed")
         found = {}
         for item in manifest["native_file_manifest"]:
