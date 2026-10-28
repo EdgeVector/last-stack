@@ -18,7 +18,7 @@ MODE = "native-run-v2-ci-cloud-off"
 
 
 def baseline_snapshot(approval, baseline=None):
-    require(approval.get("mode") == MODE, "Run V2 primary policy differs")
+    require(approval.get("mode") in (MODE, "native-run-v2-ci"), "Run V2 primary policy differs")
     home, plist_path, plist, program, target = service(approval)
     pid = job_pid(target)
     require(pid is not None, "The Run V2 primary LaunchAgent is not active")
@@ -32,7 +32,11 @@ def baseline_snapshot(approval, baseline=None):
     ceiling = memory_limit(plist)
     checked["memory_bytes"] = memory(pid, ceiling)
     require(not (home / ".shutdown_flush_ready").exists(), "A stale shutdown receipt exists")
-    return {"stable": stable(home), "plist_sha256": sha(plist_path), "pair": programs,
+    keyed = {}
+    if approval.get("mode") == "native-run-v2-ci":
+        from native_v2_read import observe
+        keyed = {"keyed_read": observe(approval)}
+    return {**keyed, "stable": stable(home), "plist_sha256": sha(plist_path), "pair": programs,
             "memory_limit_mb": ceiling, "session": identity, "health": checked,
             "process_start": run(["/bin/ps", "-p", str(pid), "-o", "lstart="]).stdout.strip()}
 
@@ -172,6 +176,9 @@ def live(approval, state, candidate=True):
     home = Path(approval["primary_home"])
     wanted = state["candidate"] if candidate else state["baseline"]["pair"]
     checked = health(home / "data/folddb.sock", wanted["lastdbd"]["version"], identity["pid"])
+    if approval.get("mode") == "native-run-v2-ci":
+        from native_v2_read import verify
+        checked["keyed_read"] = verify(approval, state["baseline"]["keyed_read"])
     require(session(home) == identity, "The selected Run V2 session changed during its health check")
     return {"session": identity, "health": checked,
             "memory_bytes": memory(identity["pid"], state["baseline"]["memory_limit_mb"])}

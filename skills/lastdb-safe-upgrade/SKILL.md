@@ -71,6 +71,32 @@ It also refuses the broad setup uninstaller. Nested setup inherits the flag.
 Artifact provenance, probes, command and skill links, compatibility layout,
 and instruction updates retain the normal path.
 
+## Ordinary RunV2 maintenance with a current V2 backup
+
+Use [RunV2 maintenance](../../docs/lastdb-run-v2-maintenance.md) for the closed
+`1a8d65d` baseline and the exact reviewed automatic-backup candidate.
+The launcher uses `--native-run-v2-ci-approval`, mode `native-run-v2-ci`, and
+approval schema `lastdb.run-v2-maintenance-approval.v1`. This is Loom protocol 12.
+The older bootstrap approvals do not authorize it.
+
+The route requires the exact accepted CI pair, required CI, benchmark-complete,
+a full source review, and a fresh DEV operation on baseline-written synthetic data.
+The DEV operation checks snapshots, mutation logs, interruption, source-free restore,
+complete file bytes, two restored restarts, and ordinary baseline reopen.
+It does not use retired apps or local builds and benchmarks.
+
+Before the strict primary stop, the route requires the exact accepted manual V2
+snapshot, provider verification, both current native selectors, and a fresh status sample.
+After the clean stop and flush, it holds both native owner locks.
+It hashes every file in that accepted snapshot before the pair changes.
+A different stopped cut refuses the change and restores the baseline supervisor.
+The route makes no primary copy and performs no data migration.
+
+The known-key primary read, program recovery transaction, supervised health,
+memory, configuration, and five-minute observation gates remain required.
+Automatic backup stays off during the program change.
+The owner can enable it after the completed upgrade.
+
 ## RunV2 Cloud-Off bootstrap with CI evidence
 
 The separate `--native-run-v2-ci-approval <private-file>` route selects protocol 11.
