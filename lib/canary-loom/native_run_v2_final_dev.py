@@ -30,6 +30,13 @@ def check(candidate, evidence, limit):
                     for name, label in (("disk-run", "main"), ("disk-cas", "cas"))),
             "The stopped DEV backup lacks complete provider readback or unchanged native roots")
     accepted = report["accepted_backup"]
+    recovery = reference(final["recovery_admission"])
+    require(recovery.get("request_id") == intent["request_id"] and recovery.get("source") == summary["source"]
+            and recovery.get("operation_sha256") == operation
+            and recovery.get("original_bindings_preserved") is True
+            and recovery.get("normalized") == recovery.get("before")
+            and recovery["during"]["node_marker"]["nlink"] == 2,
+            "The interrupted final source lacks the exact rollback metadata admission")
     interrupted, resumed = reference(final["before_resume"]), reference(final["after_resume"])
     require(interrupted.get("request_id") == resumed.get("request_id") == intent["request_id"]
             and interrupted.get("source") == summary["source"]
