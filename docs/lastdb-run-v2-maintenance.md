@@ -1,6 +1,6 @@
 # RunV2 maintenance with a current V2 backup
 
-The primary already uses RunV2 with the typed-range node marker from source `1a8d65d`. The maintenance gate requires that exact existing marker, and the driver accepts no other node marker. This route changes only the CLI and daemon pair. It does not change the native format, restore the primary, copy its data, or use the retired apps. The route uses its own approval schema and Loom protocol. The format 3 bootstrap (protocol 11) is removed.
+The primary already uses RunV2 with the typed-range node marker from source `1a8d65d`. The maintenance gate requires that exact existing marker, and the driver accepts no other node marker. This route changes only the CLI and daemon pair. It does not change the native format, restore the primary, copy its data, or use the retired apps. The route uses its own approval schema and Loom protocol. The format 3 bootstrap (protocol 11) does not exist now.
 
 The source policy names the exact baseline pair and candidate source. It checks every changed native, writer, crypto, dependency, feature, and build input against reviewed Git objects. GitHub must report the candidate PR merged, its exact source CI successful, and the accepted main CI and benchmark-complete successful. The retained Mac artifact must match GitHub and both selected programs.
 
