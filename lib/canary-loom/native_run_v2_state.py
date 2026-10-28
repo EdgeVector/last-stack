@@ -135,8 +135,11 @@ def stable(home, node=NODE):
         for name in STABLE:
             parent, leaf = (data, name[5:]) if name.startswith("data/") else (root, name)
             binding, _ = metadata.file(parent, leaf, 1024 * 1024,
-                                       private=name in ("identity.key", STABLE[-2], STABLE[-1]),
+                                       private=name in ("identity.key", STABLE[-2], STABLE[-1])
+                                       and not (node == TYPED_NODE and name == STABLE[-1]),
                                        optional=True)
+            if node == TYPED_NODE and name == STABLE[-1] and binding is not None:
+                require(binding["size"] == 0, "The typed RunV2 resume-required marker is not empty")
             values[name] = None if binding is None else binding["sha256"]
         require(values["identity.key"] is not None and values["cloud_sync.json"] is None,
                 "Run V2 requires its original identity and Cloud Off")
