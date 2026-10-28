@@ -52,7 +52,7 @@ def context():
             "Immutable Loom item/context conflict")
     ctx = {**item, **{k: v for k, v in raw.items() if k != "item"}}
     require((ctx.get("upgrade_mode"), ctx.get("safe_upgrade_protocol_version"))
-            in ((MODE, "11"), ("native-run-v2-ci", "12"))
+            in ((MODE, "11"), ("native-run-v2-ci", "12"), ("native-run-v2-ci", "13"))
             and ctx.get("native_reopen") is False and ctx.get("native_probe_only") is False
             and ctx.get("zero_live_soak", False) is False
             and ctx.get("accept_stale_recovery_point", "") == "",
@@ -77,8 +77,11 @@ def binding(ctx):
             and re.fullmatch(r"[0-9a-f]{40}", ctx["source_git_oid"]), "Candidate binding differs")
     approval = read(ctx["native_approval"], 65536, digest(ctx["native_approval_sha256"]))
     _, profile = selected_profile(approval)
-    require((approval.get("schema") == "lastdb.run-v2-maintenance-approval.v1")
+    ordinary = approval.get("schema") in ("lastdb.run-v2-maintenance-approval.v1", "lastdb.run-v2-maintenance-approval.v2")
+    require(ordinary
             == (ctx["upgrade_mode"] == "native-run-v2-ci"), "The RunV2 mode and profile differ")
+    require(ctx["safe_upgrade_protocol_version"] == ("13" if approval.get("schema") == "lastdb.run-v2-maintenance-approval.v2"
+            else "12" if ordinary else "11"), "The exact RunV2 approval protocol differs")
     require(approval.get("mode") == ctx["upgrade_mode"]
             and approval.get("approved_by") == "Tom"
             and isinstance(approval.get("quote"), str) and bool(approval["quote"].strip())
@@ -106,6 +109,8 @@ def state_path(ctx):
 
 
 def state_schema(ctx):
+    if ctx["safe_upgrade_protocol_version"] == "13":
+        return "lastdb.run-v2-maintenance-upgrade.v2"
     return ("lastdb.run-v2-maintenance-upgrade.v1" if ctx["upgrade_mode"] == "native-run-v2-ci"
             else "lastdb.run-v2-ci-bootstrap-upgrade.v1")
 
@@ -189,8 +194,12 @@ def cutover(ctx, candidate, approval, evidence, path, state):
         require(stopped_boundary(approval, state) == state["stopped_native_roots"],
                 "The exact stopped RunV2 CURRENT pair changed before installation")
         if ctx["upgrade_mode"] == "native-run-v2-ci":
-            from native_run_v2_recovery import stopped_cut
-            stopped_cut(approval, state)
+            if ctx["safe_upgrade_protocol_version"] == "13":
+                from native_run_v2_final_recovery import complete
+                complete(approval, state, path)
+            else:
+                from native_run_v2_recovery import stopped_cut
+                stopped_cut(approval, state)
         select(approval, state, path)
     if state["phase"] in ("selected", "start-requested"):
         start(approval, state, path)

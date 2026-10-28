@@ -22,19 +22,23 @@ def tree(repo, source):
 
 
 def check(evidence):
+    return check_reviewed(evidence, REVIEWED_SOURCE, REVIEWED_TREE, EXACT_CHANGES)
+
+
+def check_reviewed(evidence, reviewed_source, reviewed_tree, exact_changes):
     source, repo = evidence["source_git_oid"], evidence["source_repository"]
-    require(REVIEWED_SOURCE is not None and REVIEWED_TREE is not None and bool(EXACT_CHANGES),
+    require(reviewed_source is not None and reviewed_tree is not None and bool(exact_changes),
             "The ordinary RunV2 maintenance source review is incomplete")
-    require(source == REVIEWED_SOURCE and git(repo, "rev-parse", source + "^{tree}").decode().strip() == REVIEWED_TREE,
+    require(source == reviewed_source and git(repo, "rev-parse", source + "^{tree}").decode().strip() == reviewed_tree,
             "The candidate is outside the closed maintenance source review")
     before, after = tree(repo, BASELINE), tree(repo, source)
     changes = {p: [before.get(p), after.get(p)] for p in before.keys() | after.keys()
                if before.get(p) != after.get(p)}
     proof = read(evidence["compatibility_record"], 512 * 1024, evidence["compatibility_sha256"])
-    require(changes == EXACT_CHANGES and proof.get("reviewed_changes") == changes
+    require(changes == exact_changes and proof.get("reviewed_changes") == changes
             and proof.get("baseline") == BASELINE and proof.get("candidate") == source
             and proof.get("source_reviewed") is True and proof.get("no_native_format_change") is True
             and proof.get("primary_restore_or_migration") is False,
             "The full reviewed maintenance source map differs")
-    return {"baseline": BASELINE, "candidate": source, "tree": REVIEWED_TREE,
+    return {"baseline": BASELINE, "candidate": source, "tree": reviewed_tree,
             "changed_files": len(changes), "review_sha256": evidence["compatibility_sha256"]}

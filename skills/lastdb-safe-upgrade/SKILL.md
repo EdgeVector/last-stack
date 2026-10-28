@@ -97,6 +97,20 @@ memory, configuration, and five-minute observation gates remain required.
 Automatic backup stays off during the program change.
 The owner can enable it after the completed upgrade.
 
+The separate approval schema `lastdb.run-v2-maintenance-approval.v2` selects
+Loom protocol 13 and the closed `run-v2-maintenance-v2` profile.
+It requires all ordinary gates and a final backup after the clean stop.
+Use this route when shutdown updates the native files.
+The exact CI CLI backs up the stopped home through the ordinary V2 worker.
+It does not start a daemon, copy the primary, or change its file format.
+The CLI reads all cloud objects and checks each complete native file hash.
+The route then holds the native locks and checks every stopped file.
+Both stopped CURRENT files must match that final accepted backup.
+Only then can the program pair change.
+The DEV proof also requires this command and a separate source-free restore.
+The final backup request stays fixed during a resume.
+A failure retains its exact request and uses ordinary program recovery.
+
 ## RunV2 Cloud-Off bootstrap with CI evidence
 
 The separate `--native-run-v2-ci-approval <private-file>` route selects protocol 11.
