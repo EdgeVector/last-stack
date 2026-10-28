@@ -152,6 +152,9 @@ def probe(ctx, candidate, approval, evidence, path):
     for value in baseline["baseline"]["pair"].values():
         source = re.search(r"-g([0-9a-f]{7,40})(?:\b|-dirty\b)", value["version"])
         require(source is not None and approval["baseline_source_git_oid"].startswith(source[1]), "Actual baseline embeds another source")
+    if ctx["upgrade_mode"] == "native-run-v2-ci":
+        require(approval.get("memory_limit_mb") == baseline["baseline"]["memory_limit_mb"],
+                "The DEV memory guard differs from the actual primary memory limit")
     gates = evidence_check(candidate, evidence, approval)
     state = {"schema": state_schema(ctx),
              "binding": {k: ctx.get(k) for k in BINDING}, "execution": os.environ["LOOM_EXEC_ID"],

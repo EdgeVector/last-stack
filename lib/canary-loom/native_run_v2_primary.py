@@ -12,9 +12,13 @@ from native_upgrade_common import (memory, pair, private_dir, regular, require,
                                    run, save, session, sha, stopped, sync_dir)
 from native_v2_primary import bytes_save, record
 from native_run_v2_health import health, wait_health
-from native_run_v2_state import bounded_file, stable, stopped_pair
+from native_run_v2_state import NODE, TYPED_NODE, bounded_file, stable, stopped_pair
 
 MODE = "native-run-v2-ci-cloud-off"
+
+
+def marker(approval):
+    return TYPED_NODE if approval.get("mode") == "native-run-v2-ci" else NODE
 
 
 def baseline_snapshot(approval, baseline=None):
@@ -36,7 +40,7 @@ def baseline_snapshot(approval, baseline=None):
     if approval.get("mode") == "native-run-v2-ci":
         from native_v2_read import observe
         keyed = {"keyed_read": observe(approval)}
-    return {**keyed, "stable": stable(home), "plist_sha256": sha(plist_path), "pair": programs,
+    return {**keyed, "stable": stable(home, node=marker(approval)), "plist_sha256": sha(plist_path), "pair": programs,
             "memory_limit_mb": ceiling, "session": identity, "health": checked,
             "process_start": run(["/bin/ps", "-p", str(pid), "-o", "lstart="]).stdout.strip()}
 
@@ -74,7 +78,7 @@ def initial(approval, candidate, path):
 
 def preserved(approval, state):
     home = Path(approval["primary_home"])
-    require(stable(home) == state["baseline"]["stable"], "Primary identity, Run V2 metadata, or cloud controls changed")
+    require(stable(home, node=marker(approval)) == state["baseline"]["stable"], "Primary identity, Run V2 metadata, or cloud controls changed")
     for name, value in state["baseline"]["pair"].items():
         original = Path(value["path"])
         regular(original)
@@ -263,7 +267,7 @@ def stopped_boundary(approval, state):
     unloaded(target)
     require(stopped(home, identity) == state["stop_proof"], "Run V2 exact clean stop proof differs")
     preserved(approval, state)
-    result = stopped_pair(home, state["baseline"]["stable"])
+    result = stopped_pair(home, state["baseline"]["stable"], node=marker(approval))
     preserved(approval, state)
     unloaded(target)
     require(stopped(home, identity) == state["stop_proof"], "Run V2 stopped session changed")

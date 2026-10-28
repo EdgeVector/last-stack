@@ -117,6 +117,9 @@ def service(approval):
     arguments = plist["ProgramArguments"]
     require(isinstance(arguments, list) and len(arguments) > 0, "LaunchAgent arguments are absent")
     program = Path(arguments[0])
+    if approval.get("mode") == "native-run-v2-ci" and program == home / "current" / "lastdbd":
+        require((home / "current").is_symlink(), "The ordinary RunV2 stable program pointer is absent")
+        program = program.resolve(strict=True)
     require(program.is_absolute() and program.name == "lastdbd" and program.resolve() == program
             and program.parent == (home / "current").resolve(), "Primary pair path differs from current")
     configured_home = plist.get("EnvironmentVariables", {}).get("LASTDB_HOME", str(Path.home() / ".lastdb"))

@@ -11,6 +11,7 @@ import zlib
 from native_upgrade_common import require
 
 NODE = b"format=3\nhome=disk-run\ncas=disk-cas\n"
+TYPED_NODE = b"format=4\nhome=disk-run\ncas=disk-cas\nranges=typed-v1\n"
 MARKER = "laststore-pack-node-v1"
 DESCRIPTOR = "laststore-run-home-v2"
 STABLE = ("identity.key", ".bootstrap_done", "data/.device_id", "cloud_sync.json",
@@ -124,7 +125,7 @@ def bounded_file(path, maximum=1024 * 1024, private=False):
         metadata.close()
 
 
-def stable(home):
+def stable(home, node=NODE):
     home = Path(home)
     metadata = Metadata()
     try:
@@ -134,13 +135,16 @@ def stable(home):
         for name in STABLE:
             parent, leaf = (data, name[5:]) if name.startswith("data/") else (root, name)
             binding, _ = metadata.file(parent, leaf, 1024 * 1024,
-                                       private=name in ("identity.key", STABLE[-2], STABLE[-1]),
+                                       private=name in ("identity.key", STABLE[-2], STABLE[-1])
+                                       and not (node == TYPED_NODE and name == STABLE[-1]),
                                        optional=True)
+            if node == TYPED_NODE and name == STABLE[-1] and binding is not None:
+                require(binding["size"] == 0, "The typed RunV2 resume-required marker is not empty")
             values[name] = None if binding is None else binding["sha256"]
         require(values["identity.key"] is not None and values["cloud_sync.json"] is None,
                 "Run V2 requires its original identity and Cloud Off")
-        marker, contents = metadata.file(data, MARKER, len(NODE), exact=len(NODE))
-        require(contents == NODE, "Run V2 node marker differs")
+        marker, contents = metadata.file(data, MARKER, len(node), exact=len(node))
+        require(contents == node, "Run V2 node marker differs")
         homes = {}
         for name in ("disk-run", "disk-cas"):
             fd = metadata.directory(home / "data" / name, data, name, private=False)
@@ -176,20 +180,20 @@ def current_hash(parent):
         os.close(fd)
 
 
-def stopped_pair(home, expected):
+def stopped_pair(home, expected, node=NODE):
     home = Path(home)
     metadata = Metadata()
     try:
         root = metadata.directory(home, private=False)
         data = metadata.directory(home / "data", root, "data", private=False)
-        metadata.lock(data, MARKER, len(NODE), private=False)
+        metadata.lock(data, MARKER, len(node), private=False)
         homes = {}
         for name in ("disk-run", "disk-cas"):
             homes[name] = metadata.directory(home / "data" / name, data, name, private=False)
             metadata.lock(homes[name], "LOCK", 0)
-        require(stable(home) == expected, "Run V2 stopped native identity differs")
+        require(stable(home, node=node) == expected, "Run V2 stopped native identity differs")
         result = {name: current_hash(fd) for name, fd in homes.items()}
-        require(stable(home) == expected, "Run V2 stopped native identity changed")
+        require(stable(home, node=node) == expected, "Run V2 stopped native identity changed")
         return result
     finally:
         metadata.close()
