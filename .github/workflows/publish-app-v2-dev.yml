@@ -5,7 +5,7 @@
 #   publish-v2-dev:
 #     needs: [ci-required, publish]
 #     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-#     permissions: { contents: read, actions: read }
+#     permissions: { contents: write, actions: read }
 #     uses: EdgeVector/last-stack/.github/workflows/publish-app-v2-dev.yml@main
 #     with:
 #       app-id: brain
@@ -35,7 +35,10 @@ on:
         type: string
         required: true
       artifact-name:
-        description: GitHub Actions artifact name containing the built app (e.g. ht-artifact-${{ github.sha }})
+        description: |
+          GitHub Actions artifact name containing the built app (e.g. ht-artifact-${{ github.sha }}).
+          Note: download-artifact@v4 without run-id only works within the same workflow run.
+          The caller must upload the artifact in the same run.
         type: string
         required: true
       lastdb-ref:
@@ -176,12 +179,15 @@ jobs:
           
           echo "registered owner_dev_pubkey: $REGISTERED_PUBKEY"
           
-          DERIVED_PUBKEY=$("$LASTDB_BIN" keys derive-public --key-file "$KEY_FILE" --format base64 2>/dev/null || true)
+          # Derive public key from Ed25519 private key.
+          # The key file contains a raw 32-byte Ed25519 seed (standard base64).
+          # Wrap it in PKCS8 DER prefix 302e020100300506032b657004220420, derive public key with openssl, take last 32 bytes.
+          PKCS8_DER=$(mktemp)
+          python3 -c "import sys; sys.stdout.buffer.write(bytes.fromhex('302e020100300506032b657004220420'))" > "$PKCS8_DER"
+          cat "$KEY_FILE" >> "$PKCS8_DER"
           
-          if [ -z "$DERIVED_PUBKEY" ]; then
-            echo "::warning::lastdb keys derive-public not available, trying openssl"
-            DERIVED_PUBKEY=$(openssl pkey -in "$KEY_FILE" -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d '\n' || true)
-          fi
+          DERIVED_PUBKEY=$(openssl pkey -inform DER -in "$PKCS8_DER" -pubout -outform DER | tail -c 32 | base64 | tr -d '\n')
+          rm -f "$PKCS8_DER"
           
           if [ -z "$DERIVED_PUBKEY" ]; then
             echo "::error::failed to derive public key from signing key"
