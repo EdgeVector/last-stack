@@ -36,3 +36,10 @@ It restores that accepted snapshot into a separate absent DEV home.
 It checks every native file before the first start.
 Two starts must return the exact records, deletions, and complete file bytes.
 The earlier mutation-log restore remains a separate required check.
+
+The source can have a PR CI run and an exact-source CI dispatch.
+Protocol 13 requires all current required CI runs for that source to pass.
+It selects the required check from the exact workflow in the evidence.
+That check must appear in the actual source checks from GitHub.
+The workflow, source, job, and check identity checks remain required.
+The accepted-main gate retains its separate single-check rule.

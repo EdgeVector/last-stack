@@ -12,6 +12,7 @@ from native_run_v2_maintenance_source import BASELINE, BASELINE_PROGRAMS, check_
 from native_run_v2_final_blobs import REVIEWED_SOURCE, REVIEWED_TREE, EXACT_CHANGES
 from native_run_v2_final_recovery import request_id
 from native_run_v2_final_dev import check as development
+from native_run_v2_final_ci import source_ci
 
 PROFILE = "run-v2-maintenance-v2"
 
@@ -42,7 +43,7 @@ def check(candidate, evidence, approval):
             and pull.get("head", {}).get("repo", {}).get("full_name") == "EdgeVector/lastdb",
             "The exact tested source PR is not merged")
     git(evidence["source_repository"], "merge-base", "--is-ancestor", BASELINE, source)
-    head_checks, main_checks = accepted_ci(metadata, source), accepted_ci(metadata, accepted)
+    head_checks, main_checks = source_ci(metadata, evidence), accepted_ci(metadata, accepted)
     ci = required_ci(metadata, evidence, head_checks)
     receipt = read(evidence["artifact_receipt"], 16384, evidence["artifact_receipt_sha256"])
     require(receipt.get("source") == source, "The CI artifact receipt source differs")
