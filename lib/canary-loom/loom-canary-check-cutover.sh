@@ -6,7 +6,7 @@ set -euo pipefail
 native_input="${LOOM_INPUT:-}"
 [ -n "$native_input" ] || native_input='{}'
 if printf '%s' "$native_input" | jq -e \
-  '.upgrade_mode == "native-run-v2-ci-cloud-off" or .item.upgrade_mode == "native-run-v2-ci-cloud-off" or .upgrade_mode == "native-run-v2-ci" or .item.upgrade_mode == "native-run-v2-ci"' >/dev/null; then
+  '.upgrade_mode == "native-run-v2-ci" or .item.upgrade_mode == "native-run-v2-ci"' >/dev/null; then
   exec python3 "$(dirname -- "$0")/native_run_v2_upgrade.py" CHECK
 fi
 if printf '%s' "$native_input" | jq -e \

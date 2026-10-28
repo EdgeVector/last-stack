@@ -1,4 +1,4 @@
-"""Closed ordinary RunV2 maintenance; bootstrap exceptions do not authorize it."""
+"""Closed ordinary RunV2 maintenance with a CI-proven candidate."""
 import time
 
 from native_upgrade_common import require
