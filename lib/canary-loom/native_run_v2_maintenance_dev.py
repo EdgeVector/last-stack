@@ -70,7 +70,9 @@ def memory_guard(proof, summary, programs, operation, limit):
             and owner.get("programs") == programs and owner.get("home") == str(Path(summary["homes"]) / "r")
             and owner.get("operation_sha256") == operation and value.get("memory_limit_mb") == limit,
             "The candidate memory observation belongs to another operation or limit")
-    require(value.get("persist_failures") == {"persist_lane_failures":0, "deferred_persist_failed":0}
+    failures = value.get("persist_failures", {})
+    require(set(failures) == {"persist_lane_failures", "deferred_persist_failed"}
+            and all(type(n) is int and n == 0 for n in failures.values())
             and value.get("native_health", {}).get("version") == owner.get("version", proof["candidate_version"])
             and value["native_health"].get("native", {}).get("writer_failed") is False,
             "The restored candidate persist or native writer health is absent or failed")
@@ -95,7 +97,8 @@ def check(candidate, evidence, memory_limit_mb):
     programs = {k: v["sha256"] for k, v in candidate.items()}
     require(proof.get("schema") == "lastdb.run-v2-automatic-development.v1"
             and proof.get("environment") == "dev" and proof.get("source") == evidence["source_git_oid"]
-            and proof.get("programs") == programs and proof.get("baseline_source") == BASELINE
+            and proof.get("programs") == programs and proof.get("candidate_version") == candidate["lastdbd"]["version"]
+            and proof.get("baseline_source") == BASELINE
             and proof.get("baseline_programs") == BASELINE_PROGRAMS
             and 0 <= time.time() - uint(proof.get("completed_at"), True) <= 3600,
             "The exact-client DEV operation is absent, stale, or from another pair")
