@@ -43,3 +43,10 @@ It selects the required check from the exact workflow in the evidence.
 That check must appear in the actual source checks from GitHub.
 The workflow, source, job, and check identity checks remain required.
 The accepted-main gate retains its separate single-check rule.
+
+The DEV stop proof binds the original process number and session start time.
+The original session must end cleanly with its exact flush receipt.
+A later process can reuse that process number.
+If the number is active, the gate reads only its kernel start time.
+That start must be later than the recorded end of the original session.
+An unknown or original live process still refuses the upgrade.
