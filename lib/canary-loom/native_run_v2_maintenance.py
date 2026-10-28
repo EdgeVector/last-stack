@@ -46,7 +46,7 @@ def check(candidate, evidence, approval):
     package = artifact(candidate, evidence, metadata)
     measured = benchmark_run(metadata, evidence["accepted_main_benchmark_run"], accepted, False,
                              main_checks["check_run_ids"]["benchmark-complete"])
-    dev = development(candidate, evidence)
+    dev = development(candidate, evidence, approval["memory_limit_mb"])
     return {"profile": PROFILE, "source_review": source_review, "release": release,
             "head_checks": head_checks, "main_checks": main_checks, "required_ci": ci,
             "artifact": package, "development": dev,

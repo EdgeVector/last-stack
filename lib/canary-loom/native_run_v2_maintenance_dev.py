@@ -61,7 +61,32 @@ def data_reads(proof, summary, owners, operation):
             "Actual DEV record digests differ across baseline reopen or distinct restored boots")
 
 
-def check(candidate, evidence):
+def memory_guard(proof, summary, programs, operation, limit):
+    value = reference(proof["memory_guard"])
+    owner = value["owner"]
+    identity = {"pid": uint(owner["pid"], True), "start_ts": uint(owner["start_ts"], True)}
+    require(value.get("source") == summary["source"] and value.get("programs") == programs
+            and value.get("operation_sha256") == operation and owner.get("source") == summary["source"]
+            and owner.get("programs") == programs and owner.get("home") == str(Path(summary["homes"]) / "r")
+            and owner.get("operation_sha256") == operation and value.get("memory_limit_mb") == limit,
+            "The candidate memory observation belongs to another operation or limit")
+    samples = value.get("samples_bytes")
+    require(isinstance(samples, list) and 15 <= len(samples) <= 120
+            and all(type(n) is int and 0 < n < limit * 1048576 * 0.9 for n in samples)
+            and value.get("peak_bytes") == max(samples) and value.get("settle_seconds", 0) >= 45
+            and value.get("observation_seconds", 0) >= 15 and value.get("elapsed_seconds", 0) >= 60,
+            "The candidate memory guard or required observation interval did not pass")
+    stop, observed = reference(value["stop"]), reference(value["read"])
+    require(stop.get("owner") == owner and stop.get("receipt") == {"version":1, **identity, "flush_ok":True}
+            and all(stop.get("session", {}).get(k) == v for k,v in identity.items())
+            and stop["session"].get("exit") == "clean" and not alive(identity["pid"])
+            and observed.get("session") == identity and observed.get("source") == summary["source"]
+            and observed.get("programs") == programs and observed.get("operation_sha256") == operation
+            and observed.get("records_sha256") == reference(proof["reads"]["restored-second"])["records_sha256"],
+            "The observed candidate lacks its exact data read and native clean stop")
+
+
+def check(candidate, evidence, memory_limit_mb):
     proof = read(evidence["development_proof"], 262144, evidence["development_sha256"])
     programs = {k: v["sha256"] for k, v in candidate.items()}
     require(proof.get("schema") == "lastdb.run-v2-automatic-development.v1"
@@ -90,6 +115,7 @@ def check(candidate, evidence):
             and len({digest(f.get("sha256")) for f in files}) == 2, "The two full DEV files differ from the operation")
     owners = consumers(proof, summary, programs, operation)
     data_reads(proof, summary, owners, operation)
+    memory_guard(proof, summary, programs, operation, memory_limit_mb)
     before, after = reference(proof["before_log_restart"]), reference(proof["after_log_restart"])
     require(before["request_id"] == after["request_id"] and before["frozen_sha256"] == after["frozen_sha256"]
             and after.get("same_cut_automatic_resume") is True, "The interrupted native range or transfer identities changed")
