@@ -2,7 +2,7 @@
 import time
 
 from native_upgrade_common import require
-from native_v2_benchmark import run as benchmark_run
+from native_run_v2_maintenance_bench import run as benchmark_run
 from native_v2_maintenance import accepted_ci, artifact
 from native_v2_public import PublicMetadata
 from native_v2_release import accepted_release, git
@@ -50,5 +50,5 @@ def check(candidate, evidence, approval):
     return {"profile": PROFILE, "source_review": source_review, "release": release,
             "head_checks": head_checks, "main_checks": main_checks, "required_ci": ci,
             "artifact": package, "development": dev,
-            "measurements": {k: measured[k] for k in ("run_id", "attempt", "source", "measure_check_run_id")},
+            "measurements": {k: measured[k] for k in ("run_id", "attempt", "source", "measure_check_run_id", "lane_check_run_ids", "artifacts")},
             "checked_at": int(time.time())}
