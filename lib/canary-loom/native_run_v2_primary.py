@@ -78,7 +78,11 @@ def initial(approval, candidate, path):
 
 def preserved(approval, state):
     home = Path(approval["primary_home"])
-    require(stable(home, node=marker(approval)) == state["baseline"]["stable"], "Primary identity, Run V2 metadata, or cloud controls changed")
+    observed = stable(home, node=marker(approval))
+    if approval.get("schema") == "lastdb.run-v2-maintenance-approval.v2":
+        from native_run_v2_final_links import normalize
+        observed = normalize(approval, state, observed)
+    require(observed == state["baseline"]["stable"], "Primary identity, Run V2 metadata, or cloud controls changed")
     for name, value in state["baseline"]["pair"].items():
         original = Path(value["path"])
         regular(original)
