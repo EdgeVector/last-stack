@@ -1,7 +1,8 @@
 """Bind every DEV data read and clean stop to its exact client, home, and session."""
 from pathlib import Path
 import time
-from native_upgrade_common import alive, require
+from native_upgrade_common import require
+from native_run_v2_dev_session import ended
 from native_run_v2_inputs import read, reference, uint, digest
 from native_run_v2_maintenance_source import BASELINE, BASELINE_PROGRAMS
 
@@ -31,7 +32,7 @@ def consumers(proof, summary, programs, operation):
                 and all(stop.get("session", {}).get(k) == v for k, v in identity.items())
                 and stop["session"].get("exit") == "clean"
                 and uint(stop["session"].get("end_ts"), True) >= identity["start_ts"]
-                and not alive(identity["pid"]), "A DEV consumer lacks its exact flush receipt and clean session ledger")
+                and ended(identity, stop), "A DEV consumer lacks its exact flush receipt and clean session ledger")
         key = (identity["pid"], identity["start_ts"])
         require(key not in sessions, "Two DEV consumers reuse the same session")
         sessions.add(key)
@@ -86,7 +87,7 @@ def memory_guard(proof, summary, programs, operation, limit):
     stop, observed = reference(value["stop"]), reference(value["read"])
     require(stop.get("owner") == owner and stop.get("receipt") == {"version":1, **identity, "flush_ok":True}
             and all(stop.get("session", {}).get(k) == v for k,v in identity.items())
-            and stop["session"].get("exit") == "clean" and not alive(identity["pid"])
+            and stop["session"].get("exit") == "clean" and ended(identity, stop)
             and observed.get("session") == identity and observed.get("source") == summary["source"]
             and observed.get("programs") == programs and observed.get("operation_sha256") == operation
             and observed.get("records_sha256") == reference(proof["reads"]["restored-second"])["records_sha256"],

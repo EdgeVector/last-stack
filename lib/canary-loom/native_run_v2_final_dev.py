@@ -1,9 +1,10 @@
 """Require the actual stopped backup and its separate source-free DEV restore."""
 from pathlib import Path
 
-from native_upgrade_common import alive, require
+from native_upgrade_common import require
 from native_run_v2_inputs import read, reference, uint
 from native_run_v2_maintenance_dev import check as automatic
+from native_run_v2_dev_session import ended, original_gone
 
 
 def check(candidate, evidence, limit):
@@ -43,7 +44,8 @@ def check(candidate, evidence, limit):
             and interrupted.get("programs") == programs and interrupted.get("operation_sha256") == operation
             and interrupted.get("marker_links") == 2 and resumed.get("marker_links") == 1
             and resumed.get("same_request_resume") is True and resumed.get("accepted_backup") == accepted
-            and interrupted["core_begin"] == accepted["begin"] and not alive(interrupted["cli_pid"]),
+            and interrupted["core_begin"] == accepted["begin"]
+            and original_gone(interrupted["cli_pid"], proof["completed_at"]),
             "The actual interrupted final source did not resume the same request and release its marker link")
     restore = reference(final["restore"])
     require(restore.get("commit_sha256") == accepted["commit_sha256"]
@@ -87,7 +89,7 @@ def consumer(refs, read_ref, candidate, summary, home, operation, accepted, labe
             and owner.get("operation_sha256") == operation and stop.get("owner") == owner
             and stop.get("receipt") == {"version": 1, **identity, "flush_ok": True}
             and all(stop.get("session", {}).get(k) == v for k, v in identity.items())
-            and stop["session"].get("exit") == "clean" and not alive(identity["pid"]),
+            and stop["session"].get("exit") == "clean" and ended(identity, stop),
             "A final restored DEV consumer lacks its exact client, home, or clean stop")
     require(observed.get("session") == identity and observed.get("home") == str(home)
             and observed.get("source") == summary["source"] and observed.get("programs") == programs
