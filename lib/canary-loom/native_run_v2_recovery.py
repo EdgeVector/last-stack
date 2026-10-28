@@ -98,6 +98,12 @@ def before_stop(approval, state):
             and provider.get("routes_verified") is True and provider.get("native_bytes_unchanged") is True
             and provider.get("reservations") == 0,
             "The current snapshot lacks independent provider and account verification")
+    manifest = recovery_manifest(approval, core)
+    require(provider.get("native_manifest_sha256") == approval["recovery"]["native_manifest"]["sha256"],
+            "The provider proof names another original native manifest")
+    require(provider.get("native_files_verified") == [
+        {"path": f["path"], "bytes": int(f["native_bytes"]), "sha256": f["native_sha256"]}
+        for f in manifest["native_files"]], "The remote native bytes differ from the saved source manifest")
     metadata, roots = selectors(home, core["run"])
     try:
         require(session(home) == state["baseline"]["session"], "The exact recovery session changed")
@@ -138,22 +144,34 @@ def stopped_cut(approval, state):
     try:
         require(roots == state["recovery_point"]["selectors"]
                 and stable(home) == state["baseline"]["stable"], "The stopped recovery identities differ")
-        require(type(core.get("objects")) is int and 0 < core["objects"] <= 8192,
-                "The stopped recovery object count exceeds its bound")
+        manifest = recovery_manifest(approval, core)
         files = {}
-        source = home / "data/disk-run/cloud-byte-source-v2"
-        for ordinal in range(core["objects"]):
-            for item in wrapped(source / f"object-{ordinal:08}.json")["native_files"]:
-                path = item["path"]
-                require(path not in files and (path == "laststore-pack-node-v1" or FILE.fullmatch(path)),
-                        "The accepted native file path is duplicated or invalid")
-                length = int(item["native_bytes"])
-                require(0 < length <= 2**40 and len(files) < 1000000
-                        and native_hash(home / "data" / path, length) == item["native_sha256"],
-                        "The stopped bytes differ from the accepted recovery snapshot")
-                files[path] = length
+        for item in manifest["native_files"]:
+            path = item["path"]
+            require(path not in files and (path == "laststore-pack-node-v1" or FILE.fullmatch(path)),
+                    "The accepted native file path is duplicated or invalid")
+            length = int(item["native_bytes"])
+            require(0 < length <= 2**40 and len(files) < 1000000
+                    and native_hash(home / "data" / path, length) == item["native_sha256"],
+                    "The stopped bytes differ from the accepted recovery snapshot")
+            files[path] = length
         require(len(files) == core["native_files"] and sum(files.values()) == core["native_bytes"],
                 "The accepted stopped native file set is incomplete")
         return {"native_files": len(files), "native_bytes": sum(files.values())}
     finally:
         metadata.close()
+
+
+def recovery_manifest(approval, core):
+    manifest = reference(approval["recovery"]["native_manifest"])
+    require(manifest.get("begin") == core["begin"] and manifest.get("run_profile") == core["run"]
+            and manifest.get("native_root") == core["native_root"]
+            and manifest.get("full_held_native_hashes_verified") is True
+            and manifest.get("before_terminal_cleanup") is True,
+            "The retained original native manifest belongs to another accepted cut")
+    files = manifest.get("native_files")
+    require(isinstance(files, list) and 0 < len(files) <= 1000000
+            and len(files) == core["native_files"]
+            and sum(int(f["native_bytes"]) for f in files) == core["native_bytes"],
+            "The retained original manifest does not cover the full accepted native cut")
+    return manifest
