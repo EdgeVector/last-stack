@@ -73,7 +73,8 @@ def memory_guard(proof, summary, programs, operation, limit):
     failures = value.get("persist_failures", {})
     require(set(failures) == {"persist_lane_failures", "deferred_persist_failed"}
             and all(type(n) is int and n == 0 for n in failures.values())
-            and value.get("native_health", {}).get("version") == owner.get("version", proof["candidate_version"])
+            and value.get("native_health", {}).get("version") == proof["candidate_version"]
+            and owner.get("version") in (None, proof["candidate_version"])
             and value["native_health"].get("native", {}).get("writer_failed") is False,
             "The restored candidate persist or native writer health is absent or failed")
     samples = value.get("samples_bytes")
