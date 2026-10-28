@@ -147,21 +147,22 @@ jobs:
           echo "tree_oid: $TREE_OID"
           echo "manifest: $MANIFEST_PATH"
 
-      - name: Decode signing key
+      - name: Write signing key file
         env:
           KEY_BASE64: ${{ secrets.LASTDB_DEVELOPER_KEY_BASE64 }}
         run: |
           set -euo pipefail
-          KEY_FILE="$RUNNER_TEMP/developer-key.txt"
-          echo "$KEY_BASE64" | base64 -d > "$KEY_FILE"
+          KEY_FILE=$(mktemp)
+          chmod 0600 "$KEY_FILE"
+          echo -n "$KEY_BASE64" > "$KEY_FILE"
           
           if [ ! -s "$KEY_FILE" ]; then
-            echo "::error::signing key decode failed or returned empty"
+            echo "::error::signing key is empty"
             exit 1
           fi
           
           echo "KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
-          echo "decoded developer signing key from base64 secret"
+          echo "wrote developer signing key (base64 text) for --key-file"
 
       - name: Verify key matches registered owner_dev_pubkey
         env:
@@ -180,14 +181,24 @@ jobs:
           echo "registered owner_dev_pubkey: $REGISTERED_PUBKEY"
           
           # Derive public key from Ed25519 private key.
-          # The key file contains a raw 32-byte Ed25519 seed (standard base64).
-          # Wrap it in PKCS8 DER prefix 302e020100300506032b657004220420, derive public key with openssl, take last 32 bytes.
+          # KEY_FILE contains base64 text (44 chars). Decode to get raw 32-byte seed for derivation.
+          RAW_SEED=$(mktemp)
+          base64 -d "$KEY_FILE" > "$RAW_SEED"
+          
+          SEED_SIZE=$(stat -c%s "$RAW_SEED")
+          if [ "$SEED_SIZE" -ne 32 ]; then
+            echo "::error::decoded seed is $SEED_SIZE bytes, expected exactly 32"
+            rm -f "$RAW_SEED"
+            exit 1
+          fi
+          
+          # Wrap raw seed in PKCS8 DER prefix, derive public key with openssl, take last 32 bytes.
           PKCS8_DER=$(mktemp)
           python3 -c "import sys; sys.stdout.buffer.write(bytes.fromhex('302e020100300506032b657004220420'))" > "$PKCS8_DER"
-          cat "$KEY_FILE" >> "$PKCS8_DER"
+          cat "$RAW_SEED" >> "$PKCS8_DER"
           
           DERIVED_PUBKEY=$(openssl pkey -inform DER -in "$PKCS8_DER" -pubout -outform DER | tail -c 32 | base64 | tr -d '\n')
-          rm -f "$PKCS8_DER"
+          rm -f "$PKCS8_DER" "$RAW_SEED"
           
           if [ -z "$DERIVED_PUBKEY" ]; then
             echo "::error::failed to derive public key from signing key"
