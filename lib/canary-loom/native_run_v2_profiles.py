@@ -4,8 +4,11 @@ from native_upgrade_common import require
 import native_run_v2_gate as first
 import native_run_v2_gate_v2 as second
 import native_run_v2_maintenance as maintenance
+import native_run_v2_final_gate as final
 
 PAIRS = {
+    ("lastdb.run-v2-maintenance-approval.v2", final.PROFILE):
+        ("lastdb.run-v2-maintenance-evidence.v2", final),
     ("lastdb.run-v2-maintenance-approval.v1", maintenance.PROFILE):
         ("lastdb.run-v2-maintenance-evidence.v1", maintenance),
     ("lastdb.run-v2-ci-bootstrap-approval.v1", first.PROFILE):

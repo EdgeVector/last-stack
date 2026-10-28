@@ -82,8 +82,8 @@ replace the retired app and local benchmark procedure. Strict stop, the clean
 session, the final stopped V2 cut, isolated pair installation, program recovery,
 and five-minute supervised health remain required. No primary data copy occurs.
 
---native-run-v2-ci-approval FILE selects protocol 11 bootstrap or protocol 12
-ordinary maintenance, as the exact approval schema specifies. Protocol 12 requires
+--native-run-v2-ci-approval FILE selects protocol 11 bootstrap, protocol 12
+ordinary maintenance, or protocol 13 final stopped backup, as its schema specifies. Maintenance requires
 a current accepted V2 snapshot, exact stopped native bytes, and known-key reads.
 Its full design is docs/lastdb-run-v2-maintenance.md. Protocol 11 retains its
 closed bootstrap policy below.
@@ -261,7 +261,11 @@ if [ -n "$NATIVE_APPROVAL" ]; then
     native-run-v2-ci)
       [ "$NATIVE_POLICY_FLAG" = --native-run-v2-ci-approval ] || die "RunV2 maintenance requires its explicit policy flag"
       [ "$NATIVE_REOPEN" -eq 0 ] && [ "$NATIVE_PROBE_ONLY" -eq 0 ] || die "RunV2 maintenance refuses other modes"
-      SAFE_UPGRADE_PROTOCOL_VERSION="12"
+      case "$(jq -r '.schema // empty' "$NATIVE_APPROVAL")" in
+        lastdb.run-v2-maintenance-approval.v1) SAFE_UPGRADE_PROTOCOL_VERSION="12" ;;
+        lastdb.run-v2-maintenance-approval.v2) SAFE_UPGRADE_PROTOCOL_VERSION="13" ;;
+        *) die "RunV2 maintenance requires its exact approval schema" ;;
+      esac
       ;;
     native-run-v2-ci-cloud-off)
       [ "$NATIVE_POLICY_FLAG" = --native-run-v2-ci-approval ] || die "RunV2 requires its explicit policy flag"

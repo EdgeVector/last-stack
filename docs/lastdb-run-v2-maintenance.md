@@ -11,3 +11,28 @@ Before the primary stop, a fresh manual V2 snapshot must finish on both provider
 The route saves the old programs, stages the exact candidate pair, and uses the existing primary-only current pointer and LaunchAgent reload. It checks the supervised session, identity, native format, configuration, failure counters, memory, and ordinary keyed reads. The minimum observation period is five minutes. A failure uses the saved pair on the same compatible home through the recorded recovery transaction.
 
 Automatic backup stays off during the pair change. After the upgrade completes, a separate owner-authorized action enables minute log uploads and daily snapshots. The final check requires an actual published primary backup, the correct provider routes, released local source files, and correct account counters. Both intervals remain configurable.
+
+Protocol 13 adds the final stopped backup. Protocol 12 keeps its original rule.
+The clean shutdown updates the storage totals and flushes the native files.
+Thus, the stopped files can differ from the earlier live snapshot.
+The new route keeps that live recovery point and the strict stop.
+It then uses the exact CI CLI to back up the stopped home.
+The command uses the ordinary V2 source, transfer, and publication code.
+It keeps the source checks, account limits, and full cloud file checks.
+The command does not start a daemon or copy the primary.
+
+The approval names one fresh manual request for that final snapshot.
+The accepted snapshot must follow the live recovery point in the same stream.
+Its native homes must match the original homes and both stopped CURRENT files.
+The CLI retains the original file metadata before source release.
+The gate checks its checksum and all native files under the native locks.
+It saves only metadata in the local upgrade journal.
+It changes the program pair only after these checks pass.
+An error restores the old program through the existing recovery transaction.
+No stale-backup waiver or file-format migration applies.
+
+The exact-client DEV operation also requires the final stopped command.
+It restores that accepted snapshot into a separate absent DEV home.
+It checks every native file before the first start.
+Two starts must return the exact records, deletions, and complete file bytes.
+The earlier mutation-log restore remains a separate required check.
