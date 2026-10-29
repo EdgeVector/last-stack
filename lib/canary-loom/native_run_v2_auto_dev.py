@@ -7,6 +7,7 @@ from native_run_v2_dev_session import ended
 from native_run_v2_inputs import read, reference, uint, digest, unwrap
 from native_run_v2_auto_source import BASELINE, BASELINE_PROGRAMS, SOURCE
 from native_run_v2_auto_dev_restore import check as restored_closures
+from native_run_v2_auto_dev_continuation import check as continued_operation, expected_operation
 from native_run_v2_auto_writer_policy import development as writer_policy
 from native_v2_release import git
 
@@ -40,7 +41,7 @@ def consumers(proof, summary, programs, operation):
         identity = {"pid": uint(owner["pid"], True), "start_ts": uint(owner["start_ts"], True)}
         require(owner.get("source") == source and owner.get("programs") == expected
                 and owner.get("account") == summary["account"] and owner.get("home") == home
-                and owner.get("operation_sha256") == operation and stop.get("owner") == owner,
+                and owner.get("operation_sha256") == expected_operation(operation, name) and stop.get("owner") == owner,
                 "A DEV consumer belongs to another program pair, home, or operation")
         require(stop.get("receipt") == {"version": 1, **identity, "flush_ok": True}
                 and stop["receipt"]["flush_ok"] is True and type(stop["receipt"]["version"]) is int
@@ -65,7 +66,7 @@ def data_reads(proof, summary, owners, operation):
         accepted = None if label == "candidate-reads-baseline-data" else summary["checkpoints"][point]["commit_sha256"]
         require(receipt.get("source") == owner["source"] and receipt.get("programs") == owner["programs"]
                 and receipt.get("home") == owner["home"] and receipt.get("session") == owner["identity"]
-                and receipt.get("stage") == label and receipt.get("operation_sha256") == operation,
+                and receipt.get("stage") == label and receipt.get("operation_sha256") == expected_operation(operation, label),
                 "A DEV read belongs to another client, stage, home, or session")
         require((receipt.get("existing_records"), receipt.get("absent_records")) == ((16, 0) if initial else (14, 2))
                 and receipt.get("exact_keyed_values") is True and receipt.get("full_file_bytes_equal") is True
@@ -81,6 +82,7 @@ def data_reads(proof, summary, owners, operation):
 
 
 def memory_guard(proof, summary, programs, operation, limit):
+    operation = expected_operation(operation, "memory_guard")
     value = reference(proof["memory_guard"])
     owner = value["owner"]
     identity = {"pid": uint(owner["pid"], True), "start_ts": uint(owner["start_ts"], True)}
@@ -115,7 +117,7 @@ def memory_guard(proof, summary, programs, operation, limit):
 def check(candidate, evidence, memory_limit_mb, writer):
     proof = read(evidence["development_proof"], 262144, evidence["development_sha256"])
     programs = {k: v["sha256"] for k, v in candidate.items()}
-    require(proof.get("schema") == "lastdb.run-v2-automatic-development.v2"
+    require(proof.get("schema") in ("lastdb.run-v2-automatic-development.v2", "lastdb.run-v2-automatic-development.v3")
             and proof.get("profile") == "run-v2-format4-auto-maintenance-v1" and proof.get("protocol") == 14
             and proof.get("environment") == "dev" and proof.get("source") == evidence["source_git_oid"] == SOURCE
             and proof.get("programs") == programs and proof.get("candidate_version") == candidate["lastdbd"]["version"]
@@ -126,6 +128,8 @@ def check(candidate, evidence, memory_limit_mb, writer):
     summary, intent = reference(proof["summary"]), reference(proof["intent"])
     writer_policy(writer, intent, summary)
     operation = digest(proof["intent"]["sha256"])
+    if proof["schema"] == "lastdb.run-v2-automatic-development.v3":
+        operation = continued_operation(proof, intent, summary)
     require(intent.get("source") == summary.get("source") == evidence["source_git_oid"]
             and intent.get("homes") == summary.get("homes") and intent.get("account") == summary.get("account")
             and intent.get("programs") == programs and intent.get("baseline_programs") == BASELINE_PROGRAMS
