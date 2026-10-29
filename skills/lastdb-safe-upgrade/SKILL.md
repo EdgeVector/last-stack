@@ -110,16 +110,22 @@ The DEV proof also requires this command and a separate source-free restore.
 The final backup request stays fixed during a resume.
 A failure retains its exact request and uses ordinary program recovery.
 
-The separate approval schema `lastdb.run-v2-maintenance-approval.v3` selects
-Loom protocol 14 and the closed `run-v2-format4-auto-maintenance-v1` profile.
-Use [format 4 automatic maintenance](../../docs/lastdb-format4-automatic-maintenance.md)
+Fresh schema version 3 approvals are retired for the exact baseline.
+Its shutdown always writes native metadata after the automatic snapshot.
+Old protocol 14 records remain readable for recovery and writer lineage.
+
+The separate approval schema `lastdb.run-v2-maintenance-approval.v4` selects
+Loom protocol 13 and `run-v2-format4-final-stopped-maintenance-v1`.
+Use [format 4 maintenance](../../docs/lastdb-format4-automatic-maintenance.md)
 for the exact `1d4b205bb` to `a1c406f5` pair on an existing typed format 4 home.
-This route preserves automatic backup and its exact policy through cutover.
-It requires separate exact Mac DEV evidence, a current automatic snapshot,
-and original file proofs from a completed cloud restore before its first boot.
-The strict stop and complete stopped-file equality remain mandatory.
-A later write prevents candidate selection; it does not permit a weaker recovery point.
-This route does not use the protocol 13 final stopped upload.
+It retains the exact Mac automatic DEV proof and adds a real stopped-backup extension.
+Drain automatic work, then disable it before the strict stop.
+The verified candidate CLI uploads and reads back the exact final stopped files.
+The program pair changes only after full hashes pass.
+Loom keeps automatic backup off through its five-minute soak.
+Restore the original schedule through a separate authorized product command.
+Require a new automatic full snapshot and a coherent acknowledged journal anchor.
+An enabled flag alone does not prove this adoption.
 The Linux DEV result does not qualify different Mac program bytes.
 
 ## Native V2 upgrade with CI evidence (Tom, 2026-10-24)

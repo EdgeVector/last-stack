@@ -12,7 +12,7 @@ from native_upgrade_common import (memory, pair, private_dir, regular, require,
                                    run, save, session, sha, stopped, sync_dir)
 from native_v2_primary import bytes_save, record
 from native_run_v2_health import health, wait_health
-from native_run_v2_profiles import automatic
+from native_run_v2_profiles import automatic, final_stopped, modern_stopped
 from native_run_v2_state import bounded_file, stable, stopped_pair
 
 
@@ -31,6 +31,9 @@ def baseline_snapshot(approval, baseline=None):
     if automatic(approval):
         from native_run_v2_auto_policy import observe
         checked["automatic_backup"] = observe(approval)
+    elif modern_stopped(approval):
+        from native_run_v2_auto_final_policy import observe_off
+        checked["automatic_pause"] = observe_off(approval)
     require(session(home) == identity, "The Run V2 baseline session changed during its health check")
     ceiling = memory_limit(plist)
     checked["memory_bytes"] = memory(pid, ceiling)
@@ -48,6 +51,9 @@ def initial(approval, candidate, path):
     home, plist_path, plist, _, _ = service(approval)
     if automatic(approval):
         from native_run_v2_auto_writer_policy import initial as writer_policy
+        writer_policy(approval, baseline, plist)
+    elif modern_stopped(approval):
+        from native_run_v2_stopped_writer import initial as writer_policy
         writer_policy(approval, baseline, plist)
     require("Program" not in plist, "An explicit LaunchAgent Program needs a separately reviewed selection change")
     pointer = home / "current"
@@ -78,7 +84,7 @@ def initial(approval, candidate, path):
 def preserved(approval, state):
     home = Path(approval["primary_home"])
     observed = stable(home)
-    if approval.get("schema") == "lastdb.run-v2-maintenance-approval.v2":
+    if final_stopped(approval):
         from native_run_v2_final_links import normalize
         observed = normalize(approval, state, observed)
     require(observed == state["baseline"]["stable"], "Primary identity, Run V2 metadata, or cloud controls changed")
@@ -187,6 +193,9 @@ def live(approval, state, candidate=True):
     if automatic(approval):
         from native_run_v2_auto_policy import observe
         checked["automatic_backup"] = observe(approval)
+    elif modern_stopped(approval):
+        from native_run_v2_auto_final_policy import observe_off
+        checked["automatic_pause"] = observe_off(approval, admission=not state.get("effect_started_at"))
     from native_v2_read import verify
     checked["keyed_read"] = verify(approval, state["baseline"]["keyed_read"])
     require(session(home) == identity, "The selected Run V2 session changed during its health check")

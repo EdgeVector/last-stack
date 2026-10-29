@@ -21,6 +21,21 @@ def check(candidate, evidence, approval):
             and evidence.get("source_git_oid") == approval.get("source_git_oid") == SOURCE
             and evidence.get("accepted_main_commit") == approval.get("accepted_main_commit") == SOURCE,
             "The exact automatic format4 profile, schema, or accepted source differs")
+    require(False, "The exact baseline writes shutdown metadata; the final stopped profile is required")
+
+
+def qualification(candidate, evidence, approval, *, development_maximum_age_seconds=3600):
+    """Reuse exact modern proofs without changing their original schema or profile."""
+    require(type(development_maximum_age_seconds) is int and (development_maximum_age_seconds == 3600
+            or (development_maximum_age_seconds == 86400
+                and approval.get("schema") == "lastdb.run-v2-maintenance-approval.v4"
+                and evidence.get("schema") == "lastdb.run-v2-maintenance-evidence.v4"
+                and approval.get("profile") == evidence.get("profile")
+                    == "run-v2-format4-final-stopped-maintenance-v1")),
+            "The immutable Mac compatibility proof age policy differs")
+    require(evidence.get("source_git_oid") == approval.get("source_git_oid") == SOURCE
+            and evidence.get("accepted_main_commit") == approval.get("accepted_main_commit") == SOURCE,
+            "The exact modern format4 source differs")
     require(approval.get("baseline_source_git_oid") == BASELINE
             and approval.get("baseline_programs_sha256") == BASELINE_PROGRAMS,
             "The automatic format4 baseline differs from the exact installed pair")
@@ -32,8 +47,9 @@ def check(candidate, evidence, approval):
     ci = ci_check(evidence, metadata)
     package = artifact_check(candidate, evidence, metadata)
     writer = writer_policy(approval)
-    development = development_check(candidate, evidence, approval["memory_limit_mb"], writer)
+    development = development_check(candidate, evidence, approval["memory_limit_mb"], writer,
+                                    maximum_age_seconds=development_maximum_age_seconds)
     require(development.get("baseline_ordinary_reopen") is True,
             "The actual baseline did not reopen ordinary candidate-written DEV data")
-    return {"profile": PROFILE, "source_review": source, **ci, "artifact": package,
+    return {"source_review": source, **ci, "artifact": package,
             "development": development, "baseline_writer_policy": writer["result"], "checked_at": int(time.time())}

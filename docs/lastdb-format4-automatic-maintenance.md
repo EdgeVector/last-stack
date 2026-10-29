@@ -1,4 +1,47 @@
-# LastDB format 4 automatic maintenance
+# LastDB format 4 maintenance and the final stopped backup
+
+## Current profile
+
+Use `run-v2-format4-final-stopped-maintenance-v1` for the exact `1d4b205bb` to `a1c406f5` pair.
+Approval and evidence schemas use version 4. The launcher selects the existing protocol 13.
+
+The old baseline always writes clean-stop meter metadata during shutdown.
+A live snapshot therefore cannot prove the exact stopped files.
+Fresh version 3 approvals now refuse this pair. Their old records and recovery path remain readable.
+
+The version 4 flow keeps the strict stop and full file checks:
+
+1. Prove the current automatic snapshot, source-free restore, selected request obligations, and the exact current writer.
+2. Drain automatic work while it remains enabled. Then disable it through the normal product command.
+3. Require the exact disabled revision, no pending request, no active work, and no retained source before Loom starts.
+4. Stop the old program with its actual clean flush receipt and session ledger.
+5. Use the verified candidate CLI to capture the final stopped files with one immutable manual request UUID.
+6. Require full provider readback, unchanged stopped files, source release, and the original native file manifest.
+7. Select the candidate and complete the existing five-minute soak with automatic backup off.
+8. Restore the original 60-second log and 86400-second snapshot schedule through a separate authorized product action.
+9. Require a new automatic full snapshot, a coherent journal anchor, and complete acknowledgement before the final backup verdict.
+
+The manual stopped snapshot has no automatic journal position while automatic backup is disabled.
+An enabled flag alone does not prove adoption. The new automatic full snapshot establishes that boundary.
+
+The DEV qualification retains its original eight-point and 64 MiB allowance.
+A separate stopped extension permits one manual snapshot and one automatic adoption snapshot.
+Each permits 32 MiB of declared inventory. Their combined allowance is 64 MiB.
+The extension requires one source-free restore, two normal boots, full file reads, deletions, and strict stops.
+It also requires a real candidate source boot and an automatic adoption snapshot without new user writes.
+
+Version 4 permits 24 hours for the original immutable Mac compatibility proof.
+It still requires the exact programs, original ten clean consumers, all file reads, and an unexpired verified artifact.
+The new stopped and adoption extension must complete within one hour of admission.
+The current PROD snapshot and provider checks keep their existing freshness limits.
+Versions 2 and 3 keep the original one-hour Mac proof limit. No proof timestamp changes.
+
+The current writer observation must link to the actual recorded rollback and new session.
+Do not reuse the old PID or edit its original writer receipt.
+If a step fails, preserve the real records. Do not repeat an unknown request with a new UUID.
+Program recovery retains automatic backup off; restore its schedule as an explicit, verified action.
+
+## Historical automatic profile
 
 Protocol 14 supports one reviewed program change from `1d4b205bb` to `a1c406f5`.
 It uses approval and evidence schema version 3.

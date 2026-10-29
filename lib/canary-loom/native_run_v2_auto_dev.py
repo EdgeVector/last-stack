@@ -114,7 +114,9 @@ def memory_guard(proof, summary, programs, operation, limit):
             "The observed candidate lacks its exact data read and native clean stop")
 
 
-def check(candidate, evidence, memory_limit_mb, writer):
+def check(candidate, evidence, memory_limit_mb, writer, *, maximum_age_seconds=3600):
+    require(type(maximum_age_seconds) is int and maximum_age_seconds in (3600, 86400),
+            "The exact-client DEV proof age policy differs")
     proof = read(evidence["development_proof"], 262144, evidence["development_sha256"])
     programs = {k: v["sha256"] for k, v in candidate.items()}
     require(proof.get("schema") in ("lastdb.run-v2-automatic-development.v2", "lastdb.run-v2-automatic-development.v3")
@@ -123,7 +125,7 @@ def check(candidate, evidence, memory_limit_mb, writer):
             and proof.get("programs") == programs and proof.get("candidate_version") == candidate["lastdbd"]["version"]
             and proof.get("baseline_source") == BASELINE
             and proof.get("baseline_programs") == BASELINE_PROGRAMS
-            and 0 <= time.time() - uint(proof.get("completed_at"), True) <= 3600,
+            and 0 <= time.time() - uint(proof.get("completed_at"), True) <= maximum_age_seconds,
             "The exact-client DEV operation is absent, stale, or from another pair")
     summary, intent = reference(proof["summary"]), reference(proof["intent"])
     writer_policy(writer, intent, summary)
