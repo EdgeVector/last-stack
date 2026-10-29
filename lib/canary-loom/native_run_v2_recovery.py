@@ -164,8 +164,8 @@ def stopped_cut(approval, state):
 
 
 def recovery_manifest(approval, core):
-    from native_run_v2_profiles import automatic
-    if automatic(approval):
+    from native_run_v2_profiles import typed_recovery
+    if typed_recovery(approval):
         from auto_recovery_manifest import check
         return check(approval, core)
     manifest = reference(approval["recovery"]["native_manifest"])

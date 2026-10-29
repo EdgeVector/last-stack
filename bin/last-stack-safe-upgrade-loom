@@ -83,7 +83,9 @@ session, the final stopped V2 cut, isolated pair installation, program recovery,
 and five-minute supervised health remain required. No primary data copy occurs.
 
 --native-run-v2-ci-approval FILE selects protocol 12 ordinary maintenance,
-protocol 13 final stopped backup, or protocol 14 automatic maintenance.
+protocol 13 final stopped backup (including typed format4 schema v4), or
+historical protocol 14 automatic maintenance. Fresh schema v3 is retired for
+the exact baseline because its shutdown always writes native metadata.
 Its exact approval schema selects the policy. Maintenance requires
 a current accepted V2 snapshot, exact stopped native bytes, and known-key reads.
 Its full design is docs/lastdb-run-v2-maintenance.md. The automatic profile uses
@@ -263,6 +265,7 @@ if [ -n "$NATIVE_APPROVAL" ]; then
         lastdb.run-v2-maintenance-approval.v1) SAFE_UPGRADE_PROTOCOL_VERSION="12" ;;
         lastdb.run-v2-maintenance-approval.v2) SAFE_UPGRADE_PROTOCOL_VERSION="13" ;;
         lastdb.run-v2-maintenance-approval.v3) SAFE_UPGRADE_PROTOCOL_VERSION="14" ;;
+        lastdb.run-v2-maintenance-approval.v4) SAFE_UPGRADE_PROTOCOL_VERSION="13" ;;
         *) die "RunV2 maintenance requires its exact approval schema" ;;
       esac
       ;;

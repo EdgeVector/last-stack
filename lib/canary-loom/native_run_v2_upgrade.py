@@ -18,7 +18,7 @@ from native_upgrade_common import pair, private_dir, require, run, session, stop
 from native_v2_primary import record
 from native_v2_stop import restore_hold
 from native_run_v2_profiles import check as evidence_check, selected as selected_profile
-from native_run_v2_profiles import automatic, protocol
+from native_run_v2_profiles import automatic, modern_stopped, protocol
 from native_run_v2_inputs import digest, read, uint
 from native_run_v2_primary import (baseline_snapshot, initial, live, prepare, preserved,
                                    select, start, stopped_boundary)
@@ -186,6 +186,8 @@ def cutover(ctx, candidate, approval, evidence, path, state):
         fresh(approval)
         if automatic(approval):
             from native_run_v2_auto_policy import before_stop
+        elif modern_stopped(approval):
+            from native_run_v2_auto_final_policy import before_stop
         else:
             from native_run_v2_recovery import before_stop
         record(path, state, "prepared", recovery_point=before_stop(approval, state))

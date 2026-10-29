@@ -18,8 +18,8 @@ def normalize(approval, state, observed):
     if not changed:
         return observed
     request = approval["final_backup"]["request_id"]
-    require(approval.get("schema") == "lastdb.run-v2-maintenance-approval.v2"
-            and state.get("final_backup_requested") == request,
+    from native_run_v2_profiles import final_stopped
+    require(final_stopped(approval) and state.get("final_backup_requested") == request,
             "The primary has an unowned native metadata link")
     home = Path(approval["primary_home"])
     source = home / "data/disk-run/cloud-byte-source-v2"
