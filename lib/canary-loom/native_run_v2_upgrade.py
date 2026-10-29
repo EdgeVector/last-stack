@@ -18,6 +18,7 @@ from native_upgrade_common import pair, private_dir, require, run, session, stop
 from native_v2_primary import record
 from native_v2_stop import restore_hold
 from native_run_v2_profiles import check as evidence_check, selected as selected_profile
+from native_run_v2_profiles import automatic, protocol
 from native_run_v2_inputs import digest, read, uint
 from native_run_v2_primary import (baseline_snapshot, initial, live, prepare, preserved,
                                    select, start, stopped_boundary)
@@ -50,7 +51,7 @@ def context():
             "Immutable Loom item/context conflict")
     ctx = {**item, **{k: v for k, v in raw.items() if k != "item"}}
     require((ctx.get("upgrade_mode"), ctx.get("safe_upgrade_protocol_version"))
-            in ((MODE, "12"), (MODE, "13"))
+            in ((MODE, "12"), (MODE, "13"), (MODE, "14"))
             and ctx.get("native_reopen") is False and ctx.get("native_probe_only") is False
             and ctx.get("zero_live_soak", False) is False
             and ctx.get("accept_stale_recovery_point", "") == "",
@@ -75,8 +76,19 @@ def binding(ctx):
             and re.fullmatch(r"[0-9a-f]{40}", ctx["source_git_oid"]), "Candidate binding differs")
     approval = read(ctx["native_approval"], 65536, digest(ctx["native_approval_sha256"]))
     _, profile = selected_profile(approval)
-    require(ctx["safe_upgrade_protocol_version"] == ("13" if approval.get("schema") == "lastdb.run-v2-maintenance-approval.v2"
-            else "12"), "The exact RunV2 approval protocol differs")
+    require(ctx["safe_upgrade_protocol_version"] == protocol(approval),
+            "The exact RunV2 approval protocol differs")
+    if automatic(approval):
+        require(approval.get("legacy_sync_off") is True
+                and approval.get("automatic_backup_enabled") is True
+                and "cloud_off" not in approval,
+                "Automatic maintenance must preserve automatic backup and keep legacy sync off")
+        from native_run_v2_auto_policy import contract
+        contract(approval)
+        recovery_policy = "accepted-automatic-snapshot-exact-stopped-native-cut-and-saved-pair"
+    else:
+        require(approval.get("cloud_off") is True, "The selected maintenance policy requires Cloud Off")
+        recovery_policy = "accepted-stopped-native-cut-and-saved-pair"
     require(approval.get("mode") == ctx["upgrade_mode"]
             and approval.get("approved_by") == "Tom"
             and isinstance(approval.get("quote"), str) and bool(approval["quote"].strip())
@@ -84,10 +96,10 @@ def binding(ctx):
             and approval.get("candidate") == candidate
             and approval.get("baseline_source_git_oid") == profile.BASELINE
             and approval.get("baseline_programs_sha256") == profile.BASELINE_PROGRAMS
-            and approval.get("cloud_off") is True and approval.get("primary_data_copy") is False
+            and approval.get("primary_data_copy") is False
             and approval.get("primary_restore_or_migration") is False
             and approval.get("primary_validation") == "keyed-data-health-continuity"
-            and approval.get("recovery_policy") == "accepted-stopped-native-cut-and-saved-pair",
+            and approval.get("recovery_policy") == recovery_policy,
             "An exact named RunV2 approval for the selected policy is required")
     evidence = read(approval["evidence_path"], 65536, digest(approval["evidence_sha256"]))
     return candidate, approval, evidence
@@ -100,6 +112,8 @@ def state_path(ctx):
 
 
 def state_schema(ctx):
+    if ctx["safe_upgrade_protocol_version"] == "14":
+        return "lastdb.run-v2-maintenance-upgrade.v3"
     if ctx["safe_upgrade_protocol_version"] == "13":
         return "lastdb.run-v2-maintenance-upgrade.v2"
     return "lastdb.run-v2-maintenance-upgrade.v1"
@@ -170,7 +184,10 @@ def cutover(ctx, candidate, approval, evidence, path, state):
         prepare(approval, state, path)
         initial_snapshot(approval, state)
         fresh(approval)
-        from native_run_v2_recovery import before_stop
+        if automatic(approval):
+            from native_run_v2_auto_policy import before_stop
+        else:
+            from native_run_v2_recovery import before_stop
         record(path, state, "prepared", recovery_point=before_stop(approval, state))
         record(path, state, "prepared", gates=gates)
         print("LOOM_EFFECT_INTENT:" + json.dumps({"kind":"deploy","target":ctx["upgrade_mode"]}), flush=True)

@@ -1,4 +1,4 @@
-"""Protocols 12 and 13: primary-only Run V2 pair selection with Cloud Off."""
+"""Primary-only Run V2 pair selection with the exact selected backup policy."""
 
 import os
 from pathlib import Path
@@ -12,6 +12,7 @@ from native_upgrade_common import (memory, pair, private_dir, regular, require,
                                    run, save, session, sha, stopped, sync_dir)
 from native_v2_primary import bytes_save, record
 from native_run_v2_health import health, wait_health
+from native_run_v2_profiles import automatic
 from native_run_v2_state import bounded_file, stable, stopped_pair
 
 
@@ -25,7 +26,11 @@ def baseline_snapshot(approval, baseline=None):
             "The Run V2 primary session differs")
     check_environment(pid, plist)
     programs = pair(program.parent)
-    checked = health(home / "data/folddb.sock", programs["lastdbd"]["version"], pid)
+    checked = health(home / "data/folddb.sock", programs["lastdbd"]["version"], pid,
+                     automatic=automatic(approval))
+    if automatic(approval):
+        from native_run_v2_auto_policy import observe
+        checked["automatic_backup"] = observe(approval)
     require(session(home) == identity, "The Run V2 baseline session changed during its health check")
     ceiling = memory_limit(plist)
     checked["memory_bytes"] = memory(pid, ceiling)
@@ -41,6 +46,9 @@ def initial(approval, candidate, path):
     require({k: v["sha256"] for k, v in baseline["pair"].items()} == approval["baseline_programs_sha256"],
             "The approved baseline program pair differs")
     home, plist_path, plist, _, _ = service(approval)
+    if automatic(approval):
+        from native_run_v2_auto_writer_policy import initial as writer_policy
+        writer_policy(approval, baseline, plist)
     require("Program" not in plist, "An explicit LaunchAgent Program needs a separately reviewed selection change")
     pointer = home / "current"
     require(pointer.is_symlink(), "The primary current path must be its existing program-pair pointer")
@@ -174,7 +182,11 @@ def live(approval, state, candidate=True):
     identity = selected_session(approval, state, candidate)
     home = Path(approval["primary_home"])
     wanted = state["candidate"] if candidate else state["baseline"]["pair"]
-    checked = health(home / "data/folddb.sock", wanted["lastdbd"]["version"], identity["pid"])
+    checked = health(home / "data/folddb.sock", wanted["lastdbd"]["version"], identity["pid"],
+                     automatic=automatic(approval))
+    if automatic(approval):
+        from native_run_v2_auto_policy import observe
+        checked["automatic_backup"] = observe(approval)
     from native_v2_read import verify
     checked["keyed_read"] = verify(approval, state["baseline"]["keyed_read"])
     require(session(home) == identity, "The selected Run V2 session changed during its health check")
@@ -247,7 +259,8 @@ def start(approval, state, path, candidate=True):
     binding = bind_startup(approval, state, path, candidate)
     home, _, _, _, target = service(approval)
     wanted = state["candidate"] if candidate else state["baseline"]["pair"]
-    wait_health(home / "data/folddb.sock", wanted["lastdbd"]["version"], binding["session"]["pid"])
+    wait_health(home / "data/folddb.sock", wanted["lastdbd"]["version"], binding["session"]["pid"],
+                automatic=automatic(approval))
     observed = live(approval, state, candidate)
     checked_startup(home, target, binding)
     require(observed["session"] == binding["session"], "The selected startup health belongs to another session")

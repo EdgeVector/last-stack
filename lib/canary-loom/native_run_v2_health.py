@@ -22,7 +22,8 @@ def zero_failures(value):
             require(value[name] is None, "Run V2 current error is set: " + name)
 
 
-def health(sock, version, pid):
+def health(sock, version, pid, *, automatic=False):
+    require(type(automatic) is bool, "Run V2 backup policy is invalid")
     require(type(pid) is int and pid > 0, "Run V2 supervised PID is absent")
     routes = ("/health", "/api/version", "/api/status", "/api/db/native-status")
     with ThreadPoolExecutor(max_workers=4) as workers:
@@ -41,8 +42,14 @@ def health(sock, version, pid):
         require(sync.get("enabled") is False and sync.get("local_writable") is True,
                 "Run V2 must stay writable with Cloud Off")
     durability = status.get("durability", {})
-    require(durability.get("observed") is True and durability.get("automatic_enabled") is False
-            and durability.get("running") is False, "Run V2 requires observed automatic-off and idle backup status")
+    require(durability.get("observed") is True
+            and durability.get("automatic_enabled") is automatic
+            and (type(durability.get("running")) is bool if automatic
+                 else durability.get("running") is False),
+            "Run V2 requires the exact observed backup policy")
+    if automatic:
+        require(durability.get("degraded") is None,
+                "The automatic backup reports degraded durability")
     resident = status.get("resident", {})
     require(all(type(resident.get(name)) is int and resident[name] == 0
                 for name in ("persist_lane_failures", "deferred_persist_failed")),
@@ -55,15 +62,17 @@ def health(sock, version, pid):
     zero_failures(resident)
     zero_failures(native)
     zero_failures(native.get("parts", {}))
-    return {"version": version, "cloud_off": True, "backup_automatic_off": True, "backup_idle": True,
+    cloud_policy = {"legacy_sync_off": True} if automatic else {"cloud_off": True}
+    return {"version": version, **cloud_policy, "backup_automatic_off": not automatic,
+            "backup_idle": durability.get("running") is False,
             "native": {**{name: native[name] for name in COUNTERS}, "writer_failed": False}}
 
 
-def wait_health(sock, version, pid, seconds=120):
+def wait_health(sock, version, pid, seconds=120, *, automatic=False):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         try:
-            return health(sock, version, pid)
+            return health(sock, version, pid, automatic=automatic)
         except (OSError, http.client.HTTPException, NotReady):
             time.sleep(0.2)
     raise RuntimeError("Run V2 daemon missed its health deadline")
