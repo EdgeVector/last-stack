@@ -10,9 +10,10 @@ import uuid
 
 from native_run_v2_auto_qualify_data import Data, FIELD_MAP, NOTE_FIELD, file_spec
 from native_run_v2_auto_qualify_catalog import binding as catalog_binding
+from native_run_v2_auto_qualify_credentials import binding as credential_binding, load as load_credentials
 from native_run_v2_inputs import external
 from native_run_v2_auto_qualify_io import (BASELINE, BASELINE_PROGRAMS, SOURCE, freeze, hash_file,
-    imports, private_dir, read, reference, require, save, secret)
+    imports, private_dir, read, reference, require, save)
 from native_run_v2_auto_qualify_process import Pair
 
 PROFILE = "run-v2-format4-auto-maintenance-v1"
@@ -20,11 +21,13 @@ MODULES = ("native_run_v2_auto_qualify", "native_run_v2_auto_qualify_io",
     "native_run_v2_auto_qualify_process", "native_run_v2_auto_qualify_data",
     "native_run_v2_auto_qualify_health",
     "native_run_v2_auto_qualify_http",
-    "native_run_v2_auto_qualify_cloud", "native_run_v2_auto_qualify_catalog", "native_run_v2_auto_qualify_restore",
+    "native_run_v2_auto_qualify_cloud", "native_run_v2_auto_qualify_source",
+    "native_run_v2_auto_qualify_credentials", "native_run_v2_auto_qualify_catalog", "native_run_v2_auto_qualify_restore",
     "native_run_v2_auto_qualify_recoveries", "auto_recovery_manifest", "auto_recovery_files", "native_run_v2_inputs")
 CANDIDATE_RECEIPT = "cd6d0e5e710f48524f127e25a67f1ef8d3f9c9777d16f37a3c9f18dca7891a82"
 WRITER_POLICY_RECEIPT = "af1f22e02e694e883d06d28e45a2ac244e267626b0865dfbb9514f808b6b9cce"
 WRITER_SETTINGS = {"LASTDB_AT_REST_RAW": "1", "LASTDB_KV_AT_REST_COMPRESS": "1", "LASTDB_KV_AT_REST_RAW": "1"}
+HELD_ACCOUNT = "2a81c95623f2445854a794b5b48471d6"
 
 
 def outside_primary(path):
@@ -80,8 +83,10 @@ def prepare(args):
     for name in ("s", "r", "b", "t"):
         require(len(os.fsencode(homes / name / "data/folddb-full.sock.tmp")) <= 103, "socket_temporary_path")
     require(args.memory_limit_mb > 0 and bool(args.baseline_version), "explicit_baseline_and_memory_limit")
-    for locator in (args.api_key_ref, args.phrase_ref):
-        require(re.fullmatch(r"lastsecrets://[A-Za-z0-9][A-Za-z0-9._-]{0,127}", locator), "secret_locator_only")
+    require(re.fullmatch(r"[0-9a-f]{32}", args.account) and args.account != HELD_ACCOUNT,
+            "separate_ordinary_dev_account")
+    credentials = credential_binding(outside_primary(args.credential_home), args.credentials_from_home,
+                                     args.api_key_ref, args.phrase_ref)
     private_dir(root)
     _verified, programs, version = candidate(args.candidate_receipt)
     catalog = catalog_binding(args.catalog_read_result)
@@ -99,7 +104,7 @@ def prepare(args):
         "candidate_bin_dir": str(Path(args.candidate_receipt).parent / "bin"),
         "candidate_receipt": reference(args.candidate_receipt), "source_repository": str(args.source_repository),
         "output": str(root), "homes": str(homes), "credential_home": str(outside_primary(args.credential_home)),
-        "api_key_ref": args.api_key_ref, "phrase_ref": args.phrase_ref,
+        "account": args.account, "credential_input": credentials,
         "nonce": nonce, "records": records, "field_map": FIELD_MAP, "catalog": catalog, "writer_policy": policy,
         "files": [file_spec(nonce, n) for n in (1, 2)],
         "post_restart_rewrite": {"id": records[0]["id"], "note": records[0]["final_note"],
@@ -147,11 +152,13 @@ class Operation:
         require(not os.path.lexists(output) and not os.path.lexists(self.homes), "one_new_qualification")
         output.mkdir(mode=0o700)
         self.output = output
+        require(re.fullmatch(r"[0-9a-f]{32}", self.plan["account"])
+                and self.plan["account"] != HELD_ACCOUNT, "separate_ordinary_dev_account")
         self.intent = save(self.output / "intent.json", {**self.plan, "plan": reference(path),
-            "account": "2a81c95623f2445854a794b5b48471d6", "started_at": int(time.time())})
+            "started_at": int(time.time())})
         self.operation_sha256 = self.intent["sha256"]
         self.helpers = imports(self.root, self.plan["frozen_helpers"])
-        self.account = self.helpers.support.ACCOUNT
+        self.account = self.plan["account"]
         self.homes.mkdir(mode=0o700)
         private_dir(self.root / "tmp")
         self.consumers, self.reads, self.summary, self.node = {}, {}, {}, None
@@ -173,7 +180,7 @@ class Operation:
         original = Path(self.plan["credential_home"])
         require(not (original / "data").exists() and not (original / "current-session.json").exists(),
                 "existing_credential_only_dev_home")
-        self.api_key, self.phrase = secret(self.plan["api_key_ref"]), secret(self.plan["phrase_ref"])
+        self.api_key, self.phrase = load_credentials(original, self.plan["credential_input"], self.endpoint)
         for target in (self.homes / "s", self.credentials):
             result = self.candidate.command(original, ["cloud", "prepare-recovery-home", "--into", str(target),
                 "--env", "dev", "--api-key-stdin", "--json"], self.api_key)
@@ -214,8 +221,11 @@ def arguments():
     for name in ("output", "homes", "source-repository", "baseline-bin-dir", "candidate-receipt", "credential-home",
                  "catalog-read-result", "writer-policy-result"):
         plan.add_argument("--" + name, required=True, type=Path)
-    for name in ("baseline-version", "api-key-ref", "phrase-ref"):
+    for name in ("baseline-version", "account"):
         plan.add_argument("--" + name, required=True)
+    for name in ("api-key-ref", "phrase-ref"):
+        plan.add_argument("--" + name)
+    plan.add_argument("--credentials-from-home", action="store_true")
     plan.add_argument("--memory-limit-mb", type=int, required=True)
     run = sub.add_parser("run")
     run.add_argument("--plan", type=Path, required=True)
