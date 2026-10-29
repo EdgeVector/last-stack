@@ -5,6 +5,7 @@ import copy
 from native_run_v2_auto_qualify_data import NOTE_FIELD, SCHEMA
 from native_run_v2_auto_qualify_io import BASELINE, SOURCE, read, reference, require, save
 from native_run_v2_auto_qualify_process import node
+from native_run_v2_auto_qualify_source import Source
 
 POLICY_FIELDS = ("revision", "enabled", "log_interval_seconds", "snapshot_interval_seconds",
                  "last_snapshot_at", "next_snapshot_at")
@@ -49,8 +50,8 @@ def _seed(operation, active):
     operation.data.reads(current, "candidate-reads-baseline-data",
                          expected=operation.data.initial, files=operation.data.initial_files)
     expected = {"schema": SCHEMA, "records": copy.deepcopy(operation.plan["records"])}
-    source = operation.helpers.source.Source(current, expected, operation.plan["source"],
-                                              operation.summary)
+    require(Source.__mro__[1] is operation.helpers.source.Source, "exact_frozen_source_adapter")
+    source = Source(current, expected, operation.plan["source"], operation.summary, operation.account)
     source.connect(operation.api_key)
     operation.summary["stage"] = "automatic-initial-snapshot"
     source.configure(snapshot=86400)
@@ -133,7 +134,7 @@ def _later(operation, active, source, snapshot, selected, written):
 def run(operation):
     require(operation.plan["source"] == SOURCE and operation.candidate.source == SOURCE
             and operation.baseline.source == BASELINE
-            and operation.account == operation.helpers.support.ACCOUNT,
+            and operation.account == operation.plan["account"],
             "exact_qualification_pair_and_dev_account")
     active = [None]
     try:
