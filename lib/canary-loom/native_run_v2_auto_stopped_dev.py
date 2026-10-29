@@ -70,7 +70,7 @@ def native_source(proof, intent, original_stop, previous):
     return report, manifest
 
 
-def restored(proof, parent, summary, programs, report, manifest):
+def restored(proof, parent, summary, programs, report, manifest, *, files=None):
     record = proof["restore"]
     selected = reference(record["selection"])
     actual, result, receipt = [unwrap(reference(record[name])) for name in ("report", "result", "receipt")]
@@ -107,10 +107,10 @@ def restored(proof, parent, summary, programs, report, manifest):
         require(identity not in sessions, "The stopped restore reused a session")
         sessions.add(identity)
         consumer(proof["consumers"][label], proof["reads"][label], programs, summary, home,
-                 proof["intent"]["sha256"], accepted, label, expected_digest)
+                 proof["intent"]["sha256"], accepted, label, expected_digest, files=files)
 
 
-def adoption(proof, report):
+def adoption(proof, report, operation):
     records = proof["adoption"]
     require(set(records) == {"owner", "stop", "status", "before_enable", "after_disable", "recovery"},
             "The automatic adoption records are incomplete")
@@ -121,7 +121,7 @@ def adoption(proof, report):
     identity = {"pid": uint(owner["pid"], True), "start_ts": uint(owner["start_ts"], True)}
     require(owner.get("source") == SOURCE and owner.get("programs") == proof["programs"]
             and owner.get("account") == proof["account"] and owner.get("home") == str(Path(proof["homes"]) / "s")
-            and owner.get("operation_sha256") == proof["intent"]["sha256"] and stop.get("owner") == owner
+            and owner.get("operation_sha256") == operation and stop.get("owner") == owner
             and stop.get("receipt") == {"version": 1, **identity, "flush_ok": True}
             and all(stop.get("session", {}).get(key) == value for key, value in identity.items())
             and stop["session"].get("exit") == "clean" and ended(identity, stop),
@@ -181,8 +181,14 @@ def check(candidate, evidence):
     parent_ref = {"path": evidence["development_proof"], "sha256": evidence["development_sha256"]}
     parent, intent = reference(parent_ref), reference(proof["intent"])
     summary = reference(parent["summary"])
+    files, operation = None, proof["intent"]["sha256"]
+    if proof.get("schema") == "lastdb.format4-stopped-development.v2":
+        from native_run_v2_stopped_continuation import check as continuation
+        intent, files = continuation(proof, parent, summary, source_identity)
+        operation = proof["original_attempt"]["intent"]["sha256"]
     programs = {name: value["sha256"] for name, value in candidate.items()}
-    require(proof.get("schema") == "lastdb.format4-stopped-development.v1" and proof.get("profile") == PROFILE
+    require(proof.get("schema") in ("lastdb.format4-stopped-development.v1", "lastdb.format4-stopped-development.v2")
+            and proof.get("profile") == PROFILE
             and proof.get("protocol") == 13
             and proof.get("parent_development") == intent.get("parent_development") == parent_ref
             and proof.get("source") == intent.get("source") == SOURCE
@@ -206,8 +212,8 @@ def check(candidate, evidence):
     source_identity(intent)
     stop = reference(intent["stop"])
     report, manifest = native_source(proof, intent, stop, summary["checkpoints"]["later"])
-    restored(proof, parent, summary, candidate, report, manifest)
-    adopted = adoption(proof, report)
+    restored(proof, parent, summary, candidate, report, manifest, files=files)
+    adopted = adoption(proof, report, operation)
     manual_bytes, automatic_bytes = [decimal(point["inventory_root"]["stored_bytes"])
                                      for point in (report["accepted_backup"], adopted)]
     require(0 < manual_bytes <= BUDGET["max_manual_inventory_bytes"]

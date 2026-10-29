@@ -80,7 +80,7 @@ def check(candidate, evidence, limit):
     return result
 
 
-def consumer(refs, read_ref, candidate, summary, home, operation, accepted, label, expected_digest):
+def consumer(refs, read_ref, candidate, summary, home, operation, accepted, label, expected_digest, *, files=None):
     owner, stop, observed = reference(refs["owner"]), reference(refs["stop"]), reference(read_ref)
     identity = {"pid": uint(owner["pid"], True), "start_ts": uint(owner["start_ts"], True)}
     programs = {name: value["sha256"] for name, value in candidate.items()}
@@ -98,5 +98,5 @@ def consumer(refs, read_ref, candidate, summary, home, operation, accepted, labe
             and observed.get("records_sha256") == expected_digest
             and (observed.get("existing_records"), observed.get("absent_records")) == (14, 2)
             and observed.get("exact_keyed_values") is True and observed.get("full_file_bytes_equal") is True
-            and observed.get("files") == summary["full_CAS_file_bytes"],
+            and observed.get("files") == (summary["full_CAS_file_bytes"] if files is None else files),
             "A final restored DEV read differs from the exact records, deletions, or full file bytes")
