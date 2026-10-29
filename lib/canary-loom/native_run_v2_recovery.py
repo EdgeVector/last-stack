@@ -164,6 +164,10 @@ def stopped_cut(approval, state):
 
 
 def recovery_manifest(approval, core):
+    from native_run_v2_profiles import automatic
+    if automatic(approval):
+        from auto_recovery_manifest import check
+        return check(approval, core)
     manifest = reference(approval["recovery"]["native_manifest"])
     require(manifest.get("begin") == core["begin"] and manifest.get("run_profile") == core["run"]
             and manifest.get("native_root") == core["native_root"]
