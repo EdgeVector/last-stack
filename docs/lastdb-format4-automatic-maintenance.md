@@ -36,6 +36,18 @@ The new stopped and adoption extension must complete within one hour of admissio
 The current PROD snapshot and provider checks keep their existing freshness limits.
 Versions 2 and 3 keep the original one-hour Mac proof limit. No proof timestamp changes.
 
+The stopped extension version 2 preserves the original failed version 1 attempt and its diagnostic.
+It reuses the original manual snapshot, automatic adoption, SDK restore, and complete preboot native hashes.
+Only two new restored starts, current file reads, and strict stops use the new continuation intent.
+It creates no backup, source start, upload, or restore.
+
+A normal start can remove an old file that no current record references.
+The postboot proof derives every required file from the original final expected record pointers.
+It rejects unknown current pointers and checks every current file's complete bytes and hash.
+The original two-file compatibility checks and the complete preboot native file proof remain unchanged.
+Future qualification plans must derive this current file set before any restored start.
+They must not require an old unreferenced file after normal garbage collection.
+
 The current writer observation must link to the actual recorded rollback and new session.
 Do not reuse the old PID or edit its original writer receipt.
 If a step fails, preserve the real records. Do not repeat an unknown request with a new UUID.
