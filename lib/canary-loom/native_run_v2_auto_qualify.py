@@ -23,7 +23,8 @@ MODULES = ("native_run_v2_auto_qualify", "native_run_v2_auto_qualify_io",
     "native_run_v2_auto_qualify_http",
     "native_run_v2_auto_qualify_cloud", "native_run_v2_auto_qualify_source",
     "native_run_v2_auto_qualify_credentials", "native_run_v2_auto_qualify_catalog", "native_run_v2_auto_qualify_restore",
-    "native_run_v2_auto_qualify_recoveries", "auto_recovery_manifest", "auto_recovery_files", "native_run_v2_inputs")
+    "native_run_v2_auto_qualify_recoveries", "native_run_v2_auto_qualify_receipts",
+    "auto_recovery_manifest", "auto_recovery_files", "native_run_v2_inputs")
 CANDIDATE_RECEIPT = "cd6d0e5e710f48524f127e25a67f1ef8d3f9c9777d16f37a3c9f18dca7891a82"
 WRITER_POLICY_RECEIPT = "af1f22e02e694e883d06d28e45a2ac244e267626b0865dfbb9514f808b6b9cce"
 WRITER_SETTINGS = {"LASTDB_AT_REST_RAW": "1", "LASTDB_KV_AT_REST_COMPRESS": "1", "LASTDB_KV_AT_REST_RAW": "1"}

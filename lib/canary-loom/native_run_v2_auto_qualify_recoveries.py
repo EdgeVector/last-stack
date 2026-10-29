@@ -5,6 +5,7 @@ from native_run_v2_auto_qualify_data import memory
 from native_run_v2_auto_qualify_io import read, reference, require, save
 from native_run_v2_auto_qualify_process import node
 from native_run_v2_auto_qualify_restore import Request, qualify, selection
+from native_run_v2_auto_qualify_receipts import restored
 from auto_recovery_manifest import capture
 
 
@@ -33,8 +34,8 @@ def recover(operation, flow, kind):
 
     def product_proof(report, actual):
         require(actual["commit_sha256"] == accepted["commit_sha256"], "frozen_recovery_point")
-        return operation.helpers.restore.restored(destination, report, baseline, replay,
-                                                  operation.source.observe_accepted if replay else None)
+        return restored(operation.helpers.restore, destination, report, baseline, replay,
+                        operation.source.observe_accepted if replay else None)
 
     def boot(number):
         return node(operation, destination, operation.candidate, labels[number])

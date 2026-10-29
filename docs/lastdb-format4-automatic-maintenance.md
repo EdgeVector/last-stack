@@ -33,6 +33,17 @@ The old pair must also open and read the candidate data.
 The operation checks complete file bytes and the selected provider objects.
 It does not claim a full account allocation comparison.
 
+A DEV account must permit new work before the operation starts.
+An existing account hold stays in place.
+The qualifier can use a separate account through a protected credential home.
+It selects each restore receipt by its exact destination.
+
+Development evidence version 3 can complete the retained DEV operation after its receipt observer stops.
+The original intent, failure, backup points, and completed operations retain their original hashes.
+The continuation uses a separate intent for its four remaining starts and one later snapshot restore.
+It cannot create a new connection, backup, capture, or account.
+All record, file, provider, and clean-stop checks remain required.
+
 ## Automatic backup stays enabled
 
 The approval binds the account, automatic policy revision, intervals, and journal head.
