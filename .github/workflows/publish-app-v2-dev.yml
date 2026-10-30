@@ -1,0 +1,305 @@
+# Reusable workflow: publish an app release to /v2 DEV app registry.
+#
+# Caller (a per-repo `publish-v2-dev` job, push to main only, after artifact build):
+#
+#   publish-v2-dev:
+#     needs: [ci-required, publish]
+#     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+#     permissions: { contents: write, actions: read }
+#     uses: EdgeVector/last-stack/.github/workflows/publish-app-v2-dev.yml@main
+#     with:
+#       app-id: brain
+#       artifact-name: ht-artifact-${{ github.sha }}
+#     secrets:
+#       LASTDB_API_KEY: ${{ secrets.LASTDB_API_KEY }}
+#       LASTDB_DEVELOPER_KEY_BASE64: ${{ secrets.LASTDB_DEVELOPER_KEY_BASE64 }}
+#
+# This downloads the multi-app artifact built by host-track-artifact.yml, extracts
+# the specified app's bundle, and publishes it to the /v2 DEV registry using the
+# lastdb CLI. The signing key must match the app's registered owner_dev_pubkey in
+# the /v2 registry.
+#
+# Key model: All apps (Brain, LastSecrets, lastseek) are owned and release-signed
+# by ONE developer key (Tom's), not per-app publisher keys. The single
+# LASTDB_DEVELOPER_KEY_BASE64 secret is verified against each app's registered
+# owner_dev_pubkey before publishing.
+#
+# DEV only. Never runs on prod registry. The environment is hardcoded to dev.
+name: publish-app-v2-dev
+
+on:
+  workflow_call:
+    inputs:
+      app-id:
+        description: App ID registered in /v2 (e.g. 'brain', 'lastsecrets', 'lastseek')
+        type: string
+        required: true
+      artifact-name:
+        description: |
+          GitHub Actions artifact name containing the built app (e.g. ht-artifact-${{ github.sha }}).
+          Note: download-artifact@v4 without run-id only works within the same workflow run.
+          The caller must upload the artifact in the same run.
+        type: string
+        required: true
+      lastdb-ref:
+        description: lastdb repo ref that supplies the CLI
+        type: string
+        default: main
+    secrets:
+      LASTDB_API_KEY:
+        description: Developer API key for /v2 registry authentication
+        required: true
+      LASTDB_DEVELOPER_KEY_BASE64:
+        description: Ed25519 developer signing key for all app releases (base64-encoded private key)
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    name: publish to /v2 dev
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      DEV_REGISTRY_URL: https://y0q3m6vk75.execute-api.us-west-2.amazonaws.com
+    steps:
+      - name: Checkout lastdb (for CLI)
+        uses: actions/checkout@v4
+        with:
+          repository: EdgeVector/lastdb
+          ref: ${{ inputs.lastdb-ref }}
+          path: lastdb-repo
+          persist-credentials: false
+
+      - name: Set up Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Build lastdb CLI
+        working-directory: lastdb-repo
+        run: |
+          cargo build --release -p lastdb_node --bin lastdb
+          ./target/release/lastdb --version
+          echo "LASTDB_BIN=$PWD/target/release/lastdb" >> $GITHUB_ENV
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ runner.temp }}/app-artifact
+
+      - name: Verify artifact and extract app bundle
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/app-artifact"
+          
+          if [ ! -f index.json ]; then
+            echo "::error::index.json missing from artifact (expected multi-app bundle structure)"
+            exit 1
+          fi
+          
+          TREE_OID=$(jq -r '.tree_oid // empty' index.json)
+          [ -n "$TREE_OID" ] || { echo "::error::tree_oid missing from index.json"; exit 1; }
+          
+          APP_ID="${{ inputs.app-id }}"
+          APP_DIR="$APP_ID"
+          
+          if [ ! -d "$APP_DIR" ]; then
+            echo "::error::app directory '$APP_DIR' not found in artifact"
+            exit 1
+          fi
+          
+          if [ ! -f "$APP_DIR/provenance.json" ]; then
+            echo "::error::provenance.json missing from $APP_DIR"
+            exit 1
+          fi
+          
+          if [ ! -f "$APP_DIR/bundle.tar" ]; then
+            echo "::error::bundle.tar missing from $APP_DIR"
+            exit 1
+          fi
+          
+          EXTRACT_DIR="$RUNNER_TEMP/app-bundle"
+          mkdir -p "$EXTRACT_DIR"
+          tar -xf "$APP_DIR/bundle.tar" -C "$EXTRACT_DIR"
+          
+          MANIFEST_PATH="$EXTRACT_DIR/lastdb-app.json"
+          if [ ! -f "$MANIFEST_PATH" ]; then
+            echo "::error::lastdb-app.json not found in extracted bundle"
+            exit 1
+          fi
+          
+          APP_UUID=$(jq -r '.app_uuid // empty' "$MANIFEST_PATH")
+          [ -n "$APP_UUID" ] || { echo "::error::app_uuid missing from manifest"; exit 1; }
+          
+          {
+            echo "APP_UUID=$APP_UUID"
+            echo "TREE_OID=$TREE_OID"
+            echo "MANIFEST_PATH=$MANIFEST_PATH"
+            echo "BUNDLE_DIR=$EXTRACT_DIR"
+          } >> "$GITHUB_ENV"
+          
+          echo "app: $APP_ID"
+          echo "app_uuid: $APP_UUID"
+          echo "tree_oid: $TREE_OID"
+          echo "manifest: $MANIFEST_PATH"
+
+      - name: Write signing key file
+        env:
+          KEY_BASE64: ${{ secrets.LASTDB_DEVELOPER_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          KEY_FILE=$(mktemp)
+          chmod 0600 "$KEY_FILE"
+          echo -n "$KEY_BASE64" > "$KEY_FILE"
+          
+          if [ ! -s "$KEY_FILE" ]; then
+            echo "::error::signing key is empty"
+            exit 1
+          fi
+          
+          echo "KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
+          echo "wrote developer signing key (base64 text) for --key-file"
+
+      - name: Verify key matches registered owner_dev_pubkey
+        env:
+          APP_ID: ${{ inputs.app-id }}
+          LASTDB_API_KEY: ${{ secrets.LASTDB_API_KEY }}
+        run: |
+          set -euo pipefail
+          
+          REGISTERED_PUBKEY=$(curl -sS "$DEV_REGISTRY_URL/v2/apps/$APP_ID" | jq -r '.owner_dev_pubkey // empty')
+          
+          if [ -z "$REGISTERED_PUBKEY" ]; then
+            echo "::error::could not retrieve owner_dev_pubkey for $APP_ID from /v2 registry"
+            exit 1
+          fi
+          
+          echo "registered owner_dev_pubkey: $REGISTERED_PUBKEY"
+          
+          # Derive public key from Ed25519 private key.
+          # KEY_FILE contains base64 text (44 chars). Decode to get raw 32-byte seed for derivation.
+          RAW_SEED=$(mktemp)
+          base64 -d "$KEY_FILE" > "$RAW_SEED"
+          
+          SEED_SIZE=$(stat -c%s "$RAW_SEED")
+          if [ "$SEED_SIZE" -ne 32 ]; then
+            echo "::error::decoded seed is $SEED_SIZE bytes, expected exactly 32"
+            rm -f "$RAW_SEED"
+            exit 1
+          fi
+          
+          # Wrap raw seed in PKCS8 DER prefix, derive public key with openssl, take last 32 bytes.
+          PKCS8_DER=$(mktemp)
+          python3 -c "import sys; sys.stdout.buffer.write(bytes.fromhex('302e020100300506032b657004220420'))" > "$PKCS8_DER"
+          cat "$RAW_SEED" >> "$PKCS8_DER"
+          
+          DERIVED_PUBKEY=$(openssl pkey -inform DER -in "$PKCS8_DER" -pubout -outform DER | tail -c 32 | base64 | tr -d '\n')
+          rm -f "$PKCS8_DER" "$RAW_SEED"
+          
+          if [ -z "$DERIVED_PUBKEY" ]; then
+            echo "::error::failed to derive public key from signing key"
+            exit 1
+          fi
+          
+          echo "derived public key: $DERIVED_PUBKEY"
+          
+          if [ "$DERIVED_PUBKEY" != "$REGISTERED_PUBKEY" ]; then
+            echo "::error::derived public key does not match registered owner_dev_pubkey"
+            echo "::error::  derived:    $DERIVED_PUBKEY"
+            echo "::error::  registered: $REGISTERED_PUBKEY"
+            exit 1
+          fi
+          
+          echo "✓ signing key matches registered owner_dev_pubkey"
+
+      - name: Create artifact tarball
+        run: |
+          set -euo pipefail
+          cd "$BUNDLE_DIR"
+          ARTIFACT_TAR="$RUNNER_TEMP/${{ inputs.app-id }}-${{ github.sha }}.tar.gz"
+          tar -czf "$ARTIFACT_TAR" .
+          echo "ARTIFACT_TAR=$ARTIFACT_TAR" >> "$GITHUB_ENV"
+          ARTIFACT_SIZE=$(stat -c%s "$ARTIFACT_TAR")
+          echo "ARTIFACT_SIZE=$ARTIFACT_SIZE" >> "$GITHUB_ENV"
+          echo "artifact tarball: $ARTIFACT_TAR ($ARTIFACT_SIZE bytes)"
+
+      - name: Create GitHub release and upload artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_ID: ${{ inputs.app-id }}
+        run: |
+          set -euo pipefail
+          
+          RELEASE_TAG="v2-dev-$APP_ID-$GITHUB_SHA"
+          RELEASE_NAME="$APP_ID DEV release for $GITHUB_SHA"
+          
+          gh release create "$RELEASE_TAG" "$ARTIFACT_TAR" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$RELEASE_NAME" \
+            --notes "Automated /v2 DEV release for $APP_ID at commit $GITHUB_SHA" \
+            --prerelease
+          
+          ASSET_NAME=$(basename "$ARTIFACT_TAR")
+          ARTIFACT_URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/$ASSET_NAME"
+          
+          echo "ARTIFACT_URL=$ARTIFACT_URL" >> "$GITHUB_ENV"
+          echo "✓ uploaded artifact to: $ARTIFACT_URL"
+
+      - name: Publish release to /v2 DEV
+        env:
+          LASTDB_API_KEY: ${{ secrets.LASTDB_API_KEY }}
+          APP_ID: ${{ inputs.app-id }}
+        run: |
+          set -euo pipefail
+          
+          "$LASTDB_BIN" app release-publish \
+            --manifest "$MANIFEST_PATH" \
+            --app-uuid "$APP_UUID" \
+            --source-commit "$GITHUB_SHA" \
+            --artifact "$ARTIFACT_TAR" \
+            --artifact-url "$ARTIFACT_URL" \
+            --env dev \
+            --key-file "$KEY_FILE" \
+            --api-key "$LASTDB_API_KEY" || {
+              RC=$?
+              echo "::error::lastdb app release-publish failed with exit code $RC"
+              exit $RC
+            }
+          
+          echo "✓ published $APP_ID release for commit $GITHUB_SHA to /v2 DEV"
+
+      - name: Verify release is readable
+        env:
+          APP_ID: ${{ inputs.app-id }}
+        run: |
+          set -euo pipefail
+          
+          RELEASES=$(curl -sS "$DEV_REGISTRY_URL/v2/apps/$APP_ID/releases")
+          COUNT=$(echo "$RELEASES" | jq '.releases | length')
+          
+          echo "releases endpoint returned $COUNT releases for $APP_ID"
+          
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::no releases returned; publication failed"
+            exit 1
+          fi
+          
+          FOUND=$(echo "$RELEASES" | jq --arg sha "$GITHUB_SHA" '.releases | any(.source_commit == $sha)')
+          
+          if [ "$FOUND" != "true" ]; then
+            echo "::error::release for commit $GITHUB_SHA not found in /v2/apps/$APP_ID/releases"
+            echo "$RELEASES" | jq .
+            exit 1
+          fi
+          
+          echo "✓ confirmed release for $GITHUB_SHA is readable from /v2/apps/$APP_ID/releases"
+          echo "$RELEASES" | jq .
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f "$KEY_FILE" "$ARTIFACT_TAR" 2>/dev/null || true
