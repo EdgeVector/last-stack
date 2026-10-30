@@ -238,6 +238,21 @@ Set the P2 approval `keyed_read` to this value:
 {"input_path": "<P>/primary-keyed-read.json", "input_sha256": "<the shasum output>"}
 ```
 
+### If the declaration fails
+
+The PROD Schema Service keeps its developer-account gate. It can refuse the new definition with a certificate or developer error.
+
+1. Do not write a record. Keep `declare-reply.json` as the refusal record.
+2. Do not use LastSecrets (`6a570228…`, fields `slug` and `secret_value`). Its records hold secret material, and the read result goes into an artifact.
+3. Do not use the compaction receipt schema `c010ab51…`. Tom drops it before P2.
+4. Do not relax the name guard in `lib/canary-loom/native_v2_read.py`. The guard refuses an application or schema name that contains `brain`, `kanban`, or `situation`. Its reason still applies: the 2026-10-14 standing rule says that no agent reads brain, kanban, or situations until Tom says they are back. The kept converted records of lastdb#793 are the F-Kanban and Brain records. All of them are in the guarded namespaces.
+5. Stop before the P2 backup. Report the refusal to Tom. Tom can choose one of these actions:
+   - Enable the developer account for `lastdb-upgrade-probe` on PROD. Then run the declaration again.
+   - Say that brain or kanban is back. Then name one kept, non-secret, converted record. Remove only that namespace from the guard in a reviewed PR.
+   - Name another kept, non-secret schema outside the guarded namespaces that C803 loads.
+
+The route has no keyed-read waiver. P2 does not start without a keyed read that passes.
+
 ## Known limits
 
 - The qualifier route mode and the activation have source checks only. Their first real run is the DEV operation.
