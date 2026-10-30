@@ -32,6 +32,9 @@ Owners:
     same schema. An app group changes owner only through a declared map,
     --owner-map brain:fbrain=brain (short form: --source-owner fbrain
     --target-owner brain). Every other owner difference is a refusal.
+  * With the Brain map fbrain -> brain, Brain values rename the app-id tags
+    (__fbrain_deleted__ and the __fbrain_backlink__: prefix), as brain#484
+    lists them. A key that holds such a tag is a refusal.
   * Record digests cover the key and the mapped field values only, so they do
     not depend on the schema name or the owner.
 
@@ -749,14 +752,46 @@ def target_fields_and_types(ctx, route):
     return set(fields), detail.get("field_types") or {}, detail.get("alternate_keys") or {}
 
 
+def rename_tag(renames, text):
+    """The app-id tag rename for one string. Returns (text, changed)."""
+    for kind, old, new in renames:
+        if kind == "exact" and text == old:
+            return new, True
+        if kind == "prefix" and text.startswith(old):
+            return new + text[len(old):], True
+    return text, False
+
+
+def rename_tags_in(renames, value):
+    """Apply the tag rename to a string or to the strings of a list (a tags field). Returns (value, count)."""
+    if isinstance(value, str):
+        text, changed = rename_tag(renames, value)
+        return text, int(changed)
+    if isinstance(value, list) and any(isinstance(v, str) for v in value):
+        out, count = [], 0
+        for v in value:
+            if isinstance(v, str):
+                v, changed = rename_tag(renames, v)
+                count += changed
+            out.append(v)
+        return out, count
+    return value, 0
+
+
 def map_values(ctx, route, values, mapping, types, census):
-    """Rename fields, repair DateTime text when allowed, and check types. Pointers stay as source pointers."""
+    """Rename fields, rename app-id tags, repair DateTime text when allowed, and check types.
+    Pointers stay as source pointers."""
     mapped, issues = {}, []
+    renames = ctx.args.tag_renames if route["app"] == "brain" else []
     for stored, value in values.items():
         target = mapping.get(stored)
         if target is None:
             issues.append(f"unmapped:{stored}")
             continue
+        if renames:
+            value, count = rename_tags_in(renames, value)
+            if count:
+                census["tag-rename"] = census.get("tag-rename", 0) + count
         ftype = types.get(target)
         if wants_datetime(ftype) and isinstance(value, str) and not datetime_shape(value):
             cls = datetime_class(value)
@@ -916,6 +951,12 @@ def run_route(ctx, route, mode, pre):
                         f"name the accepted value with --accept-directory-count {route['key']}={info['selected']}")
             if info["directory_only"]:
                 result["refusals"].append(f"{info['directory_only']} directory members have no stored record")
+        if route["app"] == "brain" and args.tag_renames:
+            tagged = sum(1 for key in selected
+                         if any(isinstance(part, str) and rename_tag(args.tag_renames, part)[1] for part in key))
+            if tagged:
+                result["refusals"].append(f"{tagged} keys hold an old app-id tag name; the helper renames tag "
+                                          "values, not keys")
         if mode == "plan" and not args.census:
             return result
         if tgt_entry is not None and tgt_entry.get("independent_fields") is not True and not args.allow_shared_value_target:
@@ -976,6 +1017,7 @@ def run_route(ctx, route, mode, pre):
                                         transfer_pointers(ctx, mapped)))
                 written += write_batches(ctx, route, ops)
         result.update({"empty_rows": empty, "file_pointers": pointers, "issues": issue_counts,
+                       "tag_renames": census.pop("tag-rename", 0),
                        "datetime_census": census, "absent_fields": absent})
         if mode == "apply":
             result.update({"written": written, "unchanged": skipped})
@@ -1122,6 +1164,9 @@ def parse_args(argv):
                    help="short form for the Brain group: --source-owner fbrain --target-owner brain is "
                         "--owner-map brain:fbrain=brain")
     p.add_argument("--target-owner", metavar="APP_ID", help="see --source-owner")
+    p.add_argument("--app-tag-rename", metavar="OLD=NEW",
+                   help="rename the Brain tags that carry the app id (__OLD_deleted__, __OLD_backlink__:*). "
+                        "Default: the Brain owner map when it names both app ids (fbrain=brain)")
     p.add_argument("--allow-different-identity", action="store_true",
                    help="permit a target node whose user hash differs from the source (synthetic homes only)")
     p.add_argument("--allow-shared-value-target", action="store_true",
@@ -1170,6 +1215,18 @@ def parse_args(argv):
             p.error(f"the owner map names {match.group(1)} twice")
         owners[match.group(1)] = tuple("" if v == "-" else v for v in match.group(2, 3))
     args.owner_map = owners
+    # brain#484 renames the tags that carry the app id (Migration note in its docs/multi-key-schemas.md).
+    old, new = owners.get("brain", ("", ""))
+    if args.app_tag_rename:
+        match = re.fullmatch(r"([a-z0-9][a-z0-9_-]*)=([a-z0-9][a-z0-9_-]*)", args.app_tag_rename)
+        if not match or match.group(1) == match.group(2):
+            p.error(f"--app-tag-rename needs OLD=NEW with two different app ids, not {args.app_tag_rename!r}")
+        if old and new and (old, new) != match.group(1, 2):
+            p.error("--app-tag-rename differs from the Brain owner map")
+        old, new = match.group(1, 2)
+    args.tag_renames = ([("exact", f"__{old}_deleted__", f"__{new}_deleted__"),
+                         ("prefix", f"__{old}_backlink__:", f"__{new}_backlink__:")]
+                        if old and new and old != new else [])
     return args
 
 
@@ -1377,6 +1434,8 @@ def render_text(report):
             o = r["count_override"]
             lines.append(f"    count override: stored {o['stored_count']}, accepted {o['accepted_count']}, "
                          f"selected {o['selected']} (--accept-directory-count)")
+        if r.get("tag_renames"):
+            lines.append(f"    app-id tags renamed: {r['tag_renames']} values")
         for refusal in r["refusals"]:
             lines.append(f"    refusal: {refusal}")
         for issue, count in sorted(r.get("issues", {}).items()):

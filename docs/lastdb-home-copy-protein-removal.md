@@ -21,8 +21,9 @@ CAUTION: Nobody ran this runbook on the primary. Only the read-only plan and cen
 
 The plan and census on the primary found no value problem. Design has 38 records and a stored count of 37. The coordinator accepted 38 on 2026-10-30. The runbook names that value with `--accept-directory-count design=38`.
 
-The synthetic proof passed end to end on the #803 pair (head 11280163c) from CI. It covered the copy, the verify, the export, and the home move on a format 6 store (section 5).
-`brain init` on #803 needs a fix first. #803 refuses the keyless Brain schema `BrainCompactListLocator_v1` (B10).
+Tom renamed the Brain app id from `fbrain` to `brain` on 2026-10-30 (brain#484). The old Brain schemas have the owner `fbrain`. The new Brain schemas have the owner `brain`. The runbook declares that change with `--source-owner fbrain --target-owner brain`.
+
+The second synthetic proof passed end to end on the #803 pair (head 9196e5be9) from CI with the renamed Brain (brain#484 at 7c0a573e0). It covered `brain init` with all 25 schemas, the copy, the verify, the export, and the home move on a format 6 store (section 5). #803 accepts the keyless `BrainCompactListLocator_v1` since a83d5f06d (B10 is closed).
 
 ## 2. Answers to the eight questions
 
@@ -62,16 +63,19 @@ Backup V2 uses a new stream for the new home.
 | `native-dev-artifact.yml` | A PR head, only with the label `native-dev-artifact`. | 3 days. No strip, no explicit sign. No `workflow_dispatch`. |
 | benchmark build | Ubuntu programs. | Not usable on macOS. |
 
-On 2026-10-30 the label `native-dev-artifact` went on #803. Run 41126284642 built the pair for head 11280163c. The synthetic proof used that pair (section 5.1).
+On 2026-10-30 the label `native-dev-artifact` went on #803. The workflow builds a pair for each new head. Run 41134992191 built the pair for head 9196e5be9. The second synthetic proof used that pair (section 5.1). Run 41126284642 built the pair for head 11280163c for the first proof.
 
 The dev pair is for proof runs only. It has an adhoc linker signature and a 3-day life.
 The primary cutover uses the signed pair from `mini-upgrade-artifact.yml` after #803 merges (Step 2).
 
 ### Q4. How the apps declare schemas on the new home
 
-- Brain (brain#484): `brain init` with a staging config. The variables are `BRAIN_CONFIG` (or `FBRAIN_CONFIG`) and `FBRAIN_FOLDDB_SOCKET`. The socket variable wins over the config (`src/client.ts:180-185`).
-  - Init declares 25 owned schemas with the canonical field names. The config gets `schemaFieldAliases` and `storageModel: multi-key-v1`.
-  - On #803 head 11280163c, init stops at `BrainCompactListLocator_v1`. That schema has `key: {}`. #803 refuses it with `alternate keys require a declared primary hash field` (B10).
+- Brain (brain#484 at 7c0a573e0): `brain init` with a staging config. The app id is `brain`. The variables are `BRAIN_CONFIG` and `BRAIN_FOLDDB_SOCKET`. The socket variable wins over the config (`src/client.ts:186`). brain#484 removed the `FBRAIN_*` variables and the `~/.fbrain` fallback.
+  - Init declares 25 owned schemas with the owner `brain` and the canonical field names. The config gets `schemaFieldAliases` and `storageModel: multi-key-v1`.
+  - Init refuses a config with the old shared-value layout (`home_copy_required`, `src/commands/init.ts:301`). Use a new staging config.
+  - #803 accepts the keyless `BrainCompactListLocator_v1` since a83d5f06d (one field, no alternate keys). The first proof on head 11280163c stopped there (B10, closed).
+  - The soft-delete tag is `__brain_deleted__` and the backlink tag prefix is `__brain_backlink__:`. The old Brain wrote `__fbrain_deleted__` and `__fbrain_backlink__:`. The helper renames these tags (section 3.2).
+  - The capability files are `~/.brain/capabilities/brain@<hash>.cap`. The old `fbrain@<hash>.cap` files stay, but the new Brain does not read them.
   - Init writes `appIdentityEnforce: false` for a new config (`src/owned-schema-init.ts:155`, `src/commands/init.ts:501`). The installed config has `true`. The coordinator decided `true` for the new config on 2026-10-30. Step 5 sets it.
   - With `false`, the client sends no capability headers. The writes go in as the node owner (`src/write-context.ts:79-100`).
 - LastSecrets (lastsecrets#14): `lastsecrets init --config <path> --socket <path>`. On a new home the vocabulary mode is `auto`, so init declares the canonical names. The aliases `lastsecrets/LastSecret` and `lastsecrets/LastSecretIndex` go away.
@@ -196,6 +200,9 @@ Exit codes: 0 for success, 2 for a refusal or a copy issue, 3 for a verify diffe
   - An app group changes owner only through a declared map: `--source-owner fbrain --target-owner brain`. The long form is `--owner-map brain:fbrain=brain`. `-` means no owner.
   - Every other owner difference is a refusal. For example, LastSecrets keeps the owner `lastsecrets`, and a Brain target without the map must keep `fbrain`.
   - A record digest covers the key and the mapped values only. The digest does not include the schema name or the owner, so the verify compares `fbrain` records with `brain` records.
+  - The Brain owner map also renames the app-id tags in Brain values: `__fbrain_deleted__` becomes `__brain_deleted__`, and the prefix `__fbrain_backlink__:` becomes `__brain_backlink__:`. Without this change, the new Brain shows soft-deleted records again.
+  - The map takes the tag pair from the Brain owners. `--app-tag-rename OLD=NEW` gives the pair when the source has no owner (the synthetic proof). It must agree with the Brain map.
+  - The digest compares the renamed source values with the target values. A key that holds an old tag is a refusal. The report counts the renamed values (`tag_renames`).
 - A refusal stops the route before its first write:
   - An unselected key (override: `--allow-unselected`).
   - A count guard difference. The override names the accepted value: `--accept-directory-count TYPE=N` (for example `design=38`). The report shows the stored count, the accepted count, and the selected records.
@@ -280,53 +287,76 @@ No step of this proof read or wrote the primary. No step copied `~/.lastdb`. All
 
 ### 5.1 The #803 program pair
 
-- Run 41126284642 of `native-dev-artifact.yml` built head 11280163cfeb0a3f401aa99eb2ba24a65f4db23e. No local build ran.
-- The zip sha256 equals the artifact digest (`9abaffee5dc92e2f…`). `shasum -c SHA256SUMS` passed for both programs.
+- Run 41134992191 of `native-dev-artifact.yml` built head 9196e5be9ceab355c9470e5c3317e756a2f5e4a2. That head contains a83d5f06d (the B10 fix). No local build ran.
+- The zip sha256 equals the artifact digest (`959e7921915654b8…`). `shasum -c SHA256SUMS` passed for both programs.
 - `SOURCE_COMMIT` equals the head. `TARGET` is `aarch64-apple-darwin`.
-- `codesign --verify --strict` passed for both programs (adhoc, linker-signed). `lipo -archs` prints `arm64`.
-- Both programs print `nightly-20261030-85ff2b6d2-102-g11280163c`.
+- `codesign --verify` passed for both programs (adhoc, linker-signed). `lipo -archs` prints `arm64`.
+- Both programs print `nightly-20261030-ae0b7936d-93-g9196e5be9`. The artifact expires on 2026-11-02.
 
-### 5.2 End-to-end run on the #803 pair
+After the run, #803 moved to head 4df57d28b (4 commits). These commits change the alternate-key query page format and the SDK cursor parser. The helper uses no alternate-key query, and it sends the list cursor back unchanged. The proof did not run on that head.
+
+### 5.2 Second end-to-end run (renamed Brain)
 
 Setup:
 
-- Source: program a1c406f5 on a new home, with `LASTDB_ISOLATED_COPY=1`. It got old-layout schemas with synthetic data.
-- Data: 250 references, 7 concepts and 5 sops in one Concept schema, 30 decisions, 1 design with a stored count of 0, 2500 list pages, 5 body files, 3 papercuts, 6 secrets, and one export-list schema with a file.
-- Planted problems: one orphan concept with no directory record, one date-only DateTime value, and the design count.
-- Target home: the OLD CLI `prepare-recovery-home` (`--env dev`, a synthetic API key) made it. `ok`, both `matches` fields true, 3 files, mode 0700, the same identity.
-- Target daemon: the #803 program on that home. API 13, format 6, the same user hash as the source.
-- App schemas: `brain init` (brain#484 at 5c71286b) and `lastsecrets init` (lastsecrets#14 at 8b2d8720) ran against the target only, with Bun.
-  - `brain init` stopped at `BrainCompactListLocator_v1` (B10). A temporary copy of Brain skipped that one schema. Then init declared 24 schemas with `multi-key-v1`. The Brain runtime does not need that schema (`list-locator.ts` falls back to `BrainListLocator`).
-  - LastSecrets init declared `LastSecret` and `LastSecretIndex`.
+- Source: program a1c406f5 on a new home, with `LASTDB_ISOLATED_COPY=1`. `seed-system` gave it old-layout schemas with synthetic data.
+- Data: 250 references, 7 concepts and 5 sops in one Concept schema, 30 decisions, 1 design with a stored count of 0, 2500 list pages, 5 body files, 3 papercuts, 6 secrets, and one export-list schema (ChildTaskIndex, 12 records).
+- Planted problems:
+  - One orphan concept with no directory record.
+  - One date-only DateTime value (`dec-007`).
+  - The design count.
+  - The old tombstone tag `__fbrain_deleted__` on `ref-0010`.
+  - The old backlink tag `__fbrain_backlink__:ref-0012` on `ref-0011`.
+- Source owners: the synthetic source schemas have no owner.
+  - `seed-system` refuses `owner_app_id`.
+  - A declaration with the owner `fbrain` needs the old Brain definitions in the Schema Service. A read-only `check` of the 35 old definitions gave no `reuse` in DEV or in PROD. In PROD each check gave `register` (`no_candidate_schema`).
+  - A sync would write to a shared Schema Service, so the proof did not do it.
+  - The run used `--owner-map brain:-=brain --owner-map lastsecrets:-=lastsecrets --app-tag-rename fbrain=brain`.
+- Target home: the OLD CLI `prepare-recovery-home` (`--env dev`, a synthetic API key) made it, with the same identity.
+- Target daemon: the #803 program on that home. API 13, format 6, `LASTDB_MAX_ATOM_CONTENT_BYTES=524288`.
+- App schemas: `brain init` (brain#484 at 7c0a573e0) and `lastsecrets init` (lastsecrets#14 at 8b2d8720) ran against the target only, with Bun.
+  - Brain used `BRAIN_CONFIG` and `BRAIN_FOLDDB_SOCKET` with a staging config.
+  - A read-only `check` of the 25 `brain/*` definitions gave `reuse` for each in DEV. This includes `BrainCompactListLocator_v1`.
+  - `brain init` declared all 25 schemas with no stand-in. The config has 25 schema keys. Step 5 then set `appIdentityEnforce: true`.
+  - LastSecrets init declared `LastSecret` and `LastSecretIndex` (`reuse`).
 
 Results:
 
-1. The plan with the target showed no `independent_fields` refusal.
-2. Without overrides the plan refused the orphan and the design count. The count refusal named the fix: `--accept-directory-count design=1`.
-3. The first copy (`--accept-directory-count design=1 --allow-unselected --normalize-datetime`) wrote 3,103 records in 2.6 s. All 11 routes were equal. 5 file checks and all spot reads passed.
-4. Brain reads on the target:
-   - `get` of the date-only decision worked with `appIdentityEnforce` false and true.
-   - `list` by type worked for design, sop, concept, reference, and decision. These reads use the alternate keys.
+1. The owner guard:
+   - With no owner map, the plan refused all 11 routes: `the target schema owner is brain, not the source owner none; a rename needs --owner-map`.
+   - With `--owner-map brain:fbrain=brain`, the plan refused the 9 Brain routes (`the source schema owner is none, not the declared fbrain`) and the 2 LastSecrets routes.
+   - With the synthetic map, the plan showed only the planted refusals.
+2. The first copy (`--accept-directory-count design=1 --allow-unselected --normalize-datetime` and the map) wrote 3,103 records. All 11 routes were equal. The copy renamed 2 tag values. 5 file checks and all spot reads passed.
+3. Brain reads on the target with `appIdentityEnforce: true`:
+   - `get dec-007` showed `created_at: 2026-07-01T00:00:00Z`.
+   - `get ref-0011` showed the tag `__brain_backlink__:ref-0012`.
+   - `get ref-0010` returned `No reference`. The tombstone stayed in effect.
+   - `list` by type gave design 1, sop 5, concept 7, decision 20 (one page), and reference 100 (one page, no `ref-0010`).
    - `search` found nothing. The synthetic source has no token sets.
-5. LastSecrets on the target: `list` showed 6 slugs. `admin-slice` gave metadata keys only.
-6. Freeze: the source got an update, an add, a delete, and a field removal. Then the old program moved to a private socket. The default socket did not answer.
-7. The last copy with `--delete-extra` took 1.07 s:
-   - It wrote 3 reference records and 1 directory record.
-   - It deleted 1 extra key in each of the two schemas.
-   - The verify was equal on all 11 routes.
-8. `--export` wrote ChildTaskIndex (12 records, 1587 bytes) with mode 0600 and a sha256 manifest.
-9. Home move: both daemons stopped cleanly. One `mv` made the source home the rollback home. A second `mv` put the new home on the primary path. The moved home reports format 6.
-10. The #803 daemon started on the moved home with its default socket.
-11. The verify after the move was equal on all 11 routes, with 5 file checks. The rollback home was the source, on a private socket.
-12. Brain reads on the moved home with `appIdentityEnforce: true`:
-    - `get` worked.
-    - The changed title showed.
-    - The deleted reference returned `No reference`.
-13. LastSecrets `list` on the moved home showed 6 slugs.
-14. The secret scan found no "SYNTH-SECRET" value and no synthetic API key in any output, report, export, log, or configuration file.
-15. Clean-up: the run stopped both daemons and removed the temporary folder. After the run, only the primary daemon ran.
+4. LastSecrets on the target: `list` showed 6 slugs. `admin-slice` gave metadata keys only.
+5. Freeze: the source got an update, an add, a delete, and a field removal. Then the old program moved to a private socket.
+6. The last copy with `--delete-extra` wrote 3 reference records and 1 directory record. It deleted 1 extra key in each of the two schemas. The verify was equal on all 11 routes.
+7. `--export` wrote ChildTaskIndex (12 records, 1587 bytes) with mode 0600 and a sha256 manifest.
+8. Home move: both daemons stopped cleanly. One `mv` made the source home the rollback home. A second `mv` put the new home on the source path.
+9. The #803 daemon started on the moved home with its default socket. The old program started on the rollback home with a private socket.
+10. The verify after the move was equal on all 11 routes. It read the target through `--target-home`.
+11. Brain reads on the moved home with `appIdentityEnforce: true`:
+    - `ref-0001` showed the changed title.
+    - The deleted `ref-0002` returned `No reference`.
+    - `ref-0010` stayed hidden. `ref-0011` kept `__brain_backlink__:ref-0012`.
+    - `dec-007` showed the decision fields.
+12. LastSecrets `list` on the moved home showed 6 slugs.
+13. The secret scan found no synthetic secret value and no synthetic API key in any output, report, export, log, configuration file, or the worktree.
+14. Clean-up: the run stopped both daemons and removed the temporary folder. After the run, only the primary daemon ran.
 
-### 5.3 The first run (API 7 on both daemons)
+### 5.3 The first run on #803 (head 11280163c)
+
+The first run used run 41126284642 (head 11280163c) and brain#484 at 5c71286b (app id `fbrain`).
+
+- `brain init` stopped at `BrainCompactListLocator_v1` (B10). A temporary copy of Brain skipped that one schema.
+- The copy, the freeze, the export, the home move, and the verify after the move gave the same results as section 5.2.
+
+### 5.4 The run with API 7 on both daemons
 
 An earlier run used program a1c406f5 for the source and the target. It showed these guards:
 
@@ -334,17 +364,17 @@ An earlier run used program a1c406f5 for the source and the target. It showed th
 - A second run into the same export folder was refused.
 - A pass with no change took 0.8 s.
 
-### 5.4 Limits of the proof
+### 5.5 Limits of the proof
 
 - The data is synthetic and small. The primary has about 101,800 records.
-- The source home used `--env dev`. The primary uses PROD. The PROD Schema Service path did not run.
-- `brain init` used a stand-in for B10.
+- The source schemas have no owner. The `fbrain` to `brain` owner map ran only as a plan refusal. The primary run is the first copy with the `fbrain` owner.
+- The source home used `--env dev`. The primary uses PROD. The PROD Schema Service path did not run (B2).
 - Brain writes with `appIdentityEnforce: true` on #803 did not run. Only reads ran.
 - `brain search` did not run on copied token sets.
 - Backup V2 (Steps 8a and 12) did not run.
 - The LaunchAgent, the plist change, and `last-stack-lastdb-current` (Step 10) did not run.
 - The 423 pause did not run.
-- brain#484 moved to f1bd8cfb after the run. That head changes the alternate key wire form (`src/alternate-key-wire.ts`). The run did not use it.
+- #803 head 4df57d28b and later heads did not run (section 5.1).
 
 ## 6. Runbook
 
@@ -479,8 +509,8 @@ Rollback: `kill -TERM "$(cat "$W/s4-staging.pid")"`. The new home stays for revi
 
 ```bash
 mkdir -p "$W/staging-config" && chmod 700 "$W/staging-config"
-export BRAIN_CONFIG="$W/staging-config/brain.json" FBRAIN_CONFIG="$W/staging-config/brain.json"
-export FBRAIN_FOLDDB_SOCKET="$NEW/data/folddb.sock"
+export BRAIN_CONFIG="$W/staging-config/brain.json"
+export BRAIN_FOLDDB_SOCKET="$NEW/data/folddb.sock"
 "$BR/bin/brain" init --schema-service-url "$(jq -r .schemaServiceUrl "$HOME/.brain/config.json")" --yes
 bun "$LR/src/cli.ts" init --config "$W/staging-config/lastsecrets.json" --socket "$NEW/data/folddb.sock"
 for f in brain lastsecrets; do
@@ -495,9 +525,11 @@ jq -c '{socket: .nodeSocketPath, secret: .schemaHash, index: .indexSchemaHash}' 
 
 Use the release checkouts. Do not change the installed `brain` or `lastsecrets` programs in this step.
 
-Check: Brain has 25 keys, `multi-key-v1`, and `enforce` true. LastSecrets has both pins. Both sockets name `$NEW`.
+The new Brain reads only `BRAIN_CONFIG` and `BRAIN_FOLDDB_SOCKET`. It ignores the old `FBRAIN_*` variables. `brain init` writes the app id `brain` and declares the 25 `brain/*` schemas. It refuses an old-layout config with `home_copy_required`, so use the empty staging config.
 
-If `brain init` stops at `BrainCompactListLocator_v1`, B10 is still open. Stop the staging daemon and wait for the fix.
+Check: Brain has 25 keys (the keyless `BrainCompactListLocator_v1` is one of them), `multi-key-v1`, and `enforce` true. LastSecrets has both pins. Both sockets name `$NEW`.
+
+If `brain init` reports a `register` resolution or a Schema Service error, B2 is still open. Stop the staging daemon and wait for the PROD publish.
 
 ### Step 6. Plan with the target, then the first copy
 
@@ -515,11 +547,13 @@ If the run refuses because the selected number is not 38, review the new Design 
 
 Check: rc is 0. Each route says `equal`. No `issue:` line. The source is still live, so a later run can show new changes.
 
+The text shows `owner map brain: fbrain -> brain (declared)`. A Brain route that held old app-id tags shows `app-id tags renamed: N values`. The report keeps N in `tag_renames` for each route. No route refuses `keys hold an old app-id tag name`.
+
 Rollback: none needed. The copy writes the staging home only.
 
 ### Step 7. App read checks on the staging home
 
-Use the Step 5 shell (the three Brain variables are set).
+Use the Step 5 shell (`BRAIN_CONFIG` and `BRAIN_FOLDDB_SOCKET` are set).
 
 ```bash
 "$BR/bin/brain" get decision-2026-09-25-revert-primary-brain-to-lastdb --type decision | head -5
@@ -644,11 +678,15 @@ cp -p "$HOME/.brain/config.json" "$W/rollback-config/brain.json"
 cp -p "$HOME/.lastsecrets/config.json" "$W/rollback-config/lastsecrets.json"
 jq --arg s "$OLD/data/folddb.sock" '.nodeSocketPath=$s | .appIdentityEnforce=true' "$W/staging-config/brain.json" > "$HOME/.brain/config.json"
 jq --arg s "$OLD/data/folddb.sock" '.nodeSocketPath=$s' "$W/staging-config/lastsecrets.json" > "$HOME/.lastsecrets/config.json"
-unset BRAIN_CONFIG FBRAIN_CONFIG FBRAIN_FOLDDB_SOCKET
-jq -c '{socket: .nodeSocketPath, enforce: .appIdentityEnforce}' "$HOME/.brain/config.json"
+unset BRAIN_CONFIG BRAIN_FOLDDB_SOCKET
+jq -c '{socket: .nodeSocketPath, enforce: .appIdentityEnforce, keys: (.schemaHashes|length), model: .storageModel}' "$HOME/.brain/config.json"
 ```
 
-Check: `enforce` is true (B5).
+The new Brain reads `~/.brain/config.json` only. brain#484 removed the `~/.fbrain` fallback and the `FBRAIN_*` variables. The new config has the 25 `brain/*` schema keys of the staging home.
+
+The new Brain keeps its capabilities in `~/.brain/capabilities/brain@<hash>.cap`. The old `fbrain@<hash>.cap` files stay for the rollback. Do not delete them.
+
+Check: `enforce` is true (B5). `keys` is 25. `model` is `multi-key-v1`.
 
 11c. Install the new Brain and LastSecrets releases with the `app-safe-upgrade` skill (probe, then activate on GREEN).
 
@@ -715,16 +753,16 @@ Turn on the automatic backup of the old home if Tom wants it: `lastdb --data-dir
 
 | ID | Blocker or decision | Owner |
 |---|---|---|
-| B1 | Open. #803 is not merged. The primary needs the signed pair from a main commit (Step 2a). The dev pair of head 11280163c exists for proof runs (label `native-dev-artifact`, kept 3 days). | #803 author |
-| B2 | Open. The brain#484 definitions must exist in the PROD Schema Service. Tom allowed the publish on 2026-10-30. A separate agent does it. LastSecrets#14 definitions are already in PROD. | publish agent |
-| B3 | Open. brain#484 and lastsecrets#14 are not merged. The runbook needs their merged commits. brain#484 has two writers, and its head moves (f1bd8cfb on 2026-10-30). | app authors |
+| B1 | Open. #803 is not merged. The primary needs the signed pair from a main commit (Step 2a). Dev pairs exist for proof runs (label `native-dev-artifact`, kept 3 days): head 9196e5be9 (run 41134992191, used in section 5.2) and head 4df57d28b (building on 2026-10-30). | #803 author |
+| B2 | Open. The 25 `brain/*` definitions must exist in the PROD Schema Service. On 2026-10-30 PROD has the app `brain` (sandbox) and 10 of the 25 definitions. The quota of 10 new schemas per hour delays the rest to about 00:40 UTC. A separate agent publishes them and then makes `brain` live. DEV has all 25. A publish script that names `fbrain` definitions is out of date. LastSecrets#14 definitions are already in PROD. | publish agent |
+| B3 | Open. brain#484 and lastsecrets#14 are not merged. The runbook needs their merged commits. brain#484 head is a16968a0 on 2026-10-30. Its one commit after 7c0a573e0 (section 5.2) changes the query page cursor and does not change the 25 definitions. lastsecrets#14 head is 8b2d8720. | app authors |
 | B4 | Decided 2026-10-30. Design: trust the 38 records over the stored count of 37. The new Brain rebuilds its counts. The runbook names `--accept-directory-count design=38`. | done |
 | B5 | Decided 2026-10-30. `appIdentityEnforce` stays true. Steps 5 and 11b set it. Brain reads with true passed in the proof. Brain writes with true on #803 did not run. | done |
 | B6 | Decided 2026-10-30. Tom allowed `brain init` and read-only `brain get` and `brain search` against the NEW home for this migration. | done |
 | B7 | Open. Two V2 streams on one account. The quota and the cost are not known. The old stream stays for recovery. | Tom |
 | B8 | Closed by the proof. The #803 daemon ran in the synthetic run (section 5.2). The first check on real data is still Step 6. | operator |
 | B9 | Closed by the proof. The home move ran on a format 6 store, and the #803 daemon started on the moved home. If the real move fails, point the plist, the configs, and `current` at `~/.lastdb-v13` instead. | operator |
-| B10 | Open. brain#484 declares `BrainCompactListLocator_v1` with `key: {}`. #803 head 11280163c refuses it: `alternate keys require a declared primary hash field`. `brain init` stops there. Fix (a): LastDB accepts a keyless one-field schema with no alternate keys. Fix (b): Brain gives the locator a hash field in a new version. On the home-copy path, fix (b) needs no LastDB drop, because the new home never holds v1. | #803 author or Brain author |
+| B10 | Closed. #803 a83d5f06d accepts the keyless `BrainCompactListLocator_v1` (one field, no alternate keys). In section 5.2, `brain init` on head 9196e5be9 declared all 25 schemas with no stand-in. | done |
 
 ## 9. Loss compared with the in-place conversion
 
@@ -733,7 +771,8 @@ The in-place conversion was removed on 2026-10-30. This section stays as the rec
 | Item | In place (removed) | Home copy |
 |---|---|---|
 | Atom history, atom UUIDs, authors, clocks | Kept | Lost |
-| Tombstones | Kept | Lost |
+| LastDB tombstones of deleted records | Kept | Lost |
+| Brain soft-delete and backlink tags | - | Kept, renamed to `__brain_deleted__` and `__brain_backlink__:` |
 | Molecule IDs and file `blob_ref`/`dek` | Kept | New |
 | V2 backup stream | Same stream | New stream; the old stream stays for recovery |
 | Not-moved schemas | Convert or drop. On 2026-10-30 Brain and LastDB refuse the drop of named legacy schemas. | Export. They stay only in the rollback home. No drop is necessary. |
