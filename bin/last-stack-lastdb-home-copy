@@ -837,12 +837,19 @@ def run_route(ctx, route, mode, pre):
         if route["membership"]:
             if info["count_guard"] is None:
                 result["refusals"].append("the per-type count is not readable")
-            elif info["selected"] != info["count_guard"]:
-                drift = f"selected {info['selected']} records, but the per-type count is {info['count_guard']}"
-                if args.allow_count_drift:
-                    result["count_drift"] = drift
-                else:
-                    result["refusals"].append(drift)
+            else:
+                accepted = args.accept_directory_count.get(route["key"])
+                if accepted is not None:
+                    result["count_override"] = {"type": route["key"], "stored_count": info["count_guard"],
+                                                "accepted_count": accepted, "selected": info["selected"]}
+                    if info["selected"] != accepted:
+                        result["refusals"].append(
+                            f"--accept-directory-count {route['key']}={accepted} does not equal the "
+                            f"{info['selected']} selected records")
+                elif info["selected"] != info["count_guard"]:
+                    result["refusals"].append(
+                        f"selected {info['selected']} records, but the per-type count is {info['count_guard']}; "
+                        f"name the accepted value with --accept-directory-count {route['key']}={info['selected']}")
             if info["directory_only"]:
                 result["refusals"].append(f"{info['directory_only']} directory members have no stored record")
         if mode == "plan" and not args.census:
@@ -1037,8 +1044,9 @@ def parse_args(argv):
                    help="repair DateTime text that is not RFC 3339 (date-only, no offset, space, epoch digits)")
     p.add_argument("--allow-unselected", action="store_true",
                    help="copy although a Brain record schema holds keys outside the type directory")
-    p.add_argument("--allow-count-drift", action="store_true",
-                   help="copy the directory members although the per-type count differs (record it in the report)")
+    p.add_argument("--accept-directory-count", action="append", default=[], metavar="TYPE=N",
+                   help="Brain record TYPE: accept exactly N type-directory members in place of the stored "
+                        "per-type count (the report records both values); repeat per type")
     p.add_argument("--delete-extra", action="store_true",
                    help="--apply: delete target records that the source no longer has")
     p.add_argument("--allow-different-identity", action="store_true",
@@ -1065,6 +1073,15 @@ def parse_args(argv):
     args.read_batch = max(1, min(args.read_batch, QUERY_KEYS_MAX))
     args.write_batch = max(1, min(args.write_batch, 512))
     args.concurrency = max(1, min(args.concurrency, 8))
+    accepted = {}
+    for item in args.accept_directory_count:
+        match = re.fullmatch(r"([a-z]+)=([0-9]+)", item)
+        if not match or match.group(1) not in BRAIN_RECORD_TYPES:
+            p.error(f"--accept-directory-count needs TYPE=N with a Brain record type, not {item!r}")
+        if match.group(1) in accepted:
+            p.error(f"--accept-directory-count names {match.group(1)} twice")
+        accepted[match.group(1)] = int(match.group(2))
+    args.accept_directory_count = accepted
     return args
 
 
@@ -1263,6 +1280,10 @@ def render_text(report):
         lines.append(f"{r['app'] + ':' + r['key']:26} {(r['source']['descriptive'] or '')[:20] + ' ' + r['source']['name'][:12]:34} "
                      f"{target[:30]:30} {r.get('listed', '-'):>7} {r.get('selected', '-'):>7} "
                      f"{r.get('count_guard', '-') if r.get('count_guard') is not None else '-':>6} {verdict}")
+        if r.get("count_override"):
+            o = r["count_override"]
+            lines.append(f"    count override: stored {o['stored_count']}, accepted {o['accepted_count']}, "
+                         f"selected {o['selected']} (--accept-directory-count)")
         for refusal in r["refusals"]:
             lines.append(f"    refusal: {refusal}")
         for issue, count in sorted(r.get("issues", {}).items()):
