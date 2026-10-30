@@ -9,7 +9,6 @@ Keep all primary safety, security, and real operational controls.
 
 ```bash
 last-stack-north-star-proof --list
-last-stack-north-star-proof --offline all          # CI-safe default
 NORTH_STAR_PROOF_MODE=live last-stack-north-star-proof north-star-coderings
 ```
 
@@ -26,13 +25,13 @@ First line is `PASS`, `PASS-OFFLINE`, or `FAIL` for kanban DONE-WHEN matching.
 | app-ops | `lastdb ops --by-app` | same against live Mini |
 | schema | no-wasm tree gate | fold capstone `run.sh` when landed |
 | file-blobs-on-demand-sync | product source contract | source-only; no live PASS |
-| laststore-is-document-store-last-db-is-conventions | Brain record/design contract, fixtureable via `LASTSTORE_PROOF_RECORD_FILE` | same Brain contract against the live record |
+| laststore-is-document-store-last-db-is-conventions | Brain record/design contract, captured via `LASTSTORE_PROOF_RECORD_FILE` | same Brain contract against the live record |
 | mini-brain-observability | Fold source contract for `lastdb status`, session/crash attribution, self-metrics, dashboard regen, health alert, and dogfood hooks | same checks against current source; never restarts the primary daemon |
 | host-track | artifact registry invariant + per-app host-track checks, writing a North Star proof report | same checks against current registry; never edits the install |
 | exemem-cloud-account | redacted evidence contract via `EXEMEM_CLOUD_ACCOUNT_PROOF_EVIDENCE_FILE`, or CLI drive against `EXEMEM_CLOUD_ACCOUNT_LASTDB_HOME` (never `~/.lastdb`; never pays) | `lastdb cloud status` + `lastdb cloud account --json --no-open` on a throwaway connected home; upgrade is help-only (decision-2026-08-17: existing paid account, no fresh checkout) |
 | exemem-hands-off-prod-deploy | read-only deploy-pipeline freeze gate, canary alarm rollback, and CodeDeploy contract, plus redacted evidence (`EXEMEM_HANDS_OFF_PROOF_EVIDENCE_FILE` or the recorded brain proof). No deploy. No LastDB home. PASS requires promotion to 100%, freeze skip, alarm rollback, and visible Sentry failure; the recorded live-fire proof fails the Sentry check | same read-only checks; live mode does not cut over |
 | org-cloud-principal-membership | live command source presence | two-principal live Org/Mini + storage-service dogfood using only LastSecrets locators |
-| lastdb-ideal-storage-shape | validates redacted CoW + dogfood evidence for proteins, backup, plane map, status, and fkanban coherence | same evidence contract; evidence collection remains CoW-first and primary-safe |
+| lastdb-ideal-storage-shape | retired contract; always FAIL without database or product access | same refusal; old receipt files do not prove the current engine |
 | lastdb-io-free-commit-and-barrierless-purge | validates the Fold-generated isolated-copy evidence, warm apply-gate p99, reverse-index audit, and zero purge barriers | requires the same evidence to carry a PASS verdict after safe live cutover |
 | lastdb-uuid-hash-group-addressing | validates Fold source contracts and the immutable 11M-document CoW migration proof | reads the live `Sync:` line when `lastdb status` prints one and preserves the later Tom-authorized primary sync configuration |
 | lastdb-no-scan-access | refuses terminal PASS without the keyed scan-deprecation tracker and its completion proof | reads the tracker by slug; never scans, restarts, or mutates LastDB |
@@ -41,6 +40,14 @@ First line is `PASS`, `PASS-OFFLINE`, or `FAIL` for kanban DONE-WHEN matching.
 | lastdb-cloud-sync-resume | Fold snapshot+log, upload-interlock, hash-group, and file-blob source contract; PASS-OFFLINE only from measured CoW or ephemeral evidence after Tom clears the pause Situation | offline only; does not open a LastDB home and does not re-enable primary cloud sync |
 | lastgit-pack-blobs-b2-migration | LastGit pack-file source contract; PASS-OFFLINE only from measured pointer coverage, a verified second backfill, and B2 SHA-256 samples | same evidence contract; does not open a LastDB home and does not start a B2 cutover |
 | portable-routine-fleet | bootstrap-kit dry-run for a second project, plus two registry-rotator triggers and two session-miner triggers; no engine edits | same checks; does not open a LastDB home and does not run a canary upgrade |
+
+## Retired storage-shape contract
+
+The storage-shape checker remains registered and always returns FAIL.
+Old receipt files cannot produce PASS or PASS-OFFLINE.
+Current LastDB CI owns the disk, native-node, and latency checks.
+A current terminal contract is still required before this North Star can complete.
+The checker does not access a database, run a product, or read an evidence file.
 
 ## Cloud-owned GC: registration is not release proof
 
