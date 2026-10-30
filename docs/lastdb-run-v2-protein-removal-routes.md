@@ -188,6 +188,7 @@ Run these commands on the primary at C793, after the conversions and drops, befo
 Each command sends one request. The write sends one batch with the one record.
 
 ```bash
+umask 077
 P="$HOME/.local/state/last-stack/artifacts/lastdb/upgrade-probe-c793"
 SOCK="$HOME/.lastdb/data/folddb.sock"
 mkdir -m 700 "$P"
@@ -200,9 +201,16 @@ cat > "$P/declare.json" <<'JSON'
  "field_data_classifications":{"receipt_id":{"sensitivity_level":0,"data_domain":"general"},
   "receipt_value":{"sensitivity_level":0,"data_domain":"general"}}}}
 JSON
-curl --fail-with-body -sS --max-time 120 --unix-socket "$SOCK" \
+CODE="$(curl -sS --max-time 120 --unix-socket "$SOCK" -o "$P/declare-reply.json" -w '%{http_code}' \
   -H 'Content-Type: application/json' -H 'X-LastDB-Client: lastdb-upgrade-probe' \
-  --data-binary @"$P/declare.json" http://localhost/api/apps/declare-schema > "$P/declare-reply.json"
+  --data-binary @"$P/declare.json" http://localhost/api/apps/declare-schema)"
+echo "$CODE"
+```
+
+If `$CODE` is not `200`, stop here and go to [If the declaration fails](#if-the-declaration-fails).
+If `$CODE` is `200`, continue:
+
+```bash
 SCHEMA="$(jq -er '(.data // .).canonical | select(test("^[0-9a-f]{64}$"))' "$P/declare-reply.json")"
 
 jq -nc --arg s "$SCHEMA" '{convergence:"sync",mutations:[{type:"mutation",schema:$s,
@@ -241,17 +249,74 @@ Set the P2 approval `keyed_read` to this value:
 ### If the declaration fails
 
 The PROD Schema Service keeps its developer-account gate. It can refuse the new definition with a certificate or developer error.
+Then use Tom's one-read exception (2026-10-30): one converted Brain Preference record, read by its key.
 
-1. Do not write a record. Keep `declare-reply.json` as the refusal record.
-2. Do not use LastSecrets (`6a570228…`, fields `slug` and `secret_value`). Its records hold secret material, and the read result goes into an artifact.
-3. Do not use the compaction receipt schema `c010ab51…`. Tom drops it before P2.
-4. Do not relax the name guard in `lib/canary-loom/native_v2_read.py`. The guard refuses an application or schema name that contains `brain`, `kanban`, or `situation`. Its reason still applies: the 2026-10-14 standing rule says that no agent reads brain, kanban, or situations until Tom says they are back. The kept converted records of lastdb#793 are the F-Kanban and Brain records. All of them are in the guarded namespaces.
-5. Stop before the P2 backup. Report the refusal to Tom. Tom can choose one of these actions:
-   - Enable the developer account for `lastdb-upgrade-probe` on PROD. Then run the declaration again.
-   - Say that brain or kanban is back. Then name one kept, non-secret, converted record. Remove only that namespace from the guard in a reviewed PR.
-   - Name another kept, non-secret schema outside the guarded namespaces that C803 loads.
+CAUTION: This exception applies to the P2 route only. It applies to one fbrain `Preference` record only.
+The guard still refuses `kanban` and `situation`. Every other route keeps the full guard.
 
-The route has no keyed-read waiver. P2 does not start without a keyed read that passes.
+CAUTION: Use the exception only for a developer or certificate refusal. For any other error, correct the declaration and send it again.
+
+Do not use LastSecrets (`6a570228…`): its records hold secret material.
+Do not use the compaction receipt schema `c010ab51…`: Tom drops it before P2.
+
+1. Do not write a probe record. Keep the refusal status and the raw reply body in one record:
+
+   ```bash
+   umask 077
+   jq -n --argjson status "$CODE" --rawfile body "$P/declare-reply.json" \
+     '{schema:"lastdb.upgrade-probe-declare-refusal.v1",http_status:$status,body:$body}' > "$P/declare-refusal.json"
+   ```
+
+   The route accepts only a status from 400 to 599 and a body without a `canonical` identity.
+   A connection failure gives status `000`. The route refuses that record. Send the declaration again.
+2. Read the schema list on the primary at C793, after the Brain conversion and the drops.
+   This is a catalog read. It reads no record. Exactly one converted Preference schema must match:
+
+   ```bash
+   curl --fail-with-body -sS --max-time 60 --unix-socket "$SOCK" \
+     -H 'X-LastDB-Client: lastdb-upgrade-probe' http://localhost/api/schemas > "$P/schemas.json"
+   PREF="$(jq -er '[(.data // .).schemas[] | select(.owner_app_id == "fbrain" and .descriptive_name == "Preference"
+       and .schema_type == "Hash" and .independent_fields == true and .key.hash_field == "slug"
+       and .superseded_by == null and (.name_claim_retired | not))]
+     | if length == 1 then .[0].identity_hash else error("not exactly one converted Preference schema") end' \
+     "$P/schemas.json")"
+   ```
+
+3. Pick one Preference slug that you read on the primary after the Brain conversion. Use a record that no agent edits before P2 completes.
+   `$SLUG` is that slug.
+4. Make the keyed-read input. It reads one record and only the `slug`, `title`, and `updated_at` fields:
+
+   ```bash
+   umask 077
+   jq -n --arg s "$PREF" --arg k "$SLUG" '{schema:"lastdb.native-keyed-read.v1",application:"fbrain",
+     schema_name:$s,fields:["slug","title","updated_at"],keys:[{hash:$k,range:""}]}' > "$P/primary-keyed-read.json"
+   shasum -a 256 "$P/primary-keyed-read.json" "$P/declare-refusal.json"
+   ```
+
+   Do not read the record by hand. The route makes the keyed read.
+5. Add these fields to the P2 approval. The quote must be exact:
+
+   ```json
+   "keyed_read": {"input_path": "<P>/primary-keyed-read.json", "input_sha256": "<shasum>"},
+   "keyed_read_fallback": {
+     "namespace": "fbrain",
+     "schema": "Preference",
+     "quote": "The upgrade check reads one converted Brain Preference record by key. This lifts the brain notice for this one read only, and the guard changes for the brain namespace only.",
+     "declare_refusal": {"path": "<P>/declare-refusal.json", "sha256": "<shasum>"}
+   }
+   ```
+
+   Write each path as its real absolute path. The route refuses a path with a symbolic link.
+
+The route then makes these checks before each keyed read:
+
+- The approval is v5 and the profile is P2.
+- The fallback names `fbrain` and `Preference`, quotes Tom's exact text, and binds the refusal record by its hash.
+- The refusal record is owner-only, has a status from 400 to 599, and has no `canonical` identity.
+- The input names application `fbrain`, a 64-character identity hash, one key with an empty range, and only Preference fields with `slug`.
+- `GET /api/schema/<hash>` gives owner `fbrain`, descriptive name `Preference`, type `Hash`, key `slug`, and `independent_fields: true`.
+
+If any check fails, the route stops before any change. Report to Tom. The route has no keyed-read waiver.
 
 ## Known limits
 

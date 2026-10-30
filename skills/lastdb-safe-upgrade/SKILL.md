@@ -142,6 +142,9 @@ A route stays closed until its lastdb main commit is pinned in `native_run_v2_ro
 Use [the protein removal routes](../../docs/lastdb-run-v2-protein-removal-routes.md)
 for the approval fields, the evidence fields, the DEV proofs, and the launcher commands.
 P2 needs the upgrade probe keyed read from that document.
+If PROD refuses the probe declaration, P2 can read one converted fbrain `Preference` record by key.
+The approval must name `keyed_read_fallback` and quote Tom's exact text (2026-10-30).
+The guard still refuses `kanban` and `situation`. No other route gets this exception.
 
 ## Native V2 upgrade with CI evidence (Tom, 2026-10-24)
 
