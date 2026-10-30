@@ -333,7 +333,8 @@ def is_pointer(value):
 
 def pointer_identity(value):
     # blob_ref, dek, and the cipher fields are per node. The plaintext hash names the file.
-    return {"$lastdb_file": {"file_hash": value["$lastdb_file"].get("file_hash")}}
+    marker = value["$lastdb_file"]
+    return {"$lastdb_file": {key: marker[key] for key in ("file_hash", "name", "media_type") if key in marker}}
 
 
 def comparable(value):
@@ -624,31 +625,56 @@ def list_keys(node, name, page_size, range_schema):
     return unique
 
 
-def read_rows(node, name, fields, keys, range_schema, batch):
-    """Keyed batch read. Returns {key: {field: value}} with null values removed."""
+def read_rows(node, name, fields, keys, range_schema, batch, allow_missing=False):
+    """Read exact keys, including stored nulls. Refuse incomplete or foreign rows."""
     rows = {}
+    # One request holds the native 10,000-key budget. Reserve half for control
+    # and metadata reads; do not retry an oversized request with the same size.
+    batch = min(batch, 128, 5000 // (1 + 2 * max(1, len(fields))))
+    if batch < 1:
+        raise Refusal(f"one complete record exceeds the planned read budget for {short(name)}")
     for start in range(0, len(keys), batch):
         part = keys[start:start + batch]
+        expected = set(part)
         request = {"schema_name": name, "fields": list(fields),
                    "filter": {"HashRangeKeys": [[h, r if r is not None else ""] for h, r in part]},
                    "limit": len(part)}
-        pages = 0
+        pages, seen_cursors, found = 0, set(), set()
         while True:
             data = node.post("/api/query", request)
             results = data.get("results") if isinstance(data, dict) else None
-            if not isinstance(results, list):
-                raise Refusal(f"{node.role}: /api/query returned no results for {short(name)}")
+            if (not isinstance(results, list) or data.get("unresolved_rows") != 0
+                    or not isinstance(data.get("has_more"), bool)):
+                raise Refusal(f"{node.role}: /api/query returned an incomplete page for {short(name)}")
             for row in results:
-                key = row.get("key") or {}
+                if not isinstance(row, dict):
+                    raise Refusal(f"{node.role}: /api/query returned an invalid row for {short(name)}")
+                key = row.get("key")
+                if (not isinstance(key, dict) or not isinstance(key.get("hash"), str)
+                        or (range_schema and not isinstance(key.get("range"), str))):
+                    raise Refusal(f"{node.role}: /api/query returned an invalid primary key for {short(name)}")
                 ident = (key.get("hash"), key.get("range") if range_schema else None)
-                values = {k: v for k, v in (row.get("fields") or {}).items() if v is not None}
-                rows[ident] = values
+                values, metadata = row.get("fields"), row.get("metadata")
+                if (ident not in expected or ident in found or not isinstance(values, dict)
+                        or not values or not isinstance(metadata, dict) or set(values) - set(fields)):
+                    raise Refusal(f"{node.role}: /api/query returned a foreign, repeated, or empty row for {short(name)}")
+                for field in values:
+                    info = metadata.get(field)
+                    if not isinstance(info, dict) or not isinstance(info.get("atom_uuid"), str) or not info["atom_uuid"]:
+                        raise Refusal(f"{node.role}: a present field has no atom metadata for {short(name)}")
+                found.add(ident)
+                rows[ident] = dict(values)
             pages += 1
             if not data.get("has_more"):
                 break
-            if pages >= 16 or not data.get("next_cursor"):
-                raise Refusal(f"{node.role}: keyed read of {short(name)} did not finish in one page")
-            request = dict(request, cursor=data["next_cursor"])
+            cursor = data.get("next_cursor")
+            cursor_id = json.dumps(cursor, sort_keys=True, separators=(",", ":"))
+            if pages >= 16 or not cursor or cursor_id in seen_cursors:
+                raise Refusal(f"{node.role}: keyed read of {short(name)} did not finish or its cursor repeated")
+            seen_cursors.add(cursor_id)
+            request = dict(request, cursor=cursor)
+        if not allow_missing and found != expected:
+            raise Refusal(f"{node.role}: keyed read returned {len(found)} of {len(expected)} listed records for {short(name)}")
     return rows
 
 
@@ -676,7 +702,10 @@ def brain_membership(src, src_cat, old_brain, args):
         for kind in types:
             if kind in members:
                 members[kind].add(slug)
-    count_rows = read_rows(src, cnt_entry["name"], [cnt_field], [(t, None) for t in BRAIN_RECORD_TYPES], False, 64)
+    # The app treats an absent per-type count record as zero. This exception
+    # requires a complete, unresolved-free keyed response, not a missing page.
+    count_rows = read_rows(src, cnt_entry["name"], [cnt_field], [(t, None) for t in BRAIN_RECORD_TYPES], False, 64,
+                           allow_missing=True)
     counts = {}
     for kind in BRAIN_RECORD_TYPES:
         raw = (count_rows.get((kind, None)) or {}).get(cnt_field)
@@ -783,15 +812,25 @@ def map_values(ctx, route, values, mapping, types, census):
     Pointers stay as source pointers."""
     mapped, issues = {}, []
     renames = ctx.args.tag_renames if route["app"] == "brain" else []
+    local_fields = {stored: local for local, stored in route["old_aliases"].items()}
+    # A matching string in a title, body, slug, or arbitrary payload is user
+    # data. Only the app's declared tag fields carry the app-id tag rename.
+    tag_field = ("tags" if route["key"] in BRAIN_RECORD_TYPES else
+                 "tag" if route["key"] == "__tagindex__" else
+                 "tmb_tag" if route["key"] == "__tagmember__" else None)
     for stored, value in values.items():
         target = mapping.get(stored)
         if target is None:
             issues.append(f"unmapped:{stored}")
             continue
-        if renames:
+        if renames and tag_field and local_fields.get(stored, stored) == tag_field:
             value, count = rename_tags_in(renames, value)
             if count:
                 census["tag-rename"] = census.get("tag-rename", 0) + count
+                if route["key"] in ("__tagindex__", "__tagmember__"):
+                    # These records use __tagidx__<sha256(tag)> as their hash.
+                    # Renaming only the label strands the row at the old hash.
+                    issues.append("tag-address-conversion-required")
         ftype = types.get(target)
         if wants_datetime(ftype) and isinstance(value, str) and not datetime_shape(value):
             cls = datetime_class(value)
@@ -880,7 +919,9 @@ def write_batches(ctx, route, mutations):
     batch, size = [], 0
     written = 0
     for mutation in mutations:
-        encoded = len(json.dumps(mutation, separators=(",", ":")))
+        encoded = len(json.dumps(mutation, separators=(",", ":")).encode())
+        if encoded > ctx.args.write_bytes:
+            raise Refusal(f"{route['app']}:{route['key']}: one mutation exceeds the write batch byte cap")
         if batch and (len(batch) >= ctx.args.write_batch or size + encoded > ctx.args.write_bytes):
             written += send_batch(ctx, route, batch)
             batch, size = [], 0
@@ -985,8 +1026,7 @@ def run_route(ctx, route, mode, pre):
             for key in part:
                 values = rows.get(key)
                 if not values:
-                    empty += 1
-                    continue
+                    raise Refusal(f"{route['app']}:{route['key']}: a selected source record has no field values")
                 mapped, issues = map_values(ctx, route, values, mapping, types, census)
                 issues += alternate_key_issues(alternate, mapped)
                 for name in set(mapping.values()) - set(mapped):
@@ -1068,13 +1108,15 @@ def verify_route(ctx, route, selected, source_digests, target_fields, tgt_range)
             if hashlib.sha256(data).hexdigest() != pointer["$lastdb_file"].get("file_hash"):
                 file_bad += 1
     spot = spot_reads(ctx, route, sorted(expected & found), target_fields, tgt_range)
-    same = not differ and not missing and not extra and not file_bad and spot["mismatch"] == 0
+    digest_equal = (set(target_digests) == expected
+                    and digest_of(ctx, source_digests) == digest_of(ctx, target_digests))
+    same = not differ and not missing and not extra and not file_bad and spot["mismatch"] == 0 and digest_equal
     shown = (lambda keys: [] if route["secret"] else [k[0] if k[1] is None else f"{k[0]}|{k[1]}" for k in keys[:10]])
     out = {"equal": same, "source_records": len(expected), "target_records": len(found),
            "missing": len(missing), "extra": len(extra), "different": len(differ),
            "file_checks": file_checks, "file_mismatch": file_bad, "spot_reads": spot,
            "digest": "withheld" if route["secret"] else digest_of(ctx, source_digests)[:16],
-           "target_digest_equal": digest_of(ctx, source_digests) == digest_of(ctx, target_digests)}
+           "target_digest_equal": digest_equal}
     if deleted:
         out["extra_deleted"] = deleted
     if not same:

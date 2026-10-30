@@ -9,6 +9,9 @@ It is one Python file. It uses only the two daemon sockets.
 
 CAUTION: Nobody ran this runbook on the primary. Only the read-only plan and census ran on the primary.
 
+CAUTION: Tom requires cloud sync and automatic cloud backup to stay off throughout this work.
+The primary cutover also needs separate authorization. This document does not authorize a primary change.
+
 ## 1. Summary
 
 - The old home `~/.lastdb` stays as it is. It becomes the rollback home.
@@ -171,7 +174,8 @@ The app read checks (runbook steps 7 and 11):
 - The helper copies the last changes, verifies, and exports the not-moved schemas.
 - Both daemons stop. The homes change places with two `mv` commands. The LaunchAgent starts the NEW program on `~/.lastdb`.
 - Rollback before the move: start the old LaunchAgent again. Rollback after the move: two `mv` commands and the old plist.
-- Backup: take a manual V2 backup of the old home before the freeze. Connect the new home after the cutover, take a manual backup, and turn on the automatic backup.
+- Cloud sync and automatic cloud backup stay off on both homes before and after the cutover.
+- A new cloud backup stream needs a later instruction from Tom. This work does not start a cloud backup.
 - The freeze takes about 10 to 15 minutes. The copy and verify part takes about 2 to 3 minutes. The app release activation takes most of the rest.
 
 ## 3. The helper
@@ -203,12 +207,17 @@ Exit codes: 0 for success, 2 for a refusal or a copy issue, 3 for a verify diffe
   - The Brain owner map also renames the app-id tags in Brain values: `__fbrain_deleted__` becomes `__brain_deleted__`, and the prefix `__fbrain_backlink__:` becomes `__brain_backlink__:`. Without this change, the new Brain shows soft-deleted records again.
   - The map takes the tag pair from the Brain owners. `--app-tag-rename OLD=NEW` gives the pair when the source has no owner (the synthetic proof). It must agree with the Brain map.
   - The digest compares the renamed source values with the target values. A key that holds an old tag is a refusal. The report counts the renamed values (`tag_renames`).
+  - Only the declared tag fields can change. A matching title, body, or other field stays unchanged.
+  - A changed label in TagIndex or TagMembership is an issue. Its hash derives from the tag and needs an explicit address conversion.
 - A refusal stops the route before its first write:
   - An unselected key (override: `--allow-unselected`).
   - A count guard difference. The override names the accepted value: `--accept-directory-count TYPE=N` (for example `design=38`). The report shows the stored count, the accepted count, and the selected records.
   - An accepted value that differs from the selected records. A new Design record before the run changes the number, and the run refuses. There is no plain skip.
   - A target schema without independent fields (override: `--allow-shared-value-target`, for the synthetic proof only).
 - A record with an issue is not written: an unmapped field, a type error, a value over `--value-max-bytes`, or an alternate key problem.
+- A keyed read refuses an unresolved page, a repeated or foreign record, an incomplete cursor, or a missing listed record.
+- Each present field needs its actual atom metadata. An explicit null remains a value. An absent field stays absent.
+- A complete target digest and complete record coverage are required for an equal result.
 - A DateTime value with no offset is an issue. `--normalize-datetime` repairs date-only and similar values.
 - Plan, copy, and verify print no record value, no file pointer, and no secret. Digests use a random HMAC key.
 - `--export` writes non-secret values only, into an empty directory (0700, files 0600). It skips Papercut and every LastSecrets schema. A file pointer keeps only its `file_hash`.
@@ -566,20 +575,20 @@ LASTSECRETS_CONFIG="$W/staging-config/lastsecrets.json" bun "$LR/src/cli.ts" adm
 
 Check: `get` shows the record. `search` gives slugs. The LastSecrets list count equals the plan (164 on 2026-10-30). No secret value appears.
 
-### Step 8. Freeze: final old backup, then a private socket for the old daemon
+### Step 8. Freeze: cloud-off check, then a private socket for the old daemon
 
-8a. Manual V2 backup of the old home while it is still on its own socket:
+8a. Check that automatic backup is off on both homes. Do not start a cloud backup.
 
 ```bash
+"$OLD/current/lastdb" --data-dir "$OLD" cloud backup-v2 disable-automatic --json > "$W/s8-v2-disable.json"
 "$OLD/current/lastdb" --data-dir "$OLD" cloud backup-v2 status --json > "$W/s8-v2-before.json"
 jq -c '{running, phase, auto: .automatic_backup.enabled, pending: .automatic_backup.pending_request_id}' "$W/s8-v2-before.json"
-export R0=$(uuidgen | tr 'A-Z' 'a-z'); echo "$R0" > "$W/R0.request-id"
-"$OLD/current/lastdb" --data-dir "$OLD" cloud backup-v2 start --request-id "$R0" --json > "$W/s8-R0.json"; echo "rc=$?"
-"$OLD/current/lastdb" --data-dir "$OLD" cloud backup-v2 status --json > "$W/s8-v2-R0.json"
-jq -c '{request_id, phase, running, ordinal: .last_accepted_backup.ordinal}' "$W/s8-v2-R0.json"
+"$N/lastdb" --data-dir "$NEW" cloud backup-v2 disable-automatic --json > "$W/s8-new-v2-disable.json"
+"$N/lastdb" --data-dir "$NEW" cloud backup-v2 status --json > "$W/s8-new-v2-status.json"
+jq -e '.running == false and .automatic_backup.enabled == false' "$W/s8-v2-before.json" "$W/s8-new-v2-status.json"
 ```
 
-Check: `request_id` equals R0, `phase` is `published`, `running` is false. If `auto` is true, run `backup-v2 disable-automatic --json` first.
+Check: `running` and `automatic_backup.enabled` are false on both homes. A missing status value is a refusal.
 
 8b. Stop the old LaunchAgent and hold the memory guard:
 
@@ -700,21 +709,16 @@ lastsecrets list | wc -l
 
 The write freeze ends here.
 
-### Step 12. Backup on the new home
+### Step 12. Keep cloud sync off on the new home
 
 ```bash
-lastsecrets get lastdb-primary-cloud-api-key-prod \
-  | lastdb --data-dir "$OLD" cloud backup-v2 connect --existing --env prod --api-key-stdin \
-    --expected-user-hash "$(jq -r .userHash "$HOME/.brain/config.json")" --json > "$W/s12-connect.json"; echo "rc=$?"
-export R1=$(uuidgen | tr 'A-Z' 'a-z'); echo "$R1" > "$W/R1.request-id"
-lastdb --data-dir "$OLD" cloud backup-v2 start --request-id "$R1" --json > "$W/s12-R1.json"; echo "rc=$?"
-lastdb --data-dir "$OLD" cloud backup-v2 enable-automatic --log-interval-seconds 60 --snapshot-interval-seconds 86400 --json \
-  > "$W/s12-enable.json"
+lastdb --data-dir "$OLD" cloud backup-v2 disable-automatic --json > "$W/s12-disable.json"
 lastdb --data-dir "$OLD" cloud backup-v2 status --json > "$W/s12-status.json"
-jq -c '{request_id, phase, running, auto: .automatic_backup.enabled, blocked_reason}' "$W/s12-status.json"
+jq -e '.running == false and .automatic_backup.enabled == false' "$W/s12-status.json"
 ```
 
-Check: `request_id` equals R1, `phase` is `published`, `auto` is true, `blocked_reason` is null. The stream id differs from the old stream.
+Check: both values are false. Do not start a backup or enable automatic backup.
+The separate cloud stream validation needs a later instruction from Tom.
 
 ### Step 13. Clean up
 
@@ -747,7 +751,7 @@ rm "$OLD/monitoring/lastdbd-revive.hold"
 ```
 
 Then install the previous Brain and LastSecrets releases with `app-safe-upgrade`.
-Turn on the automatic backup of the old home if Tom wants it: `lastdb --data-dir "$OLD" cloud backup-v2 enable-automatic --log-interval-seconds 60 --snapshot-interval-seconds 86400 --json`.
+Keep cloud sync and automatic cloud backup off after rollback. A later instruction from Tom can change this rule.
 
 ## 8. Blockers and decisions
 
@@ -763,6 +767,15 @@ Turn on the automatic backup of the old home if Tom wants it: `lastdb --data-dir
 | B8 | Closed by the proof. The #803 daemon ran in the synthetic run (section 5.2). The first check on real data is still Step 6. | operator |
 | B9 | Closed by the proof. The home move ran on a format 6 store, and the #803 daemon started on the moved home. If the real move fails, point the plist, the configs, and `current` at `~/.lastdb-v13` instead. | operator |
 | B10 | Closed. #803 a83d5f06d accepts the keyless `BrainCompactListLocator_v1` (one field, no alternate keys). In section 5.2, `brain init` on head 9196e5be9 declared all 25 schemas with no stand-in. | done |
+| B11 | Open. The current helper authors new mutations. It loses the current atom identities, author signatures, and clocks. The accepted conversion rule requires those facts to stay intact. No existing cross-home import meets this requirement. | migration design |
+| B12 | Open. The helper obtains record keys through the unkeyed `/api/list` route. The accepted app access model requires known keys. A complete migration needs an explicit bounded source export contract. | migration design |
+| B13 | Open. The PR has source lint only. The current helper needs a CI product migration run with owned source definitions, complete membership, exact nulls, file bytes, preserved author facts, and a reopen. A fresh-home latency run does not prove a migration. | CI author |
+| B14 | Open. Brain tag addresses use `__tagidx__<sha256(tag)>`. A namespace tag rename changes that address. The helper now refuses affected TagIndex and TagMembership values. An app-defined address conversion must preserve complete members and primary keys. | Brain migration author |
+
+The source review at `ee0a9cd16946f38bf15d4cd81fe32f24a0fab1ff` found explicit-null loss and incomplete target digest coverage.
+The corrective source preserves nulls and refuses incomplete reads and digests. CI product proof remains open.
+The existing peer import is not a replacement: it requires unchanged schema and molecule identities and refuses signed tips and file references.
+Do not relax those peer admission rules for this migration.
 
 ## 9. Loss compared with the in-place conversion
 
