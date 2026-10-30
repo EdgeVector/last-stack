@@ -11,7 +11,7 @@ from auto_recovery_files import recorded_closure
 NAMES = {"base", "log", "later"}
 
 
-def check(proof, summary, endpoint, owners):
+def check(proof, summary, endpoint, owners, marker=None):
     value = reference(proof["provider_accounting"])
     selected, restored = summary["checkpoints"], value["restores"]
     require(set(selected) == set(restored) == NAMES and selected["log"] == summary["accepted_backup"]
@@ -23,7 +23,7 @@ def check(proof, summary, endpoint, owners):
             and value.get("provider_deletions") == 0,
             "The exact DEV proof must cover selected closures without a whole-account claim")
     for name in sorted(NAMES):
-        one(restored[name], selected[name], name, summary, endpoint, owners, proof["reads"])
+        one(restored[name], selected[name], name, summary, endpoint, owners, proof["reads"], marker)
     observed = summary["observed_accepted"]
     require(isinstance(observed, list) and 2 <= len(observed) <= 8
             and all(point in observed for point in selected.values()), "The actual DEV checkpoints exceed their bound")
@@ -41,7 +41,7 @@ def check(proof, summary, endpoint, owners):
             "selected_restore_points": 3, "observed_checkpoints": len(observed)}
 
 
-def one(record, accepted, name, summary, endpoint, owners, reads):
+def one(record, accepted, name, summary, endpoint, owners, reads, marker=None):
     selected = reference(record["selection"])
     report, result, receipt = [unwrap(reference(record[field])) for field in ("report", "result", "receipt")]
     native = reference(record["native_proof"], 32 * 1024 * 1024)
@@ -91,7 +91,10 @@ def one(record, accepted, name, summary, endpoint, owners, reads):
                 "The snapshot native observation does not precede its first normal boot")
         require(snapshot_report == report and native.get("independent_native_file_hashes_verified") is True,
                 "The DEV snapshot lacks its original full native hashes")
-        recorded_closure(manifest["native_files"], before)
+        if marker is None:
+            recorded_closure(manifest["native_files"], before)
+        else:
+            recorded_closure(manifest["native_files"], before, marker)
         normalized = [{key: item[key] for key in ("path", "native_sha256", "native_bytes")}
                       for item in manifest["native_files"]]
         require(normalized == native["files"], "The original snapshot manifest and native proofs differ")

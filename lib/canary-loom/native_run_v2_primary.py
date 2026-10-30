@@ -12,7 +12,8 @@ from native_upgrade_common import (memory, pair, private_dir, regular, require,
                                    run, save, session, sha, stopped, sync_dir)
 from native_v2_primary import bytes_save, record
 from native_run_v2_health import health, wait_health
-from native_run_v2_profiles import automatic, final_stopped, modern_stopped
+from native_run_v2_profiles import automatic, closed_route, final_stopped, modern_stopped
+from native_run_v2_routes import markers, stopped_marker
 from native_run_v2_state import bounded_file, stable, stopped_pair
 
 
@@ -39,7 +40,8 @@ def baseline_snapshot(approval, baseline=None):
     checked["memory_bytes"] = memory(pid, ceiling)
     require(not (home / ".shutdown_flush_ready").exists(), "A stale shutdown receipt exists")
     from native_v2_read import observe
-    return {"keyed_read": observe(approval), "stable": stable(home), "plist_sha256": sha(plist_path), "pair": programs,
+    return {"keyed_read": observe(approval), "stable": stable(home, (stopped_marker(approval),)),
+            "plist_sha256": sha(plist_path), "pair": programs,
             "memory_limit_mb": ceiling, "session": identity, "health": checked,
             "process_start": run(["/bin/ps", "-p", str(pid), "-o", "lstart="]).stdout.strip()}
 
@@ -49,8 +51,12 @@ def initial(approval, candidate, path):
     require({k: v["sha256"] for k, v in baseline["pair"].items()} == approval["baseline_programs_sha256"],
             "The approved baseline program pair differs")
     home, plist_path, plist, _, _ = service(approval)
+    route = closed_route(approval)
     if automatic(approval):
         from native_run_v2_auto_writer_policy import initial as writer_policy
+        writer_policy(approval, baseline, plist)
+    elif route is not None:
+        from native_run_v2_route_writer import initial as writer_policy
         writer_policy(approval, baseline, plist)
     elif modern_stopped(approval):
         from native_run_v2_stopped_writer import initial as writer_policy
@@ -61,8 +67,14 @@ def initial(approval, candidate, path):
     target = home / "native-run-v2-programs" / approval["source_git_oid"]
     require(str(target) == approval["target_program_dir"] and target.resolve() == target,
             "Candidate program directory is not the exact primary-only target")
-    require(target != pointer.resolve() and target.parent != pointer.resolve(),
-            "Candidate staging must not use the shared baseline directory")
+    if route is not None and route["kind"] == "activation":
+        # The offline activation keeps the exact pair that the primary runs.
+        require(pointer.resolve() == target and os.readlink(pointer) == str(target)
+                and all(Path(value["path"]).parent == target for value in baseline["pair"].values()),
+                "The activation must keep the exact selected primary-only pair")
+    else:
+        require(target != pointer.resolve() and target.parent != pointer.resolve(),
+                "Candidate staging must not use the shared baseline directory")
     original = path.parent / "primary-original.plist"
     if not original.exists():
         bytes_save(original, bounded_file(plist_path))
@@ -83,11 +95,15 @@ def initial(approval, candidate, path):
 
 def preserved(approval, state):
     home = Path(approval["primary_home"])
-    observed = stable(home)
+    observed = stable(home, markers(approval))
     if final_stopped(approval):
         from native_run_v2_final_links import normalize
         observed = normalize(approval, state, observed)
-    require(observed == state["baseline"]["stable"], "Primary identity, Run V2 metadata, or cloud controls changed")
+    expected = state["baseline"]["stable"]
+    if closed_route(approval) is not None:
+        from native_run_v2_activation import expected_stable
+        expected = expected_stable(approval, state)
+    require(observed == expected, "Primary identity, Run V2 metadata, or cloud controls changed")
     for name, value in state["baseline"]["pair"].items():
         original = Path(value["path"])
         regular(original)
@@ -283,7 +299,8 @@ def stopped_boundary(approval, state):
     unloaded(target)
     require(stopped(home, identity) == state["stop_proof"], "Run V2 exact clean stop proof differs")
     preserved(approval, state)
-    result = stopped_pair(home, state["baseline"]["stable"])
+    require(not state.get("activation"), "The stopped boundary precedes the offline activation")
+    result = stopped_pair(home, state["baseline"]["stable"], stopped_marker(approval), markers(approval))
     preserved(approval, state)
     unloaded(target)
     require(stopped(home, identity) == state["stop_proof"], "Run V2 stopped session changed")

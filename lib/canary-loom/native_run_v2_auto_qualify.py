@@ -15,6 +15,7 @@ from native_run_v2_inputs import external
 from native_run_v2_auto_qualify_io import (BASELINE, BASELINE_PROGRAMS, SOURCE, freeze, hash_file,
     imports, private_dir, read, reference, require, save)
 from native_run_v2_auto_qualify_process import Pair
+from native_run_v2_auto_qualify_restore import NODE, PROFILE_SHA256
 
 PROFILE = "run-v2-format4-auto-maintenance-v1"
 MODULES = ("native_run_v2_auto_qualify", "native_run_v2_auto_qualify_io",
@@ -24,7 +25,7 @@ MODULES = ("native_run_v2_auto_qualify", "native_run_v2_auto_qualify_io",
     "native_run_v2_auto_qualify_cloud", "native_run_v2_auto_qualify_source",
     "native_run_v2_auto_qualify_credentials", "native_run_v2_auto_qualify_catalog", "native_run_v2_auto_qualify_restore",
     "native_run_v2_auto_qualify_recoveries", "native_run_v2_auto_qualify_receipts",
-    "auto_recovery_manifest", "auto_recovery_files", "native_run_v2_inputs")
+    "auto_recovery_manifest", "auto_recovery_files", "native_run_v2_inputs", "native_run_v2_routes")
 CANDIDATE_RECEIPT = "cd6d0e5e710f48524f127e25a67f1ef8d3f9c9777d16f37a3c9f18dca7891a82"
 WRITER_POLICY_RECEIPT = "af1f22e02e694e883d06d28e45a2ac244e267626b0865dfbb9514f808b6b9cce"
 WRITER_SETTINGS = {"LASTDB_AT_REST_RAW": "1", "LASTDB_KV_AT_REST_COMPRESS": "1", "LASTDB_KV_AT_REST_RAW": "1"}
@@ -47,7 +48,57 @@ def own_hashes():
     return {name + ".py": hash_file(folder / (name + ".py")) for name in MODULES}
 
 
-def candidate(receipt):
+def settings(route=None):
+    """The historical pair, or one closed program route; only the route commits are pinned."""
+    if route is None:
+        return {"profile": PROFILE, "protocol": 14, "source": SOURCE, "baseline": BASELINE,
+                "baseline_programs": BASELINE_PROGRAMS, "marker": NODE, "profile_sha256": PROFILE_SHA256,
+                "route_marker": None, "run_profile": (2, 4)}
+    from native_run_v2_routes import PROTOCOL, RUN_PROFILE, route as open_route
+    selected = open_route({"profile": route})
+    require(selected["kind"] == "program" and selected["development"] == route
+            and selected["marker"] == selected["after"], "closed_route_program_qualification")
+    version = RUN_PROFILE[selected["marker"]]
+    return {"profile": route, "protocol": int(PROTOCOL), "source": selected["source"],
+            "baseline": selected["baseline"], "baseline_programs": selected["baseline_programs"],
+            "marker": selected["marker"], "profile_sha256": None, "route_marker": selected["marker"],
+            "run_profile": (version, int(selected["marker"][7:8]))}
+
+
+def plan_settings(plan):
+    """Bind a saved plan to its route and its frozen compiled profile."""
+    value = settings(plan.get("route"))
+    if plan.get("route") is not None:
+        programs = value["baseline_programs"]
+        if programs is None:
+            receipt = plan["baseline_receipt"]
+            require(reference(receipt["path"]) == receipt, "original_baseline_receipt")
+            _, programs, version = verified_pair(receipt["path"], value["baseline"])
+            require(version == plan["baseline_version"], "baseline_receipt_version")
+        value = {**value, "baseline_programs": programs,
+                 "profile_sha256": plan["frozen_helpers"]["folddb_profile/environments.json"]}
+    return value
+
+
+def verified_pair(receipt, source):
+    value = read(receipt, 65536)
+    require(value["schema"] == "lastdb.private-candidate-verification.v1"
+            and value["source_git_oid"] == source and type(value["workflow_run"]) is int
+            and value["workflow_run"] > 0 and type(value["run_attempt"]) is int and value["run_attempt"] > 0
+            and type(value["artifact_id"]) is int and value["artifact_id"] > 0
+            and value["target"] == "aarch64-apple-darwin", "verified_exact_candidate_receipt")
+    programs = {item["name"]: item["sha256"] for item in value["binaries"]}
+    versions = {item["version"] for item in value["binaries"]}
+    require(len(value["binaries"]) == 2 and set(programs) == {"lastdb", "lastdbd"}
+            and len(versions) == 1 and all(item["architecture"] == "arm64"
+            and item["strict_codesign"] is True for item in value["binaries"]), "matched_verified_candidate")
+    return value, programs, next(iter(versions))
+
+
+def candidate(receipt, route=None):
+    if route is not None:
+        # The approval gate verifies this Mini artifact against its GitHub run.
+        return verified_pair(receipt, settings(route)["source"])
     require(hash_file(receipt, 65536) == CANDIDATE_RECEIPT, "original_verified_candidate_receipt")
     value = read(receipt, 65536)
     require(value["schema"] == "lastdb.private-candidate-verification.v1"
@@ -62,12 +113,15 @@ def candidate(receipt):
     return value, programs, next(iter(versions))
 
 
-def writer_policy(path):
+def writer_policy(path, values=None):
+    """The historical pinned receipt, or a route plan's observed baseline writer."""
     original = reference(path)
-    require(original["sha256"] == WRITER_POLICY_RECEIPT, "original_primary_writer_policy_receipt")
+    values = settings() if values is None else values
+    require(values["profile"] != PROFILE or original["sha256"] == WRITER_POLICY_RECEIPT,
+            "original_primary_writer_policy_receipt")
     value = read(path, 65536)
     require(value["schema"] == "lastdb.primary-writer-policy-observation.v1"
-            and value["source"] == BASELINE and value["programs"] == BASELINE_PROGRAMS
+            and value["source"] == values["baseline"] and value["programs"] == values["baseline_programs"]
             and value["settings"] == WRITER_SETTINGS and value["effective_process_matches_plist"] is True
             and value["primary_effects"] == 0
             and re.fullmatch(r"[0-9a-f]{64}", value["launchd_plist"]["sha256"])
@@ -88,19 +142,33 @@ def prepare(args):
             "separate_ordinary_dev_account")
     credentials = credential_binding(outside_primary(args.credential_home), args.credentials_from_home,
                                      args.api_key_ref, args.phrase_ref)
+    values = settings(args.route)
+    route = {}
+    if args.route is not None:
+        require(args.baseline_receipt is not None or values["baseline_programs"] is not None,
+                "route_baseline_receipt")
+        if values["baseline_programs"] is None:
+            _, baseline_programs, baseline_version = verified_pair(args.baseline_receipt, values["baseline"])
+            require(baseline_version == args.baseline_version, "baseline_receipt_version")
+            values = {**values, "baseline_programs": baseline_programs}
+            route["baseline_receipt"] = reference(args.baseline_receipt)
+        route["route"] = args.route
+    else:
+        require(args.baseline_receipt is None, "historical_pinned_baseline")
     private_dir(root)
-    _verified, programs, version = candidate(args.candidate_receipt)
-    catalog = catalog_binding(args.catalog_read_result)
-    policy = writer_policy(args.writer_policy_result)
+    _verified, programs, version = candidate(args.candidate_receipt, args.route)
+    catalog = catalog_binding(args.catalog_read_result, args.route is None)
+    policy = writer_policy(args.writer_policy_result, values)
     nonce = str(uuid.uuid4())
     records = [{"id": hashlib.sha256((nonce + ":" + str(number)).encode()).hexdigest(),
                 "note": "application/x-lastdb-baseline-" + str(number),
                 "final_note": "application/x-lastdb-candidate-" + str(number)}
                for number in range(16)]
-    plan = {"schema": "lastdb.format4-auto-qualification-plan.v1", "profile": PROFILE, "protocol": 14,
-        "environment": "dev", "source": SOURCE, "baseline_source": BASELINE,
+    plan = {"schema": "lastdb.format4-auto-qualification-plan.v1", **route,
+        "profile": values["profile"], "protocol": values["protocol"],
+        "environment": "dev", "source": values["source"], "baseline_source": values["baseline"],
         "programs": programs, "candidate_version": version,
-        "baseline_programs": BASELINE_PROGRAMS, "baseline_version": args.baseline_version,
+        "baseline_programs": values["baseline_programs"], "baseline_version": args.baseline_version,
         "baseline_bin_dir": str(Path(args.baseline_bin_dir).resolve()),
         "candidate_bin_dir": str(Path(args.candidate_receipt).parent / "bin"),
         "candidate_receipt": reference(args.candidate_receipt), "source_repository": str(args.source_repository),
@@ -110,7 +178,8 @@ def prepare(args):
         "files": [file_spec(nonce, n) for n in (1, 2)],
         "post_restart_rewrite": {"id": records[0]["id"], "note": records[0]["final_note"],
                                  "field": NOTE_FIELD, "same_value": True},
-        "memory_limit_mb": args.memory_limit_mb, "frozen_helpers": freeze(Path(args.source_repository), root),
+        "memory_limit_mb": args.memory_limit_mb,
+        "frozen_helpers": freeze(Path(args.source_repository), root, values["source"]),
         "qualifier_sources": own_hashes(), "primary_access": False,
         "provider_scope": "selected-accepted-closures", "whole_account_reconciliation": False,
         "baseline_timestamp_policy": "exact-1d-boot-current-session-ledger; host-timestamp-recorded-separately",
@@ -127,7 +196,7 @@ def environment(operation):
     dev = profiles["environments"]["dev"]
     require(dev["region"] == "us-west-2" and dev["exemem_api"].startswith("https://"), "compiled_dev_only")
     policy = operation.plan["writer_policy"]
-    require(policy == writer_policy(policy["result"]["path"]), "frozen_observed_writer_policy")
+    require(policy == writer_policy(policy["result"]["path"], operation.settings), "frozen_observed_writer_policy")
     operation.endpoint = dev["exemem_api"]
     return {**policy["observation"]["settings"],
         "PATH": str(Path.home() / ".local/bin") + ":/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "TZ": "UTC",
@@ -143,9 +212,11 @@ class Operation:
     def __init__(self, path, expected):
         require(reference(path)["sha256"] == expected, "approved_plan_hash")
         self.plan = read(path)
+        self.settings = values = plan_settings(self.plan)
         require(self.plan["schema"] == "lastdb.format4-auto-qualification-plan.v1"
-                and self.plan["profile"] == PROFILE and self.plan["protocol"] == 14
-                and self.plan["source"] == SOURCE and self.plan["baseline_source"] == BASELINE
+                and self.plan["profile"] == values["profile"] and self.plan["protocol"] == values["protocol"]
+                and self.plan["source"] == values["source"] and self.plan["baseline_source"] == values["baseline"]
+                and self.plan["baseline_programs"] == values["baseline_programs"]
                 and self.plan["qualifier_sources"] == own_hashes(), "unchanged_approved_qualification")
         self.root, self.homes = Path(self.plan["output"]), outside_primary(self.plan["homes"])
         private_dir(self.root)
@@ -168,12 +239,12 @@ class Operation:
         for name in ("baseline-cli", "candidate-cli"):
             private_dir(self.output / name)
         self.baseline = Pair(self.helpers, self.plan["baseline_bin_dir"], self.plan["baseline_version"],
-            child_env, BASELINE, BASELINE_PROGRAMS, self.output / "baseline-cli")
+            child_env, values["baseline"], values["baseline_programs"], self.output / "baseline-cli")
         receipt = self.plan["candidate_receipt"]
         require(reference(receipt["path"]) == receipt, "original_candidate_receipt")
-        _, programs, version = candidate(receipt["path"])
+        _, programs, version = candidate(receipt["path"], self.plan.get("route"))
         require(programs == self.plan["programs"] and version == self.plan["candidate_version"], "candidate_plan_binding")
-        self.candidate = Pair(self.helpers, self.plan["candidate_bin_dir"], version, child_env, SOURCE,
+        self.candidate = Pair(self.helpers, self.plan["candidate_bin_dir"], version, child_env, values["source"],
                               programs, self.output / "candidate-cli")
         self.data = Data(self)
 
@@ -194,7 +265,9 @@ class Operation:
         self.prepare_credentials()
         flow = automatic(self)
         restores, provider = all_points(self, flow)
-        self.summary.update(source=SOURCE, account=self.account, homes=str(self.homes), baseline_source=BASELINE,
+        values = self.settings
+        self.summary.update(source=values["source"], account=self.account, homes=str(self.homes),
+            baseline_source=values["baseline"],
             initial_automatic_snapshot=True, automatic_policy_survives_restart=True, separate_later_snapshot=True,
             source_free_restore=True, baseline_ordinary_reopen=True, exact_keyed_values_and_deletes=True,
             automatic_log_checkpoints=2, restored_boots=2, full_CAS_file_bytes=self.data.files,
@@ -204,9 +277,10 @@ class Operation:
             observed_accepted=list(self.source.completed.values()),
             accepted_backup=flow["log"], primary_access=False, provider_bytes_scope="selected-accepted-closures")
         summary = save(self.output / "summary.json", self.summary)
-        proof = {"schema": "lastdb.run-v2-automatic-development.v2", "profile": PROFILE, "protocol": 14,
-            "environment": "dev", "source": SOURCE, "programs": self.plan["programs"],
-            "baseline_source": BASELINE, "baseline_programs": BASELINE_PROGRAMS,
+        proof = {"schema": "lastdb.run-v2-automatic-development.v2", "profile": values["profile"],
+            "protocol": values["protocol"],
+            "environment": "dev", "source": values["source"], "programs": self.plan["programs"],
+            "baseline_source": values["baseline"], "baseline_programs": values["baseline_programs"],
             "candidate_version": self.candidate.version, "completed_at": int(time.time()),
             "intent": self.intent, "summary": summary, "consumers": self.consumers,
             "reads": self.reads, "before_log_restart": flow["before_log_restart"],
@@ -226,6 +300,9 @@ def arguments():
         plan.add_argument("--" + name, required=True)
     for name in ("api-key-ref", "phrase-ref"):
         plan.add_argument("--" + name)
+    plan.add_argument("--route", help="closed route profile; omit for the historical a1c406f5 pair")
+    plan.add_argument("--baseline-receipt", type=Path,
+                      help="verified Mini receipt of a route baseline pair that has no pin (P2)")
     plan.add_argument("--credentials-from-home", action="store_true")
     plan.add_argument("--memory-limit-mb", type=int, required=True)
     run = sub.add_parser("run")

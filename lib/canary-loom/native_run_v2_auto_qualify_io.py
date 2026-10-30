@@ -214,7 +214,7 @@ def secret(locator):
     return value
 
 
-def freeze(repo, root):
+def freeze(repo, root, source=SOURCE):
     repo, root = _path(repo), private_dir(root)
     require(repo.is_dir(), "source_repository")
     top = _capture(["/usr/bin/git", "-C", str(repo), "rev-parse", "--show-toplevel"], 4096)
@@ -225,9 +225,10 @@ def freeze(repo, root):
     for folder in ("scripts", "scripts/cloud_backup", "folddb_profile"):
         private_dir(target / folder)
     hashes = {}
+    require(re.fullmatch(r"[0-9a-f]{40}", source) is not None, "frozen_source_commit")
     for name in SOURCES:
         raw = _capture(["/usr/bin/git", "-C", str(repo), "show", "--no-ext-diff",
-                        "--no-textconv", SOURCE + ":" + name], CHUNK)
+                        "--no-textconv", source + ":" + name], CHUNK)
         require(bool(raw), "frozen_source_empty")
         hashes[name] = _write(target / name, raw)["sha256"]
     _sync(target)

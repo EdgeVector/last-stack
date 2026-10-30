@@ -128,6 +128,21 @@ Require a new automatic full snapshot and a coherent acknowledged journal anchor
 An enabled flag alone does not prove this adoption.
 The Linux DEV result does not qualify different Mac program bytes.
 
+## Protein removal routes (Tom, 2026-10-30)
+
+The approval schema `lastdb.run-v2-maintenance-approval.v5` selects Loom protocol 15.
+It admits three closed routes in this order:
+
+1. `run-v2-a1c406f5-to-c793-format4-v1`: the lastdb#793 pair. The format stays 4.
+2. `run-v2-c793-format6-activation-v1`: the offline format 4 to 6 activation with the same pair.
+3. `run-v2-c793-to-c803-format6-v1`: the lastdb#803 pair. The format stays 6.
+
+Each route keeps the format 4 final stopped backup policy.
+A route stays closed until its lastdb main commit is pinned in `native_run_v2_routes.py`.
+Use [the protein removal routes](../../docs/lastdb-run-v2-protein-removal-routes.md)
+for the approval fields, the evidence fields, the DEV proofs, and the launcher commands.
+P2 needs the upgrade probe keyed read from that document.
+
 ## Native V2 upgrade with CI evidence (Tom, 2026-10-24)
 
 Use explicit `--native-v2-ci-approval <private-file>` for the reviewed V2 operation.

@@ -27,7 +27,8 @@ def recover(operation, flow, kind):
     labels = ("restored-first", "restored-second") if kind == "log" else (kind + "-restored-first", kind + "-restored-second")
     request = Request(operation.candidate, accepted, operation.endpoint, operation.account,
                       operation.credentials, operation.phrase, destination, output,
-                      compiled_profile=operation.root / "source/folddb_profile/environments.json")
+                      compiled_profile=operation.root / "source/folddb_profile/environments.json",
+                      marker=operation.settings["marker"], profile_sha256=operation.settings["profile_sha256"])
     chosen = {"account": operation.account, **selection(accepted, operation.account)}
     baseline = dict(chosen)
     replay = {"base": flow["snapshot"], "minimum": flow["minimum"]} if kind == "log" else None
@@ -35,7 +36,8 @@ def recover(operation, flow, kind):
     def product_proof(report, actual):
         require(actual["commit_sha256"] == accepted["commit_sha256"], "frozen_recovery_point")
         return restored(operation.helpers.restore, destination, report, baseline, replay,
-                        operation.source.observe_accepted if replay else None)
+                        operation.source.observe_accepted if replay else None,
+                        operation.settings["route_marker"], operation.settings["run_profile"])
 
     def boot(number):
         return node(operation, destination, operation.candidate, labels[number])

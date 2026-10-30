@@ -11,6 +11,7 @@ import uuid
 from native_upgrade_common import call, require, session
 from native_run_v2_inputs import reference
 from native_run_v2_state import NODE, Metadata, current_hash, stable
+from native_run_v2_routes import markers, run_version, stopped_marker
 
 FILE = re.compile(r"disk-(run|cas)/(?:CURRENT|laststore-run-home-v2|runs/[0-9a-f-]{36}\.ldrun)")
 
@@ -47,7 +48,8 @@ def selected(approval):
             and core.get("released") is True and core.get("ready") is True
             and core.get("terminal") == terminal
             and terminal.get("status") == {"state": "published", "backup": accepted}
-            and core.get("begin") == accepted["begin"] and core.get("run", {}).get("version") == 2,
+            and core.get("begin") == accepted["begin"]
+            and core.get("run", {}).get("version") == run_version(approval),
             "The exact recovery snapshot is not accepted and source-released")
     require(accepted["begin"].get("descriptor") is None
             and accepted["begin"].get("required_destinations") == ["r2", "b2"]
@@ -56,12 +58,12 @@ def selected(approval):
     return core
 
 
-def selectors(home, profile, stopped=False):
+def selectors(home, profile, stopped=False, marker=NODE):
     metadata = Metadata()
     try:
         data = metadata.directory(home / "data", private=False)
         if stopped:
-            metadata.lock(data, "laststore-pack-node-v1", len(NODE), private=False)
+            metadata.lock(data, "laststore-pack-node-v1", len(marker), private=False)
         result = {}
         for name, label in (("disk-run", "main"), ("disk-cas", "cas")):
             directory = metadata.directory(home / "data" / name, data, name, private=False)
@@ -141,10 +143,11 @@ def native_hash(path, length):
 def stopped_cut(approval, state):
     home = Path(approval["primary_home"])
     core = selected(approval)
-    metadata, roots = selectors(home, core["run"], stopped=True)
+    metadata, roots = selectors(home, core["run"], stopped=True, marker=stopped_marker(approval))
     try:
         require(roots == state["recovery_point"]["selectors"]
-                and stable(home) == state["baseline"]["stable"], "The stopped recovery identities differ")
+                and stable(home, markers(approval)) == state["baseline"]["stable"],
+                "The stopped recovery identities differ")
         manifest = recovery_manifest(approval, core)
         files = {}
         for item in manifest["native_files"]:

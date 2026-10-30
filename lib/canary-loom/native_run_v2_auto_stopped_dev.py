@@ -70,7 +70,7 @@ def native_source(proof, intent, original_stop, previous):
     return report, manifest
 
 
-def restored(proof, parent, summary, programs, report, manifest, *, files=None):
+def restored(proof, parent, summary, programs, report, manifest, *, files=None, node_format=4, profile_version=2):
     record = proof["restore"]
     selected = reference(record["selection"])
     actual, result, receipt = [unwrap(reference(record[name])) for name in ("report", "result", "receipt")]
@@ -89,7 +89,7 @@ def restored(proof, parent, summary, programs, report, manifest, *, files=None):
     expected = [{"path": item["path"], "native_sha256": item["native_sha256"], "native_bytes": decimal(item["native_bytes"])}
                 for item in manifest["native_file_manifest"]]
     require(native.get("accepted_commit_sha256") == accepted["commit_sha256"]
-            and native.get("profile_version") == 2 and native.get("node_format") == 4
+            and native.get("profile_version") == profile_version and native.get("node_format") == node_format
             and native.get("required_destinations") == ["r2", "b2"]
             and native.get("native_files") == actual.get("native_files") == report["native_files"]
             and native.get("native_bytes") == actual.get("native_bytes") == report["native_bytes"]
@@ -110,7 +110,7 @@ def restored(proof, parent, summary, programs, report, manifest, *, files=None):
                  proof["intent"]["sha256"], accepted, label, expected_digest, files=files)
 
 
-def adoption(proof, report, operation):
+def adoption(proof, report, operation, source=SOURCE):
     records = proof["adoption"]
     require(set(records) == {"owner", "stop", "status", "before_enable", "after_disable", "recovery"},
             "The automatic adoption records are incomplete")
@@ -119,7 +119,7 @@ def adoption(proof, report, operation):
     require(set(before_record) == {"status", "recovery"}, "The original pre-enable status and recovery record differ")
     before, manual_recovery = before_record["status"], before_record["recovery"]
     identity = {"pid": uint(owner["pid"], True), "start_ts": uint(owner["start_ts"], True)}
-    require(owner.get("source") == SOURCE and owner.get("programs") == proof["programs"]
+    require(owner.get("source") == source and owner.get("programs") == proof["programs"]
             and owner.get("account") == proof["account"] and owner.get("home") == str(Path(proof["homes"]) / "s")
             and owner.get("operation_sha256") == operation and stop.get("owner") == owner
             and stop.get("receipt") == {"version": 1, **identity, "flush_ok": True}

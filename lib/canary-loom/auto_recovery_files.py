@@ -112,7 +112,7 @@ def files(session, restored):
     return sorted(result, key=lambda item: item["path"])
 
 
-def closure(restored, native):
+def closure(restored, native, marker=NODE):
     expected = {item["path"] for item in native}
     require(names(restored / "data") == ["disk-cas", "disk-run", "laststore-pack-node-v1"],
             "The restored data root is not an exact native snapshot")
@@ -135,14 +135,14 @@ def closure(restored, native):
             homes[name] = descriptor(metadata, parent)["home_id"]
         finally:
             metadata.close()
-    marker = next(item for item in native if item["path"] == "laststore-pack-node-v1")
-    require(marker["native_bytes"] == len(NODE)
-            and marker["native_sha256"] == hashlib.sha256(NODE).hexdigest()
-            and paths == expected, "The restored typed-format4 file closure differs")
+    found = next(item for item in native if item["path"] == "laststore-pack-node-v1")
+    require(found["native_bytes"] == len(marker)
+            and found["native_sha256"] == hashlib.sha256(marker).hexdigest()
+            and paths == expected, "The restored typed native file closure differs")
     return observed, homes
 
 
-def recorded_closure(native, observation):
+def recorded_closure(native, observation, marker=NODE):
     observed = observation["native_closure"]
     require(observed.get("data") == ["disk-cas", "disk-run", "laststore-pack-node-v1"]
             and set(observed) == {"data", "disk-run", "disk-cas", "disk-run/runs", "disk-cas/runs"}
@@ -160,7 +160,7 @@ def recorded_closure(native, observation):
     for item in native:
         native_path(item["path"])
     require(paths == {item["path"] for item in native}, "The original snapshot file closure is incomplete")
-    marker = next(item for item in native if item["path"] == "laststore-pack-node-v1")
-    require(marker["native_bytes"] == len(NODE)
-            and marker["native_sha256"] == hashlib.sha256(NODE).hexdigest(),
-            "The original restored node is not the exact typed-format4 marker")
+    found = next(item for item in native if item["path"] == "laststore-pack-node-v1")
+    require(found["native_bytes"] == len(marker)
+            and found["native_sha256"] == hashlib.sha256(marker).hexdigest(),
+            "The original restored node is not the exact typed route marker")

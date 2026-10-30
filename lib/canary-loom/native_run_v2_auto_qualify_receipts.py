@@ -32,7 +32,8 @@ def selection(original, home, baseline):
     return root, identifier
 
 
-def restored(original, home, report, baseline, replay=None, observe=None):
+def restored(original, home, report, baseline, replay=None, observe=None, node=None, profile=(2, 4)):
+    """`node` names a closed route marker; the frozen route helper then returns its match."""
     root, identifier = selection(original, home, baseline)
     commit = original.digest(baseline["commit_sha256"])
     original.require(report["commit_sha256"] == commit and report["destination"] == str(home)
@@ -51,8 +52,11 @@ def restored(original, home, report, baseline, replay=None, observe=None):
             and not os.path.lexists(original.owned(home, "current-session.json"))
             and not os.path.lexists(original.owned(home, "data/folddb.sock")), "restore_before_normal_boot")
     routes = None
-    if replay is None:
+    if replay is None and node is None:
         files = original.inventory(home, root)
+    elif replay is None:
+        files, matched = original.inventory(home, root, node_markers=(node,))
+        original.require(matched == node, "route_node_marker")
     else:
         files, routes = original.replayed_inventory(home, root, replay,
             original.read_json(original.owned(root, "selection.json"))["accepted"], observe)
@@ -60,7 +64,8 @@ def restored(original, home, report, baseline, replay=None, observe=None):
             and sum(item["native_bytes"] for item in files) == report["native_bytes"], "restore_native_totals")
     result = {"schema": "lastdb.run-v2-restored-files.v1", "accepted_commit_sha256": commit,
             "native_files": len(files), "native_bytes": report["native_bytes"], "files": files,
-            "receipt_sha256": original.hash_file(receipt_path), "profile_version": 2, "node_format": 4,
+            "receipt_sha256": original.hash_file(receipt_path), "profile_version": profile[0],
+            "node_format": profile[1],
             "required_destinations": ["r2", "b2"], "product_inventory_closure_verified": True,
             "independent_native_file_hashes_verified": replay is None,
             "final_native_file_hashes_recorded": True, "selected_log_chain_verified": replay is not None,

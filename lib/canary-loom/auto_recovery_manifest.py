@@ -106,8 +106,8 @@ def observation(manifest, accepted, endpoint):
     return value, report
 
 
-def profile(native, observed, expected):
-    require(expected.get("version") == 2, "The recovery snapshot has another native profile")
+def profile(native, observed, expected, version=2):
+    require(expected.get("version") == version, "The recovery snapshot has another native profile")
     by_path = {item["path"]: item for item in native}
     require(len(by_path) == len(native) and by_path, "The snapshot native proof repeats or omits its files")
     for folder, label in (("disk-run", "main"), ("disk-cas", "cas")):
@@ -142,7 +142,8 @@ def check(approval, core):
         require(proof == {"path": item["path"], "sha256": item["native_sha256"], "bytes": item["native_bytes"]}
                 and item["native_proof"]["path"] == str(session / "entries" / hashlib.sha256(item["path"].encode()).hexdigest()),
                 "An original snapshot native proof changed or names another file")
-    recorded_closure(native, observed)
-    profile(native, observed, core["run"])
+    from native_run_v2_routes import run_version, stopped_marker
+    recorded_closure(native, observed, stopped_marker(approval))
+    profile(native, observed, core["run"], run_version(approval))
     return {**manifest, "begin": core["begin"], "run_profile": core["run"], "native_root": core["native_root"],
             "profile_origin": "captured-source-profile-bound-by-complete-restored-native-hashes"}

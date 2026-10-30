@@ -17,18 +17,20 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
-def binding(path):
+def binding(path, pinned=True):
+    """A closed route binds its own catalog read by plan hash, not by this pin."""
     original = reference(path)
-    require(original["sha256"] == CATALOG_RESULT_SHA256, "original_public_catalog_read")
+    require(not pinned or original["sha256"] == CATALOG_RESULT_SHA256, "original_public_catalog_read")
     result = read(path)
     require(result["http_status"] == 200 and result["complete"] is True and result["bounded"] is True
             and result["requests_attempted"] == 1 and result["credentials_sent"] is False
             and result["redirects_followed"] == 0, "completed_public_catalog_read")
     body = result["body"]
-    require(reference(body["path"])["sha256"] == body["sha256"] == CATALOG_BODY_SHA256,
-            "unchanged_public_catalog_reply")
+    require(reference(body["path"])["sha256"] == body["sha256"]
+            and (not pinned or body["sha256"] == CATALOG_BODY_SHA256), "unchanged_public_catalog_reply")
     catalog = read(body["path"])
-    require(isinstance(catalog.get("schemas"), list) and len(catalog["schemas"]) == 49,
+    require(isinstance(catalog.get("schemas"), list)
+            and (len(catalog["schemas"]) == 49 if pinned else 0 < len(catalog["schemas"]) <= 4096),
             "original_bounded_catalog_definitions")
     matches = [item for item in catalog["schemas"] if item.get("name") == SCHEMA]
     require(len(matches) == 1 and matches[0]["system"] is False, "exact_existing_public_contract")
@@ -43,7 +45,7 @@ def binding(path):
             "existing_contract_key_fields_and_types")
     return {"identity": SCHEMA, "catalog_result": original, "catalog_body": body,
         "definition": definition, "definition_sha256": digest(definition),
-        "public_type_metadata_only": True, "new_registration": False}
+        "public_type_metadata_only": True, "new_registration": False, "pinned_catalog": pinned}
 
 
 def _raw(path, raw):
@@ -82,7 +84,8 @@ def _request(node, socket, method, route, output, body=None):
 
 def load(node, operation):
     expected = operation.plan["catalog"]
-    require(expected == binding(expected["catalog_result"]["path"]), "frozen_catalog_plan_binding")
+    require(expected == binding(expected["catalog_result"]["path"], expected.get("pinned_catalog", True)),
+            "frozen_catalog_plan_binding")
     folder = operation.output / "existing-catalog-load"
     folder.mkdir(mode=0o700)
     loaded, load_ref = _request(node, node.home / "data/folddb-full.sock", "POST", "/api/schemas/load",

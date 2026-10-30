@@ -27,6 +27,9 @@ class Request:
     environment_name: str = "dev"
     compiled_profile: Path = None
     resume_session: Path = None
+    # A closed route names its own marker and its frozen compiled profile.
+    marker: bytes = NODE
+    profile_sha256: str = PROFILE_SHA256
 
 
 def names(path, maximum):
@@ -88,11 +91,11 @@ def originals(request, report, before):
         "receipt": reference(request.destination / "byte-cloud-restore-receipt.json")}
 
 
-def native_files(destination):
+def native_files(destination, node=NODE):
     data = destination / "data"
     marker = data / "laststore-pack-node-v1"
-    require(marker.stat().st_size == len(NODE)
-            and hash_file(marker, len(NODE)) == hashlib.sha256(NODE).hexdigest(), "typed_format4_marker")
+    require(marker.stat().st_size == len(node)
+            and hash_file(marker, len(node)) == hashlib.sha256(node).hexdigest(), "typed_format4_marker")
     paths = ["laststore-pack-node-v1"]
     for home in ("disk-run", "disk-cas"):
         root = data / home
@@ -136,7 +139,7 @@ def before_boot(request, session, accepted, originals_ref):
     forbidden = ("current-session.json", "boot-error.json", "data/folddb.sock", "data/folddb-full.sock",
                  "sessions.jsonl", ".shutdown_flush_ready")
     require(all(not os.path.lexists(home / name) for name in forbidden), "restore_precedes_first_boot")
-    files = native_files(home)
+    files = native_files(home, request.marker)
     report = read(request.output / "report.json")
     require(len(files) == report["native_files"] and sum(f["native_bytes"] for f in files) == report["native_bytes"],
             "restored_native_totals")
@@ -159,9 +162,9 @@ def before_boot(request, session, accepted, originals_ref):
 
 def qualify(request, node_factory, read_values, before_boot_capture=None, source_stopped=None, product_proof=None):
     """No source path is read; a caller may assert its separately owned source stop."""
-    require(hash_file(request.compiled_profile, 65536) == PROFILE_SHA256, "exact_candidate_compiled_profile")
+    require(hash_file(request.compiled_profile, 65536) == request.profile_sha256, "exact_candidate_compiled_profile")
     profiles = read(request.compiled_profile, 65536)["environments"]
-    require(hash_file(request.compiled_profile, 65536) == PROFILE_SHA256, "unchanged_compiled_profile")
+    require(hash_file(request.compiled_profile, 65536) == request.profile_sha256, "unchanged_compiled_profile")
     require(request.environment_name in ("dev", "prod")
             and request.endpoint == profiles[request.environment_name]["exemem_api"]
             and re.fullmatch(r"[0-9a-f]{32}", request.account)

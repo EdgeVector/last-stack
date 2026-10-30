@@ -132,8 +132,10 @@ def _later(operation, active, source, snapshot, selected, written):
 
 
 def run(operation):
-    require(operation.plan["source"] == SOURCE and operation.candidate.source == SOURCE
-            and operation.baseline.source == BASELINE
+    settings = operation.settings
+    require(operation.plan["source"] == settings["source"] and operation.candidate.source == settings["source"]
+            and operation.baseline.source == settings["baseline"]
+            and (operation.plan.get("route") is not None or (settings["source"], settings["baseline"]) == (SOURCE, BASELINE))
             and operation.account == operation.plan["account"],
             "exact_qualification_pair_and_dev_account")
     active = [None]

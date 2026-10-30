@@ -18,7 +18,7 @@ from native_upgrade_common import pair, private_dir, require, run, session, stop
 from native_v2_primary import record
 from native_v2_stop import restore_hold
 from native_run_v2_profiles import check as evidence_check, selected as selected_profile
-from native_run_v2_profiles import automatic, modern_stopped, protocol
+from native_run_v2_profiles import automatic, baseline as profile_baseline, closed_route, modern_stopped, protocol
 from native_run_v2_inputs import digest, read, uint
 from native_run_v2_primary import (baseline_snapshot, initial, live, prepare, preserved,
                                    select, start, stopped_boundary)
@@ -51,7 +51,7 @@ def context():
             "Immutable Loom item/context conflict")
     ctx = {**item, **{k: v for k, v in raw.items() if k != "item"}}
     require((ctx.get("upgrade_mode"), ctx.get("safe_upgrade_protocol_version"))
-            in ((MODE, "12"), (MODE, "13"), (MODE, "14"))
+            in ((MODE, "12"), (MODE, "13"), (MODE, "14"), (MODE, "15"))
             and ctx.get("native_reopen") is False and ctx.get("native_probe_only") is False
             and ctx.get("zero_live_soak", False) is False
             and ctx.get("accept_stale_recovery_point", "") == "",
@@ -75,9 +75,11 @@ def binding(ctx):
     require(identity == ctx["candidate_artifact_digest"]
             and re.fullmatch(r"[0-9a-f]{40}", ctx["source_git_oid"]), "Candidate binding differs")
     approval = read(ctx["native_approval"], 65536, digest(ctx["native_approval_sha256"]))
-    _, profile = selected_profile(approval)
+    selected_profile(approval)
     require(ctx["safe_upgrade_protocol_version"] == protocol(approval),
             "The exact RunV2 approval protocol differs")
+    baseline_source, baseline_programs = profile_baseline(approval)
+    route = closed_route(approval)
     if automatic(approval):
         require(approval.get("legacy_sync_off") is True
                 and approval.get("automatic_backup_enabled") is True
@@ -86,6 +88,10 @@ def binding(ctx):
         from native_run_v2_auto_policy import contract
         contract(approval)
         recovery_policy = "accepted-automatic-snapshot-exact-stopped-native-cut-and-saved-pair"
+    elif route is not None:
+        require(approval.get("cloud_off") is True, "The selected maintenance policy requires Cloud Off")
+        from native_run_v2_route_gate import recovery_policy as route_recovery_policy
+        recovery_policy = route_recovery_policy(route)
     else:
         require(approval.get("cloud_off") is True, "The selected maintenance policy requires Cloud Off")
         recovery_policy = "accepted-stopped-native-cut-and-saved-pair"
@@ -94,8 +100,8 @@ def binding(ctx):
             and isinstance(approval.get("quote"), str) and bool(approval["quote"].strip())
             and approval.get("source_git_oid") == ctx["source_git_oid"]
             and approval.get("candidate") == candidate
-            and approval.get("baseline_source_git_oid") == profile.BASELINE
-            and approval.get("baseline_programs_sha256") == profile.BASELINE_PROGRAMS
+            and approval.get("baseline_source_git_oid") == baseline_source
+            and approval.get("baseline_programs_sha256") == baseline_programs
             and approval.get("primary_data_copy") is False
             and approval.get("primary_restore_or_migration") is False
             and approval.get("primary_validation") == "keyed-data-health-continuity"
@@ -112,6 +118,8 @@ def state_path(ctx):
 
 
 def state_schema(ctx):
+    if ctx["safe_upgrade_protocol_version"] == "15":
+        return "lastdb.run-v2-maintenance-upgrade.v4"
     if ctx["safe_upgrade_protocol_version"] == "14":
         return "lastdb.run-v2-maintenance-upgrade.v3"
     if ctx["safe_upgrade_protocol_version"] == "13":
@@ -174,8 +182,12 @@ def cutover(ctx, candidate, approval, evidence, path, state):
     if state["phase"] == "complete":
         require(live(approval, state)["session"] == state["live"]["session"], "Completed primary session changed")
         return
+    route = closed_route(approval)
+    activation = route is not None and route["kind"] == "activation"
     require(state["phase"] in ("probed", "prepared", "stopped", "install-requested", "selected",
-                               "start-requested", "active", "soak"), "Unknown interrupted RunV2 phase")
+                               "start-requested", "active", "soak",
+                               *(("activation-requested", "activated") if activation else ())),
+            "Unknown interrupted RunV2 phase")
     if not state.get("effect_started_at"):
         fresh(approval)
         preserved(approval, state)
@@ -197,10 +209,22 @@ def cutover(ctx, candidate, approval, evidence, path, state):
         record(path, state, "stopped", stopped_at=int(time.time()), stopped_native_roots=stopped_boundary(approval, state))
     else:
         fresh(approval, state["effect_started_at"])
-    if state["phase"] in ("stopped", "install-requested"):
+    if activation and state["phase"] in ("stopped", "install-requested", "activation-requested", "activated"):
+        # The offline marker change is forward only. After its request, the
+        # activation module proves the exact marker and every other native
+        # file against the verified final stopped backup.
+        import native_run_v2_activation as offline
+        if state["phase"] == "stopped" and not state.get("final_backup"):
+            require(stopped_boundary(approval, state) == state["stopped_native_roots"],
+                    "The exact stopped RunV2 CURRENT pair changed before the final backup")
+            from native_run_v2_final_recovery import complete
+            complete(approval, state, path)
+        offline.activate(approval, state, path)
+        select(approval, state, path)
+    elif state["phase"] in ("stopped", "install-requested"):
         require(stopped_boundary(approval, state) == state["stopped_native_roots"],
                 "The exact stopped RunV2 CURRENT pair changed before installation")
-        if ctx["safe_upgrade_protocol_version"] == "13":
+        if ctx["safe_upgrade_protocol_version"] in ("13", "15"):
             from native_run_v2_final_recovery import complete
             complete(approval, state, path)
         else:
@@ -229,6 +253,12 @@ def recover(approval, state, path):
     if "stop_program" in state:
         value = state["stop_program"]
         restore_hold(Path(value["path"]), value["inode"], value["sha256"])
+    route = closed_route(approval)
+    activation = route is not None and route["kind"] == "activation"
+    if activation:
+        # Record a completed marker change first; the same pair then restarts.
+        from native_run_v2_activation import reconcile
+        reconcile(approval, state, path)
     preserved(approval, state)
     intents, bindings = state.get("startup_intents", {}), state.get("startup_bindings", {})
     require(isinstance(intents, dict) and isinstance(bindings, dict) and set(intents) <= set(bindings),
@@ -241,7 +271,10 @@ def recover(approval, state, path):
         return
     home, _, _, program, target = service(approval)
     pid = job_pid(target)
-    selected = program.parent == Path(state["candidate_directory"])
+    # An activation selects the same program directory, so its startup intent
+    # decides which session owns the primary.
+    selected = ("candidate" in intents if activation
+                else program.parent == Path(state["candidate_directory"]))
     if not selected and pid is not None:
         observed = live(approval, state, False)
         restarting = state["phase"] == "rollback-start-requested"

@@ -7,6 +7,7 @@ from native_upgrade_common import require, save, sha
 from native_run_v2_inputs import digest, reference, uint
 from native_run_v2_recovery import FILE, local, native_hash, selectors
 from native_run_v2_state import stable
+from native_run_v2_routes import markers, stopped_marker
 
 
 def canonical(value):
@@ -59,10 +60,10 @@ def verify(approval, state, report, manifest):
             and manifest.get("native_files") == report.get("native_files")
             and manifest.get("native_bytes") == report.get("native_bytes"),
             "The accepted final source metadata differs")
-    metadata, roots = selectors(home, profile, stopped=True)
+    metadata, roots = selectors(home, profile, stopped=True, marker=stopped_marker(approval))
     try:
         require(roots == state["stopped_native_roots"]
-                and stable(home) == state["baseline"]["stable"],
+                and stable(home, markers(approval)) == state["baseline"]["stable"],
                 "The final stopped native roots or stable home changed")
         found = {}
         for item in manifest["native_file_manifest"]:

@@ -124,8 +124,11 @@ def bounded_file(path, maximum=1024 * 1024, private=False):
         metadata.close()
 
 
-def stable(home):
+def stable(home, markers=(NODE,)):
+    """Bind the stable home; a closed route can admit its activated marker too."""
     home = Path(home)
+    require(isinstance(markers, tuple) and markers and all(isinstance(m, bytes) for m in markers),
+            "Run V2 node marker policy differs")
     metadata = Metadata()
     try:
         root = metadata.directory(home, private=False)
@@ -141,8 +144,11 @@ def stable(home):
             values[name] = None if binding is None else binding["sha256"]
         require(values["identity.key"] is not None and values["cloud_sync.json"] is None,
                 "Run V2 requires its original identity and Cloud Off")
-        marker, contents = metadata.file(data, MARKER, len(NODE), exact=len(NODE))
-        require(contents == NODE, "Run V2 node marker differs")
+        if markers == (NODE,):
+            marker, contents = metadata.file(data, MARKER, len(NODE), exact=len(NODE))
+        else:
+            marker, contents = metadata.file(data, MARKER, max(len(m) for m in markers))
+        require(contents in markers, "Run V2 node marker differs")
         homes = {}
         for name in ("disk-run", "disk-cas"):
             fd = metadata.directory(home / "data" / name, data, name, private=False)
@@ -178,20 +184,22 @@ def current_hash(parent):
         os.close(fd)
 
 
-def stopped_pair(home, expected):
+def stopped_pair(home, expected, marker=NODE, markers=None):
     home = Path(home)
+    markers = (marker,) if markers is None else markers
+    require(marker in markers, "Run V2 stopped node marker policy differs")
     metadata = Metadata()
     try:
         root = metadata.directory(home, private=False)
         data = metadata.directory(home / "data", root, "data", private=False)
-        metadata.lock(data, MARKER, len(NODE), private=False)
+        metadata.lock(data, MARKER, len(marker), private=False)
         homes = {}
         for name in ("disk-run", "disk-cas"):
             homes[name] = metadata.directory(home / "data" / name, data, name, private=False)
             metadata.lock(homes[name], "LOCK", 0)
-        require(stable(home) == expected, "Run V2 stopped native identity differs")
+        require(stable(home, markers) == expected, "Run V2 stopped native identity differs")
         result = {name: current_hash(fd) for name, fd in homes.items()}
-        require(stable(home) == expected, "Run V2 stopped native identity changed")
+        require(stable(home, markers) == expected, "Run V2 stopped native identity changed")
         return result
     finally:
         metadata.close()
