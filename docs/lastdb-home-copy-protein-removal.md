@@ -1,8 +1,8 @@
 # LastDB home copy for the protein removal
 
-This document gives a second path for the protein removal on the primary LastDB.
-The first path converts the old home in place.
-This path makes a new home, copies the kept records into it, and then moves the homes.
+This document gives the Brain migration path for the protein removal on the primary LastDB.
+On 2026-10-30 the in-place Brain conversion was removed. This home copy is the only Brain migration path.
+The path makes a new home, copies the kept records into it, and then moves the homes.
 
 The helper is `bin/last-stack-lastdb-home-copy`.
 It is one Python file. It uses only the two daemon sockets.
@@ -126,7 +126,7 @@ For each field the helper maps three names:
 A field with no map is an issue. The helper does not write a record with an issue.
 The helper checks each value against the target field type. It mirrors the DateTime check of the Schema Service (RFC 3339 with an offset).
 
-Brain membership follows brain#484 `multi-key-convert`:
+Brain membership follows the rules of the removed brain#484 `multi-key-convert`:
 
 - `BrainTypeDirectory` (range `__types__`, field `btd_types`) gives the record types of each slug.
 - One old Concept schema holds the concept and the sop records. The helper sends each slug to Concept or to the new Sop schema by its directory types.
@@ -190,6 +190,12 @@ Exit codes: 0 for success, 2 for a refusal or a copy issue, 3 for a verify diffe
 - `--apply` refuses a target under `~/.lastdb` or under `--protect-home`. It refuses the same socket for source and target.
 - `--apply` refuses different user hashes (override: `--allow-different-identity`).
 - `--apply` needs the new configs for each app in scope.
+- Owners (Tom renamed the Brain app id from `fbrain` to `brain` on 2026-10-30):
+  - Each route maps the source schema to the target schema with the same descriptive name and the expected owner. The `sop` route also accepts the old `Concept` schema as its source.
+  - A pin in the new app config must name that same target schema.
+  - An app group changes owner only through a declared map: `--source-owner fbrain --target-owner brain`. The long form is `--owner-map brain:fbrain=brain`. `-` means no owner.
+  - Every other owner difference is a refusal. For example, LastSecrets keeps the owner `lastsecrets`, and a Brain target without the map must keep `fbrain`.
+  - A record digest covers the key and the mapped values only. The digest does not include the schema name or the owner, so the verify compares `fbrain` records with `brain` records.
 - A refusal stops the route before its first write:
   - An unselected key (override: `--allow-unselected`).
   - A count guard difference. The override names the accepted value: `--accept-directory-count TYPE=N` (for example `design=38`). The report shows the stored count, the accepted count, and the selected records.
@@ -344,7 +350,7 @@ An earlier run used program a1c406f5 for the source and the target. It showed th
 
 CAUTION: This runbook changes the primary. Tom approves each stop. Start only after the blockers in section 8 are clear.
 
-CAUTION: The 2026-10-14 notice forbids `brain` commands. On 2026-10-30 Tom allowed `brain init`, `brain multi-key-convert`, and read-only `brain get` and `brain search` against the NEW home, for this migration only. Steps 5, 7, and 11d use only these commands. Do not use other `brain` commands.
+CAUTION: The 2026-10-14 notice forbids `brain` commands. On 2026-10-30 Tom allowed `brain init` and read-only `brain get` and `brain search` against the NEW home, for this migration only. Steps 5, 7, and 11d use only these commands. Do not use other `brain` commands.
 
 ### Step 0. Shell variables (each new shell)
 
@@ -498,7 +504,7 @@ If `brain init` stops at `BrainCompactListLocator_v1`, B10 is still open. Stop t
 ```bash
 A=(--source-home "$OLD" --target-home "$NEW" --brain-release "$BR" --lastsecrets-release "$LR"
    --new-brain-config "$W/staging-config/brain.json" --new-lastsecrets-config "$W/staging-config/lastsecrets.json"
-   --value-max-bytes 524288 --accept-directory-count design=38)
+   --value-max-bytes 524288 --accept-directory-count design=38 --source-owner fbrain --target-owner brain)
 python3 "$COPY" "${A[@]}" --census --report "$W/s6-plan.json" > "$W/s6-plan.txt"; echo "rc=$?"
 python3 "$COPY" "${A[@]}" --apply --report "$W/s6-copy.json" > "$W/s6-copy.txt"; echo "rc=$?"
 sed -n '1,45p' "$W/s6-copy.txt"
@@ -574,7 +580,7 @@ Rollback for Step 8: `kill -TERM "$(cat "$W/s8-old-private.pid")"`, then `launch
 ```bash
 F=(--source-socket "$FS/old.sock" --target-home "$NEW" --brain-release "$BR" --lastsecrets-release "$LR"
    --new-brain-config "$W/staging-config/brain.json" --new-lastsecrets-config "$W/staging-config/lastsecrets.json"
-   --value-max-bytes 524288 --accept-directory-count design=38)
+   --value-max-bytes 524288 --accept-directory-count design=38 --source-owner fbrain --target-owner brain)
 python3 "$COPY" "${F[@]}" --apply --delete-extra --report "$W/s9-copy.json" > "$W/s9-copy.txt"; echo "rc=$?"
 python3 "$COPY" "${F[@]}" --verify --report "$W/s9-verify.json" > "$W/s9-verify.txt"; echo "rc=$?"
 python3 "$COPY" --source-socket "$FS/old.sock" --brain-release "$BR" --lastsecrets-release "$LR" \
@@ -623,7 +629,8 @@ env -u LASTDB_HOME -u FOLDDB_HOME -u LASTDB_SOCKET_PATH LASTDB_ENGINE=laststore 
 echo $! > "$W/s11-back.pid"
 python3 "$COPY" --source-socket "$FS/old.sock" --target-home "$OLD" --brain-release "$BR" --lastsecrets-release "$LR" \
   --new-brain-config "$W/staging-config/brain.json" --new-lastsecrets-config "$W/staging-config/lastsecrets.json" \
-  --accept-directory-count design=38 --verify --report "$W/s11-verify.json" > "$W/s11-verify.txt"; echo "rc=$?"
+  --accept-directory-count design=38 --source-owner fbrain --target-owner brain \
+  --verify --report "$W/s11-verify.json" > "$W/s11-verify.txt"; echo "rc=$?"
 kill -TERM "$(cat "$W/s11-back.pid")"
 ```
 
@@ -713,7 +720,7 @@ Turn on the automatic backup of the old home if Tom wants it: `lastdb --data-dir
 | B3 | Open. brain#484 and lastsecrets#14 are not merged. The runbook needs their merged commits. brain#484 has two writers, and its head moves (f1bd8cfb on 2026-10-30). | app authors |
 | B4 | Decided 2026-10-30. Design: trust the 38 records over the stored count of 37. The new Brain rebuilds its counts. The runbook names `--accept-directory-count design=38`. | done |
 | B5 | Decided 2026-10-30. `appIdentityEnforce` stays true. Steps 5 and 11b set it. Brain reads with true passed in the proof. Brain writes with true on #803 did not run. | done |
-| B6 | Decided 2026-10-30. Tom allowed `brain init`, `brain multi-key-convert`, and read-only `brain get` and `brain search` against the NEW home for this migration. | done |
+| B6 | Decided 2026-10-30. Tom allowed `brain init` and read-only `brain get` and `brain search` against the NEW home for this migration. | done |
 | B7 | Open. Two V2 streams on one account. The quota and the cost are not known. The old stream stays for recovery. | Tom |
 | B8 | Closed by the proof. The #803 daemon ran in the synthetic run (section 5.2). The first check on real data is still Step 6. | operator |
 | B9 | Closed by the proof. The home move ran on a format 6 store, and the #803 daemon started on the moved home. If the real move fails, point the plist, the configs, and `current` at `~/.lastdb-v13` instead. | operator |
@@ -721,7 +728,9 @@ Turn on the automatic backup of the old home if Tom wants it: `lastdb --data-dir
 
 ## 9. Loss compared with the in-place conversion
 
-| Item | In place | Home copy |
+The in-place conversion was removed on 2026-10-30. This section stays as the record of what the home copy does not keep.
+
+| Item | In place (removed) | Home copy |
 |---|---|---|
 | Atom history, atom UUIDs, authors, clocks | Kept | Lost |
 | Tombstones | Kept | Lost |

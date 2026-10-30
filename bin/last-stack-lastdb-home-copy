@@ -26,6 +26,15 @@ Safety:
     directory (0700, files 0600). It skips every LastSecrets schema and
     Papercut, and a file pointer keeps only its content hash.
 
+Owners:
+  * Each route maps a source schema to the target schema with the same
+    descriptive name and the expected owner. A new-config pin must name that
+    same schema. An app group changes owner only through a declared map,
+    --owner-map brain:fbrain=brain (short form: --source-owner fbrain
+    --target-owner brain). Every other owner difference is a refusal.
+  * Record digests cover the key and the mapped field values only, so they do
+    not depend on the schema name or the owner.
+
 Design and runbook: docs/lastdb-home-copy-protein-removal.md.
 """
 
@@ -69,6 +78,8 @@ NOT_MOVED_NOTES = {
     "PapercutStatusIndex_hashrange_v1": "dropped with no export (Brain no longer supports papercuts)",
 }
 EXPORT_NOTE = "export to the protein-removal artifacts folder, then drop"
+# The old home keeps Sop records in the Concept schema; the new release declares its own Sop schema.
+BRAIN_SOURCE_DESCRIPTIVE = {"sop": ("Concept",)}
 NOT_MOVED_NOTES.update({name: EXPORT_NOTE for name in (
     "BrainGraphEdgeBySource_hashrange_v1", "BrainGraphEdgeByDestination_hashrange_v1",
     "ChildTaskIndex_hashrange_v1", "ClusterIndex_hashrange_v1", "EphIndex_hashrange_v1",
@@ -444,6 +455,24 @@ def field_map_for(route, source_fields, target_fields):
     return mapping, missing
 
 
+def norm_owner(entry):
+    """The owner app id of a schema listing entry; None and "" compare equal."""
+    owner = (entry or {}).get("owner_app_id")
+    return (owner.strip() or None) if isinstance(owner, str) else None
+
+
+def owned_by_descriptive(catalog, owner, descriptive):
+    """Schemas that one owner ("" = no owner) declares under one descriptive name. Alias names
+    (owner/Name) do not count."""
+    return [e for e in catalog.entries
+            if (norm_owner(e) or "") == owner and e.get("descriptive_name") == descriptive
+            and "/" not in e.get("name", "")]
+
+
+def show_owner(owner):
+    return owner or "none"
+
+
 def build_routes(args, src_cat, tgt_cat, cfg):
     routes, not_moved, fresh, refusals = [], [], [], []
     used_sources = set()
@@ -451,13 +480,45 @@ def build_routes(args, src_cat, tgt_cat, cfg):
     old_ls, new_ls = cfg["old_lastsecrets"], cfg["new_lastsecrets"]
     brain_vocab, ls_vocab = cfg["brain_release"], cfg["lastsecrets_release"]
 
-    def add_route(app, key, src_pin, tgt_pin, target_descriptive, secret, membership, old_cfg, new_cfg, vocab):
+    def add_route(app, key, src_pin, tgt_pin, target_descriptive, secret, membership, old_cfg, new_cfg, vocab,
+                  source_descriptive):
         src_entry = src_cat.find(src_pin)
         if src_entry is None:
             fresh.append({"app": app, "key": key, "reason": "no installed source schema"})
             return
         used_sources.add(src_entry["name"])
+        label = f"{app}:{key}"
+        declared = args.owner_map.get(app)
+        src_owner = norm_owner(src_entry) or ""
+        if declared:
+            want_src, want_tgt = declared
+            if src_owner != want_src:
+                refusals.append(f"{label}: the source schema owner is {show_owner(src_owner)}, not the declared "
+                                f"{show_owner(want_src)} (--owner-map {app}:{want_src or '-'}={want_tgt or '-'})")
+        else:
+            want_tgt = src_owner
+        if src_entry.get("descriptive_name") not in source_descriptive:
+            refusals.append(f"{label}: the source schema is {src_entry.get('descriptive_name')!r}, "
+                            f"not {' or '.join(repr(d) for d in source_descriptive)}")
         tgt_entry = tgt_cat.find(tgt_pin) if (tgt_cat and tgt_pin) else None
+        if tgt_cat is not None:
+            # The map goes by descriptive name within the owner. A new-config pin must name the same schema.
+            candidates = owned_by_descriptive(tgt_cat, want_tgt, target_descriptive)
+            if tgt_entry is None and not tgt_pin and len(candidates) == 1:
+                tgt_entry = candidates[0]
+            if tgt_entry is None:
+                found = f"{len(candidates)} schema(s) of owner {show_owner(want_tgt)} named {target_descriptive!r}"
+                refusals.append(f"{label}: the target node has no schema for pin {short(tgt_pin)} ({found}); "
+                                "run the new app init on the new home first")
+            else:
+                tgt_owner = norm_owner(tgt_entry) or ""
+                if tgt_owner != want_tgt:
+                    why = f"the declared {show_owner(want_tgt)}" if declared else \
+                        f"the source owner {show_owner(want_tgt)}; a rename needs --owner-map"
+                    refusals.append(f"{label}: the target schema owner is {show_owner(tgt_owner)}, not {why}")
+                if tgt_entry.get("descriptive_name") != target_descriptive:
+                    refusals.append(f"{label}: the target schema is {tgt_entry.get('descriptive_name')!r}, "
+                                    f"not {target_descriptive!r}")
         new_aliases = alias_map(new_cfg, tgt_pin, tgt_entry.get("name") if tgt_entry else None)
         if not new_aliases and new_cfg is None and vocab:
             new_aliases = vocab["schemas"].get(target_descriptive, {})
@@ -470,9 +531,6 @@ def build_routes(args, src_cat, tgt_cat, cfg):
             "vocab_types": ({name: (vocab["fields"].get(name) or {}).get("field_type")
                              for name in new_aliases.values()} if vocab and new_aliases else {}),
         }
-        if tgt_cat is not None and tgt_entry is None:
-            refusals.append(f"{app}:{key}: the target node has no schema for pin {short(tgt_pin)}; "
-                            "run the new app init on the new home first")
         routes.append(route)
 
     if args.only and not any(o.startswith("brain") for o in args.only):
@@ -492,12 +550,14 @@ def build_routes(args, src_cat, tgt_cat, cfg):
             src_entry = src_cat.find(src_pin)
             if key in BRAIN_RECORD_TYPES:
                 descriptive = key.capitalize()
+                source_descriptive = (descriptive,) + BRAIN_SOURCE_DESCRIPTIVE.get(key, ())
                 membership = {"kind": "directory", "type": key}
             else:
                 descriptive = src_entry.get("descriptive_name") if src_entry else key
+                source_descriptive = (descriptive,)
                 membership = None
             add_route("brain", key, src_pin, new_hashes.get(key), descriptive, False, membership,
-                      old_brain, new_brain, brain_vocab)
+                      old_brain, new_brain, brain_vocab, source_descriptive)
 
     if args.only and not any(o.startswith("lastsecrets") for o in args.only):
         old_ls = None
@@ -510,7 +570,7 @@ def build_routes(args, src_cat, tgt_cat, cfg):
             src_pin = old_ls.get(hash_key)
             tgt_pin = (new_ls or {}).get(hash_key) or (new_ls or {}).get(name_key)
             add_route("lastsecrets", key, src_pin, tgt_pin, descriptive, secret, None,
-                      old_ls, new_ls, ls_vocab)
+                      old_ls, new_ls, ls_vocab, (descriptive,))
             alias_name = old_ls.get(name_key)
             alias_entry = src_cat.find(alias_name)
             if alias_entry and alias_entry["name"] not in used_sources:
@@ -525,8 +585,9 @@ def build_routes(args, src_cat, tgt_cat, cfg):
         descriptive = entry.get("descriptive_name") or ""
         note = NOT_MOVED_NOTES.get(descriptive)
         if note is None:
-            note = EXPORT_NOTE if entry.get("owner_app_id") in ("fbrain", "brain", "compaction-recovery-check") \
-                else "no route in this helper"
+            brain_owners = {"fbrain", "brain", "compaction-recovery-check",
+                            (args.owner_map.get("brain") or ("",))[0]} - {""}
+            note = EXPORT_NOTE if norm_owner(entry) in brain_owners else "no route in this helper"
         not_moved.append({"name": entry["name"], "descriptive": descriptive,
                           "owner": entry.get("owner_app_id"), "reason": "not declared by the new release; " + note})
     return routes, not_moved, fresh, refusals
@@ -649,6 +710,7 @@ class RunContext:
         self.source_keys_lock = threading.Lock()
 
     def digest(self, key, fields):
+        # Key and mapped values only: no schema name and no owner, so fbrain -> brain digests compare.
         text = json.dumps([list(key), comparable(fields)], sort_keys=True, separators=(",", ":"))
         return hmac.new(self.hmac_key, text.encode(), hashlib.sha256).hexdigest()
 
@@ -815,8 +877,10 @@ def run_route(ctx, route, mode, pre):
     src_entry, tgt_entry = route["source"], route["target"]
     result = {"app": route["app"], "key": route["key"], "secret": route["secret"],
               "source": {"name": short(src_entry["name"]), "descriptive": src_entry.get("descriptive_name"),
+                         "owner": show_owner(norm_owner(src_entry)),
                          "layout": layout(src_entry), "fields": len(src_entry.get("fields") or [])},
               "target": ({"name": tgt_entry["name"], "descriptive": tgt_entry.get("descriptive_name"),
+                          "owner": show_owner(norm_owner(tgt_entry)),
                           "layout": layout(tgt_entry), "independent_fields": tgt_entry.get("independent_fields")}
                          if tgt_entry else None),
               "target_descriptive": route["target_descriptive"], "issues": {}, "refusals": list(pre["refusals"])}
@@ -1049,6 +1113,15 @@ def parse_args(argv):
                         "per-type count (the report records both values); repeat per type")
     p.add_argument("--delete-extra", action="store_true",
                    help="--apply: delete target records that the source no longer has")
+    p.add_argument("--owner-map", action="append", default=[], metavar="GROUP:SOURCE=TARGET",
+                   help="declare an owner change for one app group (brain or lastsecrets), for example "
+                        "brain:fbrain=brain. Every source schema of the group must have SOURCE and every target "
+                        "schema TARGET. '-' means no owner (a system_seed schema on a synthetic home). Without a "
+                        "map, each target schema must have the owner of its source schema")
+    p.add_argument("--source-owner", metavar="APP_ID",
+                   help="short form for the Brain group: --source-owner fbrain --target-owner brain is "
+                        "--owner-map brain:fbrain=brain")
+    p.add_argument("--target-owner", metavar="APP_ID", help="see --source-owner")
     p.add_argument("--allow-different-identity", action="store_true",
                    help="permit a target node whose user hash differs from the source (synthetic homes only)")
     p.add_argument("--allow-shared-value-target", action="store_true",
@@ -1082,6 +1155,21 @@ def parse_args(argv):
             p.error(f"--accept-directory-count names {match.group(1)} twice")
         accepted[match.group(1)] = int(match.group(2))
     args.accept_directory_count = accepted
+    if bool(args.source_owner) != bool(args.target_owner):
+        p.error("--source-owner and --target-owner go together")
+    owner_items = list(args.owner_map)
+    if args.source_owner:
+        owner_items.append(f"brain:{args.source_owner}={args.target_owner}")
+    owners = {}
+    app_id = r"(-|[a-z0-9][a-z0-9_-]*)"
+    for item in owner_items:
+        match = re.fullmatch(rf"(brain|lastsecrets):{app_id}={app_id}", item)
+        if not match:
+            p.error(f"--owner-map needs GROUP:SOURCE=TARGET with GROUP brain or lastsecrets and app ids, not {item!r}")
+        if match.group(1) in owners:
+            p.error(f"the owner map names {match.group(1)} twice")
+        owners[match.group(1)] = tuple("" if v == "-" else v for v in match.group(2, 3))
+    args.owner_map = owners
     return args
 
 
@@ -1128,7 +1216,9 @@ def main(argv):
     src_cat = Catalog(src)
     tgt_cat = Catalog(tgt) if tgt else None
     report = {"mode": args.mode, "source": node_facts(src, src_cat),
-              "target": node_facts(tgt, tgt_cat) if tgt else None, "refusals": []}
+              "target": node_facts(tgt, tgt_cat) if tgt else None, "refusals": [],
+              "owner_map": {app: {"source": show_owner(s), "target": show_owner(t)}
+                            for app, (s, t) in sorted(args.owner_map.items())}}
     if tgt and report["source"]["user_hash"] != report["target"]["user_hash"]:
         note = "the source and target user hashes differ"
         if args.mode == "apply" and not args.allow_different_identity:
@@ -1260,6 +1350,9 @@ def render_text(report):
     if tgt:
         lines.append(f"target   api {tgt['api_version']}  build {tgt['build']}  schemas {tgt['schemas']}  "
                      f"user {tgt['user_hash']}")
+    for app, pair in (report.get("owner_map") or {}).items():
+        lines.append(f"owner map {app}: {pair['source']} -> {pair['target']} (declared); "
+                     "every other group keeps its owner")
     if report.get("brain_directory"):
         d = report["brain_directory"]
         lines.append(f"brain directory rows {d['rows']}  unreadable {d['unreadable']}  counts "
