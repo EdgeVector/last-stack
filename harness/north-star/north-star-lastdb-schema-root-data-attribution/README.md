@@ -25,7 +25,11 @@ retention, and system root groups for each live candidate.
   "schema": "lastdb-schema-root-reachability.v1",
   "surface": {"kind": "isolated-copy", "copy_id": "cow-20260928"},
   "roots": {"schema_catalogs": ["schema-a"], "retention": [], "system": []},
-  "objects": [{"id": "schema-a", "references": ["protein-a"]}, {"id": "protein-a", "references": ["atom-1"]}]
+  "objects": [
+    {"id": "schema-a", "references": ["field-a"]},
+    {"id": "field-a", "references": ["molecule-a"]},
+    {"id": "molecule-a", "references": ["atom-1"]}
+  ]
 }
 ```
 

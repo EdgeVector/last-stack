@@ -115,7 +115,7 @@ usage: last-stack-north-star-proof [--list [--json]] [--offline|--live] [<ns-slu
 North Star terminal proof harness runner.
 
 Modes:
-  --offline (default)  structural + fixture / unit proofs; never primary brain
+  --offline (default)  selects each check's offline mode; never primary brain
   --live               full dogfood when prerequisites exist (still never primary)
 
 --list prints one slug per line, sorted. --list --json prints one JSON object:
