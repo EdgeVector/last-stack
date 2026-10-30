@@ -1,11 +1,11 @@
 """Close the current typed-format4 upgrade to its complete reviewed Git trees."""
 
+import hashlib
+import json
+
 from native_upgrade_common import require
 from native_run_v2_inputs import digest, read
 from native_v2_release import git
-from native_run_v2_auto_changes_a import CHANGES as FIRST
-from native_run_v2_auto_changes_b import CHANGES as SECOND
-from native_run_v2_auto_changes_c import CHANGES as THIRD
 
 BASELINE = "1d4b205bb84ad3f6dc0a3b4c9d5088e13b499f46"
 BASELINE_TREE = "3cc0d32c3434d044c3f0d436f4026dcd672fa065"
@@ -16,7 +16,10 @@ BASELINE_PROGRAMS = {
     "lastdb": "f94b96c5a820a19c76502c150c8b2815ff0d150dff86720c3f11f489976422ed",
     "lastdbd": "a53ac5ce39713574a47f9c8a9a38c337dd395c70a02212c217d2cf80d99c87d5",
 }
-EXACT_CHANGES = {**FIRST, **SECOND, **THIRD}
+# SHA-256 of the complete reviewed path/mode/type/blob map, encoded as sorted
+# compact JSON. The exact baseline and candidate tree checks remain separate.
+REVIEWED_PATHS = 655
+REVIEWED_CHANGES_SHA256 = "beeeed75325fb037125b310c68852e7a9ea1fa111af4af8b9c1fd283b401874f"
 
 
 def tree(repo, source):
@@ -44,8 +47,9 @@ def check(evidence):
                if before.get(path) != after.get(path)}
     proof_sha = digest(evidence["compatibility_sha256"])
     proof = read(evidence["compatibility_record"], 512 * 1024, proof_sha)
-    require(len(EXACT_CHANGES) == len(FIRST) + len(SECOND) + len(THIRD)
-            and changes == EXACT_CHANGES and proof.get("reviewed_changes") == changes,
+    changes_sha256 = hashlib.sha256(json.dumps(changes, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    require(len(changes) == REVIEWED_PATHS and changes_sha256 == REVIEWED_CHANGES_SHA256
+            and proof.get("reviewed_changes") == changes,
             "The complete reviewed Git mode, type, or blob map differs")
     require(proof.get("schema") == "lastdb.format4-auto-source-review.v1"
             and proof.get("baseline") == BASELINE and proof.get("candidate") == SOURCE

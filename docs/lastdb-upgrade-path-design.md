@@ -174,13 +174,17 @@ The old reader emits logical data; the new writer validates and imports it with 
 The transfer must preserve these facts:
 
 - Database and account identities, schema identities, canonical fields, and key layouts.
-- Molecules, proteins, pointers, current tips, and shared atom identities.
+- Schema-owned molecules, named alternate keys, current tips, and atom identities.
 - Current values, original write-order facts, tombstones, retained conflicts, and their expiry rules.
 - Every required file blob and the encryption material that permits its use.
 - App capabilities, grants, and other required durable control data.
 - Required file holds and the meaning of pending cloud work.
 
 Import preserves original identities and write-order facts.
+The source must complete explicit app conversion with a compatible release before a transfer if it uses cross-schema value aliases.
+Preserve canonical field definitions separately from record values.
+Refuse a source that retains value aliases.
+The target must not recreate those aliases.
 It does not submit old values as fresh ordinary app writes.
 The target reserves fresh write identities beyond the imported boundary before it accepts new app writes.
 The target rebuilds its physical storage, counters, and other derived state under the new format's rules.
@@ -237,7 +241,7 @@ Resume requires the same source boundary, old reader, new writer, transfer contr
 Verification compares all exported objects and required files, not only record counts.
 Source and target compute the same canonical logical digest despite different disk bytes.
 The target proves that every required reference resolves and every required file is complete.
-The checks include deletion state, protein relationships, shared atom identity, retained conflicts, and app access.
+The checks include deletion state, schema-owned values, alternate-key membership, atom identity, retained conflicts, and app access.
 Use migration-owned keys for write checks and exclude those declared checks from the source-to-target digest comparison.
 Read migrated values by their exact source keys in batches.
 Do not use real secret values as operator-visible examples.

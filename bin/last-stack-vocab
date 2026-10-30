@@ -254,6 +254,36 @@ def remove_legacy_block(text: str) -> str:
     return "".join(out)
 
 
+def remove_word(section: str, word: str, project: bool) -> None:
+    word = check_cell("word", word)
+    if project:
+        path = project_vocab_path()
+        current = path.read_text(encoding="utf-8") if path.is_file() else ""
+    else:
+        migrate([])
+        path = vocab_path()
+        current = ensure_tables()
+    lines = current.splitlines(keepends=True)
+    span = section_span([line.rstrip("\n") for line in lines], HEADINGS[section])
+    if span is None:
+        die(f"section missing: {HEADINGS[section]}")
+    start, end = span
+    removed = [index for index in range(start, end) if lines[index].startswith("|")
+               and first_cell(lines[index]) == word and word not in ("Word", "Unapproved")
+               and not is_divider(word)]
+    if not removed:
+        print(f"last-stack-vocab: word is absent from {section}: {word}")
+        return
+    selected = set(removed)
+    updated = "".join(line for index, line in enumerate(lines) if index not in selected)
+    if project:
+        write_project_file(path, updated)
+        print(f"last-stack-vocab: updated {path}")
+    else:
+        write_user_tables(updated)
+        sync_harnesses()
+
+
 def upsert_harness_text(text: str, body: str) -> str:
     text = remove_legacy_block(text)
     block = UV_START + "\n" + body.rstrip("\n") + "\n" + UV_END
@@ -361,6 +391,11 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--section", required=True, choices=tuple(HEADINGS))
     add.add_argument("--project", action="store_true")
 
+    removed = sub.add_parser("remove", help="remove one word from its section")
+    removed.add_argument("word")
+    removed.add_argument("--section", required=True, choices=tuple(HEADINGS))
+    removed.add_argument("--project", action="store_true")
+
     listed = sub.add_parser("list", help="print the words")
     listed.add_argument("--project", action="store_true")
 
@@ -383,6 +418,9 @@ def main(argv: list[str]) -> int:
         return 0
     if args.cmd == "list":
         cmd_list(args.project)
+        return 0
+    if args.cmd == "remove":
+        remove_word(args.section, args.word, args.project)
         return 0
     if args.cmd == "sync":
         migrate([])
