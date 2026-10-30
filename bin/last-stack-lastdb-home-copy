@@ -517,7 +517,7 @@ def build_routes(args, src_cat, tgt_cat, cfg):
                 used_sources.add(alias_entry["name"])
                 not_moved.append({"name": alias_entry["name"], "descriptive": alias_entry.get("descriptive_name"),
                                   "owner": alias_entry.get("owner_app_id"),
-                                  "reason": f"alias of {short(src_pin)}; lastsecrets#14 retires it (no own values)"})
+                                  "reason": f"alias of the {descriptive} schema; lastsecrets#14 retires it (no own values)"})
 
     for entry in src_cat.entries:
         if entry["name"] in used_sources:
