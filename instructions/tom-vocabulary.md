@@ -6,11 +6,12 @@
 
 CAUTION: Use this list with the ASD-STE100 rules. Use it when you speak to Tom about the database or about a change. Do not invent a word.
 
-The living list is brain `preference-tom-vocabulary`.
-Read that record before you describe the database or a change.
-A word in that record is approved.
-Add a new word only in that record.
-This record wins when it names a word that the list below does not name.
+The user word list is a local file.
+Use `last-stack-vocab path` to get its path.
+Use `last-stack-vocab add` to add or update a word.
+Use `last-stack-vocab remove` to remove a word from its section.
+The command updates the harness files from the user word list.
+This example does not replace the user word list.
 
 Code names stay in code. Speech uses this list.
 
@@ -29,28 +30,31 @@ Describe a change in this order:
 | SQL | Do not use this word for LastDB. |
 | Dynamo DB | The name Tom uses for the lookup model. You find a record by a key. |
 | scan | A read with no key. LastDB has no scan. |
-| schema | A schema names the fields and the key. |
+| schema | A schema names its fields, primary key, and named alternate keys. |
 | field | One named part of a schema. |
 | canonical field | One field identity. The same name with a different description is a different field. |
+| field reuse | Different schemas reuse one canonical field definition. Each schema owns its record values. |
 | schema service | The service that stores the definitive schema names. Get schema names from schema service. |
-| molecule | The index for one field. A molecule uses a hash, or a hash plus a range. |
+| molecule | The keys for one field in one schema and one key layout. A molecule uses a hash, or a hash plus a range. |
 | index | Say molecule. |
 | hash | The first part of a key. |
 | range | The second part of a key. A range orders records under one hash. |
 | key | The value that finds a record. A key is a hash, or a hash plus a range. |
+| primary key | The key that identifies a record for a mutation. |
+| alternate key | A named key on one schema. It finds the same record through fields declared in that schema. |
+| multi-key schema | One schema with a primary key and named alternate keys. |
 | molecule key | One key in one molecule. |
 | atom | The data for one field at one key. An atom points at a file. |
 | tip | The current atom for one key. |
 | file | The bytes on disk. |
 | file blob | A large file. An atom points at the file blob. |
 | record | The fields for one key. |
-| logical record | One schema, one field, one molecule key, or one atom. |
-| protein | A collection of molecules. The molecules share the same fields. The molecules use different keys. A write to a shared field updates the related molecules. |
-| pointer | The link between a molecule and its protein. |
+| logical record | One path through one schema, one field, and one molecule to one atom. |
+| pointer | A link from one object to another object. |
 | tombstone | A deleted record that still appears. |
 | database | A named set of schemas on one node. |
-| node | One LastDB. On one node, every database uses the same molecules and the same atoms. |
-| org database | A shared database. A copied schema references the same molecules and the same atoms. |
+| node | One LastDB. A database uses schema-owned records. |
+| org database | A shared database. The app reads records through authorized schemas. |
 | app | A program that declares schemas. |
 | primary | The live LastDB on this machine. |
 | Mini | The local LastDB program. |
@@ -172,7 +176,7 @@ Say the approved word.
 | sort key | range |
 | point get | read by key |
 | access pattern | key, hash, or range |
-| GSI, LSI | protein |
+| GSI, LSI | alternate key |
 | catalog | schema |
 | primary schema | schema |
 | dual-write | the write updates the related molecules |
@@ -203,7 +207,7 @@ Say the approved word.
 | program owner | North Star |
 | brain list | brain search |
 | vectors in LastDB | LastSeek |
-| genes, fieldset, same_record_as | protein, or canonical field |
+| genes, fieldset, same_record_as | canonical field |
 | group | hash group only when you name that storage object |
 | hook | the check, or the routine |
 | file blob plane | file blob |
