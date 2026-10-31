@@ -422,6 +422,7 @@ export NEW="$HOME/.lastdb-v13"
 export BACK="$HOME/.lastdb-v7-rollback"
 export LABEL=$(launchctl list | awk '/lastdbd-primary/ {print $3}')
 export PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+export KICK=$(launchctl list | awk '/lastdb-cloud-backup-kick/ {print $3}')
 export BASE=$(basename "$(readlink "$OLD/current")")
 export W="${LAST_STACK_EVIDENCE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/artifacts/last-stack}/home-copy-protein-removal-20261030"
 export X="${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/artifacts/protein-removal-20261030/home-copy-export"
@@ -503,7 +504,7 @@ Check: the zip sha256 equals `digest`. `SOURCE_COMMIT` equals `$H`. `TARGET` is 
 
 ```bash
 set -o pipefail
-lastsecrets get lastdb-primary-cloud-api-key-prod \
+lastsecrets get cloud-v2-completion-20261027-0os3adpz-prod-api-key \
   | "$OLD/current/lastdb" --data-dir "$OLD" cloud prepare-recovery-home --into "$NEW" --env prod --api-key-stdin --json \
   > "$W/s3-prepare.json"; echo "rc=$?"
 jq -c '{ok, credentials_only, identity_matches_source, api_key_matches_source, saved_url_matches_environment,
@@ -511,6 +512,8 @@ jq -c '{ok, credentials_only, identity_matches_source, api_key_matches_source, s
 ```
 
 The key goes through the pipe only. It does not go to the terminal or to a file.
+
+Use the key that the source home uses now ("Primary Cloud V2 backup access"). On 2026-10-30 that was `cloud-v2-completion-20261027-0os3adpz-prod-api-key`. The older `lastdb-primary-cloud-api-key-prod` does not match, and the command refuses it with `stdin API key does not match the source cloud credentials`. To find the correct slug, compare hashes only, never values.
 
 Give `--into` and `--data-dir` as real absolute paths. The command refuses a path with a symlink part, for example `~/.folddb` or `/var` on macOS (use `/private/var`). `--env` must agree with the saved URL.
 
@@ -678,8 +681,9 @@ mkdir -p "$NEW/monitoring" && touch "$NEW/monitoring/lastdbd-revive.hold"
 mv "$OLD" "$BACK"
 mv "$NEW" "$OLD"
 cp -p "$PLIST" "$W/s10-plist.before"
-plutil -replace ProgramArguments.0 -string "$OLD/native-run-v2-programs/$C803/lastdbd" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :ProgramArguments:0 $OLD/native-run-v2-programs/$C803/lastdbd" "$PLIST"
 plutil -lint "$PLIST"
+/usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$PLIST"
 "$HOME/.last-stack/bin/last-stack-lastdb-current" set --lastdb-home "$OLD" --bin-dir "$OLD/native-run-v2-programs/$C803"
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 "$HOME/.last-stack/bin/last-stack-lastdb-current" check --verbose
@@ -688,7 +692,9 @@ curl -s --unix-socket "$OLD/data/folddb.sock" http://localhost/api/version | jq 
 
 Wait for each `kill` until `pgrep` shows no daemon on `$OLD`, `$NEW`, or the private socket. The log ends with the shutdown line.
 
-Check: API 13 on `~/.lastdb/data/folddb.sock`. `last-stack-lastdb-current check` passes. `~/.folddb` still points to `~/.lastdb`.
+CAUTION: Do not use `plutil -replace ProgramArguments.0`. It inserts a new first element and keeps the old path. The daemon then gets four arguments, exits with `lastdbd: invalid_arguments`, and KeepAlive restarts it in a loop. The 2026-10-30 run hit this. Recovery: `launchctl bootout "gui/$(id -u)/$LABEL"`, copy `$W/s10-plist.before` back, run the PlistBuddy line, then bootstrap.
+
+Check: `ProgramArguments` has three entries: the new `lastdbd`, `--data-dir`, and `$OLD`. API 13 on `~/.lastdb/data/folddb.sock`. `last-stack-lastdb-current check` passes. `~/.folddb` still points to `~/.lastdb`.
 
 ### Step 11. Verify after the move, then open the apps
 
@@ -730,6 +736,10 @@ Check: `enforce` is false (B5). `keys` is 25. `model` is `multi-key-v1`.
 
 Do not merge them before the move. The new releases refuse the old home with `home_copy_required`, and Step 3 reads a key through the installed LastSecrets.
 
+CAUTION: Get Tom's decision on the install gate before Step 8. The installed old Brain and LastSecrets fail against the new home, so both are down from Step 10 until this install. On 2026-10-30, `host-track refresh --activate lastsecrets` stopped with rc 3: `REFUSED: Situations blocks host-track-refresh`. Situations has no schemas since the 2026-10-14 reset, so its preflight fails closed for every app except `situations` and `last-stack`. The host-track bypass is `HOST_TRACK_REFRESH_PREFLIGHT_SKIP=1`. Use it only with Tom's approval. The probe gate still runs.
+
+Until the install, read checks can use the merged release exports: `bun run "$LR/src/cli.ts" list` and the Brain CLI under `$BR`.
+
 11d. Remove the hold and check the apps:
 
 ```bash
@@ -746,19 +756,23 @@ Tom requires cloud backup on again after the work. The moved home has a new nati
 
 ```bash
 set -o pipefail
-lastsecrets get lastdb-primary-cloud-api-key-prod \
+lastsecrets get cloud-v2-completion-20261027-0os3adpz-prod-api-key \
   | lastdb --data-dir "$OLD" cloud backup-v2 connect --existing --env prod --api-key-stdin \
       --expected-user-hash "$(jq -r .account_id "$BACK/cloud-byte-backup-v2-manual.json")" --json > "$W/s12-connect.json"; echo "rc=$?"
+stat -f '%Sp %N' "$OLD/data/disk-run" "$BACK/data/disk-run"
+chmod 700 "$OLD/data/disk-run"
 date +%s > "$W/s12-enable-at"
 lastdb --data-dir "$OLD" cloud backup-v2 enable-automatic --log-interval-seconds 60 --snapshot-interval-seconds 86400 --json > "$W/s12-enable.json"
 lastdb --data-dir "$OLD" cloud backup-v2 status --json > "$W/s12-status.json"
 jq -c '{auto: .automatic_backup.enabled, rev: .automatic_backup.revision, log: .automatic_backup.log_interval_seconds,
   snap: .automatic_backup.snapshot_interval_seconds, last_snapshot_at: .automatic_backup.last_snapshot_at, phase,
   running, retained_source_bytes, blocked_reason, head: .mutation_log.head.frontiers, backed: .automatic_backup.last_backed_up_frontiers}' "$W/s12-status.json"
-launchctl print "gui/$(id -u)/com.tomtang.lastdb-cloud-backup-kick" | grep -E 'state =|run interval'
+launchctl print "gui/$(id -u)/$KICK" | grep -E 'state =|run interval'
 ```
 
 The key goes through the pipe only. The expected user hash is the account id of the rollback home (`bdad5eed…` on 2026-10-30).
+
+CAUTION: Do the `chmod 700` before `enable-automatic`. The e13ca0db daemon creates `data/disk-run` with mode 0755 on a fresh home. The mutation log stores its files under `data/disk-run/mutation-log-v1` and refuses a parent folder that is not private. Without the chmod, `enable-automatic` returns `HTTP 409 Conflict: native backup source needs attention`, the daemon logs one WARN each second, and no snapshot starts. The rollback home has `disk-run` at 0700. The chmod changes no data. On 2026-10-30 the first automatic snapshot started within 8 seconds after the chmod. The LastDB fix is to create `disk-run` at 0700 (the cloud restore path already does).
 
 Repeat the status read (one read per turn or a Monitor loop) until the first snapshot publishes.
 
@@ -766,7 +780,7 @@ Check:
 
 - `auto=true`, log 60, snapshot 86400.
 - `last_snapshot_at` is later than `s12-enable-at`, `phase=published`, `retained_source_bytes=0`, `blocked_reason=null`, `head == backed`.
-- The backup kick LaunchAgent is loaded. If it is not, `launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.tomtang.lastdb-cloud-backup-kick.plist"`.
+- The backup kick LaunchAgent is loaded (`$KICK` is not empty). If it is not, bootstrap its plist from `$HOME/Library/LaunchAgents`.
 
 Rollback: `lastdb --data-dir "$OLD" cloud backup-v2 disable-automatic --json`.
 
