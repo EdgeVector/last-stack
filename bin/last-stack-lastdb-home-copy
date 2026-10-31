@@ -625,8 +625,12 @@ def list_keys(node, name, page_size, range_schema):
     return unique
 
 
-def read_rows(node, name, fields, keys, range_schema, batch, allow_missing=False):
-    """Read exact keys, including stored nulls. Refuse incomplete or foreign rows."""
+def read_rows(node, name, fields, keys, range_schema, batch, allow_missing=False, key_fields=()):
+    """Read exact keys, including stored nulls. Refuse incomplete or foreign rows.
+
+    key_fields: primary key field names of the schema. An API 7 node returns the
+    hash key field with every row even when the request names other fields. Such a
+    field is dropped only when it is a key field and its value equals the row key."""
     rows = {}
     # One request holds the native 10,000-key budget. Reserve half for control
     # and metadata reads; do not retry an oversized request with the same size.
@@ -655,6 +659,11 @@ def read_rows(node, name, fields, keys, range_schema, batch, allow_missing=False
                     raise Refusal(f"{node.role}: /api/query returned an invalid primary key for {short(name)}")
                 ident = (key.get("hash"), key.get("range") if range_schema else None)
                 values, metadata = row.get("fields"), row.get("metadata")
+                if isinstance(values, dict):
+                    unasked = set(values) - set(fields)
+                    if unasked and all(f in key_fields and values[f] in (key.get("hash"), key.get("range"))
+                                       for f in unasked):
+                        values = {f: v for f, v in values.items() if f not in unasked}
                 if (ident not in expected or ident in found or not isinstance(values, dict)
                         or not values or not isinstance(metadata, dict) or set(values) - set(fields)):
                     raise Refusal(f"{node.role}: /api/query returned a foreign, repeated, or empty row for {short(name)}")
@@ -688,7 +697,10 @@ def brain_membership(src, src_cat, old_brain, args):
     dir_field = alias_map(old_brain, hashes.get(BRAIN_DIRECTORY_KEY)).get("btd_types", "btd_types")
     cnt_field = alias_map(old_brain, hashes.get(BRAIN_COUNT_KEY)).get("bln_n", "bln_n")
     dir_keys = [k for k in list_keys(src, dir_entry["name"], args.page_size, True) if k[1] == BRAIN_DIRECTORY_RANGE]
-    dir_rows = read_rows(src, dir_entry["name"], [dir_field], dir_keys, True, args.read_batch)
+    dir_key_fields = [f for f in (dir_entry.get("key") or {}).values() if f]
+    cnt_key_fields = [f for f in (cnt_entry.get("key") or {}).values() if f]
+    dir_rows = read_rows(src, dir_entry["name"], [dir_field], dir_keys, True, args.read_batch,
+                         key_fields=dir_key_fields)
     members = {t: set() for t in BRAIN_RECORD_TYPES}
     unreadable = 0
     for (slug, _), values in dir_rows.items():
@@ -705,7 +717,7 @@ def brain_membership(src, src_cat, old_brain, args):
     # The app treats an absent per-type count record as zero. This exception
     # requires a complete, unresolved-free keyed response, not a missing page.
     count_rows = read_rows(src, cnt_entry["name"], [cnt_field], [(t, None) for t in BRAIN_RECORD_TYPES], False, 64,
-                           allow_missing=True)
+                           allow_missing=True, key_fields=cnt_key_fields)
     counts = {}
     for kind in BRAIN_RECORD_TYPES:
         raw = (count_rows.get((kind, None)) or {}).get(cnt_field)

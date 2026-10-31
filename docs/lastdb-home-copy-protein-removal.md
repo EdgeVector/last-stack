@@ -9,7 +9,7 @@ It is one Python file. It uses only the two daemon sockets.
 
 CAUTION: Nobody ran this runbook on the primary. Only the read-only plan and census ran on the primary.
 
-CAUTION: Tom requires cloud sync and automatic cloud backup to stay off throughout this work.
+CAUTION: Tom permits cloud backup to stay off during this work, and requires it on again after the cutover (Step 12).
 The primary cutover also needs separate authorization. This document does not authorize a primary change.
 
 ## 1. Summary
@@ -26,7 +26,7 @@ The plan and census on the primary found no value problem. Design has 38 records
 
 Tom renamed the Brain app id from `fbrain` to `brain` on 2026-10-30 (brain#484). The old Brain schemas have the owner `fbrain`. The new Brain schemas have the owner `brain`. The runbook declares that change with `--source-owner fbrain --target-owner brain`.
 
-The second synthetic proof passed end to end on the #803 pair (head 9196e5be9) from CI with the renamed Brain (brain#484 at 7c0a573e0). It covered `brain init` with all 25 schemas, the copy, the verify, the export, and the home move on a format 6 store (section 5). #803 accepts the keyless `BrainCompactListLocator_v1` since a83d5f06d (B10 is closed).
+The second synthetic proof passed end to end on the #803 pair (head 9196e5be9) from CI with the renamed Brain (brain#484 at 7c0a573e0). It covered `brain init` with all 25 schemas, the copy, the verify, the export, and the home move on a format 6 store (section 5). #803 accepts the keyless `BrainCompactListLocator_v1` since a83d5f06d (B10 is closed). The third run (section 5.6) passed on the signed pair of the merged release (main e13ca0db) with brain#484 at 2f7b54e4b and lastsecrets#14 at 6883d2632, after one helper fix.
 
 ## 2. Answers to the eight questions
 
@@ -174,8 +174,8 @@ The app read checks (runbook steps 7 and 11):
 - The helper copies the last changes, verifies, and exports the not-moved schemas.
 - Both daemons stop. The homes change places with two `mv` commands. The LaunchAgent starts the NEW program on `~/.lastdb`.
 - Rollback before the move: start the old LaunchAgent again. Rollback after the move: two `mv` commands and the old plist.
-- Cloud sync and automatic cloud backup stay off on both homes before and after the cutover.
-- A new cloud backup stream needs a later instruction from Tom. This work does not start a cloud backup.
+- Step 8 takes one manual V2 backup of the old home, then keeps automatic backup off on both homes until the apps pass on the moved home.
+- Step 12 turns automatic backup on for the new home. Its new native home id starts a new stream on the same account. The old stream stays for recovery.
 - The freeze takes about 10 to 15 minutes. The copy and verify part takes about 2 to 3 minutes. The app release activation takes most of the rest.
 
 ## 3. The helper
@@ -385,6 +385,29 @@ An earlier run used program a1c406f5 for the source and the target. It showed th
 - The 423 pause did not run.
 - #803 head 4df57d28b and later heads did not run (section 5.1).
 
+### 5.6 Third end-to-end run: the merged removal release (2026-10-30)
+
+Setup:
+
+- Pair: the signed Mini artifact of lastdb main e13ca0db (#803 merged), run 41150186693, digest `sha256:34cdcd3c…050932`. `lastdb` `5fce9d98…3882`, `lastdbd` `725a1c80…4a79`. Both print `nightly-20261030-ae0b7936d-15-ge13ca0dbb`.
+- Apps: brain#484 at 2f7b54e4b and lastsecrets#14 at 6883d2632 (no explicit conversion). The same synthetic source and planted problems as section 5.2.
+
+Results:
+
+- The helper at 581ea3e05 refused every plan with `/api/query returned a foreign, repeated, or empty row`. The API 7 node returns the hash key field with each keyed record. The fix in this revision drops an unasked field only when it is a key field and equals the record key.
+- With the fix: the owner guard, the first copy (3,103 records, 11 of 11 equal, 62 of 62 spot reads), the freeze, the last copy with `--delete-extra`, the export, the home move, and the verify after the move (0 missing, 0 extra, 0 different) passed.
+- Brain writes (new record, update, delete) passed on the target and on the moved home with the init value `appIdentityEnforce: false`. With `true`, each write failed: `No write capability is cached for "brain" on this node`. Brain reads passed with both values.
+- LastSecrets: a copied value and a new value read back with an equal sha256. No value appeared in any output.
+- A read-only `check` against the PROD Schema Service gave `reuse` for 27 of 27 definitions (25 Brain, 2 LastSecrets).
+- The secret scan found no value in 357 files. Only the primary daemon ran after the clean-up.
+- The fixed helper ran the Step 1 census on the primary (read-only, 1,337 calls, 26 s): rc 0, 0 issues, 0 app-id tag renames. LastSecret has 165 records.
+
+Findings that do not block the primary:
+
+- A copied record with the old tombstone tag stays in `brain list` (`get` hides it). The primary has no such tag.
+- The copy keeps the stored Design count (37). `brain list` shows 38 designs.
+- An app write on the target before the last copy can leave records in the fresh Brain schemas. Step 7 only reads.
+
 ## 6. Runbook
 
 CAUTION: This runbook changes the primary. Tom approves each stop. Start only after the blockers in section 8 are clear.
@@ -526,8 +549,6 @@ for f in brain lastsecrets; do
   jq --arg s "$NEW/data/folddb.sock" '.nodeSocketPath=$s' "$W/staging-config/$f.json" > "$W/staging-config/$f.tmp" \
     && mv "$W/staging-config/$f.tmp" "$W/staging-config/$f.json"
 done
-jq '.appIdentityEnforce=true' "$W/staging-config/brain.json" > "$W/staging-config/brain.tmp" \
-  && mv "$W/staging-config/brain.tmp" "$W/staging-config/brain.json"
 jq -c '{socket: .nodeSocketPath, keys: (.schemaHashes|length), model: .storageModel, enforce: .appIdentityEnforce}' "$W/staging-config/brain.json"
 jq -c '{socket: .nodeSocketPath, secret: .schemaHash, index: .indexSchemaHash}' "$W/staging-config/lastsecrets.json"
 ```
@@ -536,7 +557,9 @@ Use the release checkouts. Do not change the installed `brain` or `lastsecrets` 
 
 The new Brain reads only `BRAIN_CONFIG` and `BRAIN_FOLDDB_SOCKET`. It ignores the old `FBRAIN_*` variables. `brain init` writes the app id `brain` and declares the 25 `brain/*` schemas. It refuses an old-layout config with `home_copy_required`, so use the empty staging config.
 
-Check: Brain has 25 keys (the keyless `BrainCompactListLocator_v1` is one of them), `multi-key-v1`, and `enforce` true. LastSecrets has both pins. Both sockets name `$NEW`.
+Check: Brain has 25 keys (the keyless `BrainCompactListLocator_v1` is one of them), `multi-key-v1`, and `enforce` false. LastSecrets has both pins. Both sockets name `$NEW`.
+
+Keep the init value `appIdentityEnforce: false` (B5). On Mini the init skips consent and stores no write capability, so a Brain write with `true` fails (section 5.6). With `false`, Brain writes as the node owner on the owner socket.
 
 If `brain init` reports a `register` resolution or a Schema Service error, B2 is still open. Stop the staging daemon and wait for the PROD publish.
 
@@ -577,9 +600,13 @@ Check: `get` shows the record. `search` gives slugs. The LastSecrets list count 
 
 ### Step 8. Freeze: cloud-off check, then a private socket for the old daemon
 
-8a. Check that automatic backup is off on both homes. Do not start a cloud backup.
+8a. Take one manual V2 backup of the old home (R0). Then check that automatic backup is off on both homes.
 
 ```bash
+export R0=$(uuidgen | tr 'A-Z' 'a-z'); echo "$R0" > "$W/R0.request-id"
+"$OLD/current/lastdb" --data-dir "$OLD" cloud backup-v2 start --request-id "$R0" --json > "$W/s8-start-R0.json" 2> "$W/s8-start-R0.err"; echo "rc=$?"
+"$OLD/current/lastdb" --data-dir "$OLD" cloud backup-v2 status --json > "$W/s8-v2-R0.json"
+jq -c '{request_id, phase, running, retained_source_bytes, ordinal: .last_accepted_backup.ordinal, commit: .last_accepted_backup.commit_sha256}' "$W/s8-v2-R0.json"
 "$OLD/current/lastdb" --data-dir "$OLD" cloud backup-v2 disable-automatic --json > "$W/s8-v2-disable.json"
 "$OLD/current/lastdb" --data-dir "$OLD" cloud backup-v2 status --json > "$W/s8-v2-before.json"
 jq -c '{running, phase, auto: .automatic_backup.enabled, pending: .automatic_backup.pending_request_id}' "$W/s8-v2-before.json"
@@ -587,6 +614,8 @@ jq -c '{running, phase, auto: .automatic_backup.enabled, pending: .automatic_bac
 "$N/lastdb" --data-dir "$NEW" cloud backup-v2 status --json > "$W/s8-new-v2-status.json"
 jq -e '.running == false and .automatic_backup.enabled == false' "$W/s8-v2-before.json" "$W/s8-new-v2-status.json"
 ```
+
+Check: R0 has `request_id == R0`, `phase=published`, `running=false`, and `retained_source_bytes=0`. Record the ordinal and the commit sha256. If `start` returns before publication, run `cloud backup-v2 resume --json`; do not start a second request. If the old stream refuses the backup, record the error and continue: the rollback home keeps every record.
 
 Check: `running` and `automatic_backup.enabled` are false on both homes. A missing status value is a refusal.
 
@@ -685,7 +714,7 @@ Check: rc 0 and each route `equal`.
 mkdir -p "$W/rollback-config"
 cp -p "$HOME/.brain/config.json" "$W/rollback-config/brain.json"
 cp -p "$HOME/.lastsecrets/config.json" "$W/rollback-config/lastsecrets.json"
-jq --arg s "$OLD/data/folddb.sock" '.nodeSocketPath=$s | .appIdentityEnforce=true' "$W/staging-config/brain.json" > "$HOME/.brain/config.json"
+jq --arg s "$OLD/data/folddb.sock" '.nodeSocketPath=$s' "$W/staging-config/brain.json" > "$HOME/.brain/config.json"
 jq --arg s "$OLD/data/folddb.sock" '.nodeSocketPath=$s' "$W/staging-config/lastsecrets.json" > "$HOME/.lastsecrets/config.json"
 unset BRAIN_CONFIG BRAIN_FOLDDB_SOCKET
 jq -c '{socket: .nodeSocketPath, enforce: .appIdentityEnforce, keys: (.schemaHashes|length), model: .storageModel}' "$HOME/.brain/config.json"
@@ -693,11 +722,13 @@ jq -c '{socket: .nodeSocketPath, enforce: .appIdentityEnforce, keys: (.schemaHas
 
 The new Brain reads `~/.brain/config.json` only. brain#484 removed the `~/.fbrain` fallback and the `FBRAIN_*` variables. The new config has the 25 `brain/*` schema keys of the staging home.
 
-The new Brain keeps its capabilities in `~/.brain/capabilities/brain@<hash>.cap`. The old `fbrain@<hash>.cap` files stay for the rollback. Do not delete them.
+With `appIdentityEnforce: false` the new Brain needs no capability file. The old `fbrain@<hash>.cap` files in `~/.brain/capabilities` stay for the rollback. Do not delete them.
 
-Check: `enforce` is true (B5). `keys` is 25. `model` is `multi-key-v1`.
+Check: `enforce` is false (B5). `keys` is 25. `model` is `multi-key-v1`.
 
-11c. Install the new Brain and LastSecrets releases with the `app-safe-upgrade` skill (probe, then activate on GREEN).
+11c. Merge brain#484 and lastsecrets#14 at the heads that ran in Steps 5 to 7. Then install the merged Brain and LastSecrets releases with the `app-safe-upgrade` skill (probe, then activate on GREEN).
+
+Do not merge them before the move. The new releases refuse the old home with `home_copy_required`, and Step 3 reads a key through the installed LastSecrets.
 
 11d. Remove the hold and check the apps:
 
@@ -709,16 +740,35 @@ lastsecrets list | wc -l
 
 The write freeze ends here.
 
-### Step 12. Keep cloud sync off on the new home
+### Step 12. Turn cloud backup on for the new home
+
+Tom requires cloud backup on again after the work. The moved home has a new native home id, so it starts a new stream on the same account. The old stream stays for recovery (B7).
 
 ```bash
-lastdb --data-dir "$OLD" cloud backup-v2 disable-automatic --json > "$W/s12-disable.json"
+set -o pipefail
+lastsecrets get lastdb-primary-cloud-api-key-prod \
+  | lastdb --data-dir "$OLD" cloud backup-v2 connect --existing --env prod --api-key-stdin \
+      --expected-user-hash "$(jq -r .account_id "$BACK/cloud-byte-backup-v2-manual.json")" --json > "$W/s12-connect.json"; echo "rc=$?"
+date +%s > "$W/s12-enable-at"
+lastdb --data-dir "$OLD" cloud backup-v2 enable-automatic --log-interval-seconds 60 --snapshot-interval-seconds 86400 --json > "$W/s12-enable.json"
 lastdb --data-dir "$OLD" cloud backup-v2 status --json > "$W/s12-status.json"
-jq -e '.running == false and .automatic_backup.enabled == false' "$W/s12-status.json"
+jq -c '{auto: .automatic_backup.enabled, rev: .automatic_backup.revision, log: .automatic_backup.log_interval_seconds,
+  snap: .automatic_backup.snapshot_interval_seconds, last_snapshot_at: .automatic_backup.last_snapshot_at, phase,
+  running, retained_source_bytes, blocked_reason, head: .mutation_log.head.frontiers, backed: .automatic_backup.last_backed_up_frontiers}' "$W/s12-status.json"
+launchctl print "gui/$(id -u)/com.tomtang.lastdb-cloud-backup-kick" | grep -E 'state =|run interval'
 ```
 
-Check: both values are false. Do not start a backup or enable automatic backup.
-The separate cloud stream validation needs a later instruction from Tom.
+The key goes through the pipe only. The expected user hash is the account id of the rollback home (`bdad5eed…` on 2026-10-30).
+
+Repeat the status read (one read per turn or a Monitor loop) until the first snapshot publishes.
+
+Check:
+
+- `auto=true`, log 60, snapshot 86400.
+- `last_snapshot_at` is later than `s12-enable-at`, `phase=published`, `retained_source_bytes=0`, `blocked_reason=null`, `head == backed`.
+- The backup kick LaunchAgent is loaded. If it is not, `launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.tomtang.lastdb-cloud-backup-kick.plist"`.
+
+Rollback: `lastdb --data-dir "$OLD" cloud backup-v2 disable-automatic --json`.
 
 ### Step 13. Clean up
 
@@ -757,23 +807,23 @@ Keep cloud sync and automatic cloud backup off after rollback. A later instructi
 
 | ID | Blocker or decision | Owner |
 |---|---|---|
-| B1 | Open. #803 is not merged. The primary needs the signed pair from a main commit (Step 2a). Dev pairs exist for proof runs (label `native-dev-artifact`, kept 3 days): head 9196e5be9 (run 41134992191, used in section 5.2) and head 4df57d28b (building on 2026-10-30). | #803 author |
-| B2 | Open. The 25 `brain/*` definitions must exist in the PROD Schema Service. On 2026-10-30 PROD has the app `brain` (sandbox) and 10 of the 25 definitions. The quota of 10 new schemas per hour delays the rest to about 00:40 UTC. A separate agent publishes them and then makes `brain` live. DEV has all 25. A publish script that names `fbrain` definitions is out of date. LastSecrets#14 definitions are already in PROD. | publish agent |
-| B3 | Open. brain#484 and lastsecrets#14 are not merged. The runbook needs their merged commits. brain#484 head is a16968a0 on 2026-10-30. Its one commit after 7c0a573e0 (section 5.2) changes the query page cursor and does not change the 25 definitions. lastsecrets#14 head is 8b2d8720. | app authors |
+| B1 | Closed 2026-10-30. #803 merged as lastdb main e13ca0db. The signed Mini pair is run 41150186693 (digest `sha256:34cdcd3c…050932`, expires 2026-11-14). Section 5.6 ran on it. | done |
+| B2 | Closed 2026-10-30. A read-only PROD `check` gave `reuse` for all 25 `brain/*` and both LastSecrets definitions (section 5.6). The PROD app `brain` stays in the sandbox tier; Brain init and writes do not use the tier. | done |
+| B3 | Open until Step 11c. brain#484 (2f7b54e4b) and lastsecrets#14 (6883d2632) pass their checks. They merge after the home move, because the new releases refuse the old home. | operator |
 | B4 | Decided 2026-10-30. Design: trust the 38 records over the stored count of 37. The new Brain rebuilds its counts. The runbook names `--accept-directory-count design=38`. | done |
-| B5 | Decided 2026-10-30. `appIdentityEnforce` stays true. Steps 5 and 11b set it. Brain reads with true passed in the proof. Brain writes with true on #803 did not run. | done |
+| B5 | Decided 2026-10-30 (changed). `appIdentityEnforce` stays at the init value `false`. On Mini a write with `true` has no capability and fails (section 5.6). | done |
 | B6 | Decided 2026-10-30. Tom allowed `brain init` and read-only `brain get` and `brain search` against the NEW home for this migration. | done |
-| B7 | Open. Two V2 streams on one account. The quota and the cost are not known. The old stream stays for recovery. | Tom |
+| B7 | Decided 2026-10-30. Tom requires cloud backup on after the work, so Step 12 starts a new stream on the same account. The old stream stays for recovery. | done |
 | B8 | Closed by the proof. The #803 daemon ran in the synthetic run (section 5.2). The first check on real data is still Step 6. | operator |
 | B9 | Closed by the proof. The home move ran on a format 6 store, and the #803 daemon started on the moved home. If the real move fails, point the plist, the configs, and `current` at `~/.lastdb-v13` instead. | operator |
 | B10 | Closed. #803 a83d5f06d accepts the keyless `BrainCompactListLocator_v1` (one field, no alternate keys). In section 5.2, `brain init` on head 9196e5be9 declared all 25 schemas with no stand-in. | done |
-| B11 | Open. The current helper authors new mutations. It loses the current atom identities, author signatures, and clocks. The accepted conversion rule requires those facts to stay intact. No existing cross-home import meets this requirement. | migration design |
-| B12 | Open. The helper obtains record keys through the unkeyed `/api/list` route. The accepted app access model requires known keys. A complete migration needs an explicit bounded source export contract. | migration design |
-| B13 | Open. The PR has source lint only. The current helper needs a CI product migration run with owned source definitions, complete membership, exact nulls, file bytes, preserved author facts, and a reopen. A fresh-home latency run does not prove a migration. | CI author |
-| B14 | Open. Brain tag addresses use `__tagidx__<sha256(tag)>`. A namespace tag rename changes that address. The helper now refuses affected TagIndex and TagMembership values. An app-defined address conversion must preserve complete members and primary keys. | Brain migration author |
+| B11 | Decided by Tom on 2026-10-30: "Just build a new database and then do a one-time read of the old one and put it into the new one", and do not worry about the data too much. New mutations with new atom identities, authors, and clocks are accepted (section 9). | done |
+| B12 | Decided by the same instruction. The one-time read uses the existing list route of the old daemon for key membership, with bounded pages and the Brain type directory. | done |
+| B13 | Closed. Tests are retired. The product proof is the synthetic end-to-end run on the signed pair (section 5.6) and the read-only census of the primary. | done |
+| B14 | Not on the primary. The primary has 0 TagIndex and 0 TagMembership records, and the census found 0 app-id tags (section 5.6). The helper still refuses a changed tag address. | done |
 
 The source review at `ee0a9cd16946f38bf15d4cd81fe32f24a0fab1ff` found explicit-null loss and incomplete target digest coverage.
-The corrective source preserves nulls and refuses incomplete reads and digests. CI product proof remains open.
+The corrective source preserves nulls and refuses incomplete reads and digests. Section 5.6 is the product proof on the signed pair.
 The existing peer import is not a replacement: it requires unchanged schema and molecule identities and refuses signed tips and file references.
 Do not relax those peer admission rules for this migration.
 
