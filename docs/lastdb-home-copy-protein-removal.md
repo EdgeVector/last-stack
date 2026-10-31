@@ -42,6 +42,9 @@ Source references name the LastDB revision of #803 at 209d4ec0 unless the text s
 - The NEW daemon boots on that home and makes a format 6 store (`alternate-keys=v2`) with the same identity (`run_admission.rs:13-14`).
 - The daemon mints a new identity when `identity.key` is absent (`lastdb_identity/src/lib.rs:57-66`). Prepare the home before the first start.
 - The OLD daemon opens format 4 only. It can never open the new home.
+- Record model move (format 7, lastdb #911 to #920): start the NEW daemon the first time with `LASTDB_RECORD_HOME=1`. It then makes a format 7 store (`records=v1`). The node marker decides every later start, so the variable can stay or go.
+  - A format 7 query reply has an empty `atom_uuid` for each field (decision D7). The helper accepts that on the target only. The source still needs an atom identity for each present field.
+  - A format 7 home refuses logical capture, share rules, retention policies, imported writes and aggregate writes. Keep `LASTDB_LOGICAL_CAPTURE` unset on the new home.
 
 Backup V2 uses a new stream for the new home.
 
