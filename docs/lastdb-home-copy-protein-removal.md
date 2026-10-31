@@ -45,6 +45,7 @@ Source references name the LastDB revision of #803 at 209d4ec0 unless the text s
 - Record model move (format 7, lastdb #911 to #920): start the NEW daemon the first time with `LASTDB_RECORD_HOME=1`. It then makes a format 7 store (`records=v1`). The node marker decides every later start, so the variable can stay or go.
   - A format 7 query reply has an empty `atom_uuid` for each field (decision D7). The helper accepts that on the target only. The source still needs an atom identity for each present field.
   - A format 7 home refuses logical capture, share rules, retention policies, imported writes and aggregate writes. Keep `LASTDB_LOGICAL_CAPTURE` unset on the new home.
+  - A format 7 home stores each record as one value of at most 64 KiB (decision D3). Run the census with `--record-max-bytes 65536`. A row whose fields and stamps are larger is a `record-over-cap` issue, and `--apply` skips it. On 2026-10-31 no primary record was over the cap. The LastSecrets `LastSecretIndex` row `__all__` was near it, at about 61,500 bytes.
 
 Backup V2 uses a new stream for the new home.
 
@@ -150,7 +151,11 @@ Derived records:
 | Alternate keys `recent`, `by_status`, and `by_design` (Task) | The NEW node writes them for each create. The helper does not copy them. |
 | `BrainListPage`, `BrainListLocator`, `BrainListCount`, `BrainTypeDirectory`, `BrainEdgeSet`, `BrainTokenSet` | Copied as records. The in-place converter also keeps them. |
 | `BrainBodyFile` | Copied as records. The file bytes go to the target as in Q5. |
-| `__braincompactlocator__` | No source. The new release fills it. |
+| `__braincompactlocator__` (`BrainCompactListLocator_v1`) | Copied as records through derived keys (below). Brain deletes the legacy locator when it writes the compact one, so a card that moved has only the compact row. |
+
+The compact locator schema has no key field, so no node lists it (`/api/list` says `has no hash_field to list`). Brain addresses each row by a hash of one list card (`src/list-locator.ts`, `compactKey`). The helper reads every source list page, derives the key of each typed card, and reads those keys. A keyword page (`kw#`) holds cards but never a locator, so the helper skips it. The route reports `derived keys: <pages>, <typed cards>, <compact rows>, <legacy rows>, <cards with no locator>`. A card with neither locator is a refusal: it means that the key formula no longer matches Brain. Verify reads the same keys on the target; a target row outside them stays unseen.
+
+Primary census on 2026-10-31 (read-only): 38272 list pages, 33644 typed cards, 115 compact rows, 33582 legacy rows, 0 cards with no locator.
 
 With the alternate keys, the new release writes no new `all`, type, status, or child list slot (`src/list-page.ts`, `slotsFor`, `native`). The copied slots stay.
 
