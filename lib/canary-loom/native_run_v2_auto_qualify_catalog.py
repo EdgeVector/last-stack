@@ -35,7 +35,7 @@ def binding(path):
     definition = {key: value for key, value in matches[0].items() if key != "system"}
     require(definition["identity_hash"] == SCHEMA and definition["schema_type"] == "Hash"
             and definition["key"] == {"hash_field": ID_FIELD, "range_field": None}
-            and not definition.get("field_mappers") and not definition.get("transform_fields")
+            and not definition.get("transform_fields")
             and not definition.get("ref_fields")
             and all(name in definition["fields"] for name in FIELD_MAP.values())
             and {name: definition["field_types"][name] for name in FIELD_MAP.values()}
@@ -93,7 +93,7 @@ def load(node, operation):
                                   folder / "cached-schema-response")
     actual = cached.get("schema")
     require(isinstance(actual, dict) and actual.get("state") == "Available"
-            and not actual.get("field_mappers") and not actual.get("transform_fields")
+            and not actual.get("transform_fields")
             and not actual.get("ref_fields")
             and all(actual.get(key) == value for key, value in expected["definition"].items()),
             "cached_schema_matches_original_public_definition")

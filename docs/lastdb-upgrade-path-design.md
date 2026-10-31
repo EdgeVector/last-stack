@@ -181,10 +181,8 @@ The transfer must preserve these facts:
 - Required file holds and the meaning of pending cloud work.
 
 Import preserves original identities and write-order facts.
-The source must complete explicit app conversion with a compatible release before a transfer if it uses cross-schema value aliases.
+Each schema owns its record values.
 Preserve canonical field definitions separately from record values.
-Refuse a source that retains value aliases.
-The target must not recreate those aliases.
 It does not submit old values as fresh ordinary app writes.
 The target reserves fresh write identities beyond the imported boundary before it accepts new app writes.
 The target rebuilds its physical storage, counters, and other derived state under the new format's rules.
