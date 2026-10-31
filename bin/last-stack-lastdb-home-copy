@@ -1,0 +1,1544 @@
+#!/usr/bin/env python3
+"""Copy Brain and LastSecrets records from an old LastDB home to a new one.
+
+The old home keeps the shared-value (protein) layout. The new home runs the
+protein-free release, and the new app releases declared their own schemas
+there. This helper reads every kept record from the old daemon and writes it
+to the new daemon over the two Unix sockets, in batches.
+
+Modes:
+  (default)  plan: read-only. Lists the schemas, key counts, membership, and
+             the field mapping. With --census it also reads every value and
+             checks it against the target field types. No write.
+  --apply    copy: writes to the TARGET node only, then verifies.
+  --verify   read-only comparison of both nodes.
+  --export D read-only on the source: write each not-moved schema on Tom's
+             export list to D as JSONL (mode 0600). Never a secret schema.
+
+Safety:
+  * The source node accepts only GET and three read POST routes. A write to
+    the source is impossible through this program.
+  * --apply refuses a target socket under a protected home (default ~/.lastdb).
+  * Plan, apply and verify print no record value, file pointer, or secret, and
+    write none to a file. Digests use HMAC-SHA256 with a random key per run;
+    the key is never shown.
+  * --export writes non-secret record values only, into a new or empty
+    directory (0700, files 0600). It skips every LastSecrets schema and
+    Papercut, and a file pointer keeps only its content hash.
+
+Owners:
+  * Each route maps a source schema to the target schema with the same
+    descriptive name and the expected owner. A new-config pin must name that
+    same schema. An app group changes owner only through a declared map,
+    --owner-map brain:fbrain=brain (short form: --source-owner fbrain
+    --target-owner brain). Every other owner difference is a refusal.
+  * With the Brain map fbrain -> brain, Brain values rename the app-id tags
+    (__fbrain_deleted__ and the __fbrain_backlink__: prefix), as brain#484
+    lists them. A key that holds such a tag is a refusal.
+  * Record digests cover the key and the mapped field values only, so they do
+    not depend on the schema name or the owner.
+
+Design and runbook: docs/lastdb-home-copy-protein-removal.md.
+"""
+
+import argparse
+import base64
+import hashlib
+import hmac
+import http.client
+import json
+import os
+import random
+import re
+import secrets
+import socket
+import sys
+import threading
+import time
+import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
+
+CLIENT_NAME = "last-stack-home-copy"
+SOURCE_POST_ROUTES = frozenset({"/api/query", "/api/queries/batch", "/api/db/fetch-file-blob"})
+TARGET_WRITE_ROUTES = frozenset({"/api/mutations/batch", "/api/db/put-blob-local", "/api/db/flush"})
+
+# brain#484 (head 2b8f126ab): record kinds select members through the type directory.
+BRAIN_RECORD_TYPES = ("design", "task", "concept", "preference", "reference",
+                      "agent", "project", "spike", "sop", "decision")
+BRAIN_DIRECTORY_KEY = "__braintypedirectory__"
+BRAIN_COUNT_KEY = "__brainlistcount__"
+BRAIN_DIRECTORY_RANGE = "__types__"
+# The 25 config keys that brain#484 declares. A new Brain config overrides this list.
+BRAIN_NEW_KEYS = BRAIN_RECORD_TYPES + (
+    "__tagindex__", "__tagmember__", "__admin_snapshot__", "__attachmentindex__",
+    "__attachmentblob__", "__attachmentfile__", "__bodyfile__", "__brainlistpage__",
+    "__brainlistlocator__", "__braincompactlocator__", BRAIN_DIRECTORY_KEY, BRAIN_COUNT_KEY,
+    "__brainedgeset__", "__braintokenset__", "__brainbackfillcursor__",
+)
+# Tom's decisions (2026-10-30) for the schemas that the new releases do not declare.
+NOT_MOVED_NOTES = {
+    "Papercut": "dropped with no export (Brain no longer supports papercuts)",
+    "PapercutStatusIndex_hashrange_v1": "dropped with no export (Brain no longer supports papercuts)",
+}
+EXPORT_NOTE = "export to the protein-removal artifacts folder, then drop"
+# The old home keeps Sop records in the Concept schema; the new release declares its own Sop schema.
+BRAIN_SOURCE_DESCRIPTIVE = {"sop": ("Concept",)}
+NOT_MOVED_NOTES.update({name: EXPORT_NOTE for name in (
+    "BrainGraphEdgeBySource_hashrange_v1", "BrainGraphEdgeByDestination_hashrange_v1",
+    "ChildTaskIndex_hashrange_v1", "ClusterIndex_hashrange_v1", "EphIndex_hashrange_v1",
+    "LiveIndex_hashrange_v1", "ParkedIndex_hashrange_v1", "RecordListEntry_hashrange_v2",
+    "Compaction recovery receipt",
+)})
+
+LIST_PAGE_MAX = 1000
+QUERY_KEYS_MAX = 1000
+RETRY_LIMIT = 30
+
+
+class Refusal(Exception):
+    """A precondition failed. Nothing was written for the failed step."""
+
+
+class NodeError(Exception):
+    def __init__(self, role, method, path, status, code, detail):
+        self.role, self.method, self.path = role, method, path
+        self.status, self.code, self.detail = status, code, detail
+        super().__init__(f"{role} {method} {path}: HTTP {status} {code}")
+
+    def safe_text(self, secret):
+        if secret:
+            return f"{self.role} {self.method} {self.path.split('?')[0]}: HTTP {self.status} {self.code}"
+        return f"{self} {self.detail}"
+
+
+class UnixConnection(http.client.HTTPConnection):
+    def __init__(self, path, timeout):
+        super().__init__("localhost", timeout=timeout)
+        self.unix_path = path
+
+    def connect(self):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        sock.connect(self.unix_path)
+        self.sock = sock
+
+
+class Node:
+    """One LastDB daemon on its Unix socket. One request per connection."""
+
+    def __init__(self, role, socket_path, writable, timeout):
+        self.role = role
+        self.socket_path = socket_path
+        self.writable = writable
+        self.timeout = timeout
+        self.calls = 0
+        self._lock = threading.Lock()
+
+    def _guard(self, method, path):
+        route = path.split("?")[0]
+        if method == "GET":
+            return
+        if self.role == "source":
+            if method != "POST" or route not in SOURCE_POST_ROUTES:
+                raise Refusal(f"the source node is read-only; {method} {route} is not a read route")
+            return
+        if method == "POST" and route in ("/api/query", "/api/queries/batch", "/api/db/fetch-file-blob"):
+            return
+        if not self.writable or route not in TARGET_WRITE_ROUTES:
+            raise Refusal(f"the target node refuses {method} {route} in this mode")
+
+    def call(self, method, path, payload=None):
+        self._guard(method, path)
+        body = None if payload is None else json.dumps(payload, separators=(",", ":")).encode()
+        headers = {"Host": "localhost", "X-LastDB-Client": CLIENT_NAME, "Connection": "close",
+                   "Accept": "application/json"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        for attempt in range(RETRY_LIMIT):
+            conn = UnixConnection(self.socket_path, self.timeout)
+            try:
+                conn.request(method, path, body=body, headers=headers)
+                response = conn.getresponse()
+                status = response.status
+                raw = response.read()
+                retry_after = response.getheader("Retry-After")
+            except (ConnectionError, socket.timeout, OSError) as exc:
+                if attempt + 1 >= RETRY_LIMIT:
+                    raise NodeError(self.role, method, path, 0, "transport", type(exc).__name__) from None
+                time.sleep(min(2.0, 0.2 * (attempt + 1)))
+                continue
+            finally:
+                conn.close()
+            with self._lock:
+                self.calls += 1
+            if status == 503 and attempt + 1 < RETRY_LIMIT:
+                try:
+                    delay = float(retry_after) if retry_after else 1.0
+                except ValueError:
+                    delay = 1.0
+                time.sleep(min(max(delay, 0.2), 10.0))
+                continue
+            try:
+                data = json.loads(raw.decode() or "null")
+            except (UnicodeDecodeError, ValueError):
+                data = None
+            if status == 423:
+                raise NodeError(self.role, method, path, status, "maintenance_active",
+                                "the node pauses writes for an app schema conversion")
+            if status != 200 or (isinstance(data, dict) and data.get("ok") is False):
+                code = data.get("error", "error") if isinstance(data, dict) else "error"
+                detail = raw.decode(errors="replace")[:300]
+                raise NodeError(self.role, method, path, status, str(code)[:80], detail)
+            if isinstance(data, dict) and isinstance(data.get("data"), dict) and "ok" not in data:
+                data = data["data"]
+            return data
+        raise NodeError(self.role, method, path, 503, "busy", "retry limit")
+
+    def get(self, path):
+        return self.call("GET", path)
+
+    def post(self, path, payload):
+        return self.call("POST", path, payload)
+
+
+# ---------------------------------------------------------------- field types
+
+def date_shape(text):
+    return (len(text) == 10 and text[4] == "-" and text[7] == "-"
+            and all(ch.isdigit() for i, ch in enumerate(text) if i not in (4, 7)))
+
+
+def datetime_shape(text):
+    """Mirror of lastdb schema_types temporal::datetime_shape (RFC 3339 with an offset)."""
+    if not 20 <= len(text) <= 35 or not date_shape(text[:10]) or text[10] not in "Tt":
+        return False
+    if text[13] != ":" or text[16] != ":" or not all(text[i].isdigit() for i in (11, 12, 14, 15, 17, 18)):
+        return False
+    rest = text[19:]
+    if rest.startswith("."):
+        digits = len(rest[1:]) - len(rest[1:].lstrip("0123456789"))
+        if not 1 <= digits <= 9:
+            return False
+        rest = rest[1 + digits:]
+    if rest in ("Z", "z"):
+        return True
+    return (len(rest) == 6 and rest[0] in "+-" and rest[3] == ":"
+            and all(rest[i].isdigit() for i in (1, 2, 4, 5)))
+
+
+NAIVE_DATETIME = re.compile(r"^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(\.\d{1,9})?$")
+SPACED_DATETIME = re.compile(r"^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:[Zz]|[+-]\d{2}:\d{2}))$")
+
+
+def datetime_class(value):
+    if not isinstance(value, str):
+        return "not-text"
+    if datetime_shape(value):
+        return "rfc3339"
+    if date_shape(value):
+        return "date-only"
+    if NAIVE_DATETIME.match(value):
+        return "no-offset"
+    if SPACED_DATETIME.match(value):
+        return "space-separator"
+    if value.isdigit() and len(value) in (10, 13):
+        return "epoch-digits"
+    return "other"
+
+
+def normalize_datetime(value):
+    """Deterministic repair for --normalize-datetime. Returns None when no rule applies."""
+    kind = datetime_class(value)
+    if kind == "rfc3339":
+        return value
+    if kind == "date-only":
+        return value + "T00:00:00Z"
+    if kind == "no-offset":
+        match = NAIVE_DATETIME.match(value)
+        return f"{match.group(1)}T{match.group(2)}{match.group(3) or ''}Z"
+    if kind == "space-separator":
+        return value.replace(" ", "T", 1)
+    if kind == "epoch-digits":
+        seconds = int(value) / (1000.0 if len(value) == 13 else 1.0)
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(int(seconds)))
+        millis = int(round((seconds - int(seconds)) * 1000))
+        return f"{stamp}.{millis:03d}Z" if len(value) == 13 else f"{stamp}Z"
+    return None
+
+
+def type_error(ftype, value):
+    """Mirror of lastdb FieldValueType::validate. Returns a short class string or None."""
+    if ftype is None or ftype == "Any":
+        return None
+    if isinstance(ftype, str):
+        if ftype == "String":
+            return None if isinstance(value, str) else "expected-string"
+        if ftype == "DateTime":
+            return None if isinstance(value, str) and datetime_shape(value) else "datetime-" + datetime_class(value)
+        if ftype == "Date":
+            return None if isinstance(value, str) and date_shape(value) else "expected-date"
+        if ftype == "Boolean":
+            return None if isinstance(value, bool) else "expected-boolean"
+        if ftype == "Integer":
+            return None if isinstance(value, int) and not isinstance(value, bool) else "expected-integer"
+        if ftype in ("Float", "Number"):
+            return None if isinstance(value, (int, float)) and not isinstance(value, bool) else "expected-number"
+        if ftype == "Null":
+            return None if value is None else "expected-null"
+        return None
+    if isinstance(ftype, dict) and len(ftype) == 1:
+        kind, inner = next(iter(ftype.items()))
+        if kind == "Array":
+            if not isinstance(value, list):
+                return "expected-array"
+            for item in value:
+                err = type_error(inner, item)
+                if err:
+                    return "array-" + err
+            return None
+        if kind == "Map":
+            if not isinstance(value, dict):
+                return "expected-map"
+            for item in value.values():
+                err = type_error(inner, item)
+                if err:
+                    return "map-" + err
+            return None
+        if kind == "Object":
+            if not isinstance(value, dict):
+                return "expected-object"
+            for name, sub in (inner or {}).items():
+                err = type_error(sub, value.get(name))
+                if err:
+                    return f"object-{name}-{err}"
+            return None
+        if kind == "OneOf":
+            return None if any(type_error(v, value) is None for v in inner or []) else "oneof-no-match"
+        if kind == "SchemaRef":
+            return None if isinstance(value, (dict, list)) else "expected-reference"
+    return None
+
+
+def wants_datetime(ftype):
+    if ftype == "DateTime":
+        return True
+    if isinstance(ftype, dict) and "OneOf" in ftype:
+        return any(wants_datetime(v) for v in ftype["OneOf"] or [])
+    return False
+
+
+def is_pointer(value):
+    return isinstance(value, dict) and isinstance(value.get("$lastdb_file"), dict)
+
+
+def pointer_identity(value):
+    # blob_ref, dek, and the cipher fields are per node. The plaintext hash names the file.
+    marker = value["$lastdb_file"]
+    return {"$lastdb_file": {key: marker[key] for key in ("file_hash", "name", "media_type") if key in marker}}
+
+
+def comparable(value):
+    """Value form for digests: file pointers compare by content hash, name and media type."""
+    if is_pointer(value):
+        return pointer_identity(value)
+    if isinstance(value, list):
+        return [comparable(v) for v in value]
+    if isinstance(value, dict):
+        return {k: comparable(v) for k, v in value.items()}
+    return value
+
+
+def collect_pointers(value, out):
+    if is_pointer(value):
+        out.append(value)
+    elif isinstance(value, list):
+        for item in value:
+            collect_pointers(item, out)
+    elif isinstance(value, dict):
+        for item in value.values():
+            collect_pointers(item, out)
+
+
+# ---------------------------------------------------------------- discovery
+
+def load_config(path, required, label):
+    if not path:
+        if required:
+            raise Refusal(f"{label} is required")
+        return None
+    full = os.path.expanduser(path)
+    if not os.path.isfile(full):
+        if required:
+            raise Refusal(f"{label} not found: {path}")
+        return None
+    with open(full, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def load_release_vocabulary(directory, label):
+    if not directory:
+        return None
+    path = os.path.join(os.path.expanduser(directory), "src", "canonical-fields.json")
+    if not os.path.isfile(path):
+        raise Refusal(f"{label}: {path} not found")
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+    return {"fields": data.get("fields", {}), "schemas": data.get("schemas", {})}
+
+
+class Catalog:
+    """Schema listing for one node, with full definitions on demand."""
+
+    def __init__(self, node):
+        self.node = node
+        listing = node.get("/api/schemas?include_system=true")
+        self.entries = listing.get("schemas", []) if isinstance(listing, dict) else []
+        self.user_hash = listing.get("user_hash") if isinstance(listing, dict) else None
+        self._detail = {}
+        self._lock = threading.Lock()
+
+    def find(self, pin):
+        """Exact runtime name first. An alias with mappers shares the identity hash of its target,
+        so an identity match prefers the entry whose runtime name is that identity."""
+        if not pin:
+            return None
+        for entry in self.entries:
+            if entry.get("name") == pin:
+                return entry
+        matches = [e for e in self.entries if e.get("identity_hash") == pin]
+        for entry in matches:
+            if not entry.get("field_mappers") and "/" not in entry.get("name", ""):
+                return entry
+        independent = [e for e in matches if e.get("independent_fields")]
+        return (independent or matches or [None])[0]
+
+    def detail(self, name):
+        with self._lock:
+            if name in self._detail:
+                return self._detail[name]
+        data = self.node.get("/api/schema/" + urllib.parse.quote(name, safe=""))
+        schema = data.get("schema", data) if isinstance(data, dict) else {}
+        with self._lock:
+            self._detail[name] = schema
+        return schema
+
+
+def short(pin):
+    return (pin or "-")[:16]
+
+
+def layout(entry):
+    key = entry.get("key") or {}
+    hash_field, range_field = key.get("hash_field"), key.get("range_field")
+    return f"{entry.get('schema_type', '?')}({hash_field or '-'}{', ' + range_field if range_field else ''})"
+
+
+def is_range_schema(entry):
+    key = entry.get("key") or {}
+    return bool(key.get("range_field"))
+
+
+def alias_map(config, pin, name=None):
+    aliases = (config or {}).get("schemaFieldAliases") or {}
+    return aliases.get(pin) or (aliases.get(name) if name else None) or {}
+
+
+def field_map_for(route, source_fields, target_fields):
+    """Map each stored source field to a stored target field through the local app names."""
+    old_alias = route["old_aliases"]
+    new_alias = route["new_aliases"]
+    old_local = {stored: local for local, stored in old_alias.items()}
+    mapping, missing = {}, []
+    for stored in source_fields:
+        local = old_local.get(stored, stored)
+        target = new_alias.get(local, local)
+        if target_fields is not None and target not in target_fields:
+            missing.append(stored)
+            continue
+        mapping[stored] = target
+    return mapping, missing
+
+
+def norm_owner(entry):
+    """The owner app id of a schema listing entry; None and "" compare equal."""
+    owner = (entry or {}).get("owner_app_id")
+    return (owner.strip() or None) if isinstance(owner, str) else None
+
+
+def owned_by_descriptive(catalog, owner, descriptive):
+    """Schemas that one owner ("" = no owner) declares under one descriptive name. Alias names
+    (owner/Name) do not count."""
+    return [e for e in catalog.entries
+            if (norm_owner(e) or "") == owner and e.get("descriptive_name") == descriptive
+            and "/" not in e.get("name", "")]
+
+
+def show_owner(owner):
+    return owner or "none"
+
+
+def build_routes(args, src_cat, tgt_cat, cfg):
+    routes, not_moved, fresh, refusals = [], [], [], []
+    used_sources = set()
+    old_brain, new_brain = cfg["old_brain"], cfg["new_brain"]
+    old_ls, new_ls = cfg["old_lastsecrets"], cfg["new_lastsecrets"]
+    brain_vocab, ls_vocab = cfg["brain_release"], cfg["lastsecrets_release"]
+
+    def add_route(app, key, src_pin, tgt_pin, target_descriptive, secret, membership, old_cfg, new_cfg, vocab,
+                  source_descriptive):
+        src_entry = src_cat.find(src_pin)
+        if src_entry is None:
+            fresh.append({"app": app, "key": key, "reason": "no installed source schema"})
+            return
+        used_sources.add(src_entry["name"])
+        label = f"{app}:{key}"
+        declared = args.owner_map.get(app)
+        src_owner = norm_owner(src_entry) or ""
+        if declared:
+            want_src, want_tgt = declared
+            if src_owner != want_src:
+                refusals.append(f"{label}: the source schema owner is {show_owner(src_owner)}, not the declared "
+                                f"{show_owner(want_src)} (--owner-map {app}:{want_src or '-'}={want_tgt or '-'})")
+        else:
+            want_tgt = src_owner
+        if src_entry.get("descriptive_name") not in source_descriptive:
+            refusals.append(f"{label}: the source schema is {src_entry.get('descriptive_name')!r}, "
+                            f"not {' or '.join(repr(d) for d in source_descriptive)}")
+        tgt_entry = tgt_cat.find(tgt_pin) if (tgt_cat and tgt_pin) else None
+        if tgt_cat is not None:
+            # The map goes by descriptive name within the owner. A new-config pin must name the same schema.
+            candidates = owned_by_descriptive(tgt_cat, want_tgt, target_descriptive)
+            if tgt_entry is None and not tgt_pin and len(candidates) == 1:
+                tgt_entry = candidates[0]
+            if tgt_entry is None:
+                found = f"{len(candidates)} schema(s) of owner {show_owner(want_tgt)} named {target_descriptive!r}"
+                refusals.append(f"{label}: the target node has no schema for pin {short(tgt_pin)} ({found}); "
+                                "run the new app init on the new home first")
+            else:
+                tgt_owner = norm_owner(tgt_entry) or ""
+                if tgt_owner != want_tgt:
+                    why = f"the declared {show_owner(want_tgt)}" if declared else \
+                        f"the source owner {show_owner(want_tgt)}; a rename needs --owner-map"
+                    refusals.append(f"{label}: the target schema owner is {show_owner(tgt_owner)}, not {why}")
+                if tgt_entry.get("descriptive_name") != target_descriptive:
+                    refusals.append(f"{label}: the target schema is {tgt_entry.get('descriptive_name')!r}, "
+                                    f"not {target_descriptive!r}")
+        new_aliases = alias_map(new_cfg, tgt_pin, tgt_entry.get("name") if tgt_entry else None)
+        if not new_aliases and new_cfg is None and vocab:
+            new_aliases = vocab["schemas"].get(target_descriptive, {})
+        route = {
+            "app": app, "key": key, "secret": secret, "membership": membership,
+            "source": src_entry, "source_pin": src_pin,
+            "target": tgt_entry, "target_pin": tgt_pin, "target_descriptive": target_descriptive,
+            "old_aliases": alias_map(old_cfg, src_pin, src_entry.get("name")),
+            "new_aliases": new_aliases,
+            "vocab_types": ({name: (vocab["fields"].get(name) or {}).get("field_type")
+                             for name in new_aliases.values()} if vocab and new_aliases else {}),
+        }
+        routes.append(route)
+
+    if args.only and not any(o.startswith("brain") for o in args.only):
+        old_brain = None
+    if old_brain:
+        old_hashes = old_brain.get("schemaHashes") or {}
+        new_hashes = (new_brain or {}).get("schemaHashes") or {}
+        new_keys = list(new_hashes) if new_brain else list(BRAIN_NEW_KEYS)
+        for key in new_keys:
+            if key not in old_hashes:
+                fresh.append({"app": "brain", "key": key, "reason": "new in this release; no source data"})
+        for key, src_pin in old_hashes.items():
+            if key not in new_keys:
+                continue
+            if args.only and f"brain:{key}" not in args.only and "brain" not in args.only:
+                continue
+            src_entry = src_cat.find(src_pin)
+            if key in BRAIN_RECORD_TYPES:
+                descriptive = key.capitalize()
+                source_descriptive = (descriptive,) + BRAIN_SOURCE_DESCRIPTIVE.get(key, ())
+                membership = {"kind": "directory", "type": key}
+            else:
+                descriptive = src_entry.get("descriptive_name") if src_entry else key
+                source_descriptive = (descriptive,)
+                membership = None
+            add_route("brain", key, src_pin, new_hashes.get(key), descriptive, False, membership,
+                      old_brain, new_brain, brain_vocab, source_descriptive)
+
+    if args.only and not any(o.startswith("lastsecrets") for o in args.only):
+        old_ls = None
+    if old_ls:
+        pairs = (("secret", "schemaHash", "schemaName", "LastSecret", True),
+                 ("index", "indexSchemaHash", "indexSchemaName", "LastSecretIndex", False))
+        for key, hash_key, name_key, descriptive, secret in pairs:
+            if args.only and f"lastsecrets:{key}" not in args.only and "lastsecrets" not in args.only:
+                continue
+            src_pin = old_ls.get(hash_key)
+            tgt_pin = (new_ls or {}).get(hash_key) or (new_ls or {}).get(name_key)
+            add_route("lastsecrets", key, src_pin, tgt_pin, descriptive, secret, None,
+                      old_ls, new_ls, ls_vocab, (descriptive,))
+            alias_name = old_ls.get(name_key)
+            alias_entry = src_cat.find(alias_name)
+            if alias_entry and alias_entry["name"] not in used_sources:
+                used_sources.add(alias_entry["name"])
+                not_moved.append({"name": alias_entry["name"], "descriptive": alias_entry.get("descriptive_name"),
+                                  "owner": alias_entry.get("owner_app_id"),
+                                  "reason": f"alias of the {descriptive} schema; lastsecrets#14 retires it (no own values)"})
+
+    for entry in src_cat.entries:
+        if entry["name"] in used_sources:
+            continue
+        descriptive = entry.get("descriptive_name") or ""
+        note = NOT_MOVED_NOTES.get(descriptive)
+        if note is None:
+            brain_owners = {"fbrain", "brain", "compaction-recovery-check",
+                            (args.owner_map.get("brain") or ("",))[0]} - {""}
+            note = EXPORT_NOTE if norm_owner(entry) in brain_owners else "no route in this helper"
+        not_moved.append({"name": entry["name"], "descriptive": descriptive,
+                          "owner": entry.get("owner_app_id"), "reason": "not declared by the new release; " + note})
+    return routes, not_moved, fresh, refusals
+
+
+# ---------------------------------------------------------------- data access
+
+def list_keys(node, name, page_size, range_schema):
+    keys, cursor, seen_cursors = [], None, set()
+    for _ in range(1_000_000 // max(page_size, 1) + 2):
+        params = {"schema": name, "limit": str(page_size)}
+        if cursor:
+            params["cursor"] = cursor
+        data = node.get("/api/list?" + urllib.parse.urlencode(params))
+        page = data.get("list") if isinstance(data, dict) else None
+        if not isinstance(page, dict) or not isinstance(page.get("keys"), list):
+            raise Refusal(f"{node.role}: /api/list returned no key page for {short(name)}")
+        for raw in page["keys"]:
+            if not isinstance(raw, dict) or not isinstance(raw.get("hash"), str):
+                raise Refusal(f"{node.role}: /api/list returned an invalid key for {short(name)}")
+            keys.append((raw["hash"], raw.get("range") if range_schema else None))
+        if not page.get("has_more"):
+            break
+        cursor = page.get("next_cursor")
+        if not cursor or cursor in seen_cursors:
+            raise Refusal(f"{node.role}: /api/list cursor did not advance for {short(name)}")
+        seen_cursors.add(cursor)
+    else:
+        raise Refusal(f"{node.role}: /api/list exceeded the page limit for {short(name)}")
+    unique = list(dict.fromkeys(keys))
+    return unique
+
+
+def read_rows(node, name, fields, keys, range_schema, batch, allow_missing=False, key_fields=()):
+    """Read exact keys, including stored nulls. Refuse incomplete or foreign rows.
+
+    key_fields: primary key field names of the schema. An API 7 node returns the
+    hash key field with every row even when the request names other fields. Such a
+    field is dropped only when it is a key field and its value equals the row key."""
+    rows = {}
+    # One request holds the native 10,000-key budget. Reserve half for control
+    # and metadata reads; do not retry an oversized request with the same size.
+    batch = min(batch, 128, 5000 // (1 + 2 * max(1, len(fields))))
+    if batch < 1:
+        raise Refusal(f"one complete record exceeds the planned read budget for {short(name)}")
+    for start in range(0, len(keys), batch):
+        part = keys[start:start + batch]
+        expected = set(part)
+        request = {"schema_name": name, "fields": list(fields),
+                   "filter": {"HashRangeKeys": [[h, r if r is not None else ""] for h, r in part]},
+                   "limit": len(part)}
+        pages, seen_cursors, found = 0, set(), set()
+        while True:
+            data = node.post("/api/query", request)
+            results = data.get("results") if isinstance(data, dict) else None
+            if (not isinstance(results, list) or data.get("unresolved_rows") != 0
+                    or not isinstance(data.get("has_more"), bool)):
+                raise Refusal(f"{node.role}: /api/query returned an incomplete page for {short(name)}")
+            for row in results:
+                if not isinstance(row, dict):
+                    raise Refusal(f"{node.role}: /api/query returned an invalid row for {short(name)}")
+                key = row.get("key")
+                if (not isinstance(key, dict) or not isinstance(key.get("hash"), str)
+                        or (range_schema and not isinstance(key.get("range"), str))):
+                    raise Refusal(f"{node.role}: /api/query returned an invalid primary key for {short(name)}")
+                ident = (key.get("hash"), key.get("range") if range_schema else None)
+                values, metadata = row.get("fields"), row.get("metadata")
+                if isinstance(values, dict):
+                    unasked = set(values) - set(fields)
+                    if unasked and all(f in key_fields and values[f] in (key.get("hash"), key.get("range"))
+                                       for f in unasked):
+                        values = {f: v for f, v in values.items() if f not in unasked}
+                if (ident not in expected or ident in found or not isinstance(values, dict)
+                        or not values or not isinstance(metadata, dict) or set(values) - set(fields)):
+                    raise Refusal(f"{node.role}: /api/query returned a foreign, repeated, or empty row for {short(name)}")
+                for field in values:
+                    info = metadata.get(field)
+                    if not isinstance(info, dict) or not isinstance(info.get("atom_uuid"), str) or not info["atom_uuid"]:
+                        raise Refusal(f"{node.role}: a present field has no atom metadata for {short(name)}")
+                found.add(ident)
+                rows[ident] = dict(values)
+            pages += 1
+            if not data.get("has_more"):
+                break
+            cursor = data.get("next_cursor")
+            cursor_id = json.dumps(cursor, sort_keys=True, separators=(",", ":"))
+            if pages >= 16 or not cursor or cursor_id in seen_cursors:
+                raise Refusal(f"{node.role}: keyed read of {short(name)} did not finish or its cursor repeated")
+            seen_cursors.add(cursor_id)
+            request = dict(request, cursor=cursor)
+        if not allow_missing and found != expected:
+            raise Refusal(f"{node.role}: keyed read returned {len(found)} of {len(expected)} listed records for {short(name)}")
+    return rows
+
+
+def brain_membership(src, src_cat, old_brain, args):
+    """Type directory members and per-type counts, as brain multi-key-convert selects them."""
+    hashes = old_brain.get("schemaHashes") or {}
+    dir_entry = src_cat.find(hashes.get(BRAIN_DIRECTORY_KEY))
+    cnt_entry = src_cat.find(hashes.get(BRAIN_COUNT_KEY))
+    if dir_entry is None or cnt_entry is None:
+        raise Refusal("the old Brain home has no type directory or list count schema")
+    dir_field = alias_map(old_brain, hashes.get(BRAIN_DIRECTORY_KEY)).get("btd_types", "btd_types")
+    cnt_field = alias_map(old_brain, hashes.get(BRAIN_COUNT_KEY)).get("bln_n", "bln_n")
+    dir_keys = [k for k in list_keys(src, dir_entry["name"], args.page_size, True) if k[1] == BRAIN_DIRECTORY_RANGE]
+    dir_key_fields = [f for f in (dir_entry.get("key") or {}).values() if f]
+    cnt_key_fields = [f for f in (cnt_entry.get("key") or {}).values() if f]
+    dir_rows = read_rows(src, dir_entry["name"], [dir_field], dir_keys, True, args.read_batch,
+                         key_fields=dir_key_fields)
+    members = {t: set() for t in BRAIN_RECORD_TYPES}
+    unreadable = 0
+    for (slug, _), values in dir_rows.items():
+        try:
+            types = json.loads(values.get(dir_field) or "[]")
+        except (TypeError, ValueError):
+            types = None
+        if not isinstance(types, list):
+            unreadable += 1
+            continue
+        for kind in types:
+            if kind in members:
+                members[kind].add(slug)
+    # The app treats an absent per-type count record as zero. This exception
+    # requires a complete, unresolved-free keyed response, not a missing page.
+    count_rows = read_rows(src, cnt_entry["name"], [cnt_field], [(t, None) for t in BRAIN_RECORD_TYPES], False, 64,
+                           allow_missing=True, key_fields=cnt_key_fields)
+    counts = {}
+    for kind in BRAIN_RECORD_TYPES:
+        raw = (count_rows.get((kind, None)) or {}).get(cnt_field)
+        counts[kind] = parse_list_count(raw)
+    return {"members": members, "counts": counts, "directory_rows": len(dir_rows), "unreadable": unreadable}
+
+
+def parse_list_count(raw):
+    if raw is None:
+        return 0
+    if isinstance(raw, str) and re.fullmatch(r"-?\d+", raw):
+        return int(raw)
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(value, dict) and value.get("version") == 1 and isinstance(value.get("count"), int):
+        return value["count"]
+    return None
+
+
+# ---------------------------------------------------------------- per route work
+
+class RunContext:
+    def __init__(self, args, src, tgt, src_cat, tgt_cat, membership):
+        self.args, self.src, self.tgt = args, src, tgt
+        self.src_cat, self.tgt_cat = src_cat, tgt_cat
+        self.membership = membership
+        self.hmac_key = secrets.token_bytes(32)
+        self.blob_cache = {}
+        self.blob_lock = threading.Lock()
+        self.source_keys = {}
+        self.source_key_locks = {}
+        self.source_keys_lock = threading.Lock()
+
+    def digest(self, key, fields):
+        # Key and mapped values only: no schema name and no owner, so fbrain -> brain digests compare.
+        text = json.dumps([list(key), comparable(fields)], sort_keys=True, separators=(",", ":"))
+        return hmac.new(self.hmac_key, text.encode(), hashlib.sha256).hexdigest()
+
+    def listed_source_keys(self, route):
+        """One listing per source schema; Concept serves two routes (concept and sop)."""
+        name = route["source"]["name"]
+        with self.source_keys_lock:
+            lock = self.source_key_locks.setdefault(name, threading.Lock())
+        with lock:
+            if name not in self.source_keys:
+                self.source_keys[name] = list_keys(self.src, name, self.args.page_size,
+                                                   is_range_schema(route["source"]))
+            return self.source_keys[name]
+
+
+def select_keys(ctx, route, listed):
+    """Apply Brain directory membership. Returns (selected, info)."""
+    membership = route["membership"]
+    if not membership:
+        return listed, {"selected": len(listed)}
+    kind = membership["type"]
+    members = ctx.membership["members"][kind]
+    expected = ctx.membership["counts"][kind]
+    listed_hashes = {h for h, _ in listed}
+    selected = [k for k in listed if k[0] in members]
+    info = {"selected": len(selected), "count_guard": expected,
+            "directory_only": len(members - listed_hashes)}
+    return selected, info
+
+
+def target_fields_and_types(ctx, route):
+    if route["target"] is None:
+        return None, route["vocab_types"] or {}, {}
+    detail = ctx.tgt_cat.detail(route["target"]["name"])
+    fields = detail.get("fields") or route["target"].get("fields") or []
+    return set(fields), detail.get("field_types") or {}, detail.get("alternate_keys") or {}
+
+
+def rename_tag(renames, text):
+    """The app-id tag rename for one string. Returns (text, changed)."""
+    for kind, old, new in renames:
+        if kind == "exact" and text == old:
+            return new, True
+        if kind == "prefix" and text.startswith(old):
+            return new + text[len(old):], True
+    return text, False
+
+
+def rename_tags_in(renames, value):
+    """Apply the tag rename to a string or to the strings of a list (a tags field). Returns (value, count)."""
+    if isinstance(value, str):
+        text, changed = rename_tag(renames, value)
+        return text, int(changed)
+    if isinstance(value, list) and any(isinstance(v, str) for v in value):
+        out, count = [], 0
+        for v in value:
+            if isinstance(v, str):
+                v, changed = rename_tag(renames, v)
+                count += changed
+            out.append(v)
+        return out, count
+    return value, 0
+
+
+def map_values(ctx, route, values, mapping, types, census):
+    """Rename fields, rename app-id tags, repair DateTime text when allowed, and check types.
+    Pointers stay as source pointers."""
+    mapped, issues = {}, []
+    renames = ctx.args.tag_renames if route["app"] == "brain" else []
+    local_fields = {stored: local for local, stored in route["old_aliases"].items()}
+    # A matching string in a title, body, slug, or arbitrary payload is user
+    # data. Only the app's declared tag fields carry the app-id tag rename.
+    tag_field = ("tags" if route["key"] in BRAIN_RECORD_TYPES else
+                 "tag" if route["key"] == "__tagindex__" else
+                 "tmb_tag" if route["key"] == "__tagmember__" else None)
+    for stored, value in values.items():
+        target = mapping.get(stored)
+        if target is None:
+            issues.append(f"unmapped:{stored}")
+            continue
+        if renames and tag_field and local_fields.get(stored, stored) == tag_field:
+            value, count = rename_tags_in(renames, value)
+            if count:
+                census["tag-rename"] = census.get("tag-rename", 0) + count
+                if route["key"] in ("__tagindex__", "__tagmember__"):
+                    # These records use __tagidx__<sha256(tag)> as their hash.
+                    # Renaming only the label strands the row at the old hash.
+                    issues.append("tag-address-conversion-required")
+        ftype = types.get(target)
+        if wants_datetime(ftype) and isinstance(value, str) and not datetime_shape(value):
+            cls = datetime_class(value)
+            census[f"{target}:datetime-{cls}"] = census.get(f"{target}:datetime-{cls}", 0) + 1
+            if ctx.args.normalize_datetime:
+                fixed = normalize_datetime(value)
+                if fixed is not None:
+                    value = fixed
+        err = type_error(ftype, value)
+        if err:
+            issues.append(f"{target}:{err}")
+        if not is_pointer(value):
+            size = len(value.encode()) if isinstance(value, str) else \
+                len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode())
+            if size > ctx.args.value_max_bytes:
+                issues.append(f"{target}:value-over-cap")
+        mapped[target] = value
+    return mapped, issues
+
+
+def alternate_key_issues(alternate_keys, mapped):
+    issues = []
+    for name, spec in (alternate_keys or {}).items():
+        if not isinstance(spec, dict):
+            continue
+        omit = spec.get("missing") == "omit"
+        fields = []
+        if spec.get("hash_field"):
+            fields.append(spec["hash_field"])
+        if spec.get("range_field"):
+            fields.append(spec["range_field"])
+        parts = spec.get("range_parts") or []
+        fields.extend(p.get("field") for p in parts if isinstance(p, dict))
+        absent = [f for f in fields if f and mapped.get(f) is None]
+        if absent and not omit:
+            issues.append(f"key-{name}:absent-{absent[0]}")
+            continue
+        sep = spec.get("range_separator") or ""
+        for part in parts:
+            value = mapped.get(part.get("field"))
+            if value is None:
+                continue
+            if part.get("format") == "reverse_time_millis" and not (isinstance(value, str) and datetime_shape(value)):
+                issues.append(f"key-{name}:time-{datetime_class(value)}")
+            elif sep and isinstance(value, str) and sep in value:
+                issues.append(f"key-{name}:separator-in-value")
+    return issues
+
+
+def transfer_pointers(ctx, value):
+    """Fetch each file from the source and store it on the target. Bytes stay in memory."""
+    if is_pointer(value):
+        marker = value["$lastdb_file"]
+        expected = marker.get("file_hash")
+        with ctx.blob_lock:
+            cached = ctx.blob_cache.get((expected, marker.get("name"), marker.get("media_type")))
+        if cached:
+            return cached
+        fetched = ctx.src.post("/api/db/fetch-file-blob", {"pointer": value})
+        blob = (fetched or {}).get("file_blob") or {}
+        data = base64.b64decode(blob.get("bytes_b64") or "")
+        actual = hashlib.sha256(data).hexdigest()
+        if expected and actual != expected:
+            raise Refusal("a source file does not match its pointer hash")
+        request = {"bytes_b64": base64.b64encode(data).decode()}
+        if isinstance(marker.get("name"), str):
+            request["name"] = marker["name"]
+        if isinstance(marker.get("media_type"), str):
+            request["media_type"] = marker["media_type"]
+        stored = ctx.tgt.post("/api/db/put-blob-local", request)
+        out = (stored or {}).get("file_blob") or {}
+        pointer = out.get("pointer")
+        if not is_pointer(pointer) or out.get("file_hash") != actual:
+            raise Refusal("the target returned an invalid file pointer")
+        with ctx.blob_lock:
+            ctx.blob_cache[(expected, marker.get("name"), marker.get("media_type"))] = pointer
+        return pointer
+    if isinstance(value, list):
+        return [transfer_pointers(ctx, v) for v in value]
+    if isinstance(value, dict):
+        return {k: transfer_pointers(ctx, v) for k, v in value.items()}
+    return value
+
+
+def write_batches(ctx, route, mutations):
+    batch, size = [], 0
+    written = 0
+    for mutation in mutations:
+        encoded = len(json.dumps(mutation, separators=(",", ":")).encode())
+        if encoded > ctx.args.write_bytes:
+            raise Refusal(f"{route['app']}:{route['key']}: one mutation exceeds the write batch byte cap")
+        if batch and (len(batch) >= ctx.args.write_batch or size + encoded > ctx.args.write_bytes):
+            written += send_batch(ctx, route, batch)
+            batch, size = [], 0
+        batch.append(mutation)
+        size += encoded
+    if batch:
+        written += send_batch(ctx, route, batch)
+    return written
+
+
+def send_batch(ctx, route, batch):
+    data = ctx.tgt.post("/api/mutations/batch", {"mutations": batch, "convergence": "sync"})
+    ops = (data or {}).get("operations") or {}
+    total = ops.get("total", (data or {}).get("count"))
+    if total is not None and total != len(batch):
+        raise Refusal(f"{route['app']}:{route['key']}: the target applied {total} of {len(batch)} mutations")
+    return len(batch)
+
+
+def mutation(target_name, key, kind, fields):
+    hash_value, range_value = key
+    return {"type": "mutation", "schema": target_name, "mutation_type": kind,
+            "key_value": {"hash": hash_value, "range": range_value},
+            "fields_and_values": fields, "durability": "durable"}
+
+
+def run_route(ctx, route, mode, pre):
+    args = ctx.args
+    src_entry, tgt_entry = route["source"], route["target"]
+    result = {"app": route["app"], "key": route["key"], "secret": route["secret"],
+              "source": {"name": short(src_entry["name"]), "descriptive": src_entry.get("descriptive_name"),
+                         "owner": show_owner(norm_owner(src_entry)),
+                         "layout": layout(src_entry), "fields": len(src_entry.get("fields") or [])},
+              "target": ({"name": tgt_entry["name"], "descriptive": tgt_entry.get("descriptive_name"),
+                          "owner": show_owner(norm_owner(tgt_entry)),
+                          "layout": layout(tgt_entry), "independent_fields": tgt_entry.get("independent_fields")}
+                         if tgt_entry else None),
+              "target_descriptive": route["target_descriptive"], "issues": {}, "refusals": list(pre["refusals"])}
+    result.update(pre["info"])
+    try:
+        range_schema = is_range_schema(src_entry)
+        listed = ctx.listed_source_keys(route)
+        selected, info = select_keys(ctx, route, listed)
+        result.update({"listed": len(listed)}, **info)
+        source_fields = src_entry.get("fields") or []
+        target_fields, types, alternate = target_fields_and_types(ctx, route)
+        mapping, unmapped = field_map_for(route, source_fields, target_fields)
+        result["field_map"] = mapping
+        if unmapped:
+            result["refusals"].append(f"source fields with no target field: {', '.join(unmapped)}")
+        if not route["new_aliases"] and route["target"] is None:
+            result["field_map_status"] = "provisional (no new app config or release vocabulary)"
+        if route["membership"]:
+            if info["count_guard"] is None:
+                result["refusals"].append("the per-type count is not readable")
+            else:
+                accepted = args.accept_directory_count.get(route["key"])
+                if accepted is not None:
+                    result["count_override"] = {"type": route["key"], "stored_count": info["count_guard"],
+                                                "accepted_count": accepted, "selected": info["selected"]}
+                    if info["selected"] != accepted:
+                        result["refusals"].append(
+                            f"--accept-directory-count {route['key']}={accepted} does not equal the "
+                            f"{info['selected']} selected records")
+                elif info["selected"] != info["count_guard"]:
+                    result["refusals"].append(
+                        f"selected {info['selected']} records, but the per-type count is {info['count_guard']}; "
+                        f"name the accepted value with --accept-directory-count {route['key']}={info['selected']}")
+            if info["directory_only"]:
+                result["refusals"].append(f"{info['directory_only']} directory members have no stored record")
+        if route["app"] == "brain" and args.tag_renames:
+            tagged = sum(1 for key in selected
+                         if any(isinstance(part, str) and rename_tag(args.tag_renames, part)[1] for part in key))
+            if tagged:
+                result["refusals"].append(f"{tagged} keys hold an old app-id tag name; the helper renames tag "
+                                          "values, not keys")
+        if mode == "plan" and not args.census:
+            return result
+        if tgt_entry is not None and tgt_entry.get("independent_fields") is not True and not args.allow_shared_value_target:
+            result["refusals"].append("the target schema does not report independent_fields")
+        census, issue_counts, absent = {}, {}, {}
+        target_name = tgt_entry["name"] if tgt_entry else None
+        tgt_range = is_range_schema(tgt_entry) if tgt_entry else range_schema
+        written = skipped = empty = pointers = 0
+        source_digests, target_digests = {}, {}
+        target_keys = set()
+        if tgt_entry is not None and mode in ("apply", "verify"):
+            target_keys = set(list_keys(ctx.tgt, target_name, args.page_size, tgt_range))
+            result["target_keys_before"] = len(target_keys)
+        if mode == "apply" and result["refusals"]:
+            return result
+        for start in range(0, len(selected), args.read_batch):
+            part = selected[start:start + args.read_batch]
+            rows = read_rows(ctx.src, src_entry["name"], source_fields, part, range_schema, args.read_batch)
+            have = {}
+            if tgt_entry is not None and mode == "apply":
+                present = [k for k in part if k in target_keys]
+                if present:
+                    have = read_rows(ctx.tgt, target_name, sorted(target_fields or []), present, tgt_range,
+                                     args.read_batch)
+            to_write, recreate = [], []
+            for key in part:
+                values = rows.get(key)
+                if not values:
+                    raise Refusal(f"{route['app']}:{route['key']}: a selected source record has no field values")
+                mapped, issues = map_values(ctx, route, values, mapping, types, census)
+                issues += alternate_key_issues(alternate, mapped)
+                for name in set(mapping.values()) - set(mapped):
+                    absent[name] = absent.get(name, 0) + 1
+                found = []
+                collect_pointers(mapped, found)
+                pointers += len(found)
+                for issue in issues:
+                    issue_counts[issue] = issue_counts.get(issue, 0) + 1
+                source_digests[key] = ctx.digest(key, mapped)
+                current = have.get(key)
+                if current is not None:
+                    target_digests[key] = ctx.digest(key, current)
+                if mode != "apply" or issues:
+                    continue
+                if current is not None and target_digests[key] == source_digests[key]:
+                    skipped += 1
+                    continue
+                if current is not None and set(current) - set(mapped):
+                    recreate.append(key)
+                to_write.append((key, mapped, current is None or key in recreate))
+            if mode == "apply" and to_write:
+                if recreate:
+                    write_batches(ctx, route, [mutation(target_name, k, "delete", {}) for k in recreate])
+                ops = []
+                for key, mapped, create in to_write:
+                    ops.append(mutation(target_name, key, "create" if create else "update",
+                                        transfer_pointers(ctx, mapped)))
+                written += write_batches(ctx, route, ops)
+        result.update({"empty_rows": empty, "file_pointers": pointers, "issues": issue_counts,
+                       "tag_renames": census.pop("tag-rename", 0),
+                       "datetime_census": census, "absent_fields": absent})
+        if mode == "apply":
+            result.update({"written": written, "unchanged": skipped})
+        if mode in ("apply", "verify") and tgt_entry is not None:
+            result["verify"] = verify_route(ctx, route, selected, source_digests, target_fields, tgt_range)
+        if mode == "plan":
+            result["census_digest"] = "withheld" if route["secret"] else digest_of(ctx, source_digests)[:16]
+    except NodeError as exc:
+        result["refusals"].append(exc.safe_text(route["secret"]))
+    except Refusal as exc:
+        result["refusals"].append(str(exc))
+    return result
+
+
+def digest_of(ctx, digests):
+    joined = "".join(digests[k] for k in sorted(digests, key=lambda k: (k[0], k[1] or "")))
+    return hmac.new(ctx.hmac_key, joined.encode(), hashlib.sha256).hexdigest()
+
+
+def verify_route(ctx, route, selected, source_digests, target_fields, tgt_range):
+    """Read the target after the copy and compare every selected record."""
+    args = ctx.args
+    target_name = route["target"]["name"]
+    expected = set(source_digests)
+    target_keys = list_keys(ctx.tgt, target_name, args.page_size, tgt_range)
+    deleted = 0
+    if args.mode == "apply" and args.delete_extra:
+        stale = sorted(set(target_keys) - expected)
+        if stale:
+            write_batches(ctx, route, [mutation(target_name, k, "delete", {}) for k in stale])
+            deleted = len(stale)
+            target_keys = list_keys(ctx.tgt, target_name, args.page_size, tgt_range)
+    found = set(target_keys)
+    rows = read_rows(ctx.tgt, target_name, sorted(target_fields or []), [k for k in target_keys if k in expected],
+                     tgt_range, args.read_batch)
+    target_digests = {k: ctx.digest(k, v) for k, v in rows.items()}
+    differ = sorted(k for k in expected & set(target_digests) if target_digests[k] != source_digests[k])
+    missing = sorted(expected - found)
+    extra = sorted(found - expected)
+    file_checks = file_bad = 0
+    for values in rows.values():
+        found_pointers = []
+        collect_pointers(values, found_pointers)
+        for pointer in found_pointers:
+            file_checks += 1
+            fetched = ctx.tgt.post("/api/db/fetch-file-blob", {"pointer": pointer})
+            data = base64.b64decode(((fetched or {}).get("file_blob") or {}).get("bytes_b64") or "")
+            if hashlib.sha256(data).hexdigest() != pointer["$lastdb_file"].get("file_hash"):
+                file_bad += 1
+    spot = spot_reads(ctx, route, sorted(expected & found), target_fields, tgt_range)
+    digest_equal = (set(target_digests) == expected
+                    and digest_of(ctx, source_digests) == digest_of(ctx, target_digests))
+    same = not differ and not missing and not extra and not file_bad and spot["mismatch"] == 0 and digest_equal
+    shown = (lambda keys: [] if route["secret"] else [k[0] if k[1] is None else f"{k[0]}|{k[1]}" for k in keys[:10]])
+    out = {"equal": same, "source_records": len(expected), "target_records": len(found),
+           "missing": len(missing), "extra": len(extra), "different": len(differ),
+           "file_checks": file_checks, "file_mismatch": file_bad, "spot_reads": spot,
+           "digest": "withheld" if route["secret"] else digest_of(ctx, source_digests)[:16],
+           "target_digest_equal": digest_equal}
+    if deleted:
+        out["extra_deleted"] = deleted
+    if not same:
+        out.update({"missing_keys": shown(missing), "extra_keys": shown(extra), "different_keys": shown(differ)})
+    return out
+
+
+def spot_reads(ctx, route, keys, target_fields, tgt_range):
+    """Single-key reads on both nodes for a random sample; values compared in memory only."""
+    sample = random.Random(secrets.randbits(64)).sample(keys, min(ctx.args.spot_reads, len(keys)))
+    src_entry = route["source"]
+    mapping, _ = field_map_for(route, src_entry.get("fields") or [], target_fields)
+    _, types, _ = target_fields_and_types(ctx, route)
+    matched = mismatch = 0
+    for key in sample:
+        src = read_rows(ctx.src, src_entry["name"], src_entry.get("fields") or [], [key],
+                        is_range_schema(src_entry), 1).get(key) or {}
+        tgt = read_rows(ctx.tgt, route["target"]["name"], sorted(target_fields or []), [key], tgt_range, 1).get(key) or {}
+        mapped, _ = map_values(ctx, route, src, mapping, types, {})
+        if json.dumps(comparable(mapped), sort_keys=True) == json.dumps(comparable(tgt), sort_keys=True):
+            matched += 1
+        else:
+            mismatch += 1
+    return {"sampled": len(sample), "matched": matched, "mismatch": mismatch}
+
+
+# ---------------------------------------------------------------- main
+
+def resolve_socket(home, sock):
+    if sock:
+        return os.path.abspath(os.path.expanduser(sock))
+    if home:
+        return os.path.join(os.path.abspath(os.path.expanduser(home)), "data", "folddb.sock")
+    return None
+
+
+def node_facts(node, catalog):
+    version = node.get("/api/version")
+    return {"socket": node.socket_path, "api_version": version.get("api_version"), "build": version.get("build"),
+            "capabilities": sorted(k for k, v in (version.get("capabilities") or {}).items() if v),
+            "schemas": len(catalog.entries), "user_hash": (catalog.user_hash or "")[:12]}
+
+
+def parse_args(argv):
+    p = argparse.ArgumentParser(
+        prog="last-stack-lastdb-home-copy",
+        description="Copy Brain and LastSecrets records from an old LastDB home to a new home. "
+                    "Default: read-only plan. See docs/lastdb-home-copy-protein-removal.md.")
+    p.add_argument("--source-home", help="old home (its daemon serves <home>/data/folddb.sock)")
+    p.add_argument("--source-socket", help="old daemon socket (overrides --source-home)")
+    p.add_argument("--target-home", help="new home (its daemon serves <home>/data/folddb.sock)")
+    p.add_argument("--target-socket", help="new daemon socket (overrides --target-home)")
+    p.add_argument("--old-brain-config", default="~/.brain/config.json",
+                   help="Brain config that pins the old schemas (read only)")
+    p.add_argument("--new-brain-config", help="staging Brain config written by the new Brain init on the new home")
+    p.add_argument("--old-lastsecrets-config", default="~/.lastsecrets/config.json",
+                   help="LastSecrets config that pins the old schemas (read only)")
+    p.add_argument("--new-lastsecrets-config", help="staging LastSecrets config written by the new init")
+    p.add_argument("--brain-release", help="checkout of the new Brain release; its src/canonical-fields.json "
+                                           "gives a provisional map and field types for the plan")
+    p.add_argument("--lastsecrets-release", help="checkout of the new LastSecrets release (same use)")
+    p.add_argument("--only", action="append", default=[],
+                   help="limit to brain, lastsecrets, brain:<key>, or lastsecrets:secret|index (repeatable)")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--apply", action="store_true", help="copy to the target node, then verify")
+    mode.add_argument("--verify", action="store_true", help="read-only comparison of both nodes")
+    mode.add_argument("--export", metavar="DIR",
+                      help="read-only on the source: write the not-moved schemas on the export list as JSONL "
+                           "(mode 0600) into DIR; never a LastSecrets schema, never Papercut")
+    p.add_argument("--census", action="store_true", help="plan: read every value and check it against the "
+                                                         "target field types (read-only)")
+    p.add_argument("--normalize-datetime", action="store_true",
+                   help="repair DateTime text that is not RFC 3339 (date-only, no offset, space, epoch digits)")
+    p.add_argument("--allow-unselected", action="store_true",
+                   help="copy although a Brain record schema holds keys outside the type directory")
+    p.add_argument("--accept-directory-count", action="append", default=[], metavar="TYPE=N",
+                   help="Brain record TYPE: accept exactly N type-directory members in place of the stored "
+                        "per-type count (the report records both values); repeat per type")
+    p.add_argument("--delete-extra", action="store_true",
+                   help="--apply: delete target records that the source no longer has")
+    p.add_argument("--owner-map", action="append", default=[], metavar="GROUP:SOURCE=TARGET",
+                   help="declare an owner change for one app group (brain or lastsecrets), for example "
+                        "brain:fbrain=brain. Every source schema of the group must have SOURCE and every target "
+                        "schema TARGET. '-' means no owner (a system_seed schema on a synthetic home). Without a "
+                        "map, each target schema must have the owner of its source schema")
+    p.add_argument("--source-owner", metavar="APP_ID",
+                   help="short form for the Brain group: --source-owner fbrain --target-owner brain is "
+                        "--owner-map brain:fbrain=brain")
+    p.add_argument("--target-owner", metavar="APP_ID", help="see --source-owner")
+    p.add_argument("--app-tag-rename", metavar="OLD=NEW",
+                   help="rename the Brain tags that carry the app id (__OLD_deleted__, __OLD_backlink__:*). "
+                        "Default: the Brain owner map when it names both app ids (fbrain=brain)")
+    p.add_argument("--allow-different-identity", action="store_true",
+                   help="permit a target node whose user hash differs from the source (synthetic homes only)")
+    p.add_argument("--allow-shared-value-target", action="store_true",
+                   help="permit a target schema without independent_fields (synthetic runs on an older daemon only)")
+    p.add_argument("--protect-home", action="append", default=[],
+                   help="--apply refuses a target socket under this home (repeatable; ~/.lastdb is always protected)")
+    p.add_argument("--page-size", type=int, default=LIST_PAGE_MAX)
+    p.add_argument("--read-batch", type=int, default=100)
+    p.add_argument("--write-batch", type=int, default=64)
+    p.add_argument("--write-bytes", type=int, default=4 * 1024 * 1024)
+    p.add_argument("--value-max-bytes", type=int, default=256 * 1024,
+                   help="largest field value the target accepts: the node default is 256 KiB; "
+                        "LASTDB_MAX_ATOM_CONTENT_BYTES on the target daemon changes it")
+    p.add_argument("--concurrency", type=int, default=4)
+    p.add_argument("--spot-reads", type=int, default=8)
+    p.add_argument("--timeout", type=float, default=120.0)
+    p.add_argument("--json", action="store_true", help="print the full JSON report")
+    p.add_argument("--report", help="also write the JSON report to this path (mode 0600; no record values)")
+    args = p.parse_args(argv)
+    args.mode = "apply" if args.apply else ("verify" if args.verify else ("export" if args.export else "plan"))
+    args.page_size = max(1, min(args.page_size, LIST_PAGE_MAX))
+    args.read_batch = max(1, min(args.read_batch, QUERY_KEYS_MAX))
+    args.write_batch = max(1, min(args.write_batch, 512))
+    args.concurrency = max(1, min(args.concurrency, 8))
+    accepted = {}
+    for item in args.accept_directory_count:
+        match = re.fullmatch(r"([a-z]+)=([0-9]+)", item)
+        if not match or match.group(1) not in BRAIN_RECORD_TYPES:
+            p.error(f"--accept-directory-count needs TYPE=N with a Brain record type, not {item!r}")
+        if match.group(1) in accepted:
+            p.error(f"--accept-directory-count names {match.group(1)} twice")
+        accepted[match.group(1)] = int(match.group(2))
+    args.accept_directory_count = accepted
+    if bool(args.source_owner) != bool(args.target_owner):
+        p.error("--source-owner and --target-owner go together")
+    owner_items = list(args.owner_map)
+    if args.source_owner:
+        owner_items.append(f"brain:{args.source_owner}={args.target_owner}")
+    owners = {}
+    app_id = r"(-|[a-z0-9][a-z0-9_-]*)"
+    for item in owner_items:
+        match = re.fullmatch(rf"(brain|lastsecrets):{app_id}={app_id}", item)
+        if not match:
+            p.error(f"--owner-map needs GROUP:SOURCE=TARGET with GROUP brain or lastsecrets and app ids, not {item!r}")
+        if match.group(1) in owners:
+            p.error(f"the owner map names {match.group(1)} twice")
+        owners[match.group(1)] = tuple("" if v == "-" else v for v in match.group(2, 3))
+    args.owner_map = owners
+    # brain#484 renames the tags that carry the app id (Migration note in its docs/multi-key-schemas.md).
+    old, new = owners.get("brain", ("", ""))
+    if args.app_tag_rename:
+        match = re.fullmatch(r"([a-z0-9][a-z0-9_-]*)=([a-z0-9][a-z0-9_-]*)", args.app_tag_rename)
+        if not match or match.group(1) == match.group(2):
+            p.error(f"--app-tag-rename needs OLD=NEW with two different app ids, not {args.app_tag_rename!r}")
+        if old and new and (old, new) != match.group(1, 2):
+            p.error("--app-tag-rename differs from the Brain owner map")
+        old, new = match.group(1, 2)
+    args.tag_renames = ([("exact", f"__{old}_deleted__", f"__{new}_deleted__"),
+                         ("prefix", f"__{old}_backlink__:", f"__{new}_backlink__:")]
+                        if old and new and old != new else [])
+    return args
+
+
+def check_target_guard(args, source_socket, target_socket):
+    if target_socket is None:
+        return
+    real_target = os.path.realpath(target_socket)
+    if source_socket and real_target == os.path.realpath(source_socket):
+        raise Refusal("the source and target sockets are the same socket")
+    if args.mode != "apply":
+        return
+    for home in ["~/.lastdb"] + args.protect_home:
+        root = os.path.realpath(os.path.expanduser(home))
+        if real_target == root or real_target.startswith(root.rstrip("/") + "/"):
+            raise Refusal(f"--apply refuses a target under the protected home {home}")
+
+
+def main(argv):
+    args = parse_args(argv)
+    source_socket = resolve_socket(args.source_home, args.source_socket)
+    target_socket = resolve_socket(args.target_home, args.target_socket)
+    if not source_socket:
+        raise Refusal("give --source-home or --source-socket")
+    if args.mode in ("apply", "verify") and not target_socket:
+        raise Refusal(f"--{args.mode} needs --target-home or --target-socket")
+    check_target_guard(args, source_socket, target_socket)
+    wants_brain = not args.only or any(o.startswith("brain") for o in args.only)
+    wants_ls = not args.only or any(o.startswith("lastsecrets") for o in args.only)
+    cfg = {
+        "old_brain": load_config(args.old_brain_config, False, "old Brain config") if wants_brain else None,
+        "new_brain": load_config(args.new_brain_config, False, "--new-brain-config"),
+        "old_lastsecrets": load_config(args.old_lastsecrets_config, False, "old LastSecrets config") if wants_ls else None,
+        "new_lastsecrets": load_config(args.new_lastsecrets_config, False, "--new-lastsecrets-config"),
+        "brain_release": load_release_vocabulary(args.brain_release, "--brain-release"),
+        "lastsecrets_release": load_release_vocabulary(args.lastsecrets_release, "--lastsecrets-release"),
+    }
+    if args.mode == "apply":
+        if cfg["old_brain"] and cfg["new_brain"] is None:
+            raise Refusal("--apply needs --new-brain-config from the new Brain init (or --only lastsecrets)")
+        if cfg["old_lastsecrets"] and cfg["new_lastsecrets"] is None:
+            raise Refusal("--apply needs --new-lastsecrets-config from the new LastSecrets init (or --only brain)")
+    src = Node("source", source_socket, False, args.timeout)
+    tgt = Node("target", target_socket, args.mode == "apply", args.timeout) if target_socket else None
+    src_cat = Catalog(src)
+    tgt_cat = Catalog(tgt) if tgt else None
+    report = {"mode": args.mode, "source": node_facts(src, src_cat),
+              "target": node_facts(tgt, tgt_cat) if tgt else None, "refusals": [],
+              "owner_map": {app: {"source": show_owner(s), "target": show_owner(t)}
+                            for app, (s, t) in sorted(args.owner_map.items())}}
+    if tgt and report["source"]["user_hash"] != report["target"]["user_hash"]:
+        note = "the source and target user hashes differ"
+        if args.mode == "apply" and not args.allow_different_identity:
+            report["refusals"].append(note + "; prepare the new home with the same identity")
+        else:
+            report["identity_note"] = note
+    routes, not_moved, fresh, refusals = build_routes(args, src_cat, tgt_cat, cfg)
+    report["refusals"] += refusals
+    membership = None
+    if args.mode != "export" and any(r["membership"] for r in routes):
+        membership = brain_membership(src, src_cat, cfg["old_brain"], args)
+        report["brain_directory"] = {"rows": membership["directory_rows"], "unreadable": membership["unreadable"],
+                                     "counts": membership["counts"]}
+    ctx = RunContext(args, src, tgt, src_cat, tgt_cat, membership)
+    if args.mode == "export":
+        report["routes"] = []
+        report["export"] = export_not_moved(args, src, src_cat, not_moved)
+    elif args.mode == "apply" and report["refusals"]:
+        report["routes"] = []
+    else:
+        pre = preflight_unselected(ctx, routes)
+        with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+            report["routes"] = list(pool.map(lambda i: run_route(ctx, routes[i], args.mode, pre[i]),
+                                             range(len(routes))))
+    if args.mode == "apply" and tgt and report["routes"]:
+        tgt.post("/api/db/flush", {})
+        report["flushed"] = True
+    report["not_moved"] = [] if args.only else not_moved
+    report["fresh"] = fresh
+    report["calls"] = {"source": src.calls, "target": tgt.calls if tgt else 0}
+    return args, report
+
+
+def export_record(value):
+    """Export form: a file pointer keeps only its content hash (the pointer holds a data key)."""
+    if is_pointer(value):
+        return pointer_identity(value)
+    if isinstance(value, list):
+        return [export_record(v) for v in value]
+    if isinstance(value, dict):
+        return {k: export_record(v) for k, v in value.items()}
+    return value
+
+
+def export_not_moved(args, src, src_cat, not_moved):
+    """Tom 2026-10-30: export these schemas, then drop them. Papercut and LastSecrets are never exported."""
+    root = os.path.abspath(os.path.expanduser(args.export))
+    if os.path.isdir(root) and os.listdir(root):
+        raise Refusal(f"export directory {root} is not empty; choose a new directory")
+    os.makedirs(root, mode=0o700, exist_ok=True)
+    os.chmod(root, 0o700)
+    files = []
+    for item in not_moved:
+        if EXPORT_NOTE not in item["reason"] or item.get("owner") == "lastsecrets":
+            continue
+        entry = src_cat.find(item["name"])
+        fields = entry.get("fields") or []
+        range_schema = is_range_schema(entry)
+        keys = list_keys(src, entry["name"], args.page_size, range_schema)
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", entry.get("descriptive_name") or "schema")
+        path = os.path.join(root, f"{safe}-{short(entry['name'])}.jsonl")
+        digest, size, count = hashlib.sha256(), 0, 0
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            for start in range(0, len(keys), args.read_batch):
+                part = keys[start:start + args.read_batch]
+                rows = read_rows(src, entry["name"], fields, part, range_schema, args.read_batch)
+                for key in part:
+                    if key not in rows:
+                        continue
+                    line = json.dumps({"key": {"hash": key[0], "range": key[1]}, "fields": export_record(rows[key])},
+                                      sort_keys=True, separators=(",", ":")) + "\n"
+                    data = line.encode()
+                    handle.write(line)
+                    digest.update(data)
+                    size += len(data)
+                    count += 1
+        files.append({"schema": entry["name"], "descriptive": entry.get("descriptive_name"),
+                      "owner": entry.get("owner_app_id"), "keys": len(keys), "records": count, "bytes": size,
+                      "sha256": digest.hexdigest(), "file": os.path.basename(path)})
+    manifest = {"schema": "last-stack.lastdb-home-copy.export.v1", "created_at":
+                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "source_socket": src.socket_path,
+                "files": files}
+    fd = os.open(os.path.join(root, "export-manifest.json"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    return {"directory": root, "files": files}
+
+
+def preflight_unselected(ctx, routes):
+    """Before any write: a stored record that no route selects is a refusal, as in brain
+    multi-key-convert. Concept serves concept and sop, so the check spans the routes of one source."""
+    pre = [{"refusals": [], "info": {}} for _ in routes]
+    by_source = {}
+    for index, route in enumerate(routes):
+        slot = by_source.setdefault(route["source"]["name"], {"all": False, "members": set(), "routes": []})
+        slot["routes"].append(index)
+        if route["membership"] is None:
+            slot["all"] = True
+        else:
+            slot["members"] |= ctx.membership["members"][route["membership"]["type"]]
+    for slot in by_source.values():
+        if slot["all"]:
+            continue
+        first = slot["routes"][0]
+        try:
+            listed = ctx.listed_source_keys(routes[first])
+        except (NodeError, Refusal) as exc:
+            pre[first]["refusals"].append(str(exc))
+            continue
+        outside = [k for k in listed if k[0] not in slot["members"]]
+        if not outside:
+            continue
+        for index in slot["routes"]:
+            pre[index]["info"] = {"unselected": len(outside), "unselected_keys": [k[0] for k in outside[:10]]}
+            if not ctx.args.allow_unselected:
+                pre[index]["refusals"].append(
+                    f"{len(outside)} stored records belong to no record type in the directory")
+    return pre
+
+
+def render_text(report):
+    lines = []
+    src, tgt = report["source"], report["target"]
+    lines.append(f"mode     {report['mode']}")
+    lines.append(f"source   api {src['api_version']}  build {src['build']}  schemas {src['schemas']}  "
+                 f"user {src['user_hash']}")
+    if tgt:
+        lines.append(f"target   api {tgt['api_version']}  build {tgt['build']}  schemas {tgt['schemas']}  "
+                     f"user {tgt['user_hash']}")
+    for app, pair in (report.get("owner_map") or {}).items():
+        lines.append(f"owner map {app}: {pair['source']} -> {pair['target']} (declared); "
+                     "every other group keeps its owner")
+    if report.get("brain_directory"):
+        d = report["brain_directory"]
+        lines.append(f"brain directory rows {d['rows']}  unreadable {d['unreadable']}  counts "
+                     + " ".join(f"{k}={v}" for k, v in d["counts"].items()))
+    lines.append("")
+    lines.append(f"{'ROUTE':26} {'SOURCE':34} {'TARGET':30} {'LISTED':>7} {'SELECT':>7} {'GUARD':>6} RESULT")
+    for r in report.get("routes", []):
+        target = r["target"]["descriptive"] if r.get("target") else f"({r['target_descriptive']}, pending)"
+        verdict = "ok"
+        if r.get("verify"):
+            verdict = "equal" if r["verify"]["equal"] else "DIFFERENT"
+        if r["refusals"]:
+            verdict = "refused"
+        if r.get("written") is not None:
+            verdict += f" written={r['written']} unchanged={r.get('unchanged', 0)}"
+        if r.get("issues"):
+            verdict += f" issues={sum(r['issues'].values())}"
+        lines.append(f"{r['app'] + ':' + r['key']:26} {(r['source']['descriptive'] or '')[:20] + ' ' + r['source']['name'][:12]:34} "
+                     f"{target[:30]:30} {r.get('listed', '-'):>7} {r.get('selected', '-'):>7} "
+                     f"{r.get('count_guard', '-') if r.get('count_guard') is not None else '-':>6} {verdict}")
+        if r.get("count_override"):
+            o = r["count_override"]
+            lines.append(f"    count override: stored {o['stored_count']}, accepted {o['accepted_count']}, "
+                         f"selected {o['selected']} (--accept-directory-count)")
+        if r.get("tag_renames"):
+            lines.append(f"    app-id tags renamed: {r['tag_renames']} values")
+        for refusal in r["refusals"]:
+            lines.append(f"    refusal: {refusal}")
+        for issue, count in sorted(r.get("issues", {}).items()):
+            lines.append(f"    issue: {issue} x{count}")
+    lines.append("")
+    lines.append("not moved:")
+    for item in report.get("not_moved", []):
+        lines.append(f"  {(item['descriptive'] or '')[:42]:42} {short(item['name'])}  {item['reason']}")
+    if report.get("export"):
+        lines.append(f"export directory {report['export']['directory']}")
+        for item in report["export"]["files"]:
+            lines.append(f"  {(item['descriptive'] or '')[:42]:42} records {item['records']:>7}  bytes {item['bytes']:>10}  "
+                         f"sha256 {item['sha256'][:16]}  {item['file']}")
+    if report.get("fresh"):
+        lines.append("fresh (no source data): " + ", ".join(f"{f['app']}:{f['key']}" for f in report["fresh"]))
+    for refusal in report.get("refusals", []):
+        lines.append(f"REFUSAL: {refusal}")
+    lines.append(f"calls source={report['calls']['source']} target={report['calls']['target']}")
+    return "\n".join(lines)
+
+
+def exit_code(report):
+    if report.get("refusals") or any(r["refusals"] for r in report.get("routes", [])):
+        return 2
+    if any(r.get("verify") and not r["verify"]["equal"] for r in report.get("routes", [])):
+        return 3
+    if report["mode"] == "apply" and any(r.get("issues") for r in report.get("routes", [])):
+        return 2
+    return 0
+
+
+def write_report(path, report):
+    full = os.path.abspath(os.path.expanduser(path))
+    fd = os.open(full, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(report, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
+if __name__ == "__main__":
+    try:
+        options, result = main(sys.argv[1:])
+    except Refusal as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        sys.exit(2)
+    except NodeError as exc:
+        print(f"node error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if options.report:
+        write_report(options.report, result)
+    print(json.dumps(result, indent=2, sort_keys=True) if options.json else render_text(result))
+    sys.exit(exit_code(result))
