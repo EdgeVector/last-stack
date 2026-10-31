@@ -805,6 +805,8 @@ Check:
 - The inbox is empty after the drain. `~/.lastseek/drain.log` shows the records.
 - `brain search "home copy"` returns hits with no `unknown schema` error.
 
+CAUTION: Brain 73ca4d41 (#484) still fails every search without `--type` when one Brain type holds no record. On 2026-10-31 `task` and `agent` were empty, and the error was `unknown schema "brain/Task"`. LastSeek learns a `brain/<Type>` name only from a stored row. brain#485 leaves the empty types out of the LastSeek scope. Install a Brain release with brain#485 (Step 11c path), then repeat the check. Until then, `brain search --type <type>` works.
+
 Do not use `lastdb search-rebuild` on e13ca0db. Its offline open has no molecule wrap key and does not load the molecule key bundles, so it stops with `the typed molecule has no admitted range profile`. The LastDB fix: open with `from_namespaced_store_with_content_and_molecule_keys` and call `molecule_keys().load_schema` before the field reads, as the query path does.
 
 The LastSeek index keeps the old rows under the old schema identities. Brain does not query those identities. They use space only.
