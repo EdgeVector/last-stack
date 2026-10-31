@@ -427,6 +427,7 @@ export BASE=$(basename "$(readlink "$OLD/current")")
 export W="${LAST_STACK_EVIDENCE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/artifacts/last-stack}/home-copy-protein-removal-20261030"
 export X="${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/artifacts/protein-removal-20261030/home-copy-export"
 export COPY="<accepted last-stack checkout>/bin/last-stack-lastdb-home-copy"
+export SEED="<accepted last-stack checkout>/bin/last-stack-lastseek-seed-brain"
 export BR="<brain checkout at the merged brain#484 commit>"
 export LR="<lastsecrets checkout at the merged lastsecrets#14 commit>"
 mkdir -p "$W" && chmod 700 "$W"
@@ -732,11 +733,28 @@ With `appIdentityEnforce: false` the new Brain needs no capability file. The old
 
 Check: `enforce` is false (B5). `keys` is 25. `model` is `multi-key-v1`.
 
-11c. Merge brain#484 and lastsecrets#14 at the heads that ran in Steps 5 to 7. Then install the merged Brain and LastSecrets releases with the `app-safe-upgrade` skill (probe, then activate on GREEN).
+11c. Merge brain#484 and lastsecrets#14 at the heads that ran in Steps 5 to 7. Then install the merged Brain and LastSecrets releases through the LastDB app registry (`next` channel) with the probe gate.
 
 Do not merge them before the move. The new releases refuse the old home with `home_copy_required`, and Step 3 reads a key through the installed LastSecrets.
 
-CAUTION: Get Tom's decision on the install gate before Step 8. The installed old Brain and LastSecrets fail against the new home, so both are down from Step 10 until this install. On 2026-10-30, `host-track refresh --activate lastsecrets` stopped with rc 3: `REFUSED: Situations blocks host-track-refresh`. Situations has no schemas since the 2026-10-14 reset, so its preflight fails closed for every app except `situations` and `last-stack`. The host-track bypass is `HOST_TRACK_REFRESH_PREFLIGHT_SKIP=1`. Use it only with Tom's approval. The probe gate still runs.
+CAUTION: Get Tom's decision on the install gate before Step 8. The installed old Brain and LastSecrets fail against the new home, so both are down from Step 10 until this install. On 2026-10-30, `host-track refresh --activate lastsecrets` stopped with rc 3: `REFUSED: Situations blocks host-track-refresh`. Situations has no schemas since the 2026-10-14 reset, so its preflight fails closed for every app except `situations` and `last-stack`. On 2026-10-31 Tom ordered "install through app registry" and "skip situations for now" for these two installs.
+
+The registry path that ran on 2026-10-31:
+
+1. Dispatch `.github/workflows/registry-proof.yml` on last-stack main for the new LastDB build. The plan reads the main head of each app repo, so each app repo must be public (Tom made `EdgeVector/lastseek` public for this). Run 41167685531 proved 8 apps on e13ca0db; `kanban` and `lastseek` were RED.
+2. Publish the proved rows with `bin/last-stack-registry-apply-proof` from last-stack main, with `--publish-bin` set to the main `bin/last-stack-registry-publish-next`. The installed copy was older than main and lacked the `lastseek` row and the proof-record step. The rows merged as homebrew-lastdb#152.
+3. Install each app. LastSecrets first, because Brain reads its key through LastSecrets:
+
+```bash
+export LAST_STACK_SITUATIONS_BIN="$W/install-tools/situations-skip"   # prints a note, exits 0; Tom's order only
+HOST_TRACK_ACTIVATE=1 host-track install lastsecrets > "$W/install-lastsecrets.out" 2> "$W/install-lastsecrets.err"; echo "rc=$?"
+HOST_TRACK_ACTIVATE=1 host-track install brain > "$W/install-brain.out" 2> "$W/install-brain.err"; echo "rc=$?"
+unset LAST_STACK_SITUATIONS_BIN
+```
+
+`host-track install` has no refresh preflight. Only the artifact puller runs `situations preflight`, and `LAST_STACK_SITUATIONS_BIN` replaces that one call. The candidate probes still run, and activation needs GREEN. Do not use `HOST_TRACK_PROBE_SKIP=1`.
+
+The Brain install log shows `probe attempt 1/3 failed` for the old version tree. That is the latency control: the old Brain cannot read the new home. The candidate probe is the gate.
 
 Until the install, read checks can use the merged release exports: `bun run "$LR/src/cli.ts" list` and the Brain CLI under `$BR`.
 
@@ -749,6 +767,47 @@ lastsecrets list | wc -l
 ```
 
 The write freeze ends here.
+
+11e. Make `brain search` work on the new home.
+
+`brain search` and `brain ask` scope LastSeek with the new schema names (`brain/Design`, ...). LastSeek knows a local name only after a batch with that name reaches the inbox. The copy wrote with Search delivery off, so the first `brain search` fails with `lastseek: unknown schema "brain/Design"`.
+
+CAUTION: Search delivery is off by default since lastdb#497. Without `LASTDB_SEARCH_ENABLED=1` in the plist, no new write reaches LastSeek, and the index goes stale with no error.
+
+First turn on delivery for new writes. The restart takes about 2 seconds:
+
+```bash
+cp -p "$PLIST" "$W/search-plist.before"
+touch "$OLD/monitoring/lastdbd-revive.hold"
+launchctl bootout "gui/$(id -u)/$LABEL"
+pgrep -f "lastdbd --data-dir $OLD"; echo "absent when empty"
+/usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:LASTDB_SEARCH_ENABLED string 1" "$PLIST"
+plutil -lint "$PLIST"
+launchctl bootstrap "gui/$(id -u)" "$PLIST"
+lastdb status | head -3
+rm "$OLD/monitoring/lastdbd-revive.hold"
+```
+
+Then deliver every existing Brain record once. The daemon must run:
+
+```bash
+lastseek schema-table > "$W/lastseek-table.out"
+"$SEED" --count-only > "$W/seed-count.json"
+"$SEED" > "$W/seed-write.json"
+launchctl kickstart "gui/$(id -u)/com.edgevector.lastseek-drain"
+```
+
+The helper reads only. It pages the keys with `/api/list`, reads the searchable fields by key with `/api/query`, and writes `IndexChangeBatch` files in the daemon's own outbox format. The LastSeek drain then embeds them and deletes the files.
+
+Check:
+
+- `seed-count.json` shows `missing: 0` for each type, and the per-type records equal the Step 9 copy counts (5,314 on 2026-10-31).
+- The inbox is empty after the drain. `~/.lastseek/drain.log` shows the records.
+- `brain search "home copy"` returns hits with no `unknown schema` error.
+
+Do not use `lastdb search-rebuild` on e13ca0db. Its offline open has no molecule wrap key and does not load the molecule key bundles, so it stops with `the typed molecule has no admitted range profile`. The LastDB fix: open with `from_namespaced_store_with_content_and_molecule_keys` and call `molecule_keys().load_schema` before the field reads, as the query path does.
+
+The LastSeek index keeps the old rows under the old schema identities. Brain does not query those identities. They use space only.
 
 ### Step 12. Turn cloud backup on for the new home
 
@@ -823,7 +882,8 @@ Keep cloud sync and automatic cloud backup off after rollback. A later instructi
 |---|---|---|
 | B1 | Closed 2026-10-30. #803 merged as lastdb main e13ca0db. The signed Mini pair is run 41150186693 (digest `sha256:34cdcd3c…050932`, expires 2026-11-14). Section 5.6 ran on it. | done |
 | B2 | Closed 2026-10-30. A read-only PROD `check` gave `reuse` for all 25 `brain/*` and both LastSecrets definitions (section 5.6). The PROD app `brain` stays in the sandbox tier; Brain init and writes do not use the tier. | done |
-| B3 | Open until Step 11c. brain#484 (2f7b54e4b) and lastsecrets#14 (6883d2632) pass their checks. They merge after the home move, because the new releases refuse the old home. | operator |
+| B3 | Closed 2026-10-31. brain#484 merged as brain main 73ca4d41 and lastsecrets#14 as lastsecrets main 8d50002f. Both installed through the registry `next` channel with GREEN probes (Step 11c). | done |
+| B15 | Closed 2026-10-31 by Step 11e. `lastdb search-rebuild` fails on e13ca0db (no molecule wrap key on the offline open). The seed helper delivered the Brain records through the running daemon. The LastDB fix is still open. | LastDB |
 | B4 | Decided 2026-10-30. Design: trust the 38 records over the stored count of 37. The new Brain rebuilds its counts. The runbook names `--accept-directory-count design=38`. | done |
 | B5 | Decided 2026-10-30 (changed). `appIdentityEnforce` stays at the init value `false`. On Mini a write with `true` has no capability and fails (section 5.6). | done |
 | B6 | Decided 2026-10-30. Tom allowed `brain init` and read-only `brain get` and `brain search` against the NEW home for this migration. | done |

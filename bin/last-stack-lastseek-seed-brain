@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+"""Seed the LastSeek inbox with the Brain records of a LastDB home.
+
+After the protein-removal home copy, the Brain schemas have new names
+(`brain/Design`, ...). LastSeek only knows a local name after a batch with
+that name reaches its inbox, and the copy wrote with Search delivery off. So
+`brain search` fails with "unknown schema brain/Design" until every record is
+delivered once.
+
+`lastdb search-rebuild` is the intended tool, but on e13ca0db its offline open
+has no molecule wrap key and never loads the molecule key bundles, so it stops
+with "the typed molecule has no admitted range profile". This script does the
+same work through the running daemon: page the keys with /api/list, read the
+searchable fields by key with /api/query, and write IndexChangeBatch files in
+the format the daemon's own outbox writes. The LastSeek drain then applies them.
+
+Reads only. It never writes to LastDB.
+"""
+import argparse
+import http.client
+import json
+import os
+import socket
+import sys
+import time
+import urllib.parse
+import uuid
+
+CLIENT = "lastseek-seed-brain"
+FILE_KEY = "$lastdb_file"
+FILE_FIELDS = ("name", "media_type")
+EXCLUDED = ("secret", "no_index", "no-index")
+
+
+class UnixConnection(http.client.HTTPConnection):
+    def __init__(self, path, timeout):
+        super().__init__("localhost", timeout=timeout)
+        self.unix_path = path
+
+    def connect(self):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        sock.connect(self.unix_path)
+        self.sock = sock
+
+
+class Node:
+    def __init__(self, socket_path, timeout):
+        self.socket_path = socket_path
+        self.timeout = timeout
+        self.calls = 0
+
+    def call(self, method, path, payload=None):
+        body = None if payload is None else json.dumps(payload, separators=(",", ":")).encode()
+        headers = {"Host": "localhost", "X-LastDB-Client": CLIENT, "Connection": "close",
+                   "Accept": "application/json"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        for attempt in range(6):
+            conn = UnixConnection(self.socket_path, self.timeout)
+            try:
+                conn.request(method, path, body=body, headers=headers)
+                response = conn.getresponse()
+                status, raw = response.status, response.read()
+            finally:
+                conn.close()
+            self.calls += 1
+            if status == 503 and attempt < 5:
+                time.sleep(1.0 + attempt)
+                continue
+            data = json.loads(raw.decode() or "null")
+            if status != 200 or (isinstance(data, dict) and data.get("ok") is False):
+                raise SystemExit(f"{method} {path.split('?')[0]}: HTTP {status} {raw.decode(errors='replace')[:300]}")
+            if isinstance(data, dict) and isinstance(data.get("data"), dict) and "ok" not in data:
+                data = data["data"]
+            return data
+        raise SystemExit(f"{method} {path.split('?')[0]}: the node stayed busy")
+
+
+def searchable_fields(schema):
+    """The rule of LastDB inbox_fields.rs: None when unclassified, else `word` fields not excluded."""
+    classes = schema.get("field_classifications") or {}
+    if not classes:
+        return None
+    return sorted(f for f, c in classes.items()
+                  if not any(x.lower() in EXCLUDED for x in c) and any(x.lower() == "word" for x in c))
+
+
+def strip_file_access(value):
+    """The rule of LastDB inbox_value: a file pointer keeps only its name and media type."""
+    if isinstance(value, dict):
+        out = {}
+        for key, child in value.items():
+            if key == FILE_KEY and isinstance(child, dict):
+                out[key] = {f: child[f] for f in FILE_FIELDS if f in child}
+            else:
+                out[key] = strip_file_access(child)
+        return out
+    if isinstance(value, list):
+        return [strip_file_access(v) for v in value]
+    return value
+
+
+def list_keys(node, name, page_size, has_range):
+    keys, cursor, seen = [], None, set()
+    while True:
+        params = {"schema": name, "limit": str(page_size)}
+        if cursor:
+            params["cursor"] = cursor
+        page = node.call("GET", "/api/list?" + urllib.parse.urlencode(params)).get("list")
+        if not isinstance(page, dict) or not isinstance(page.get("keys"), list):
+            raise SystemExit(f"/api/list returned no key page for {name}")
+        for raw in page["keys"]:
+            keys.append((raw["hash"], raw.get("range") if has_range else None))
+        if not page.get("has_more"):
+            return list(dict.fromkeys(keys))
+        cursor = page.get("next_cursor")
+        if not cursor or cursor in seen:
+            raise SystemExit(f"/api/list cursor did not advance for {name}")
+        seen.add(cursor)
+
+
+def read_rows(node, name, fields, keys, batch):
+    rows = {}
+    for start in range(0, len(keys), batch):
+        part = keys[start:start + batch]
+        request = {"schema_name": name, "fields": fields,
+                   "filter": {"HashRangeKeys": [[h, r or ""] for h, r in part]}, "limit": len(part)}
+        seen = set()
+        while True:
+            data = node.call("POST", "/api/query", request)
+            if data.get("unresolved_rows") != 0:
+                raise SystemExit(f"/api/query returned unresolved rows for {name}")
+            for row in data.get("results") or []:
+                key = row["key"]
+                values = {f: v for f, v in (row.get("fields") or {}).items() if f in fields}
+                rows[(key["hash"], key.get("range"))] = values
+            if not data.get("has_more"):
+                break
+            cursor = json.dumps(data.get("next_cursor"), sort_keys=True)
+            if cursor in seen:
+                raise SystemExit(f"/api/query cursor repeated for {name}")
+            seen.add(cursor)
+            request = dict(request, cursor=data["next_cursor"])
+    return rows
+
+
+class Inbox:
+    def __init__(self, path):
+        self.path = path
+        self.last_ms = 0
+        self.files = 0
+
+    def write(self, batch):
+        ms = max(int(time.time() * 1000), self.last_ms + 1)
+        self.last_ms = ms
+        name = f"{ms}_{uuid.uuid4().hex}.json"
+        # A leading dot hides the partial file from the drain until the rename.
+        tmp = os.path.join(self.path, "." + name)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as out:
+            json.dump(batch, out, separators=(",", ":"))
+        os.replace(tmp, os.path.join(self.path, name))
+        self.files += 1
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--socket", default=os.path.expanduser("~/.lastdb/data/folddb.sock"))
+    parser.add_argument("--brain-config", default=os.path.expanduser("~/.brain/config.json"))
+    parser.add_argument("--inbox", default=os.path.expanduser("~/.lastdb/apps/search/inbox"))
+    parser.add_argument("--page-size", type=int, default=500)
+    parser.add_argument("--read-batch", type=int, default=100)
+    parser.add_argument("--changes-per-file", type=int, default=100)
+    parser.add_argument("--count-only", action="store_true", help="read and count; write no batch file")
+    args = parser.parse_args()
+
+    with open(args.brain_config) as f:
+        hashes = json.load(f).get("schemaHashes") or {}
+    # Brain search scopes only the record types; `__` entries are its own bookkeeping.
+    names = sorted(v for k, v in hashes.items() if not k.startswith("__"))
+    if not names:
+        raise SystemExit("the Brain config names no record schemas")
+    if not args.count_only and not os.path.isdir(args.inbox):
+        raise SystemExit(f"the inbox {args.inbox} does not exist")
+
+    node = Node(args.socket, 60)
+    inbox = Inbox(args.inbox)
+    report = []
+    for name in names:
+        schema = node.call("GET", "/api/schema/" + urllib.parse.quote(name, safe=""))
+        schema = schema.get("schema", schema)
+        has_range = bool((schema.get("key") or {}).get("range_field"))
+        allow = searchable_fields(schema)
+        fields = allow if allow is not None else list(schema.get("fields") or [])
+        keys = list_keys(node, name, args.page_size, has_range)
+        if allow == [] or not keys:
+            report.append({"schema": name, "keys": len(keys), "records": 0, "files": 0})
+            continue
+        rows = read_rows(node, name, fields, keys, args.read_batch)
+        missing = len(set(keys) - set(rows))
+        changes = [{"mutation_id": f"seed-{uuid.uuid4().hex}", "kind": "upsert",
+                    "key_value": {"hash": h, "range": r},
+                    "fields_and_values": {f: strip_file_access(v) for f, v in values.items()}}
+                   for (h, r), values in sorted(rows.items(), key=lambda kv: (kv[0][0], kv[0][1] or ""))
+                   if values]
+        before = inbox.files
+        if not args.count_only:
+            for start in range(0, len(changes), args.changes_per_file):
+                batch = {"schema_name": name, "changes": changes[start:start + args.changes_per_file]}
+                if allow is not None:
+                    batch["searchable_fields"] = allow
+                inbox.write(batch)
+        report.append({"schema": name, "keys": len(keys), "records": len(changes),
+                       "missing": missing, "files": inbox.files - before})
+    print(json.dumps({"ok": True, "count_only": args.count_only, "node_calls": node.calls,
+                      "files": inbox.files, "records": sum(r["records"] for r in report),
+                      "schemas": report}, indent=2))
+
+
+if __name__ == "__main__":
+    main()
