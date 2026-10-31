@@ -68,6 +68,14 @@ BRAIN_RECORD_TYPES = ("design", "task", "concept", "preference", "reference",
 BRAIN_DIRECTORY_KEY = "__braintypedirectory__"
 BRAIN_COUNT_KEY = "__brainlistcount__"
 BRAIN_DIRECTORY_RANGE = "__types__"
+# brain src/list-locator.ts: a compact locator row has no key field, so no node lists it.
+# Its key is a hash of one list page card; the helper derives the keys from the pages.
+BRAIN_PAGE_KEY = "__brainlistpage__"
+BRAIN_LEGACY_LOCATOR_KEY = "__brainlistlocator__"
+BRAIN_COMPACT_LOCATOR_KEY = "__braincompactlocator__"
+BRAIN_PAGE_FIELD = "blp_page"
+# A keyword page (src/list-page.ts keywordHash) holds typed cards but never a locator.
+BRAIN_KEYWORD_PAGE_PREFIX = "kw#"
 # The 25 config keys that brain#484 declares. A new Brain config overrides this list.
 BRAIN_NEW_KEYS = BRAIN_RECORD_TYPES + (
     "__tagindex__", "__tagmember__", "__admin_snapshot__", "__attachmentindex__",
@@ -575,6 +583,8 @@ def build_routes(args, src_cat, tgt_cat, cfg):
                 membership = None
             add_route("brain", key, src_pin, new_hashes.get(key), descriptive, False, membership,
                       old_brain, new_brain, brain_vocab, source_descriptive)
+            if key == BRAIN_COMPACT_LOCATOR_KEY and routes and routes[-1]["key"] == key:
+                routes[-1]["derive_from"] = locator_sources(src_cat, old_brain)
 
     if args.only and not any(o.startswith("lastsecrets") for o in args.only):
         old_ls = None
@@ -608,6 +618,36 @@ def build_routes(args, src_cat, tgt_cat, cfg):
         not_moved.append({"name": entry["name"], "descriptive": descriptive,
                           "owner": entry.get("owner_app_id"), "reason": "not declared by the new release; " + note})
     return routes, not_moved, fresh, refusals
+
+
+def locator_sources(src_cat, old_brain):
+    """The source schemas that name every compact locator key: the list pages, plus the
+    legacy locators for the completeness count."""
+    hashes = old_brain.get("schemaHashes") or {}
+    page = src_cat.find(hashes.get(BRAIN_PAGE_KEY))
+    field = alias_map(old_brain, hashes.get(BRAIN_PAGE_KEY), page["name"] if page else None)
+    return {"page": page, "page_field": field.get(BRAIN_PAGE_FIELD, BRAIN_PAGE_FIELD),
+            "legacy": src_cat.find(hashes.get(BRAIN_LEGACY_LOCATOR_KEY))}
+
+
+def page_card_ranges(raw):
+    """Locator ranges of one list page (brain src/list-page.ts parsePage). A symptom page
+    keeps bare slugs and has no locators, so a card with no type is skipped."""
+    try:
+        page = json.loads(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return []
+    cards = page.get("cards") if isinstance(page, dict) else None
+    return [f"{card['type']}#{card['slug']}" for card in (cards if isinstance(cards, list) else [])
+            if isinstance(card, dict) and isinstance(card.get("type"), str) and card["type"]
+            and isinstance(card.get("slug"), str) and card["slug"]]
+
+
+def compact_locator_key(list_hash, card_range):
+    """brain src/list-locator.ts compactKey for the locator key ("loc#" + list hash, card range)."""
+    text = json.dumps(["loc#" + list_hash, card_range], separators=(",", ":"), ensure_ascii=False)
+    digest = hashlib.sha256(b"brain:list-locator:v1\0" + text.encode()).digest()
+    return base64.urlsafe_b64encode(digest).decode().rstrip("=")
 
 
 # ---------------------------------------------------------------- data access
@@ -768,6 +808,7 @@ class RunContext:
         self.source_keys = {}
         self.source_key_locks = {}
         self.source_keys_lock = threading.Lock()
+        self.derived = {}
 
     def digest(self, key, fields):
         # Key and mapped values only: no schema name and no owner, so fbrain -> brain digests compare.
@@ -781,9 +822,40 @@ class RunContext:
             lock = self.source_key_locks.setdefault(name, threading.Lock())
         with lock:
             if name not in self.source_keys:
-                self.source_keys[name] = list_keys(self.src, name, self.args.page_size,
-                                                   is_range_schema(route["source"]))
+                if route.get("derive_from"):
+                    self.source_keys[name] = self.derived_locator_keys(route)
+                else:
+                    self.source_keys[name] = list_keys(self.src, name, self.args.page_size,
+                                                       is_range_schema(route["source"]))
             return self.source_keys[name]
+
+    def derived_locator_keys(self, route):
+        """Read every source list page, derive the compact key of each typed card, and keep
+        the keys that hold a row. A card with neither a compact nor a legacy locator is
+        counted: a key formula that does not match Brain shows there, not as a quiet loss."""
+        source, args = route["derive_from"], self.args
+        page = source["page"]
+        if page is None:
+            raise Refusal("compact locators: the source has no list page schema to derive the keys from")
+        page_keys = list_keys(self.src, page["name"], args.page_size, True)
+        rows = read_rows(self.src, page["name"], page.get("fields") or [source["page_field"]], page_keys, True,
+                         args.read_batch, allow_missing=True)
+        cards = {(list_hash, card_range) for (list_hash, _), values in rows.items()
+                 if not list_hash.startswith(BRAIN_KEYWORD_PAGE_PREFIX)
+                 for card_range in page_card_ranges(values.get(source["page_field"]))}
+        range_schema = is_range_schema(route["source"])
+        candidates = {(compact_locator_key(h, r), "" if range_schema else None): (h, r) for h, r in cards}
+        found = read_rows(self.src, route["source"]["name"], route["source"].get("fields") or [],
+                          sorted(candidates), range_schema, args.read_batch, allow_missing=True)
+        legacy = set()
+        if source["legacy"] is not None:
+            legacy = set(list_keys(self.src, source["legacy"]["name"], args.page_size, True))
+        unlocated = sum(1 for key, (h, r) in candidates.items()
+                        if key not in found and ("loc#" + h, r) not in legacy)
+        self.derived[route["source"]["name"]] = {
+            "list_pages": len(page_keys), "typed_cards": len(cards), "compact_rows": len(found),
+            "legacy_rows": len(legacy), "unlocated_cards": unlocated}
+        return sorted(found)
 
 
 def select_keys(ctx, route, listed):
@@ -876,7 +948,21 @@ def map_values(ctx, route, values, mapping, types, census):
             if size > ctx.args.value_max_bytes:
                 issues.append(f"{target}:value-over-cap")
         mapped[target] = value
+    if ctx.args.record_max_bytes and record_bytes(mapped) > ctx.args.record_max_bytes:
+        issues.append("record-over-cap")
     return mapped, issues
+
+
+# A format 7 home stores one value for the full record: the fields plus one
+# stamp per field ([written_at, logical_counter, device_id, mutation_id]). The
+# stamp uses the longest device and mutation identities, so the estimate is an
+# upper bound. Record metadata (D7) is not in this read and is small.
+RECORD_STAMP = [2 ** 63, 2 ** 63, "f" * 64, "0" * 36]
+
+
+def record_bytes(mapped):
+    record = {"v": 1, "fields": mapped, "stamps": {name: RECORD_STAMP for name in mapped}}
+    return len(json.dumps(record, separators=(",", ":"), ensure_ascii=False).encode())
 
 
 def alternate_key_issues(alternate_keys, mapped):
@@ -994,6 +1080,12 @@ def run_route(ctx, route, mode, pre):
         listed = ctx.listed_source_keys(route)
         selected, info = select_keys(ctx, route, listed)
         result.update({"listed": len(listed)}, **info)
+        if route.get("derive_from"):
+            derived = result["derived_keys"] = ctx.derived.get(src_entry["name"])
+            if derived and derived["unlocated_cards"]:
+                result["refusals"].append(
+                    f"{derived['unlocated_cards']} list cards have neither a compact nor a legacy locator; "
+                    "the derived key may not match this Brain release")
         source_fields = src_entry.get("fields") or []
         target_fields, types, alternate = target_fields_and_types(ctx, route)
         mapping, unmapped = field_map_for(route, source_fields, target_fields)
@@ -1037,7 +1129,7 @@ def run_route(ctx, route, mode, pre):
         source_digests, target_digests = {}, {}
         target_keys = set()
         if tgt_entry is not None and mode in ("apply", "verify"):
-            target_keys = set(list_keys(ctx.tgt, target_name, args.page_size, tgt_range))
+            target_keys = set(target_key_list(ctx, route, target_name, selected, tgt_range, target_fields))
             result["target_keys_before"] = len(target_keys)
         if mode == "apply" and result["refusals"]:
             return result
@@ -1100,6 +1192,15 @@ def run_route(ctx, route, mode, pre):
     return result
 
 
+def target_key_list(ctx, route, target_name, keys, tgt_range, target_fields):
+    """The stored target keys of a route. A derived route has no listable key, so it reads
+    its own keys; a target row outside them stays unseen."""
+    if route.get("derive_from"):
+        return list(read_rows(ctx.tgt, target_name, sorted(target_fields or []), list(keys), tgt_range,
+                              ctx.args.read_batch, allow_missing=True))
+    return list_keys(ctx.tgt, target_name, ctx.args.page_size, tgt_range)
+
+
 def digest_of(ctx, digests):
     joined = "".join(digests[k] for k in sorted(digests, key=lambda k: (k[0], k[1] or "")))
     return hmac.new(ctx.hmac_key, joined.encode(), hashlib.sha256).hexdigest()
@@ -1110,9 +1211,9 @@ def verify_route(ctx, route, selected, source_digests, target_fields, tgt_range)
     args = ctx.args
     target_name = route["target"]["name"]
     expected = set(source_digests)
-    target_keys = list_keys(ctx.tgt, target_name, args.page_size, tgt_range)
+    target_keys = target_key_list(ctx, route, target_name, expected, tgt_range, target_fields)
     deleted = 0
-    if args.mode == "apply" and args.delete_extra:
+    if args.mode == "apply" and args.delete_extra and not route.get("derive_from"):
         stale = sorted(set(target_keys) - expected)
         if stale:
             write_batches(ctx, route, [mutation(target_name, k, "delete", {}) for k in stale])
@@ -1147,6 +1248,8 @@ def verify_route(ctx, route, selected, source_digests, target_fields, tgt_range)
            "target_digest_equal": digest_equal}
     if deleted:
         out["extra_deleted"] = deleted
+    if route.get("derive_from"):
+        out["extra_check"] = "keyed reads of the derived keys only; the schema has no listable key"
     if not same:
         out.update({"missing_keys": shown(missing), "extra_keys": shown(extra), "different_keys": shown(differ)})
     return out
@@ -1258,6 +1361,9 @@ def parse_args(argv):
     p.add_argument("--value-max-bytes", type=int, default=256 * 1024,
                    help="largest field value the target accepts: the node default is 256 KiB; "
                         "LASTDB_MAX_ATOM_CONTENT_BYTES on the target daemon changes it")
+    p.add_argument("--record-max-bytes", type=int, default=None,
+                   help="census: the full-record cap of a format 7 target (65536). A row whose stored record "
+                        "would be larger is a record-over-cap issue")
     p.add_argument("--concurrency", type=int, default=4)
     p.add_argument("--spot-reads", type=int, default=8)
     p.add_argument("--timeout", type=float, default=120.0)
@@ -1512,6 +1618,11 @@ def render_text(report):
             o = r["count_override"]
             lines.append(f"    count override: stored {o['stored_count']}, accepted {o['accepted_count']}, "
                          f"selected {o['selected']} (--accept-directory-count)")
+        if r.get("derived_keys"):
+            d = r["derived_keys"]
+            lines.append(f"    derived keys: {d['list_pages']} list pages, {d['typed_cards']} typed cards, "
+                         f"{d['compact_rows']} compact rows, {d['legacy_rows']} legacy rows, "
+                         f"{d['unlocated_cards']} cards with no locator")
         if r.get("tag_renames"):
             lines.append(f"    app-id tags renamed: {r['tag_renames']} values")
         for refusal in r["refusals"]:
