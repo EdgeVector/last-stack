@@ -843,6 +843,10 @@ Check:
 - `last_snapshot_at` is later than `s12-enable-at`, `phase=published`, `retained_source_bytes=0`, `blocked_reason=null`, `head == backed`.
 - The backup kick LaunchAgent is loaded (`$KICK` is not empty). If it is not, bootstrap its plist from `$HOME/Library/LaunchAgents`.
 
+CAUTION: A routine can turn automatic backup off again after Step 12 (B16). Read the status again after the next hourly routine run at minute 25.
+
+On 2026-10-31 at 02:25Z the routine `last-stack-lastdb-batch-apps` found automatic backup on and ran `disable-automatic`. It read the CLAUDE.md / AGENTS.md line "cloud sync is off" (the 2026-10-14 reset notice) as an order. The mutation log stopped. At 05:10Z the operator ran `enable-automatic` again. That gave revision 3, a new snapshot (ordinal 3), and `head == backed`. A restore to a point between 02:25Z and 05:10Z is not possible. The snapshot holds all data up to 05:10Z. A note at the end of `~/.routines/memory/last-stack-lastdb-batch-apps/memory.md` now tells that routine to leave backup on.
+
 Rollback: `lastdb --data-dir "$OLD" cloud backup-v2 disable-automatic --json`.
 
 ### Step 13. Clean up
@@ -886,6 +890,7 @@ Keep cloud sync and automatic cloud backup off after rollback. A later instructi
 | B2 | Closed 2026-10-30. A read-only PROD `check` gave `reuse` for all 25 `brain/*` and both LastSecrets definitions (section 5.6). The PROD app `brain` stays in the sandbox tier; Brain init and writes do not use the tier. | done |
 | B3 | Closed 2026-10-31. brain#484 merged as brain main 73ca4d41 and lastsecrets#14 as lastsecrets main 8d50002f. Both installed through the registry `next` channel with GREEN probes (Step 11c). | done |
 | B15 | Closed 2026-10-31 by Step 11e. `lastdb search-rebuild` fails on e13ca0db (no molecule wrap key on the offline open). The seed helper delivered the Brain records through the running daemon. The LastDB fix is still open. | LastDB |
+| B16 | Open 2026-10-31. The 2026-10-14 notice in CLAUDE.md and AGENTS.md says "cloud sync is off". A routine read it as an order and turned automatic backup off after Step 12. A routine memory note keeps it on for now. The notice text needs an update from Tom. | Tom |
 | B4 | Decided 2026-10-30. Design: trust the 38 records over the stored count of 37. The new Brain rebuilds its counts. The runbook names `--accept-directory-count design=38`. | done |
 | B5 | Decided 2026-10-30 (changed). `appIdentityEnforce` stays at the init value `false`. On Mini a write with `true` has no capability and fails (section 5.6). | done |
 | B6 | Decided 2026-10-30. Tom allowed `brain init` and read-only `brain get` and `brain search` against the NEW home for this migration. | done |
