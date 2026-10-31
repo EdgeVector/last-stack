@@ -93,6 +93,9 @@ NOT_MOVED_NOTES.update({name: EXPORT_NOTE for name in (
 LIST_PAGE_MAX = 1000
 QUERY_KEYS_MAX = 1000
 RETRY_LIMIT = 30
+# lastdb#803 (API 13) owns the values of every schema and refuses a shared-value home at startup.
+# lastdb#901 stage 2 stops sending independent_fields, so from this API on a missing key means owned.
+OWNED_VALUES_API = 13
 
 
 class Refusal(Exception):
@@ -391,6 +394,9 @@ class Catalog:
 
     def __init__(self, node):
         self.node = node
+        self.version = node_version(node)
+        level = self.version.get("api_version")
+        self.api_version = level if isinstance(level, int) and not isinstance(level, bool) else None
         listing = node.get("/api/schemas?include_system=true")
         self.entries = listing.get("schemas", []) if isinstance(listing, dict) else []
         self.user_hash = listing.get("user_hash") if isinstance(listing, dict) else None
@@ -411,6 +417,13 @@ class Catalog:
                 return entry
         independent = [e for e in matches if e.get("independent_fields")]
         return (independent or matches or [None])[0]
+
+    def owns_values(self, entry):
+        """The target owned check. A present independent_fields key decides as before: only true passes.
+        A missing key passes only on API 13 or later (OWNED_VALUES_API); an older node without it fails."""
+        if "independent_fields" in entry:
+            return entry["independent_fields"] is True
+        return self.api_version is not None and self.api_version >= OWNED_VALUES_API
 
     def detail(self, name):
         with self._lock:
@@ -1012,7 +1025,7 @@ def run_route(ctx, route, mode, pre):
                                           "values, not keys")
         if mode == "plan" and not args.census:
             return result
-        if tgt_entry is not None and tgt_entry.get("independent_fields") is not True and not args.allow_shared_value_target:
+        if tgt_entry is not None and not ctx.tgt_cat.owns_values(tgt_entry) and not args.allow_shared_value_target:
             result["refusals"].append("the target schema does not report independent_fields")
         census, issue_counts, absent = {}, {}, {}
         target_name = tgt_entry["name"] if tgt_entry else None
@@ -1165,8 +1178,16 @@ def resolve_socket(home, sock):
     return None
 
 
+def node_version(node):
+    """GET /api/version once per daemon. Accept a bare reply or a data envelope."""
+    data = node.get("/api/version")
+    if isinstance(data, dict) and "api_version" not in data and isinstance(data.get("data"), dict):
+        data = data["data"]
+    return data if isinstance(data, dict) else {}
+
+
 def node_facts(node, catalog):
-    version = node.get("/api/version")
+    version = catalog.version
     return {"socket": node.socket_path, "api_version": version.get("api_version"), "build": version.get("build"),
             "capabilities": sorted(k for k, v in (version.get("capabilities") or {}).items() if v),
             "schemas": len(catalog.entries), "user_hash": (catalog.user_hash or "")[:12]}
