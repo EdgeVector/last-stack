@@ -7,7 +7,7 @@ The path makes a new home, copies the kept records into it, and then moves the h
 The helper is `bin/last-stack-lastdb-home-copy`.
 It is one Python file. It uses only the two daemon sockets.
 
-CAUTION: Nobody ran this runbook on the primary. Only the read-only plan and census ran on the primary.
+CAUTION: This runbook ran on the primary on 2026-10-31. Section 10 records the state after the run: the upgrade to lastdb main b1076736 and the deletion schedule for the old homes.
 
 CAUTION: Tom permits cloud backup to stay off during this work, and requires it on again after the cutover (Step 12).
 The primary cutover also needs separate authorization. This document does not authorize a primary change.
@@ -852,7 +852,7 @@ Rollback: `lastdb --data-dir "$OLD" cloud backup-v2 disable-automatic --json`.
 ### Step 13. Clean up
 
 - Remove `$FS` with `rmdir` after both private daemons stop.
-- Keep `$BACK` untouched until Tom approves its removal. It is the rollback home.
+- Keep `$BACK` untouched until its removal date. It is the rollback home. Tom approved its removal on 2026-10-31 (section 10).
 - Keep `$W` and `$X`. They are outside Git.
 
 ## 7. Rollback
@@ -890,7 +890,7 @@ Keep cloud sync and automatic cloud backup off after rollback. A later instructi
 | B2 | Closed 2026-10-30. A read-only PROD `check` gave `reuse` for all 25 `brain/*` and both LastSecrets definitions (section 5.6). The PROD app `brain` stays in the sandbox tier; Brain init and writes do not use the tier. | done |
 | B3 | Closed 2026-10-31. brain#484 merged as brain main 73ca4d41 and lastsecrets#14 as lastsecrets main 8d50002f. Both installed through the registry `next` channel with GREEN probes (Step 11c). | done |
 | B15 | Closed 2026-10-31 by Step 11e. `lastdb search-rebuild` fails on e13ca0db (no molecule wrap key on the offline open). The seed helper delivered the Brain records through the running daemon. The LastDB fix is still open. | LastDB |
-| B16 | Open 2026-10-31. The 2026-10-14 notice in CLAUDE.md and AGENTS.md says "cloud sync is off". A routine read it as an order and turned automatic backup off after Step 12. A routine memory note keeps it on for now. The notice text needs an update from Tom. | Tom |
+| B16 | Closed 2026-10-31. The 2026-10-14 notice said "cloud sync is off". A routine read it as an order and turned automatic backup off after Step 12. Tom approved a new notice (`tom:primary-state-20261031`) in CLAUDE.md and both AGENTS.md files. It says that automatic backup must stay on. The routine memory note stays too. | done |
 | B4 | Decided 2026-10-30. Design: trust the 38 records over the stored count of 37. The new Brain rebuilds its counts. The runbook names `--accept-directory-count design=38`. | done |
 | B5 | Decided 2026-10-30 (changed). `appIdentityEnforce` stays at the init value `false`. On Mini a write with `true` has no capability and fails (section 5.6). | done |
 | B6 | Decided 2026-10-30. Tom allowed `brain init` and read-only `brain get` and `brain search` against the NEW home for this migration. | done |
@@ -926,3 +926,40 @@ The in-place conversion was removed on 2026-10-30. This section stays as the rec
 | Write freeze | Each converter pauses non-GET requests (423) | About 10 to 15 minutes |
 
 The home copy keeps every current value, every key, every file byte, the identity, and the account.
+
+## 10. After the run (2026-10-31)
+
+### 10.1 LastDB code
+
+- lastdb#879 (main d897ee85) removed FieldMapper and the `field_mappers` path from the schema types, the Schema Service, the node, the host, and the SDK.
+- lastdb#880 (main b1076736) removed the retired shared-value words from the docs and scripts.
+- These stay on purpose: the boot refusal of a home with the old layout, the `independent_fields` serde name and wire key, and the refusal of a non-empty `field_mappers` at the declare routes.
+
+### 10.2 LastSeek
+
+The old home left search rows under schema identities that the new home does not declare. A tombstone batch removed 8164 rows under those identities. The drain applied the batches, and `lastseek compact` merged them. The batch refused any identity that the live LastDB declares.
+
+### 10.3 Upgrade to lastdb main b1076736
+
+Tom approved this upgrade on 2026-10-31 and waived the safe-upgrade soak. The new home did not need a second copy.
+
+1. The signed pair: `mini-upgrade-artifact.yml` run 41176743296 for b1076736. The zip digest `sha256:597a718f…ca8d8` matched. The artifact expires 2026-11-14. The manifest names b1076736. `codesign` passed, `lipo` printed `arm64`, and both versions are `nightly-20261030-ae0b7936d-36-gb10767360`.
+2. The switch at 06:36Z: copy the pair to `~/.lastdb/native-run-v2-programs/<oid>`, touch the revive hold, `launchctl bootout`, set `ProgramArguments:0` with PlistBuddy, `last-stack-lastdb-current set`, `launchctl bootstrap`, remove the hold. The daemon was down for about 3 seconds.
+3. Checks after the switch: API 13 with the new build, `last-stack-lastdb-current check` passed, `brain get` and `brain search` passed, `lastsecrets list` gave 165 names, `data/disk-run` is 0700, and automatic backup reached `head == backed` (main 1170) 30 seconds after the start.
+
+Rollback before the deletion date: copy the plist back from `$W/upgrade-b10767360-plist.before`, run `last-stack-lastdb-current set --bin-dir ~/.lastdb/native-run-v2-programs/e13ca0dbb06ef03fe0aa7229801d3cb7e072e7f3`, and restart the LaunchAgent.
+
+### 10.4 Tom's decisions and the deletion schedule
+
+Tom approved these on 2026-10-31:
+
+| Item | Decision | When |
+|---|---|---|
+| Rollback home `~/.lastdb-v7-rollback` and its old programs | Delete | 2026-11-07, 7 days after the new release runs |
+| Archive `~/.primary-lastdb-archive-20261014` | Delete with the rollback home | 2026-11-07 |
+| Export folder `$X` and the not-moved app data (Kanban, Situations, Routines, others) | Drop. Do not copy it to the new home. | 2026-11-07 |
+| Program pair e13ca0db in `~/.lastdb/native-run-v2-programs` | Operator addition, not a separate Tom decision: the upgrade made it old. The day-7 task lists it, and Tom confirms it with the other paths. | 2026-11-07 |
+| Old V2 backup stream (the stream of the rollback home) | Delete. Keep the new stream `c7f33eb6-…`. | 2026-11-30, 30 days after the move |
+| Notice text in CLAUDE.md and AGENTS.md | Rewrite (B16) | Done 2026-10-31 |
+
+Two Claude Desktop scheduled tasks carry the dates: `lastdb-old-homes-delete-20261107` and `lastdb-old-backup-stream-delete-20261130`. Each task checks the primary first, asks Tom once, and deletes only exact paths. On 2026-10-31 `lastdb cloud backup-v2` had no command that deletes a stream. The day-30 task does not delete through raw cloud calls; it asks for a product command if none exists.
