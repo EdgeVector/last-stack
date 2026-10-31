@@ -682,7 +682,10 @@ def read_rows(node, name, fields, keys, range_schema, batch, allow_missing=False
                     raise Refusal(f"{node.role}: /api/query returned a foreign, repeated, or empty row for {short(name)}")
                 for field in values:
                     info = metadata.get(field)
-                    if not isinstance(info, dict) or not isinstance(info.get("atom_uuid"), str) or not info["atom_uuid"]:
+                    # A format 7 target stores one record per key and returns an
+                    # empty atom identity (record model D7). The source keeps atoms.
+                    if (not isinstance(info, dict) or not isinstance(info.get("atom_uuid"), str)
+                            or (not info["atom_uuid"] and node.role != "target")):
                         raise Refusal(f"{node.role}: a present field has no atom metadata for {short(name)}")
                 found.add(ident)
                 rows[ident] = dict(values)
