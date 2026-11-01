@@ -19,6 +19,8 @@ Safety:
   * The source node accepts only GET and three read POST routes. A write to
     the source is impossible through this program.
   * --apply refuses a target socket under a protected home (default ~/.lastdb).
+  * The compact locator schema has no listable key, so the target (never the source)
+    walks it with unfiltered /api/query pages and the X-LastDB-Allow-Full-Scan opt-in.
   * Plan, apply and verify print no record value, file pointer, or secret, and
     write none to a file. Digests use HMAC-SHA256 with a random key per run;
     the key is never shown.
@@ -101,6 +103,8 @@ NOT_MOVED_NOTES.update({name: EXPORT_NOTE for name in (
 LIST_PAGE_MAX = 1000
 QUERY_KEYS_MAX = 1000
 RETRY_LIMIT = 30
+# An unfiltered /api/query needs the explicit admin/offline bulk opt-in. Only the target walk sends it.
+WALK_HEADERS = {"X-LastDB-Allow-Full-Scan": "1"}
 # lastdb#803 (API 13) owns the values of every schema and refuses a shared-value home at startup.
 # lastdb#901 stage 2 stops sending independent_fields, so from this API on a missing key means owned.
 OWNED_VALUES_API = 13
@@ -158,11 +162,12 @@ class Node:
         if not self.writable or route not in TARGET_WRITE_ROUTES:
             raise Refusal(f"the target node refuses {method} {route} in this mode")
 
-    def call(self, method, path, payload=None):
+    def call(self, method, path, payload=None, extra_headers=None):
         self._guard(method, path)
         body = None if payload is None else json.dumps(payload, separators=(",", ":")).encode()
         headers = {"Host": "localhost", "X-LastDB-Client": CLIENT_NAME, "Connection": "close",
                    "Accept": "application/json"}
+        headers.update(extra_headers or {})
         if body is not None:
             headers["Content-Type"] = "application/json"
         for attempt in range(RETRY_LIMIT):
@@ -208,8 +213,8 @@ class Node:
     def get(self, path):
         return self.call("GET", path)
 
-    def post(self, path, payload):
-        return self.call("POST", path, payload)
+    def post(self, path, payload, extra_headers=None):
+        return self.call("POST", path, payload, extra_headers)
 
 
 # ---------------------------------------------------------------- field types
@@ -678,6 +683,47 @@ def list_keys(node, name, page_size, range_schema):
     return unique
 
 
+def walk_keys(node, name, fields, range_schema, page_size):
+    """Every stored key of a schema that /api/list cannot list (a schema with no hash field).
+
+    An unfiltered /api/query of a format 7 home walks the records in record key order:
+    total_count null, has_more, next_cursor, page_order "record_key", at most 1,000 rows
+    per page. The target uses it to name each row it holds, so a derived row that the
+    source no longer derives shows as an extra key."""
+    if node.role != "target":
+        raise Refusal(f"{node.role}: only the target walks the records of {short(name)}")
+    if not fields:
+        raise Refusal(f"{node.role}: {short(name)} has no field to page")
+    limit = max(1, min(page_size, LIST_PAGE_MAX, 5000 // (1 + 2 * len(fields))))
+    request = {"schema_name": name, "fields": list(fields), "limit": limit}
+    keys, seen_cursors = [], set()
+    for _ in range(1_000_000 // limit + 2):
+        # The node refuses an unfiltered read without this admin/offline bulk opt-in.
+        data = node.post("/api/query", request, WALK_HEADERS)
+        results = data.get("results") if isinstance(data, dict) else None
+        if (not isinstance(results, list) or data.get("unresolved_rows") != 0
+                or not isinstance(data.get("has_more"), bool)):
+            raise Refusal(f"{node.role}: an unfiltered page of {short(name)} is incomplete")
+        for row in results:
+            key = row.get("key") if isinstance(row, dict) else None
+            if (not isinstance(key, dict) or not isinstance(key.get("hash"), str)
+                    or (range_schema and not isinstance(key.get("range"), str))):
+                raise Refusal(f"{node.role}: an unfiltered page of {short(name)} returned an invalid key")
+            keys.append((key["hash"], key.get("range") if range_schema else None))
+        if not data["has_more"]:
+            break
+        cursor = data.get("next_cursor")
+        cursor_id = json.dumps(cursor, sort_keys=True, separators=(",", ":"))
+        if not cursor or cursor_id in seen_cursors:
+            raise Refusal(f"{node.role}: the unfiltered pages of {short(name)} have no new cursor; the extra-key "
+                          "check of a derived route needs a format 7 target (record walk)")
+        seen_cursors.add(cursor_id)
+        request = dict(request, cursor=cursor)
+    else:
+        raise Refusal(f"{node.role}: the unfiltered pages of {short(name)} exceeded the page limit")
+    return list(dict.fromkeys(keys))
+
+
 def read_rows(node, name, fields, keys, range_schema, batch, allow_missing=False, key_fields=()):
     """Read exact keys, including stored nulls. Refuse incomplete or foreign rows.
 
@@ -1129,7 +1175,7 @@ def run_route(ctx, route, mode, pre):
         source_digests, target_digests = {}, {}
         target_keys = set()
         if tgt_entry is not None and mode in ("apply", "verify"):
-            target_keys = set(target_key_list(ctx, route, target_name, selected, tgt_range, target_fields))
+            target_keys = set(target_key_list(ctx, route, target_name, tgt_range, target_fields))
             result["target_keys_before"] = len(target_keys)
         if mode == "apply" and result["refusals"]:
             return result
@@ -1192,12 +1238,11 @@ def run_route(ctx, route, mode, pre):
     return result
 
 
-def target_key_list(ctx, route, target_name, keys, tgt_range, target_fields):
-    """The stored target keys of a route. A derived route has no listable key, so it reads
-    its own keys; a target row outside them stays unseen."""
+def target_key_list(ctx, route, target_name, tgt_range, target_fields):
+    """The stored target keys of a route. A derived route has no listable key, so it walks
+    the target records; a target row that the source no longer derives is then an extra key."""
     if route.get("derive_from"):
-        return list(read_rows(ctx.tgt, target_name, sorted(target_fields or []), list(keys), tgt_range,
-                              ctx.args.read_batch, allow_missing=True))
+        return walk_keys(ctx.tgt, target_name, sorted(target_fields or []), tgt_range, ctx.args.page_size)
     return list_keys(ctx.tgt, target_name, ctx.args.page_size, tgt_range)
 
 
@@ -1211,14 +1256,15 @@ def verify_route(ctx, route, selected, source_digests, target_fields, tgt_range)
     args = ctx.args
     target_name = route["target"]["name"]
     expected = set(source_digests)
-    target_keys = target_key_list(ctx, route, target_name, expected, tgt_range, target_fields)
+    target_keys = target_key_list(ctx, route, target_name, tgt_range, target_fields)
     deleted = 0
-    if args.mode == "apply" and args.delete_extra and not route.get("derive_from"):
+    # A derived route deletes too: its expected keys are the rows the source derives now.
+    if args.mode == "apply" and args.delete_extra:
         stale = sorted(set(target_keys) - expected)
         if stale:
             write_batches(ctx, route, [mutation(target_name, k, "delete", {}) for k in stale])
             deleted = len(stale)
-            target_keys = list_keys(ctx.tgt, target_name, args.page_size, tgt_range)
+            target_keys = target_key_list(ctx, route, target_name, tgt_range, target_fields)
     found = set(target_keys)
     rows = read_rows(ctx.tgt, target_name, sorted(target_fields or []), [k for k in target_keys if k in expected],
                      tgt_range, args.read_batch)
@@ -1249,7 +1295,7 @@ def verify_route(ctx, route, selected, source_digests, target_fields, tgt_range)
     if deleted:
         out["extra_deleted"] = deleted
     if route.get("derive_from"):
-        out["extra_check"] = "keyed reads of the derived keys only; the schema has no listable key"
+        out["extra_check"] = "unfiltered record walk of the target; the schema has no listable key"
     if not same:
         out.update({"missing_keys": shown(missing), "extra_keys": shown(extra), "different_keys": shown(differ)})
     return out
