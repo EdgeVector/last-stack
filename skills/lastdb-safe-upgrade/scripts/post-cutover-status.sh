@@ -41,8 +41,64 @@ post_cutover_status_check() {
   [ "$verdict" = GREEN ]
 }
 
+# Format 7 V2 primary. Args: status.json [v2-status.json stream_id cut].
+# Without a V2 file only the native status is checked (the pre-live bar).
+# With one, the automatic backup must cover the stopped cut <main>/<cas> on the
+# same stream: the candidate backed up every write up to the program change.
+post_cutover_status_check_v2() {
+  local file="$1" v2="${2:-}" stream="${3:-}" cut="${4:-}" verdict sample_verdict
+  local cut_main="" cut_cas=""
+  verdict="$(jq -r '
+      if .ok != true then "status-not-ok"
+      elif (.status.resident.persist_lane_failures // -1) != 0 then "persist-lane-failure"
+      elif (.status.resident.deferred_persist_failed // -1) != 0 then "deferred-persist-failure"
+      elif (.status | has("sync")) then "not-format7"
+      elif .status.durability.observed != true then "cloud-unobserved"
+      elif .status.durability.automatic_enabled != true then "cloud-disabled"
+      elif .status.durability.degraded != null then "cloud-degraded"
+      elif .status.durability.accepted_backup_recorded != true then "cloud-no-accepted-backup"
+      else "GREEN" end
+    ' "$file" 2>/dev/null)" || verdict="status-invalid"
+  if [ "$verdict" = GREEN ] && [ -n "$v2" ]; then
+    case "$cut" in */*) cut_main="${cut%/*}"; cut_cas="${cut#*/}" ;; esac
+    case "$cut_main$cut_cas" in ''|*[!0-9]*) verdict="cut-invalid" ;; esac
+  fi
+  if [ "$verdict" = GREEN ] && [ -n "$v2" ]; then
+    verdict="$(jq -r --arg stream "$stream" \
+      --argjson cut_main "$cut_main" --argjson cut_cas "$cut_cas" '
+        .automatic_backup.last_backed_up_frontiers as $backed |
+        if .ok != true then "v2-status-not-ok"
+        elif .automatic_backup_enabled != true or .automatic_backup.enabled != true then "cloud-disabled"
+        elif .automatic_backup.paused != null then "cloud-paused"
+        elif .blocked_reason != null then "cloud-blocked"
+        elif .mutation_log.gap != null then "cloud-log-gap"
+        elif .last_accepted_backup.begin.job.stream.stream_id != $stream then "cloud-stream-changed"
+        elif ($backed.main | type) != "number" or ($backed.cas | type) != "number" then "cloud-backup-pending"
+        elif $backed.main < $cut_main or $backed.cas < $cut_cas then "cloud-backup-pending"
+        else "GREEN" end
+      ' "$v2" 2>/dev/null)" || verdict="v2-status-invalid"
+  fi
+  if sample_verdict="$(python3 "$(dirname -- "${BASH_SOURCE[0]}")/cloud-recovery-status.py" \
+    --status "$file" --max-age-secs 300 --status-sample-only 2>/dev/null)"; then
+    [ "$sample_verdict" = status-sample-fresh ] || verdict="status-invalid"
+  else
+    case "$sample_verdict" in
+      status-sample-missing|status-sample-invalid|status-sample-future)
+        verdict="$sample_verdict" ;;
+      status-sample-stale)
+        [ "$verdict" != GREEN ] || verdict="$sample_verdict" ;;
+      *) verdict="status-invalid" ;;
+    esac
+  fi
+  printf 'POST_CUTOVER_STATUS=%s\n' "$verdict"
+  [ "$verdict" = GREEN ]
+}
+
 post_cutover_status_retryable() {
   case "$1" in
+    POST_CUTOVER_STATUS=cloud-unobserved|\
+    POST_CUTOVER_STATUS=cloud-backup-pending|\
+    POST_CUTOVER_STATUS=cloud-log-gap|\
     POST_CUTOVER_STATUS=status-sample-stale|\
     POST_CUTOVER_STATUS=cloud-capture-unregistered|\
     POST_CUTOVER_STATUS=cloud-degraded|\

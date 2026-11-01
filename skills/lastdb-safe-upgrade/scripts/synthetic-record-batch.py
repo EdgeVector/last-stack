@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Write or verify one complete synthetic seed through the normal owner API."""
+"""Write or verify one complete synthetic seed through the normal owner API.
+
+The seed holds Brain and LastSecrets records only (kanban is off since
+2026-10-31): one fixed brain/Reference point record, M brain records,
+N brain/TagMembership rows under one bucket (the range read), and a few
+lastsecrets/LastSecret records whose envelopes are fixed public test text.
+"""
 
 import argparse
 import collections
@@ -15,11 +21,24 @@ import sys
 
 STAMP = "2026-10-12T00:00:00.000Z"
 CAP = 4 * 1024 * 1024
+POINT_SLUG = "synth-point-reference"
+RANGE_BUCKET = "synth-tag-bucket"
+SECRETS = 4
+SCHEMA_NAME = re.compile(r"[0-9a-f]{64}|[a-z][a-z0-9_-]{0,63}/[A-Za-z][A-Za-z0-9_]{0,127}")
+RECORD_FIELDS = {"slug": "knowledge_record_slug", "title": "knowledge_record_title",
+                 "body": "knowledge_record_markdown", "status": "knowledge_record_status",
+                 "tags": "knowledge_record_tag_labels", "created_at": "knowledge_record_created_at",
+                 "updated_at": "knowledge_record_updated_at"}
 
 
-def require(condition):
+def require(condition, what="synthetic seed contract refused"):
     if not condition:
-        raise ValueError("synthetic seed contract refused")
+        raise ValueError(what)
+
+
+def excerpt(raw):
+    """A short single-line excerpt of a node reply. The seed holds no secrets."""
+    return " ".join(raw[:300].decode("utf-8", errors="replace").split())
 
 
 def pairs(items):
@@ -60,9 +79,9 @@ def read_json(path):
     return decode(raw)
 
 
-def read_config(path):
+def read_config(path, names_key):
     value = read_json(path)
-    require(type(value) is dict and type(value.get("schemaHashes")) is dict)
+    require(type(value) is dict and type(value.get(names_key)) in (dict, str))
     require(type(value.get("userHash")) is str and value["userHash"])
     return value
 
@@ -92,18 +111,27 @@ def call(path, route, body):
                      "X-LastDB-Client": "lastdb-safe-upgrade-synthetic", "Connection": "close"})
         reply = conn.getresponse()
         payload = reply.read(CAP + 1)
-        require(reply.status == 200)
+        require(reply.status == 200, "%s returned HTTP %d: %s" % (route, reply.status, excerpt(payload)))
         result = decode(payload)
-        require(type(result) is dict and result.get("ok") is True)
+        require(type(result) is dict and result.get("ok") is True,
+                "%s returned ok=false: %s" % (route, excerpt(payload)))
         return result
     finally:
         conn.close()
 
 
 def canonical(config, key):
-    value = config["schemaHashes"].get(key)
-    require(type(value) is str and re.fullmatch("[0-9a-f]{64}", value))
+    """The schema name or identity the app's own init pinned for one type."""
+    value = config["schemaHashes"].get(key) if key else config["schemaName"]
+    require(type(value) is str and SCHEMA_NAME.fullmatch(value))
     return value
+
+
+def record_fields(config, schema, record):
+    """Map logical record names to the schema's own fields."""
+    aliases = config.get("schemaFieldAliases", {}).get(schema) or RECORD_FIELDS
+    require(type(aliases) is dict and set(RECORD_FIELDS) <= set(aliases))
+    return {aliases[name]: record[name] for name in RECORD_FIELDS}
 
 
 def text(number):
@@ -111,63 +139,47 @@ def text(number):
                      % (number, i, (number * 7919 + i * 104729) % 100003) for i in range(8))
 
 
-def collect(kanban, brain, cards, records):
+def collect(brain, secrets, cards, records):
     operations = []
     expected = collections.OrderedDict()
 
-    def add(schema, key, fields, deleted=False):
+    def add(schema, key, fields):
         address = (schema, key[0], key[1] or "")
         require(address not in expected)
-        expected[address] = None if deleted else fields
+        expected[address] = fields
         operations.append({"type": "mutation", "schema": schema,
                            "fields_and_values": fields, "key_value": {"hash": key[0], "range": key[1]},
-                           "mutation_type": "delete" if deleted else "update", "durability": "durable"})
+                           "mutation_type": "update", "durability": "durable"})
 
-    board = {"slug": "default", "title": "Synthetic board", "body": "Synthetic seed board.",
-             "columns": ["backlog", "todo", "doing", "done"], "created_at": STAMP, "updated_at": STAMP}
-    add(canonical(kanban, "board"), ("default", None), board)
-    add(canonical(kanban, "card_list_index"), ("all_boards", None),
-        {"key": "all_boards", "payload_json": json.dumps([board], ensure_ascii=False, separators=(",", ":")),
-         "updated_at": STAMP})
-    milestone = {"slug": "synth-ms", "title": "Synthetic milestone", "body": "Synthetic seed milestone.",
-                 "board": "default", "state": "active", "position": "1000", "north_star": "",
-                 "driver": "", "deps": [], "proof_card": "", "proof_status": "", "block_reason": "",
-                 "created_at": STAMP, "updated_at": STAMP, "completed_at": ""}
-    add(canonical(kanban, "milestone"), ("synth-ms", None), milestone)
-    projected = {k: v for k, v in milestone.items() if k != "completed_at"}
-    projected.update(sk="active#00001000#synth-ms", layout="hashrange_v1_board_milestones")
-    add(canonical(kanban, "board_milestones"), ("default", projected["sk"]), projected)
-    # A freshly initialized app has one BoardCards identity. A staged rekey
-    # needs the app's full migration contract, so this small seed refuses it.
-    require("board_cards_rekey_target" not in kanban["schemaHashes"])
-    for n in range(1, cards + 1):
-        column = "todo" if n % 20 <= 11 else "backlog" if n % 20 <= 14 else "done"
-        fields = {"slug": "synth-card-%d" % n, "title": "Synthetic card %d" % n,
-                  "body": text(n), "board": "default", "column": column, "position": str(n * 1000),
-                  "assignee": "", "tags": ["done_at:" + STAMP] if column == "done" else [],
-                  "deps": [], "surfaces": [], "created_at": STAMP, "created_by": "unknown",
-                  "updated_at": STAMP, "db": "", "repo": "EdgeVector/synthetic", "base": "",
-                  "kind": "tracker", "block_status": "none", "block_reason": "", "north_star": "",
-                  "milestone": "synth-ms", "pr_url": "", "branch": ""}
-        add(canonical(kanban, "card"), (fields["slug"], None), fields)
-        projected = {k: v for k, v in fields.items() if k != "body"}
-        projected.update(sk="%s#%08d#%s" % (column, n * 1000, fields["slug"]),
-                         layout="hashrange_v1_board_partition")
-        add(canonical(kanban, "board_cards"), ("default", projected["sk"]), projected)
+    def record(kind, slug, number):
+        schema = canonical(brain, kind)
+        fields = record_fields(brain, schema, {
+            "slug": slug, "title": "Synthetic %s %d" % (kind, number), "body": text(number),
+            "status": "draft" if kind == "design" else "active", "tags": [],
+            "created_at": STAMP, "updated_at": STAMP})
+        add(schema, (slug, None), fields)
+
+    # The keyed point read of every probe bar.
+    record("reference", POINT_SLUG, 0)
     for n in range(1, records + 1):
         kind = ("reference", "concept", "preference", "design")[n % 4]
-        record = {"slug": "synth-%s-%d" % (kind, n), "title": "Synthetic %s %d" % (kind, n),
-                  "body": text(n), "status": "draft" if kind == "design" else "active",
-                  "tags": [], "created_at": STAMP, "updated_at": STAMP}
-        add(canonical(brain, kind), (record["slug"], None), record)
-        payload = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
-        add(canonical(brain, "__recordlistentry__"), (kind, record["slug"]),
-            {"rle_h": kind, "rle_r": record["slug"], "rle_payload": payload,
-             "rle_marker": "fbrain_record_list_entry_v1", "layout": "RecordListEntry novel hashrange rle_h x rle_r"})
-        payload = json.dumps(dict(record, type=kind), ensure_ascii=False, separators=(",", ":"))
-        add(canonical(brain, "__liveindex__"), (kind, record["slug"]),
-            {"liv_h": kind, "liv_r": record["slug"], "liv_payload": payload, "liv_marker": "fbrain_live_index_v1"})
-        add(canonical(brain, "__parkedindex__"), (kind, record["slug"]), {}, deleted=True)
+        record(kind, "synth-%s-%d" % (kind, n), n)
+    # N rows under one hash: the range read and the batch read of its keys.
+    member = canonical(brain, "__tagmember__")
+    for n in range(1, cards + 1):
+        entry = "synth-entry-%03d" % n
+        add(member, (RANGE_BUCKET, entry),
+            {"tag_membership_bucket_key": RANGE_BUCKET, "tag_membership_entry_key": entry,
+             "tag_label_excerpt": "synthetic", "tag_membership_copy_state_json": "{}"})
+    # LastSecrets locators. The envelope is fixed public test text, not a secret.
+    secret = canonical(secrets, None)
+    for n in range(1, SECRETS + 1):
+        slug = "synth-secret-%d" % n
+        add(secret, (slug, None),
+            {"secret_locator_slug": slug, "secret_display_name": "Synthetic secret %d" % n,
+             "secret_provider_name": "synthetic", "secret_usage_description": "safe-upgrade probe",
+             "secret_environment_name": "dev", "secret_text_envelope": {"value": "synthetic-public-envelope-%d" % n},
+             "secret_created_at": STAMP, "secret_updated_at": STAMP})
     return operations, expected
 
 
@@ -220,7 +232,7 @@ def verify(path, expected):
         group = grouped.setdefault(schema, {"keys": [], "fields": set(), "expected": {}})
         group["keys"].append([hash_key, range_key])
         group["expected"][(hash_key, range_key)] = fields
-        group["fields"].update(fields or ("prk_h", "prk_r", "prk_payload", "prk_marker"))
+        group["fields"].update(fields)
     queries = [{"schema_name": schema, "fields": sorted(group["fields"]),
                 "filter": {"HashRangeKeys": group["keys"]}, "limit": len(group["keys"])}
                for schema, group in grouped.items()]
@@ -228,8 +240,9 @@ def verify(path, expected):
     reply = call(path, "/api/queries/batch", {"queries": queries})
     require(reply.get("count") == len(queries) and type(reply.get("results")) is list)
     require(len(reply["results"]) == len(queries))
-    for group, item in zip(grouped.values(), reply["results"]):
-        require(type(item) is dict and item.get("status") == 200)
+    for (schema, group), item in zip(grouped.items(), reply["results"]):
+        require(type(item) is dict and item.get("status") == 200,
+                "verify query for %s returned status %r" % (schema, item.get("status") if type(item) is dict else None))
         value = item.get("response")
         require(type(value) is dict and value.get("ok") is True)
         require(type(value.get("unresolved_rows")) is int and value["unresolved_rows"] == 0)
@@ -242,9 +255,10 @@ def verify(path, expected):
             require(type(row) is dict and type(row.get("key")) is dict)
             key = (row["key"].get("hash"), row["key"].get("range") or "")
             require(key in group["expected"] and key not in seen)
-            require(group["expected"][key] is not None and row.get("fields") == group["expected"][key])
+            require(row.get("fields") == group["expected"][key])
             seen.add(key)
-        require(seen == {key for key, fields in group["expected"].items() if fields is not None})
+        require(seen == set(group["expected"]),
+                "verify query for %s returned %d of %d keys" % (schema, len(seen), len(group["expected"])))
 
 
 def main():
@@ -265,12 +279,13 @@ def main():
     require(args.home != primary and primary not in args.home.parents and args.home not in primary.parents)
     path = args.home / "data" / "folddb.sock"
     require(path.parent.resolve() == path.parent)
-    kanban = read_config(args.cli_home / ".kanban" / "config.json")
-    brain = read_config(args.cli_home / ".brain" / "config.json")
-    require(kanban["userHash"] == brain["userHash"])
+    brain = read_config(args.cli_home / ".brain" / "config.json", "schemaHashes")
+    secrets = read_config(args.cli_home / ".lastsecrets" / "config.json", "schemaName")
+    require(type(brain["schemaHashes"]) is dict and type(secrets["schemaName"]) is str)
+    require(secrets["userHash"] == brain["userHash"])
     require(all(not cfg.get("nodeSocketPath") or Path(cfg["nodeSocketPath"]).resolve() == path
-                for cfg in (kanban, brain)))
-    operations, expected = collect(kanban, brain, args.cards, args.records)
+                for cfg in (secrets, brain)))
+    operations, expected = collect(brain, secrets, args.cards, args.records)
     if args.mode == "commit":
         require(not path.exists())
         commit(args, expected)
@@ -280,10 +295,15 @@ def main():
     before = metadata(path.lstat())
     if args.mode == "write":
         reply = call(path, "/api/mutations/batch", {"mutations": operations, "convergence": "sync"})
-        require(type(reply.get("count")) is int and reply["count"] == len(operations))
-        require(reply.get("durability") == "durable")
-        require(type(reply.get("operations")) is dict and reply["operations"].get("total") == len(operations))
-        require(reply.get("background_tasks_drained") is True and reply.get("convergence_pending") is False)
+        shape = {k: reply.get(k) for k in ("count", "durability", "background_tasks_drained",
+                                            "convergence_pending")}
+        shape["operations.total"] = (reply.get("operations") or {}).get("total") \
+            if type(reply.get("operations")) is dict else None
+        what = "batch reply for %d mutations: %s" % (len(operations), json.dumps(shape, sort_keys=True))
+        require(type(reply.get("count")) is int and reply["count"] == len(operations), what)
+        require(reply.get("durability") == "durable", what)
+        require(type(reply.get("operations")) is dict and reply["operations"].get("total") == len(operations), what)
+        require(reply.get("background_tasks_drained") is True and reply.get("convergence_pending") is False, what)
     else:
         verify(path, expected)
     require(metadata(path.lstat()) == before)
@@ -294,6 +314,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, TypeError, KeyError, RecursionError, http.client.HTTPException):
-        print("synthetic record batch refused; no automatic retry", file=sys.stderr)
+    except (OSError, ValueError, TypeError, KeyError, RecursionError, http.client.HTTPException) as error:
+        print("synthetic record batch refused: %s: %s; no automatic retry"
+              % (type(error).__name__, str(error)[:400]), file=sys.stderr)
         raise SystemExit(1)

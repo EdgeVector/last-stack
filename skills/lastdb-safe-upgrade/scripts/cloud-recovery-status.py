@@ -13,6 +13,18 @@ Print "waived <published> <window secs> <failed,checks>". A refused waiver print
 "waiver refused: <fixed reason>" and exits 1.
 Every mode first requires an exact native sampled_at at most 300 seconds old.
 --status-sample-only checks only that protected snapshot and its sample age.
+
+A strict refusal prints "refused failed=<check,names>". A sample that cannot be
+decoded prints "refused".
+
+Format 7 V2 route (--v2-status): a home without the retired status.sync object
+uses status.durability and the protected output of
+`lastdb --data-dir <home> cloud backup-v2 status --json`. The recovery point is
+current when the mutation log head equals the last backed-up frontiers, the
+accepted backup is recorded, nothing is degraded, paused, blocked or retained,
+and the V2 sample is at most --max-age-secs old. Print
+"ok-v2 <main>/<cas> <age> <stream id> <ordinal>". The V2 route takes no waiver.
+A status without sync and without --v2-status refuses with sync_object_absent.
 """
 import argparse
 from datetime import datetime, timedelta, timezone
@@ -44,6 +56,10 @@ class Refusal(Exception):
 
 class StatusSampleRefusal(Exception):
     """A fixed native snapshot freshness verdict; no captured values are printed."""
+
+
+class CheckRefusal(Exception):
+    """Named failed checks. The names are fixed strings, never file text."""
 
 
 def require(value):
@@ -119,6 +135,7 @@ def unsigned(value):
 
 
 def load_status(path):
+    """Return the whole response; its status object has a fresh sample time."""
     value = read_status(path)
     require(type(value) is dict and value.get("ok") is True)
     require(type(value.get("status")) is dict)
@@ -134,13 +151,81 @@ def load_status(path):
         raise StatusSampleRefusal("status-sample-future")
     if now_ns - sampled_at_ns > STATUS_SAMPLE_MAX_AGE_SECS * 1_000_000_000:
         raise StatusSampleRefusal("status-sample-stale")
-    return status
+    return value
 
 
-def load_sync(status):
-    sync = status.get("sync")
-    require(type(sync) is dict)
-    return sync
+def frontier_pair(value):
+    require(type(value) is dict and set(value) == {"main", "cas"})
+    return unsigned(value["main"]), unsigned(value["cas"])
+
+
+def v2_failed_checks(response, v2, v2_mtime_ns, max_age):
+    """Return (failed check names, head frontiers, backup age, stream id, ordinal).
+
+    Every check is lenient: a missing or malformed value is a failed check.
+    """
+    failed = []
+    status = response["status"]
+
+    def check(name, test):
+        try:
+            passed = test() is True
+        except (ValueError, TypeError, KeyError, AttributeError):
+            passed = False
+        if not passed:
+            failed.append(name)
+
+    def lenient(read):
+        try:
+            return read()
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return None
+
+    durability = status.get("durability")
+    durability = durability if type(durability) is dict else {}
+    v2 = v2 if type(v2) is dict else {}
+    automatic = v2.get("automatic_backup")
+    automatic = automatic if type(automatic) is dict else {}
+    log = v2.get("mutation_log")
+    log = log if type(log) is dict else {}
+    accepted = v2.get("last_accepted_backup")
+    accepted = accepted if type(accepted) is dict else {}
+    now_ns = time.time_ns()
+
+    check("durability_observed", lambda: durability["observed"] is True)
+    check("durability_automatic_enabled", lambda: durability["automatic_enabled"] is True)
+    check("durability_degraded", lambda: "degraded" in durability and durability["degraded"] is None)
+    check("durability_accepted_backup", lambda: durability["accepted_backup_recorded"] is True)
+    check("v2_sample_age", lambda: 0 <= now_ns - v2_mtime_ns <= max_age * 1_000_000_000)
+    check("v2_ok", lambda: v2["ok"] is True)
+    check("v2_user_hash", lambda: type(v2["user_hash"]) is str
+          and re.fullmatch(r"[0-9a-f]{32}", v2["user_hash"]) is not None
+          and v2["user_hash"] == response.get("user_hash"))
+    check("v2_enabled", lambda: v2["enabled"] is True)
+    check("v2_automatic_enabled", lambda: v2["automatic_backup_enabled"] is True
+          and automatic["enabled"] is True)
+    check("v2_paused", lambda: "paused" in automatic and automatic["paused"] is None)
+    check("v2_blocked", lambda: "blocked_reason" in v2 and v2["blocked_reason"] is None)
+    stream = lenient(lambda: accepted["begin"]["job"]["stream"]["stream_id"])
+    stream = stream if type(stream) is str and re.fullmatch(r"[0-9a-f-]{36}", stream) else None
+    ordinal = accepted.get("ordinal")
+    ordinal = ordinal if type(ordinal) is str and re.fullmatch(r"[0-9]{1,20}", ordinal) else None
+    check("v2_accepted_backup", lambda: stream is not None and ordinal is not None)
+    check("v2_mutation_log_enabled", lambda: log["enabled"] is True)
+    check("v2_log_gap", lambda: "gap" in log and log["gap"] is None)
+    check("v2_snapshot_required", lambda: log["snapshot_required"] is False)
+    check("v2_retained_bytes", lambda: unsigned(log["retained_bytes"]) == 0
+          and unsigned(v2["retained_source_bytes"]) == 0)
+    check("v2_acknowledged_head", lambda: unsigned(log["acknowledged_through"])
+          == unsigned(log["head"]["sequence"]))
+    head = lenient(lambda: frontier_pair(log["head"]["frontiers"]))
+    backed = lenient(lambda: frontier_pair(automatic["last_backed_up_frontiers"]))
+    check("v2_head_backed", lambda: head is not None and head == backed)
+    completed = lenient(lambda: unsigned(automatic["last_completed_at"]))
+    age = None
+    if completed is not None and completed * 1_000_000_000 <= now_ns:
+        age = (now_ns - completed * 1_000_000_000) // 1_000_000_000
+    return failed, head, age, stream, ordinal
 
 
 def number(sync, key, lenient):
@@ -251,6 +336,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--status", required=True, type=Path)
+    parser.add_argument("--v2-status", type=Path)
     parser.add_argument("--max-age-secs", required=True)
     parser.add_argument("--report", action="store_true")
     parser.add_argument("--status-sample-only", action="store_true")
@@ -264,17 +350,45 @@ def main():
     max_age = unsigned(int(args.max_age_secs))
     # Freshness precedes report and waiver selection, so no backup waiver can
     # authorize stale cached sync flags.
-    status = load_status(args.status)
+    response = load_status(args.status)
+    status = response["status"]
     waiver = (args.waiver_decision, args.waiver_slug, args.candidate_sha256,
               args.waiver_max_window_secs)
     if args.status_sample_only:
-        require(not args.report and not any(waiver))
+        require(not args.report and not any(waiver) and args.v2_status is None)
         print("status-sample-fresh")
         return
-    sync = load_sync(status)
+    if "sync" not in status:
+        if any(waiver):
+            raise Refusal("the status has no legacy sync object; the V2 route takes no waiver")
+        if args.v2_status is None:
+            if args.report:
+                print("report failed=sync_object_absent published=- age=- window=- state=?")
+                return
+            raise CheckRefusal(["sync_object_absent"])
+        v2 = read_status(args.v2_status)
+        v2_mtime_ns = args.v2_status.lstat().st_mtime_ns
+        failed, head, age, stream, ordinal = v2_failed_checks(response, v2, v2_mtime_ns, max_age)
+        if args.report:
+            phase = v2.get("phase") if type(v2) is dict else None
+            phase = phase if type(phase) is str and re.fullmatch(r"[a-z_]{1,32}", phase) else "?"
+            print("report failed=%s published=%s age=%s window=- state=%s" % (
+                ",".join(failed) or "none",
+                "-" if head is None else "%d/%d" % head,
+                "-" if age is None else age, phase))
+            return
+        if failed:
+            raise CheckRefusal(failed)
+        print("ok-v2 %d/%d %s %s %s" % (head[0], head[1], "-" if age is None else age,
+                                        stream, ordinal))
+        return
+    require(args.v2_status is None)
+    sync = status["sync"]
+    require(type(sync) is dict)
     if not args.report and not any(waiver):
-        failed, published, age, _window = failed_checks(sync, max_age, lenient=False)
-        require(not failed)
+        failed, published, age, _window = failed_checks(sync, max_age, lenient=True)
+        if failed:
+            raise CheckRefusal(failed)
         print("ok %d %d" % (published, age))
         return
     failed, published, age, window = failed_checks(sync, max_age, lenient=True)
@@ -303,6 +417,9 @@ if __name__ == "__main__":
         main()
     except StatusSampleRefusal as refusal:
         print(refusal)
+        raise SystemExit(1)
+    except CheckRefusal as refusal:
+        print("refused failed=%s" % ",".join(refusal.args[0]))
         raise SystemExit(1)
     except Refusal as refusal:
         print("waiver refused: %s" % refusal)

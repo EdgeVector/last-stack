@@ -9,11 +9,13 @@
 # small, so every probe copy is an instant APFS clone of it.
 #
 # WHAT IT WRITES: a home with Tom's identity.key (copied, never printed), the
-# kanban and brain schemas registered by the apps' own init commands, one
-# milestone, N cards in todo/backlog/done, and M brain records in one batch. The kanban and
-# brain CLIs get their own HOME (cli-home) so they never read or write the real
-# ~/.fkanban or ~/.brain. The seed pins different schema hashes from the
-# primary, so the probes must read it through this cli-home.
+# brain and lastsecrets schemas registered by the apps' own init commands, and
+# in one batch: one keyed brain/Reference point record, M brain records,
+# N brain/TagMembership rows under one hash (--cards; the range read), and four
+# lastsecrets/LastSecret locators with fixed public test envelopes. Kanban is
+# off (Tom, 2026-10-31), so the seed does not use it. The brain and lastsecrets
+# CLIs get their own HOME (cli-home) so they never read or write the real
+# ~/.brain or ~/.lastsecrets.
 #
 # It never starts a daemon on the primary home and never writes to it. It reads
 # only <primary>/identity.key and <primary>/.bootstrap_done.
@@ -24,7 +26,7 @@
 #
 # Output dir layout:
 #   NEW_DIR/home        node home (data dir for the probe daemons)
-#   NEW_DIR/cli-home    HOME for kanban and brain calls
+#   NEW_DIR/cli-home    HOME for brain and lastsecrets calls
 #   NEW_DIR/seed.meta   key=value facts, written last
 #   NEW_DIR/.complete   written after seed.meta; a seed without it is unusable
 #
@@ -155,7 +157,7 @@ trap cleanup EXIT
 umask 077
 mkdir -m 700 "$OUT"
 OUT_CREATED=1
-mkdir -m 700 "$HOME_DIR" "$CLI_HOME" "$BUILD" "$CLI_HOME/.kanban" "$CLI_HOME/.brain"
+mkdir -m 700 "$HOME_DIR" "$CLI_HOME" "$BUILD" "$CLI_HOME/.lastsecrets" "$CLI_HOME/.brain"
 printf 'version=1\nowner_uid=%s\ncreator_pid=%s\n' "$(id -u)" "$$" >"$OUT/owner.meta"
 jq -n --argjson uid "$(id -u)" --argjson dev "$(stat -f %d "$OUT")" \
   --argjson ino "$(stat -f %i "$OUT")" --argjson pid "$$" \
@@ -285,7 +287,7 @@ boot_baseline first
 
 cli_env() {
   env HOME="$CLI_HOME" LASTDB_HOME="$HOME_DIR" FOLDDB_HOME="$HOME_DIR" \
-    KANBAN_CONFIG="$CLI_HOME/.kanban/config.json" FKANBAN_CONFIG="$CLI_HOME/.kanban/config.json" \
+    LASTSECRETS_CONFIG="$CLI_HOME/.lastsecrets/config.json" \
     BRAIN_CONFIG="$CLI_HOME/.brain/config.json" FBRAIN_CONFIG="$CLI_HOME/.brain/config.json" \
     FOLDDB_SOCKET_PATH="$SOCK" FBRAIN_FOLDDB_SOCKET="$SOCK" "$@"
 }
@@ -293,12 +295,13 @@ cli_env() {
 # --- register the app schemas through the apps' own init ---------------------
 # Mini resolves or registers each schema with the schema service, so this step
 # needs the network. The seed is cached, so the cost is paid once per baseline.
-phase kanban-init
-log "kanban init"
+phase lastsecrets-init
+log "lastsecrets init"
 rc=0
-run_op_with_deadline "$INIT_DEADLINE_SECS" cli_env kanban init \
-  --node-socket-path "$SOCK" --name synthetic >"$BUILD/kanban-init.out" 2>"$BUILD/kanban-init.err" || rc=$?
-[ "$rc" -eq 0 ] || fail "kanban init failed (rc=$rc); private evidence retained"
+run_op_with_deadline "$INIT_DEADLINE_SECS" cli_env lastsecrets init \
+  --config "$CLI_HOME/.lastsecrets/config.json" --socket "$SOCK" \
+  >"$BUILD/lastsecrets-init.out" 2>"$BUILD/lastsecrets-init.err" || rc=$?
+[ "$rc" -eq 0 ] || fail "lastsecrets init failed (rc=$rc); private evidence retained"
 phase brain-init
 log "brain init"
 rc=0
@@ -346,7 +349,7 @@ probe_strip_cloud_state "$HOME_DIR" "$IDENTITY_FROM" || fail "cloud state could 
   printf 'baseline_sha256=%s\n' "$(synth_sha256_file "$BASELINE_BIN")"
   printf 'cards=%s\n' "$CARDS"
   printf 'records=%s\n' "$RECORDS"
-  printf 'todo_cards=%s\n' "$(synth_expected_todo "$CARDS")"
+  printf 'range_rows=%s\nsecrets=4\n' "$CARDS"
   printf 'known_keys_verified=true\nshutdown_flush_verified=true\n'
   printf 'owner_uid=%s\ncreator_pid=%s\n' "$(id -u)" "$$"
   printf 'write_env_omitted=%s\n' "$SYNTH_WRITE_OMIT_KEYS"

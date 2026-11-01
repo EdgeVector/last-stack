@@ -14,9 +14,11 @@
 # bash 3.2 compatible (macOS /bin/bash). No nested functions.
 
 # Bump when build-synthetic-home.sh writes different data.
-SYNTH_GENERATOR_VERSION="3"
-# 10 cards give a todo list of 10 and 8 records give the brain reads data. That is
-# enough for the keyed-read, row-count and latency bars. One complete batch
+# Version 4 (2026-11-01): Brain and LastSecrets records; kanban is off.
+SYNTH_GENERATOR_VERSION="4"
+# The "cards" count is the number of brain/TagMembership rows under one hash
+# (the range read); 10 rows and 8 brain records are enough for the keyed-read,
+# row-count and latency bars. One complete batch
 # waits for durable persistence. The seed is cached per key, so most runs
 # build nothing.
 SYNTH_DEFAULT_CARDS=10
@@ -63,19 +65,6 @@ synth_count_valid() {
     ''|*[!0-9]*|0|0[0-9]*) return 1 ;;
   esac
   [ "${#1}" -le 2 ] && [ "$1" -le 64 ]
-}
-
-# $1 = card count. Prints how many of cards 1..N the builder places in todo.
-# Card n goes to todo when n mod 20 is 0 to 11, to backlog for 12 to 14, and to
-# done for 15 to 19. A full block of 20 holds 12 todo cards. A partial block of
-# r cards (n mod 20 = 1..r) holds min(r, 11).
-synth_expected_todo() {
-  local n="${1:-}" full rem
-  synth_count_valid "$n" || return 1
-  full=$((n / 20))
-  rem=$((n % 20))
-  [ "$rem" -le 11 ] || rem=11
-  printf '%s\n' $((full * 12 + rem))
 }
 
 # $1 = file. Prints the lowercase hex SHA-256, or fails.
@@ -136,7 +125,7 @@ synth_app_token() {
 }
 
 # $1 = baseline daemon, $2 = identity file, $3 = live env pairs (newline list),
-# $4 = cards, $5 = records, $6 = kanban token, $7 = brain token.
+# $4 = range rows, $5 = records, $6 = lastsecrets token, $7 = brain token.
 # Prints a 20 hex character key. The identity file contributes only through its
 # SHA-256, mixed with every other input; no key bytes are printed.
 synth_seed_key() {
@@ -152,7 +141,7 @@ synth_seed_key() {
       printf 'identity=%s\n' "$isha"
       printf 'cards=%s\n' "$cards"
       printf 'records=%s\n' "$recs"
-      printf 'kanban=%s\n' "$kt"
+      printf 'lastsecrets=%s\n' "$kt"
       printf 'brain=%s\n' "$bt"
       printf '%s\n' "$envs" | LC_ALL=C sort
     } | synth_sha256_stdin
@@ -250,11 +239,11 @@ synth_seed_root_default() {
 
 # $1 = baseline daemon, $2 = primary home, $3 = LaunchAgent plist (may be empty),
 # $4 = cards, $5 = records. Prints the seed key for the installed apps.
-# Needs live_lastdb_env_pairs (live-lastdb-env.sh). Exit 2: no kanban CLI;
+# Needs live_lastdb_env_pairs (live-lastdb-env.sh). Exit 2: no lastsecrets CLI;
 # exit 3: no brain CLI; exit 1: any other input is unusable.
 synth_seed_key_for() {
   local baseline="${1:-}" primary="${2:-}" plist="${3-}" cards="${4:-}" recs="${5:-}" kt bt envs
-  kt="$(synth_app_token kanban)" || return 2
+  kt="$(synth_app_token lastsecrets)" || return 2
   bt="$(synth_app_token brain)" || return 3
   envs="$(live_lastdb_env_pairs "$plist")"
   synth_seed_key "$baseline" "$primary/identity.key" "$envs" "$cards" "$recs" "$kt" "$bt"

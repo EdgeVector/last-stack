@@ -999,11 +999,20 @@ if step == "CUTOVER":
     raise SystemExit(0)
 
 if step == "VERIFY":
-    p = subprocess.run(["kanban", "list", "--column", "todo"], capture_output=True, text=True, timeout=120)
+    # One keyed live read: Board when it answers, else the brain record and
+    # the LastSecrets locator named in live-read.env. Kanban is off.
+    p = subprocess.run(
+        ["bash", skill, "--live-read-check"],
+        capture_output=True, text=True, timeout=120,
+    )
     if p.returncode != 0:
-        sys.stderr.write(p.stderr or "")
+        sys.stderr.write((p.stdout or "") + (p.stderr or ""))
         sys.exit(p.returncode)
-    emit({"verify": "live"}, "su VERIFY live")
+    mode = ""
+    for line in (p.stdout or "").splitlines():
+        if line.startswith("LIVE_READ="):
+            mode = line.split("=", 1)[1].strip()
+    emit({"verify": "live", "live_read": mode}, f"su VERIFY live read={mode}")
     raise SystemExit(0)
 
 sys.stderr.write(f"unknown live step {step}\n")
