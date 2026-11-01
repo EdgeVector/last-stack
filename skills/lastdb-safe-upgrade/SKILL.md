@@ -844,14 +844,23 @@ An exact-candidate live cutover requires the sidebin venue. The driver refuses
 the brew venue before a durable write or a service stop. Brew can resolve an
 artifact whose bytes differ from the photographed pair.
 
-The nightly path uses the parent graph:
+The nightly primary upgrade is the routine `lastdb-nightly-primary-upgrade`.
+Its gate downloads the GitHub nightly pair. It does not compile LastDB on
+this machine. A forward pair calls `last-stack-safe-upgrade-loom`. The gate
+refuses that call until this driver contains `primary_brain_and_secret_ok`.
+Do not call the cutover driver except through that Loom launcher.
+`lastdb-canary-candidate-set` stays paused. It compiles LastDB on this machine.
 
-```bash
-last-stack-canary-loom --start --oid <full-lastdb-main-commit>
-```
+Before the live install, the driver classifies the live read. When Board
+answers, the proof stays the Board title. When Board does not answer, the
+proof is one brain record and one LastSecrets locator. The locator read
+requests `secret_locator_slug` only. A miss exits before the install, and
+the primary stays on the old pair. The same mode runs again after the install.
 
-The parent graph builds the candidate and calls `lastdb-safe-upgrade` as a Loom
-child. Do not call the cutover driver from a routine or an agent.
+The slugs come from `LASTDB_LIVE_BRAIN_SLUG` and `LASTDB_LIVE_SECRET_SLUG`,
+or from mode `600` file `live-read.env` under
+`${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/lastdb-nightly-primary-upgrade/`.
+The driver does not log the query body.
 
 `last-stack-canary-loom --recover` accepts only a complete protocol-v7 child
 receipt. Recovery rechecks both canonical paths, versions, hashes, the tuple
@@ -915,7 +924,7 @@ The script:
 | **2c. DEV photograph proof** | The exact pair clones the trial copy, scrubs production state, connects the copied identity to DEV, and publishes a snapshot. The exact CLI restores that manifest from DEV into a source-free home. The fresh v3 receipt must match this Loom execution, this run's trial copy, and the retained restore report. |
 | **2d. Meter restart bar** | Read live status before restart. Refuse a `keep_small` plane above 1.5 GiB or a failed persist lane. The 2 GiB cold-group cap can prevent both new and old binaries from booting. |
 | **3. Live** | Refuse brew. For sidebin, write the boot-ledger restart intent. Stage and check both candidate files. Require a current cloud backup. Stop the old daemon without a forced kill. Require its exact flush receipt and clean session. No copy of the primary is made. Then replace the saved binary pair and reload the LaunchAgent job. |
-| **4. Post-check** | Exact installed pair hashes, live `/health`, schemas > 0, Board title, **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **live peak RSS** vs guard, **live point-read + batch-read latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency in notice |
+| **4. Post-check** | Exact installed pair hashes, live `/health`, schemas > 0, the live read mode classified before install (Board title, or one brain record plus one LastSecrets locator), **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **live peak RSS** vs guard, **live point-read + batch-read latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency in notice |
 | **4a. Live soak** | Keep checking for at least five minutes by default. `--zero-live-soak` removes only that minimum. At least one fresh GREEN status sample remains required. Check persist failures, write access, and meter size on each status sample. If Cloud Sync was on before cutover, require the cloud frontier to stay at or beyond its pre-live value. A failed or stale bar is RED. |
 | **4b. Release** | The exact owned seed and trial stay through all Loom, proof, and recovery consumers. After consumer closure and driver exit, the operator preserves the public proof and uses the exact-container cleanup route. No sibling sweep runs. |
 | RED | Exit 1. No copy of the primary exists; recovery is the saved binary pair, then `lastdb restore` of the cloud backup. A class, probe or cloud-recovery-point failure leaves the primary unchanged. |

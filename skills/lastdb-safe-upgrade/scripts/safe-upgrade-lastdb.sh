@@ -1008,6 +1008,140 @@ stop_probe_node() {
   remove_probe_copy "$copy" "$blog" || return 1
 }
 
+# Live primary proof.
+# Board stays the proof when that schema answers.
+# A primary with no Board uses one brain record and one LastSecrets locator.
+# Classify the mode before the live install. A miss leaves the primary unchanged.
+# The query body is never logged. The secret text field is never requested.
+live_read_slug_ok() {
+  printf '%s\n' "${1:-}" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$'
+}
+
+load_live_read_slugs() {
+  local file line key_count
+  if live_read_slug_ok "${LASTDB_LIVE_BRAIN_SLUG:-}" \
+      && live_read_slug_ok "${LASTDB_LIVE_SECRET_SLUG:-}"; then
+    return 0
+  fi
+  file="${LASTDB_LIVE_READ_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/lastdb-nightly-primary-upgrade/live-read.env}"
+  if [ -L "$file" ] || [ ! -f "$file" ]; then
+    return 1
+  fi
+  if [ "$(stat -f '%u' "$file")" != "$(id -u)" ]; then
+    return 1
+  fi
+  if [ "$(stat -f '%Lp' "$file")" != "600" ]; then
+    return 1
+  fi
+  LASTDB_LIVE_BRAIN_SLUG=""
+  LASTDB_LIVE_SECRET_SLUG=""
+  key_count=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|\#*) continue ;;
+      LASTDB_LIVE_BRAIN_SLUG=*)
+        LASTDB_LIVE_BRAIN_SLUG="${line#LASTDB_LIVE_BRAIN_SLUG=}"
+        key_count=$((key_count + 1))
+        ;;
+      LASTDB_LIVE_SECRET_SLUG=*)
+        LASTDB_LIVE_SECRET_SLUG="${line#LASTDB_LIVE_SECRET_SLUG=}"
+        key_count=$((key_count + 1))
+        ;;
+      *) return 1 ;;
+    esac
+  done <"$file"
+  [ "$key_count" -eq 2 ] || return 1
+  live_read_slug_ok "$LASTDB_LIVE_BRAIN_SLUG" \
+    && live_read_slug_ok "$LASTDB_LIVE_SECRET_SLUG"
+}
+
+primary_board_read_ok() {
+  local payload out
+  payload='{"schema_name":"Board","fields":["title"],"filter":{"HashKey":"default"}}'
+  out="$(mktemp "${TMPDIR:-/tmp}/lastdb-live-board.XXXXXX")"
+  chmod 600 "$out" || { rm -f "$out"; return 1; }
+  if ! curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
+      -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+      -H 'Content-Type: application/json' \
+      --data "$payload" http://x/api/query >"$out" 2>/dev/null; then
+    rm -f "$out"
+    return 1
+  fi
+  if ! jq -e '
+      .ok == true
+      and (.results | length) > 0
+      and ((.results[0].fields.title // .results[0].title // "") | length) > 0
+    ' "$out" >/dev/null 2>&1; then
+    rm -f "$out"
+    return 1
+  fi
+  rm -f "$out"
+  return 0
+}
+
+# Marker primary_brain_and_secret_ok: the nightly gate refuses Loom without it.
+primary_brain_and_secret_ok() {
+  local brain_payload secret_payload brain_out secret_out
+  load_live_read_slugs || return 1
+  brain_out="$(mktemp "${TMPDIR:-/tmp}/lastdb-live-brain.XXXXXX")"
+  secret_out="$(mktemp "${TMPDIR:-/tmp}/lastdb-live-secret.XXXXXX")"
+  chmod 600 "$brain_out" "$secret_out" || {
+    rm -f "$brain_out" "$secret_out"
+    return 1
+  }
+  brain_payload="$(jq -nc --arg k "$LASTDB_LIVE_BRAIN_SLUG" \
+    '{schema_name:"brain/Decision",fields:["knowledge_record_slug","knowledge_record_title"],filter:{HashKey:$k}}')"
+  if ! curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
+      -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+      -H 'Content-Type: application/json' \
+      --data "$brain_payload" http://x/api/query >"$brain_out" 2>/dev/null; then
+    rm -f "$brain_out" "$secret_out"
+    return 1
+  fi
+  if ! jq -e --arg k "$LASTDB_LIVE_BRAIN_SLUG" '
+      .ok == true
+      and (.results | length) > 0
+      and ((.results[0].fields.knowledge_record_slug // "") == $k)
+      and (((.results[0].fields.knowledge_record_title // "") | length) > 0)
+    ' "$brain_out" >/dev/null 2>&1; then
+    rm -f "$brain_out" "$secret_out"
+    return 1
+  fi
+  secret_payload="$(jq -nc --arg k "$LASTDB_LIVE_SECRET_SLUG" \
+    '{schema_name:"lastsecrets/LastSecret",fields:["secret_locator_slug"],filter:{HashKey:$k}}')"
+  if ! curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
+      -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+      -H 'Content-Type: application/json' \
+      --data "$secret_payload" http://x/api/query >"$secret_out" 2>/dev/null; then
+    rm -f "$brain_out" "$secret_out"
+    return 1
+  fi
+  if ! jq -e --arg k "$LASTDB_LIVE_SECRET_SLUG" '
+      .ok == true
+      and (.results | length) > 0
+      and ((.results[0].fields.secret_locator_slug // "") == $k)
+      and ((.results[0].fields | has("secret_text_envelope")) | not)
+    ' "$secret_out" >/dev/null 2>&1; then
+    rm -f "$brain_out" "$secret_out"
+    return 1
+  fi
+  rm -f "$brain_out" "$secret_out"
+  return 0
+}
+
+classify_live_read_mode() {
+  if primary_board_read_ok; then
+    LIVE_READ_MODE=board
+    return 0
+  fi
+  if primary_brain_and_secret_ok; then
+    LIVE_READ_MODE=brain
+    return 0
+  fi
+  LIVE_READ_MODE=""
+  return 1
+}
+
 # A deployment check boots the exact candidate on a copy of the synthetic seed.
 # It writes nothing to the copy.
 candidate_deployment_check() {
@@ -2551,6 +2685,14 @@ if [ "$SOAK_REQUIRE_CLOUD" -eq 1 ]; then
 fi
 log "pre-live status bar $PRELIVE_STATUS_OUT (meter plane below 1.5 GiB)"
 
+# Classify before any live write. Board is the proof when it answers.
+# Otherwise one brain record and one LastSecrets locator must answer.
+# A miss here exits with the primary unchanged.
+if ! classify_live_read_mode; then
+  die "live read proof failed before cutover; Board did not answer and the brain plus LastSecrets locators are missing or unreadable; primary was not changed"
+fi
+log "live read mode ${LIVE_READ_MODE} classified before cutover"
+
 detect_live_venue
 assert_exact_candidate_live_venue
 write_cutover_recovery_state "pre-live" false
@@ -2568,7 +2710,7 @@ if [ "$ASSUME_YES" -eq 0 ]; then
     echo "  brew upgrade edgevector/lastdb/lastdb"
     echo "  brew services restart lastdb"
   fi
-  echo "  post-check live /health + Board title"
+  echo "  post-check live /health + live read mode ${LIVE_READ_MODE}"
   echo "Candidate trial copy: $TRIAL_COPY (retained until all Loom/proof/recovery consumers close, including an operator abort)"
   echo "No copy of the primary is made. Recovery point: current cloud backup + saved binary pair."
   printf "Proceed with LIVE upgrade? [y/N] "
@@ -2727,16 +2869,27 @@ if [ "$VENUE" = "sidebin" ]; then
   fi
 fi
 
-# Live data check (same keyed Board read as the deployment check)
+# Live data check. Use the mode classified before the install.
+# mode=board repeats the Board title read.
+# mode=brain repeats the brain record and the LastSecrets locator.
 UH="$(curl -sS --max-time 5 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/system/auto-identity 2>/dev/null | jq -r '.user_hash // empty')"
 [ -n "$UH" ] || die "live auto-identity empty after cutover — treat as RED; recovery = saved binary pair, then lastdb restore of the cloud backup (no copy of the primary exists)"
 NSCHEMAS="$(curl -sS --max-time 30 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/schemas 2>/dev/null | jq -r '.schemas|length // 0')"
 [ "${NSCHEMAS:-0}" -gt 0 ] || die "live /api/schemas empty after cutover — treat as RED; recovery = saved binary pair, then lastdb restore of the cloud backup (no copy of the primary exists)"
-QRES="$(curl -sS --max-time 30 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' -H 'Content-Type: application/json' \
-  --data '{"schema_name":"Board","fields":["title"],"filter":{"HashKey":"default"}}' http://x/api/query 2>/dev/null || true)"
-QOK="$(echo "$QRES" | jq -r '.ok // empty' 2>/dev/null || true)"
-QVAL="$(echo "$QRES" | jq -r '.results[0].fields.title // .results[0].title // empty' 2>/dev/null || true)"
-[ "$QOK" = "true" ] && [ -n "$QVAL" ] || die "live Board query failed after cutover — treat as RED; recovery = saved binary pair, then lastdb restore of the cloud backup (no copy of the primary exists)"
+case "${LIVE_READ_MODE:-}" in
+  board)
+    primary_board_read_ok \
+      || die "live Board query failed after cutover — treat as RED; recovery = saved binary pair, then lastdb restore of the cloud backup (no copy of the primary exists)"
+    ;;
+  brain)
+    primary_brain_and_secret_ok \
+      || die "live brain and LastSecrets reads failed after cutover — treat as RED; recovery = saved binary pair, then lastdb restore of the cloud backup (no copy of the primary exists)"
+    ;;
+  *)
+    die "live read mode was not classified before cutover — treat as RED; recovery = saved binary pair, then lastdb restore of the cloud backup (no copy of the primary exists)"
+    ;;
+esac
+log "live read proof GREEN mode=${LIVE_READ_MODE}"
 
 # Live RSS vs memory-guard (settle briefly — embeddings may still be loading).
 log "live RSS settle ${RSS_SETTLE_SECS}s then sample ${RSS_SAMPLE_SECS}s..."
