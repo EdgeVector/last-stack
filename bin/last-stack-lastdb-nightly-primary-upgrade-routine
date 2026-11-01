@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Seed lastdb-nightly-primary-upgrade when its registry entry is missing.
+# Active only when the host marker file exists. Other hosts stay paused.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
+# shellcheck source=last-stack-routines-registry-env
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/last-stack-routines-registry-env"
+last_stack_registry_paths_init
+
+ROUTINES_HOME="${ROUTINES_HOME:-$HOME/.routines}"
+REGISTRY_DIR="$ROUTINES_HOME/registry"
+PROMPT_PATH="$(last_stack_registry_prompt_path lastdb-nightly-primary-upgrade.md "$ROOT/routines/lastdb-nightly-primary-upgrade.md")"
+ID="lastdb-nightly-primary-upgrade"
+DRY_RUN=0
+FORCE_DEFAULTS=0
+state_root="${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/lastdb-nightly-primary-upgrade"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --registry-dir) REGISTRY_DIR="$2"; shift 2 ;;
+    --prompt-path) PROMPT_PATH="$2"; shift 2 ;;
+    --id) ID="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --force-defaults) FORCE_DEFAULTS=1; shift ;;
+    -h|--help) echo "last-stack-lastdb-nightly-primary-upgrade-routine [--dry-run] [--force-defaults]"; exit 0 ;;
+    *) echo "unknown: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -r "$PROMPT_PATH" ] || { echo "missing prompt: $PROMPT_PATH" >&2; exit 66; }
+
+if [ "$DRY_RUN" -eq 0 ]; then
+  last_stack_registry_assert_safe_write "$REGISTRY_DIR" "$PROMPT_PATH" "$REG_CWD" \
+    || exit 3
+fi
+
+path="$REGISTRY_DIR/$ID.toml"
+if [ "$DRY_RUN" -eq 0 ] && last_stack_registry_skip_if_exists "$path" "$FORCE_DEFAULTS"; then
+  exit 0
+fi
+
+GATE="${REG_STABLE_ROOT}/bin/last-stack-nightly-primary-upgrade-gate"
+if [ ! -x "$GATE" ]; then
+  GATE="$ROOT/bin/last-stack-nightly-primary-upgrade-gate"
+fi
+if [ -f "$state_root/enabled" ]; then
+  entry_status="active"
+else
+  entry_status="paused"
+fi
+
+body=$(cat <<EOF
+# Nightly GitHub LastDB pair. The gate upgrades the primary only when the
+# nightly source is newer than the running pair. Zero-agent: the gate does
+# the work. Active only on a host with the enabled marker.
+id = "$ID"
+difficulty = "normal"
+effort = "medium"
+group = "ops"
+rrule = "FREQ=DAILY;BYHOUR=9;BYMINUTE=17;BYSECOND=0"
+cwd = "$REG_CWD"
+status = "$entry_status"
+timeout_min = 180
+prompt_path = "$PROMPT_PATH"
+gate_command = "$GATE"
+heartbeat_slug = "routine-heartbeats"
+EOF
+)
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  printf '%s\n' "--- $path"
+  printf '%s\n' "$body"
+  exit 0
+fi
+mkdir -p "$REGISTRY_DIR"
+tmp="$(mktemp "${TMPDIR:-/tmp}/last-stack-nightly-primary.XXXXXX")"
+printf '%s\n' "$body" >"$tmp"
+if [ -f "$path" ] && cmp -s "$tmp" "$path"; then
+  rm -f "$tmp"
+  printf 'unchanged %s\n' "$path"
+else
+  mv "$tmp" "$path"
+  printf 'wrote %s\n' "$path"
+fi

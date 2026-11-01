@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+# Zero-LLM gate for lastdb-nightly-primary-upgrade.
+#
+# Download the GitHub nightly pair for aarch64. Call the safe-upgrade Loom
+# only when that source is a strict descendant of the running primary and an
+# ancestor of origin/main. Do not compile LastDB. Do not retry a red source.
+# Refuse Loom until the installed driver can prove brain and LastSecrets
+# before the live install.
+set -euo pipefail
+
+export PATH="${HOME}/.local/bin:${PATH:-/usr/bin:/bin}"
+
+state_root="${LASTDB_NIGHTLY_PRIMARY_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/lastdb-nightly-primary-upgrade}"
+mirror="${LASTDB_NIGHTLY_FOLD_GIT_DIR:-$HOME/.cache/edgevector-git/lastdb.git}"
+driver="${LASTDB_SAFE_UPGRADE_DRIVER:-$HOME/.last-stack/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh}"
+loom_bin="${LASTDB_NIGHTLY_LOOM:-last-stack-safe-upgrade-loom}"
+primary_bin="${LASTDB_NIGHTLY_PRIMARY_BIN:-$HOME/.lastdb/current/lastdbd}"
+repo="EdgeVector/lastdb"
+target="aarch64-apple-darwin"
+lock_held=0
+
+usage() {
+  printf '%s\n' 'last-stack-nightly-primary-upgrade-gate'
+  printf '%s\n' 'Compare the GitHub nightly pair with the primary. Upgrade only a newer main commit.'
+}
+
+result() {
+  printf 'NIGHTLY_PRIMARY outcome=%s detail=%s\n' "$1" "$2"
+  printf 'ROUTINE_RESULT outcome=%s detail=%s\n' "$1" "$2"
+  exit "$3"
+}
+
+release_lock() {
+  if [ "$lock_held" -eq 1 ]; then
+    rm -f "$state_root/lock/pid"
+    rmdir "$state_root/lock" 2>/dev/null || true
+    lock_held=0
+  fi
+}
+trap release_lock EXIT
+
+take_lock() {
+  local old
+  mkdir -p "$state_root"
+  chmod 700 "$state_root"
+  if mkdir "$state_root/lock" 2>/dev/null; then
+    printf '%s\n' "$$" >"$state_root/lock/pid"
+    lock_held=1
+    return 0
+  fi
+  old="$(cat "$state_root/lock/pid" 2>/dev/null || true)"
+  if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then
+    result noop lock-held 0
+  fi
+  rm -f "$state_root/lock/pid"
+  rmdir "$state_root/lock" 2>/dev/null || result error lock-stuck 1
+  mkdir "$state_root/lock"
+  printf '%s\n' "$$" >"$state_root/lock/pid"
+  lock_held=1
+}
+
+full_oid() {
+  printf '%s\n' "$1" | grep -Eq '^[0-9a-f]{40}$'
+}
+
+sum_of() {
+  local name="$1" sums="$2" line
+  line="$(grep -E "^[0-9a-f]{64}  ${name}$" "$sums" || true)"
+  printf '%s\n' "${line%% *}"
+}
+
+file_sha() {
+  shasum -a 256 "$1" | awk '{print $1}'
+}
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  usage
+  exit 0
+fi
+if [ "$#" -ne 0 ]; then
+  usage >&2
+  exit 2
+fi
+
+case "$(uname -m)" in
+  arm64|aarch64) ;;
+  *) result error host-not-aarch64 1 ;;
+esac
+
+take_lock
+
+if [ ! -x "$primary_bin" ]; then
+  result error primary-bin-missing 1
+fi
+if [ ! -d "$mirror" ]; then
+  result error mirror-missing 1
+fi
+
+primary_line="$("$primary_bin" --version 2>/dev/null | head -n 1 || true)"
+primary_short="$(printf '%s\n' "$primary_line" | sed -n 's/.*-g\([0-9a-f]\{7,40\}\).*/\1/p')"
+if [ -z "$primary_short" ]; then
+  result error primary-oid-unreadable 1
+fi
+if ! git -C "$mirror" fetch --quiet origin main; then
+  result error mirror-fetch-failed 1
+fi
+if ! primary_full="$(git -C "$mirror" rev-parse --verify "${primary_short}^{commit}")"; then
+  result error primary-oid-unresolved 1
+fi
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/lastdb-nightly-primary.XXXXXX")"
+chmod 700 "$work"
+cleanup_work() {
+  release_lock
+  rm -rf "$work"
+}
+trap cleanup_work EXIT
+
+list="$work/releases.json"
+if ! env -u GH_TOKEN -u GITHUB_TOKEN gh release list --repo "$repo" --limit 40 \
+  --json tagName,publishedAt,isDraft >"$list"; then
+  result error release-list-failed 1
+fi
+tag="$(jq -r '[.[] | select(.isDraft != true and (.tagName | startswith("nightly-")))] | sort_by(.publishedAt) | last | .tagName // empty' "$list")"
+if [ -z "$tag" ]; then
+  result error nightly-tag-missing 1
+fi
+if ! env -u GH_TOKEN -u GITHUB_TOKEN gh release download "$tag" --repo "$repo" \
+  --pattern nightly.json --dir "$work" --clobber; then
+  result error nightly-index-download-failed 1
+fi
+
+index_schema="$(jq -r '.schema // empty' "$work/nightly.json")"
+nightly_oid="$(jq -r '.source_git_oid // empty' "$work/nightly.json")"
+nightly_version="$(jq -r '.version // empty' "$work/nightly.json")"
+if [ "$index_schema" != "lastdb.nightly.release.v1" ] || ! full_oid "$nightly_oid" || [ -z "$nightly_version" ]; then
+  result error nightly-index-invalid 1
+fi
+if ! git -C "$mirror" cat-file -e "${nightly_oid}^{commit}"; then
+  result error nightly-oid-missing 1
+fi
+if ! git -C "$mirror" merge-base --is-ancestor "$nightly_oid" origin/main; then
+  result error nightly-not-on-main 1
+fi
+if [ "$nightly_oid" = "$primary_full" ]; then
+  result noop same-oid 0
+fi
+if git -C "$mirror" merge-base --is-ancestor "$nightly_oid" "$primary_full"; then
+  result noop nightly-not-newer 0
+fi
+if ! git -C "$mirror" merge-base --is-ancestor "$primary_full" "$nightly_oid"; then
+  result error diverged 1
+fi
+if [ -e "$state_root/red/$nightly_oid" ]; then
+  result noop already-red 0
+fi
+if [ ! -f "$driver" ] || ! grep -q 'primary_brain_and_secret_ok' "$driver"; then
+  result error driver-marker-missing 1
+fi
+
+live_file="${LASTDB_LIVE_READ_FILE:-$state_root/live-read.env}"
+if [ -L "$live_file" ] || [ ! -f "$live_file" ]; then
+  result error live-read-file-missing 1
+fi
+if [ "$(stat -f '%u' "$live_file")" != "$(id -u)" ] || [ "$(stat -f '%Lp' "$live_file")" != "600" ]; then
+  result error live-read-file-unsafe 1
+fi
+
+bundle="lastdb-${target}.tar.gz"
+manifest_name="lastdb-${target}.manifest.json"
+if ! env -u GH_TOKEN -u GITHUB_TOKEN gh release download "$tag" --repo "$repo" \
+  --pattern "$bundle" --pattern "$manifest_name" --pattern SHA256SUMS.txt \
+  --dir "$work" --clobber; then
+  result error asset-download-failed 1
+fi
+
+sums="$work/SHA256SUMS.txt"
+for name in nightly.json "$manifest_name" "$bundle"; do
+  want="$(sum_of "$name" "$sums")"
+  got="$(file_sha "$work/$name")"
+  if [ -z "$want" ] || [ "$want" != "$got" ]; then
+    result error checksum-mismatch 1
+  fi
+done
+
+manifest_oid="$(jq -r '.source_git_oid // empty' "$work/$manifest_name")"
+manifest_version="$(jq -r '.version // empty' "$work/$manifest_name")"
+manifest_sha="$(jq -r '.artifact.sha256 // empty' "$work/$manifest_name")"
+manifest_schema="$(jq -r '.schema // empty' "$work/$manifest_name")"
+manifest_target="$(jq -r '.target // empty' "$work/$manifest_name")"
+if [ "$manifest_schema" != "lastdb.mini.bundle.v1" ] \
+  || [ "$manifest_target" != "$target" ] \
+  || [ "$manifest_oid" != "$nightly_oid" ] \
+  || [ "$manifest_version" != "$nightly_version" ] \
+  || [ "$manifest_sha" != "$(file_sha "$work/$bundle")" ]; then
+  result error manifest-mismatch 1
+fi
+
+pair="$work/pair"
+mkdir -p "$pair"
+if ! tar -xzf "$work/$bundle" -C "$pair"; then
+  result error extract-failed 1
+fi
+members="$(find "$pair" -type f -print | sed "s|^$pair/||" | sort)"
+if [ "$members" != $'lastdb\nlastdbd' ]; then
+  result error archive-members 1
+fi
+
+bin_ok=0
+while IFS= read -r name; do
+  [ -n "$name" ] || continue
+  want="$(jq -r --arg n "$name" '.binaries[] | select(.name==$n) | .sha256' "$work/$manifest_name")"
+  want_ver="$(jq -r --arg n "$name" '.binaries[] | select(.name==$n) | .version' "$work/$manifest_name")"
+  got="$(file_sha "$pair/$name")"
+  got_ver="$("$pair/$name" --version 2>/dev/null | awk '{print $NF}')"
+  if [ "$want" != "$got" ] || [ "$want_ver" != "$nightly_version" ] || [ "$got_ver" != "$nightly_version" ]; then
+    result error binary-mismatch 1
+  fi
+  bin_ok=$((bin_ok + 1))
+done <<EOF
+lastdb
+lastdbd
+EOF
+if [ "$bin_ok" -ne 2 ]; then
+  result error binary-count 1
+fi
+chmod 755 "$pair/lastdb" "$pair/lastdbd"
+
+set +e
+"$loom_bin" --candidate "$pair/lastdbd" --source-git-oid "$nightly_oid"
+loom_rc=$?
+set -e
+if [ "$loom_rc" -ne 0 ]; then
+  mkdir -p "$state_root/red"
+  printf 'loom_rc=%s\n' "$loom_rc" >"$state_root/red/$nightly_oid"
+  chmod 600 "$state_root/red/$nightly_oid"
+  result error loom-failed 1
+fi
+result ok "upgraded-${nightly_oid}" 0
