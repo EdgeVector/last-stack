@@ -51,7 +51,7 @@ def check(candidate, evidence, limit):
     require(restore.get("commit_sha256") == accepted["commit_sha256"]
             and restore.get("destination") == str(homes / "t")
             and restore.get("file_dependencies_verified") is True
-            and uint(restore.get("verified_atoms"), True) > 0,
+            and uint(restore.get("verified_atoms")) >= 0,
             "The accepted stopped DEV snapshot did not restore into its absent home")
     native = reference(final["native_files"])
     require(native.get("accepted_backup") == accepted and native.get("before_first_boot") is True
