@@ -26,5 +26,6 @@ Rules:
 7. An error leaves the primary on its current pair unless the gate detail is loom-failed.
 8. Do not retry a red source. The gate records that source.
 9. A format 7 primary with automatic V2 backup uses the driver's format 7 V2 route.
-10. The detail format7-v2-dev-proof-clearance-needed is not a red source.
-    The V2 route has no DEV restore proof yet. Tom sets LASTDB_PROBE_DEV_STAMP_SKIP=1 to clear it.
+10. The V2 route runs the V2 DEV restore proof before the live cutover.
+    The detail driver-format7-v2-dev-proof-missing is not a red source.
+    It means the installed driver is older than that proof. Refresh the last-stack install.

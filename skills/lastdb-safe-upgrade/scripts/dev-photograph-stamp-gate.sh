@@ -610,14 +610,313 @@ write_dev_stamp_receipt_v4() {
   fi
 }
 
+# --- Receipt v5: format 7 V2 DEV restore proof --------------------------------
+# A format 7 home has no V1 photograph. dev-v2-restore-proof.sh backs up a clone
+# of the trial home to DEV with `backup-v2` and restores that exact commit into
+# a source-free home. Same receipt root and exact path as v4: one Loom execution
+# has one route, so it has one receipt. A v4 receipt never satisfies this gate.
+LASTDB_DEV_V2_RECEIPT_VERSION="5"
+LASTDB_DEV_V2_PROOF_KIND="format7-v2-dev-restore"
+_DEV_V2_UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+
+_dev_v2_required_keys() {
+  cat <<'EOF'
+receipt_version
+verdict
+proof_kind
+loom_execution_id
+source_git_oid
+lastdbd_path
+lastdb_path
+lastdbd_sha256
+lastdb_sha256
+lastdbd_version
+lastdb_version
+api_url
+environment
+home
+primary_home
+clone_source
+user_hash
+source_home
+stream_id
+account_generation
+commit_id
+commit_sha256
+backup_kind
+restore_commit_sha256
+restore_native_files
+restore_native_bytes
+restore_known_keys
+restore_report_sha256
+restore_file_dependencies_verified
+restore_cloud_off
+restore_identity_matches
+source_strict_stop
+restored_strict_stop
+identity_preserved
+seed_cloud_state_absent
+committed_at
+committed_epoch
+cloud_cleanup
+EOF
+}
+
+_dev_v2_flag_keys() {
+  printf '%s\n' restore_file_dependencies_verified restore_cloud_off \
+    restore_identity_matches source_strict_stop restored_strict_stop \
+    identity_preserved seed_cloud_state_absent
+}
+
+_dev_v2_matches() {
+  printf '%s' "$1" | grep -Eq "$2"
+}
+
+# Validate one v5 receipt. Like v4, a failure prints a fixed RED reason and no
+# receipt value: a path or a cloud identifier must not reach a shared log.
+assert_dev_v2_restore_stamp_ok() {
+  local receipt="${1:-$(dev_stamp_receipt_path)}"
+  local primary="${2:-${LASTDB_HOME:-$HOME/.lastdb}}"
+  local clone_source="${3:-${LASTDB_SAFE_UPGRADE_EXPECTED_CLONE_SOURCE:-}}"
+  local failed=0 line key value expected required_keys
+  local home phome stored_clone real_clone user_hash commit_sha256 native_files native_bytes known_keys
+  local evidence evidence_sha256 evidence_bytes receipt_api_url
+
+  if [ ! -f "$receipt" ] || [ -L "$receipt" ]; then
+    printf 'RED: exact-candidate V2 DEV restore receipt is absent or unsafe\n'
+    return 1
+  fi
+  [ "$(_dev_stamp_file_mode "$receipt" || true)" = "600" ] \
+    || { printf 'RED: V2 DEV restore receipt mode is not 600\n'; failed=1; }
+  [ "$(_dev_stamp_file_owner "$receipt" || true)" = "$(id -u)" ] \
+    || { printf 'RED: V2 DEV restore receipt has another owner\n'; failed=1; }
+  dev_stamp_expected_binding_is_complete || failed=1
+
+  required_keys="$(_dev_v2_required_keys)"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      [A-Za-z_][A-Za-z0-9_]*=*) key="${line%%=*}" ;;
+      *) printf 'RED: V2 DEV restore receipt has an invalid line\n'; failed=1; continue ;;
+    esac
+    printf '%s\n' "$required_keys" | grep -qx "$key" \
+      || { printf 'RED: V2 DEV restore receipt has an unknown key\n'; failed=1; }
+  done <"$receipt"
+  while IFS= read -r key; do
+    [ -n "$(dev_stamp_receipt_get "$receipt" "$key" || true)" ] \
+      || { printf 'RED: V2 DEV restore receipt has a missing or duplicate required key\n'; failed=1; }
+  done <<EOF
+$required_keys
+EOF
+
+  [ "$(dev_stamp_receipt_get "$receipt" receipt_version || true)" = "$LASTDB_DEV_V2_RECEIPT_VERSION" ] \
+    || { printf 'RED: V2 DEV restore receipt version is not 5\n'; failed=1; }
+  [ "$(dev_stamp_receipt_get "$receipt" verdict || true)" = "GREEN" ] \
+    || { printf 'RED: V2 DEV restore receipt verdict is not GREEN\n'; failed=1; }
+  [ "$(dev_stamp_receipt_get "$receipt" proof_kind || true)" = "$LASTDB_DEV_V2_PROOF_KIND" ] \
+    || { printf 'RED: V2 DEV restore receipt is another proof kind\n'; failed=1; }
+  [ "$(dev_stamp_receipt_get "$receipt" loom_execution_id || true)" = "${LOOM_EXEC_ID:-}" ] \
+    || { printf 'RED: V2 DEV restore receipt belongs to another Loom execution\n'; failed=1; }
+
+  for key in source_git_oid lastdbd_path lastdb_path lastdbd_sha256 lastdb_sha256 lastdbd_version lastdb_version; do
+    value="$(dev_stamp_receipt_get "$receipt" "$key" || true)"
+    expected="$(_dev_stamp_expected_value "$key" || true)"
+    if [ -z "$expected" ] || [ "$value" != "$expected" ]; then
+      printf 'RED: V2 DEV restore receipt candidate binding does not match Loom\n'
+      failed=1
+    fi
+  done
+  _dev_v2_matches "${LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID:-}" '^[0-9a-f]{40}$' \
+    || { printf 'RED: expected source Git OID is not full length\n'; failed=1; }
+  _dev_v2_matches "${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_SHA256:-}" '^[0-9a-f]{64}$' \
+    && _dev_v2_matches "${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_SHA256:-}" '^[0-9a-f]{64}$' \
+    || { printf 'RED: expected candidate SHA-256 is not full length\n'; failed=1; }
+
+  receipt_api_url="$(dev_stamp_receipt_get "$receipt" api_url || true)"
+  if ! dev_stamp_api_is_dev "$receipt_api_url"; then
+    if dev_stamp_api_is_prod "$receipt_api_url"; then
+      printf 'RED: V2 DEV restore receipt names the PRODUCTION backup API\n'
+    else
+      printf 'RED: V2 DEV restore receipt does not name the exact DEV API\n'
+    fi
+    failed=1
+  fi
+  [ "$(dev_stamp_receipt_get "$receipt" environment || true)" = "dev" ] \
+    || { printf 'RED: V2 DEV restore receipt does not name the DEV environment\n'; failed=1; }
+
+  home="$(dev_stamp_receipt_get "$receipt" home || true)"
+  phome="$(dev_stamp_receipt_get "$receipt" primary_home || true)"
+  [ "$phome" = "$(_dev_stamp_real_maybe_absent "$primary")" ] \
+    || { printf 'RED: V2 DEV restore receipt names another primary home\n'; failed=1; }
+  _dev_stamp_paths_do_not_overlap "$home" "$phome" \
+    || { printf 'RED: V2 DEV restore home overlaps the live primary\n'; failed=1; }
+  stored_clone="$(dev_stamp_receipt_get "$receipt" clone_source || true)"
+  real_clone=""
+  if [ -n "$clone_source" ] && [ -d "$clone_source" ] && [ ! -L "$clone_source" ]; then
+    real_clone="$(_dev_stamp_real_dir "$clone_source" || true)"
+  fi
+  if [ -z "$real_clone" ] || [ "$stored_clone" != "$real_clone" ] \
+      || [ ! -d "$real_clone/data" ] || [ -L "$real_clone/data" ] \
+      || [ ! -f "$real_clone/.safe-upgrade/complete" ] \
+      || [ -L "$real_clone/.safe-upgrade/complete" ] \
+      || ! grep -qx 'kind=trial' "$real_clone/.safe-upgrade/complete" \
+      || ! _dev_stamp_paths_do_not_overlap "$real_clone" "$phome"; then
+    printf 'RED: V2 DEV restore receipt does not name this run\047s fresh trial copy\n'
+    failed=1
+  fi
+
+  user_hash="$(dev_stamp_receipt_get "$receipt" user_hash || true)"
+  _dev_v2_matches "$user_hash" '^[0-9a-f]{32}$' \
+    || { printf 'RED: V2 DEV restore user hash is invalid\n'; failed=1; }
+  for key in source_home stream_id commit_id; do
+    _dev_v2_matches "$(dev_stamp_receipt_get "$receipt" "$key" || true)" "$_DEV_V2_UUID_RE" \
+      || { printf 'RED: V2 DEV restore receipt has an invalid backup identifier\n'; failed=1; }
+  done
+  _dev_v2_matches "$(dev_stamp_receipt_get "$receipt" account_generation || true)" '^[0-9]+$' \
+    || { printf 'RED: V2 DEV restore account generation is invalid\n'; failed=1; }
+  [ "$(dev_stamp_receipt_get "$receipt" backup_kind || true)" = "snapshot" ] \
+    || { printf 'RED: V2 DEV restore backup is not a snapshot\n'; failed=1; }
+  commit_sha256="$(dev_stamp_receipt_get "$receipt" commit_sha256 || true)"
+  _dev_v2_matches "$commit_sha256" '^[0-9a-f]{64}$' \
+    || { printf 'RED: V2 DEV restore commit SHA-256 is invalid\n'; failed=1; }
+  [ "$(dev_stamp_receipt_get "$receipt" restore_commit_sha256 || true)" = "$commit_sha256" ] \
+    || { printf 'RED: V2 DEV restore did not restore the published commit\n'; failed=1; }
+  native_files="$(dev_stamp_receipt_get "$receipt" restore_native_files || true)"
+  native_bytes="$(dev_stamp_receipt_get "$receipt" restore_native_bytes || true)"
+  known_keys="$(dev_stamp_receipt_get "$receipt" restore_known_keys || true)"
+  for value in "$native_files" "$native_bytes" "$known_keys"; do
+    _dev_v2_matches "$value" '^[1-9][0-9]*$' \
+      || { printf 'RED: V2 DEV restore count is not positive\n'; failed=1; }
+  done
+  while IFS= read -r key; do
+    [ "$(dev_stamp_receipt_get "$receipt" "$key" || true)" = "true" ] \
+      || { printf 'RED: V2 DEV restore isolation or restore proof is incomplete\n'; failed=1; }
+  done <<EOF
+$(_dev_v2_flag_keys)
+EOF
+  # This release has no V2 delete command. The DEV stream stays.
+  [ "$(dev_stamp_receipt_get "$receipt" cloud_cleanup || true)" = "none" ] \
+    || { printf 'RED: V2 DEV restore cleanup contract is invalid\n'; failed=1; }
+
+  evidence="${receipt}.restore.json"
+  evidence_sha256="$(dev_stamp_receipt_get "$receipt" restore_report_sha256 || true)"
+  _dev_v2_matches "$evidence_sha256" '^[0-9a-f]{64}$' \
+    || { printf 'RED: V2 DEV restore report digest is invalid\n'; failed=1; }
+  if [ ! -f "$evidence" ] || [ -L "$evidence" ] \
+      || [ "$(_dev_stamp_file_mode "$evidence" || true)" != "600" ] \
+      || [ "$(_dev_stamp_file_owner "$evidence" || true)" != "$(id -u)" ]; then
+    printf 'RED: V2 DEV restore report evidence is absent or unsafe\n'
+    failed=1
+  else
+    evidence_bytes="$(wc -c <"$evidence" | tr -d ' ')"
+    case "$evidence_bytes" in ''|*[!0-9]*) evidence_bytes=4097 ;; esac
+    if [ "$evidence_bytes" -gt 4096 ] \
+        || [ "$(dev_stamp_sha256_file "$evidence" || true)" != "$evidence_sha256" ] \
+        || ! jq -e --arg commit "$commit_sha256" --arg files "$native_files" \
+          --arg bytes "$native_bytes" --arg keys "$known_keys" '
+          type == "object"
+          and (keys | sort) == ["cloud_off","commit_sha256","file_dependencies_verified","known_keys","native_bytes","native_files"]
+          and .commit_sha256 == $commit
+          and .file_dependencies_verified == true
+          and .cloud_off == true
+          and (.native_files | tostring) == $files
+          and (.native_bytes | tostring) == $bytes
+          and (.known_keys | tostring) == $keys
+        ' "$evidence" >/dev/null 2>&1; then
+      printf 'RED: V2 DEV restore report evidence differs from the receipt\n'
+      failed=1
+    fi
+  fi
+
+  _dev_stamp_time_is_valid "$(dev_stamp_receipt_get "$receipt" committed_at || true)" \
+    "$(dev_stamp_receipt_get "$receipt" committed_epoch || true)" \
+    || { printf 'RED: V2 DEV restore receipt time is invalid, stale, or in the future\n'; failed=1; }
+  [ "$failed" -eq 0 ]
+}
+
+# Write a v5 receipt from an already validated backup, restore and key read.
+# The candidate fields come only from the Loom environment. The evidence file
+# must already exist beside the receipt. The rename is same-directory.
+write_dev_v2_restore_receipt() {
+  local path="$1" primary_home="$2" proof_home="$3" clone_source="$4" user_hash="$5"
+  local source_home="$6" stream_id="$7" generation="$8" commit_id="$9" commit_sha256="${10}"
+  local native_files="${11}" native_bytes="${12}" known_keys="${13}" evidence_sha256="${14}"
+  local committed_at="${15}" committed_epoch="${16}"
+  local dir base tmp key
+
+  dev_stamp_expected_binding_is_complete >/dev/null || return 1
+  primary_home="$(_dev_stamp_real_maybe_absent "$primary_home")" || return 1
+  proof_home="$(_dev_stamp_real_maybe_absent "$proof_home")" || return 1
+  _dev_stamp_paths_do_not_overlap "$proof_home" "$primary_home" || return 1
+  [ -d "$clone_source/data" ] && [ ! -L "$clone_source" ] \
+    && [ ! -L "$clone_source/data" ] \
+    && [ -f "$clone_source/.safe-upgrade/complete" ] \
+    && [ ! -L "$clone_source/.safe-upgrade/complete" ] \
+    && grep -qx 'kind=trial' "$clone_source/.safe-upgrade/complete" || return 1
+  clone_source="$(_dev_stamp_real_dir "$clone_source")" || return 1
+  _dev_stamp_paths_do_not_overlap "$clone_source" "$primary_home" || return 1
+  [ -f "${path}.restore.json" ] && [ ! -L "${path}.restore.json" ] \
+    && [ "$(dev_stamp_sha256_file "${path}.restore.json" || true)" = "$evidence_sha256" ] \
+    || return 1
+  dir="$(dirname -- "$path")"
+  base="$(basename -- "$path")"
+  mkdir -p "$dir"
+  chmod 700 "$dir" 2>/dev/null || true
+  tmp="$(umask 077; mktemp "$dir/.${base}.tmp.XXXXXX")" || return 1
+  if ! (umask 077; {
+    printf 'receipt_version=%s\n' "$LASTDB_DEV_V2_RECEIPT_VERSION"
+    printf 'verdict=GREEN\n'
+    printf 'proof_kind=%s\n' "$LASTDB_DEV_V2_PROOF_KIND"
+    printf 'loom_execution_id=%s\n' "$LOOM_EXEC_ID"
+    printf 'source_git_oid=%s\n' "$LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID"
+    printf 'lastdbd_path=%s\n' "$LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_PATH"
+    printf 'lastdb_path=%s\n' "$LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_PATH"
+    printf 'lastdbd_sha256=%s\n' "$LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_SHA256"
+    printf 'lastdb_sha256=%s\n' "$LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_SHA256"
+    printf 'lastdbd_version=%s\n' "$LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_VERSION"
+    printf 'lastdb_version=%s\n' "$LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_VERSION"
+    printf 'api_url=%s\n' "$LASTDB_DEV_BACKUP_API_URL_DEFAULT"
+    printf 'environment=dev\n'
+    printf 'home=%s\n' "$proof_home"
+    printf 'primary_home=%s\n' "$primary_home"
+    printf 'clone_source=%s\n' "$clone_source"
+    printf 'user_hash=%s\n' "$user_hash"
+    printf 'source_home=%s\n' "$source_home"
+    printf 'stream_id=%s\n' "$stream_id"
+    printf 'account_generation=%s\n' "$generation"
+    printf 'commit_id=%s\n' "$commit_id"
+    printf 'commit_sha256=%s\n' "$commit_sha256"
+    printf 'backup_kind=snapshot\n'
+    printf 'restore_commit_sha256=%s\n' "$commit_sha256"
+    printf 'restore_native_files=%s\n' "$native_files"
+    printf 'restore_native_bytes=%s\n' "$native_bytes"
+    printf 'restore_known_keys=%s\n' "$known_keys"
+    printf 'restore_report_sha256=%s\n' "$evidence_sha256"
+    _dev_v2_flag_keys | while IFS= read -r key; do printf '%s=true\n' "$key"; done
+    printf 'committed_at=%s\n' "$committed_at"
+    printf 'committed_epoch=%s\n' "$committed_epoch"
+    printf 'cloud_cleanup=none\n'
+  } >"$tmp"; chmod 600 "$tmp"); then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  if ! mv -f -- "$tmp" "$path"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
+
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   set -euo pipefail
   receipt="$(dev_stamp_receipt_path)"
-  if ! assert_dev_photograph_stamp_ok "$receipt"; then
+  check=assert_dev_photograph_stamp_ok
+  if [ "$(dev_stamp_receipt_get "$receipt" receipt_version 2>/dev/null || true)" = "$LASTDB_DEV_V2_RECEIPT_VERSION" ]; then
+    check=assert_dev_v2_restore_stamp_ok
+  fi
+  if ! "$check" "$receipt"; then
     printf 'VERDICT: RED\n'
-    printf 'REASON: exact-candidate DEV photograph proof failed\n'
+    printf 'REASON: exact-candidate DEV proof failed\n'
     exit 1
   fi
   printf 'VERDICT: GREEN\n'
-  printf 'SUMMARY: exact-candidate DEV photograph receipt is valid\n'
+  printf 'SUMMARY: exact-candidate DEV proof receipt is valid\n'
 fi

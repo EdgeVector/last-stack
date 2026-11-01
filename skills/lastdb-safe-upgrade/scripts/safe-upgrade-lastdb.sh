@@ -204,6 +204,17 @@ emit_dev_photograph_failure() {
   printf 'NEXT: fix the candidate, DEV registration, or snapshot CAS path, then start a new bound Loom execution\n'
 }
 
+emit_dev_v2_restore_failure() {
+  local proof_out="${1:-}"
+  if [ -n "$proof_out" ]; then
+    printf '%s\n' "$proof_out"
+  fi
+  printf '\n'
+  printf 'VERDICT: RED\n'
+  printf 'REASON: the exact candidate failed its isolated V2 DEV restore proof; primary remains untouched\n'
+  printf 'NEXT: fix the candidate, the DEV account, or the V2 backup and restore path, then start a new bound Loom execution\n'
+}
+
 if [ "$PROBE_ONLY" -eq 0 ] && [ "$CHECK_DEV_STAMP" -eq 0 ] && [ "$LIVE_READ_CHECK" -eq 0 ]; then
   [ "${LASTDB_SAFE_UPGRADE_VIA_LOOM:-0}" = "1" ] \
     || die "live cutover requires the Loom lastdb-safe-upgrade graph; use last-stack-safe-upgrade-loom --candidate PATH"
@@ -303,6 +314,7 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 # shellcheck source=deadline.sh
 . "$_SCRIPT_DIR/deadline.sh"
 DEV_PHOTOGRAPH_PROOF_SH="$_SCRIPT_DIR/dev-photograph-candidate-proof.sh"
+DEV_V2_RESTORE_PROOF_SH="$_SCRIPT_DIR/dev-v2-restore-proof.sh"
 SYNTH_BUILD_SH="$_SCRIPT_DIR/build-synthetic-home.sh"
 synth_data_mode_valid "$PROBE_DATA" \
   || { echo "unknown --data value: ${PROBE_DATA:-<empty>}. The only mode is synthetic. Tom, 2026-10-12: never copy or run a copy of the primary database." >&2; exit 2; }
@@ -328,10 +340,33 @@ if [ "${CHECK_DEV_STAMP:-0}" -eq 1 ]; then
     echo "REASON: exact candidate binding is absent or changed"
     exit 1
   fi
+  # The receipt kind follows the primary route. A format 7 home needs the V2
+  # DEV restore receipt; a V1 photograph proves nothing about a V2 home.
+  CHECK_ROUTE_STATUS="$(umask 077; mktemp "${TMPDIR:-/tmp}/lastdb-safe-upgrade-route.XXXXXX")" \
+    || die "route status file cannot be created"
+  if ! curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
+      -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+      http://x/api/status >"$CHECK_ROUTE_STATUS" 2>/dev/null; then
+    rm -f -- "$CHECK_ROUTE_STATUS"
+    echo "VERDICT: RED"
+    echo "REASON: primary status unavailable; cannot select the DEV receipt kind"
+    exit 1
+  fi
+  CHECK_ROUTE="legacy"
+  if v2_status_is_format7 "$CHECK_ROUTE_STATUS"; then
+    CHECK_ROUTE="format7-v2"
+  fi
+  rm -f -- "$CHECK_ROUTE_STATUS"
+  echo "ROUTE: $CHECK_ROUTE"
   DEV_STAMP_OUT=""
   set +e
-  DEV_STAMP_OUT="$(assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" \
-    "${LASTDB_SAFE_UPGRADE_EXPECTED_CLONE_SOURCE:-}" 2>&1)"
+  if [ "$CHECK_ROUTE" = "format7-v2" ]; then
+    DEV_STAMP_OUT="$(assert_dev_v2_restore_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" \
+      "${LASTDB_SAFE_UPGRADE_EXPECTED_CLONE_SOURCE:-}" 2>&1)"
+  else
+    DEV_STAMP_OUT="$(assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" \
+      "${LASTDB_SAFE_UPGRADE_EXPECTED_CLONE_SOURCE:-}" 2>&1)"
+  fi
   DEV_STAMP_RC=$?
   set -e
   if [ -n "$DEV_STAMP_OUT" ]; then
@@ -339,11 +374,19 @@ if [ "${CHECK_DEV_STAMP:-0}" -eq 1 ]; then
   fi
   if [ "$DEV_STAMP_RC" -ne 0 ]; then
     echo "VERDICT: RED"
-    echo "REASON: live cutover refused — DEV photograph stamp is missing or RED (ephemeral/CoW + DEV upload + CAS latest required; never live ~/.lastdb; never production backup home)"
+    if [ "$CHECK_ROUTE" = "format7-v2" ]; then
+      echo "REASON: live cutover refused — V2 DEV restore receipt is missing or RED (trial clone + DEV backup-v2 snapshot + source-free restore + known seed keys required; never live ~/.lastdb; never production backup home)"
+    else
+      echo "REASON: live cutover refused — DEV photograph stamp is missing or RED (ephemeral/CoW + DEV upload + CAS latest required; never live ~/.lastdb; never production backup home)"
+    fi
     exit 1
   fi
   echo "VERDICT: GREEN"
-  echo "SUMMARY: DEV photograph stamp receipt is GREEN; live cutover is allowed to proceed (this flag does not install)"
+  if [ "$CHECK_ROUTE" = "format7-v2" ]; then
+    echo "SUMMARY: V2 DEV restore receipt is GREEN; live cutover is allowed to proceed (this flag does not install)"
+  else
+    echo "SUMMARY: DEV photograph stamp receipt is GREEN; live cutover is allowed to proceed (this flag does not install)"
+  fi
   exit 0
 fi
 
@@ -2652,17 +2695,78 @@ log "primary route: $PRIMARY_ROUTE"
 # The exact candidate pair clones that static point, connects its copied identity
 # to compiled DEV, and publishes one photograph. A receipt from another
 # execution, source, path, version, or byte pair cannot authorize this change.
+# The format 7 V2 route runs the V2 DEV restore proof (receipt v5) instead.
 # LASTDB_PROBE_DEV_STAMP_SKIP=1 is Tom clearance only.
 if [ "${LASTDB_PROBE_DEV_STAMP_SKIP:-0}" = "1" ]; then
   warn "DEV photograph stamp SKIPPED (LASTDB_PROBE_DEV_STAMP_SKIP=1) — Tom-clearance only; live cutover will not prove backup-to-DEV"
 elif [ "$PRIMARY_ROUTE" = "format7-v2" ]; then
-  # The photograph helper uses the retired V1 connect, snapshot and restore
-  # commands. The V2 route has no DEV restore proof of its own yet.
-  echo ""
-  echo "VERDICT: RED"
-  echo "REASON: the format 7 V2 route has no exact-candidate DEV restore proof; the V1 photograph helper uses retired commands. The primary is unchanged."
-  echo "NEXT:   Tom approves the cutover without a DEV restore proof by LASTDB_PROBE_DEV_STAMP_SKIP=1 on the Loom run, or a V2 DEV proof is added first"
-  exit 1
+  # The V1 photograph helper uses retired commands and cannot read a V2 home.
+  # The exact pair clones the same trial home, publishes one manual backup-v2
+  # snapshot to DEV, restores that commit into a source-free home, and reads
+  # every known seed key there. The v5 receipt binds this Loom execution.
+  [ -x "$DEV_V2_RESTORE_PROOF_SH" ] \
+    || die "exact-candidate V2 DEV restore proof helper is absent or not executable"
+  BINDING_OUT=""
+  set +e
+  BINDING_OUT="$(assert_candidate_binding_matches_expected \
+    "$CANDIDATE_BIN" "$CANDIDATE_CLI_BIN" \
+    "${LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID:-}" 2>&1)"
+  BINDING_RC=$?
+  set -e
+  [ "$BINDING_RC" -eq 0 ] \
+    || die "candidate pair changed after the normal probe bars; primary remains untouched"
+
+  DEV_STAMP_OUT=""
+  set +e
+  DEV_STAMP_OUT="$(assert_dev_v2_restore_stamp_ok \
+    "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" "$TRIAL_COPY" 2>&1)"
+  DEV_STAMP_RC=$?
+  set -e
+  if [ "$DEV_STAMP_RC" -ne 0 ]; then
+    log "exact-candidate V2 DEV restore: create a fresh isolated proof"
+    DEV_PROOF_OUT=""
+    set +e
+    DEV_PROOF_OUT="$(LASTDB_LAUNCHD_PLIST="$LAUNCHD_PLIST" bash "$DEV_V2_RESTORE_PROOF_SH" \
+      --candidate-lastdbd "$CANDIDATE_BIN" \
+      --candidate-lastdb "$CANDIDATE_CLI_BIN" \
+      --primary-home "$PRIMARY_HOME" \
+      --clone-source "$TRIAL_COPY" \
+      --cli-home "$PROBE_CLI_HOME" \
+      --cards "$SYNTH_CARDS" \
+      --records "$SYNTH_RECORDS" \
+      --receipt "$(dev_stamp_receipt_path)" \
+      --source-git-oid "${LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID:-}" 2>&1)"
+    DEV_PROOF_RC=$?
+    set -e
+    if [ "$DEV_PROOF_RC" -ne 0 ]; then
+      emit_dev_v2_restore_failure "$DEV_PROOF_OUT"
+      exit 1
+    fi
+    while IFS= read -r line; do
+      case "$line" in DEV_V2_RESTORE_SUMMARY:*) log "$line" ;; esac
+    done <<< "$DEV_PROOF_OUT"
+  else
+    log "exact-candidate V2 DEV restore: reuse this execution's fresh receipt"
+  fi
+
+  DEV_STAMP_OUT=""
+  set +e
+  DEV_STAMP_OUT="$(assert_dev_v2_restore_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" "$TRIAL_COPY" 2>&1)"
+  DEV_STAMP_RC=$?
+  set -e
+  if [ -n "$DEV_STAMP_OUT" ]; then
+    while IFS= read -r line; do
+      log "V2 DEV restore stamp $line"
+    done <<< "$DEV_STAMP_OUT"
+  fi
+  if [ "$DEV_STAMP_RC" -ne 0 ]; then
+    echo ""
+    echo "VERDICT: RED"
+    echo "REASON: live cutover refused because this execution lacks a fresh exact-candidate V2 DEV restore receipt"
+    echo "NEXT: start a new bound Loom execution after the V2 DEV proof path is healthy"
+    exit 1
+  fi
+  log "exact-candidate V2 DEV restore GREEN"
 else
   [ -x "$DEV_PHOTOGRAPH_PROOF_SH" ] \
     || die "exact-candidate DEV photograph proof helper is absent or not executable"
@@ -2818,8 +2922,13 @@ log "STEP 3/4: live install + supervisor restart (venue=$VENUE)"
 assert_final_candidate_binding
 
 if [ "${LASTDB_PROBE_DEV_STAMP_SKIP:-0}" != "1" ]; then
-  assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" "$TRIAL_COPY" >/dev/null \
-    || die "exact-candidate DEV photograph receipt changed before the live section"
+  if [ "$PRIMARY_ROUTE" = "format7-v2" ]; then
+    assert_dev_v2_restore_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" "$TRIAL_COPY" >/dev/null \
+      || die "exact-candidate V2 DEV restore receipt changed before the live section"
+  else
+    assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" "$TRIAL_COPY" >/dev/null \
+      || die "exact-candidate DEV photograph receipt changed before the live section"
+  fi
 fi
 
 CUTOVER_T0="$(date +%s)"
