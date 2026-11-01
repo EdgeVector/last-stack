@@ -16,12 +16,15 @@ live_unix_socket_health_pid() {
   # The daemon binds folddb.sock.tmp and renames it to folddb.sock. macOS
   # lsof can retain the old name on the open FD and miss the live path.
   # Read the instance ID from this exact socket. Supervision callers compare
-  # its PID with the launchd job PID.
+  # its PID with the launchd job PID. Any positive integer api_version is a
+  # LastDB node: the field is the node API level (16 on 3108a8958), not a
+  # version of this health shape, so pinning it to 1 refused every current
+  # daemon and stopped the format 7 cutover before the stop (2026-11-01).
   health="$(curl -fsS --max-time 3 --unix-socket "$sock" \
     -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
     http://x/health 2>/dev/null)" || return 1
   instance_id="$(printf '%s\n' "$health" | jq -er \
-    'select(.status == "ok" and .api_version == 1 and (.instance_id | type) == "string") | .instance_id' \
+    'select(.status == "ok" and (.api_version | type) == "number" and .api_version >= 1 and (.instance_id | type) == "string") | .instance_id' \
     2>/dev/null)" || return 1
   case "$instance_id" in
     [1-9]*-[0-9]*) ;;
