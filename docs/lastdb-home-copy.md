@@ -1,6 +1,7 @@
-# LastDB home copy for the protein removal
+# LastDB home copy
 
-This document gives the Brain migration path for the protein removal on the primary LastDB.
+This document gives the Brain and LastSecrets copy path from an old home format to a new one on the primary LastDB.
+The first run (2026-10-30) moved the primary from the shared-value layout to the schema-owned layout.
 On 2026-10-30 the in-place Brain conversion was removed. This home copy is the only Brain migration path.
 The path makes a new home, copies the kept records into it, and then moves the homes.
 
@@ -45,7 +46,6 @@ Source references name the LastDB revision of #803 at 209d4ec0 unless the text s
 - The daemon mints a new identity when `identity.key` is absent (`lastdb_identity/src/lib.rs:57-66`). Prepare the home before the first start.
 - The OLD daemon opens format 4 only. It can never open the new home.
 - Record model move (format 7): since lastdb #929 (main 2cdc5531c) every new home is format 7 (`records=v1`), and the program refuses a format 4, 5, or 6 home. `LASTDB_RECORD_HOME` no longer exists.
-  - A format 7 query reply has an empty `atom_uuid` for each field (decision D7). The helper accepts that on the target only. The source still needs an atom identity for each present field.
   - A format 7 home refuses aggregate writes, content-hash CAS, and an alternate key change of a declared schema (Tom, 2026-11-01). Keep `LASTDB_LOGICAL_CAPTURE` unset on the new home.
   - A format 7 home stores each record as one value of at most 64 KiB (decision D3). Run the census with `--record-max-bytes 65536`. A row whose fields and stamps are larger is a `record-over-cap` issue, and `--apply` skips it. On 2026-10-31 no primary record was over the cap. The LastSecrets `LastSecretIndex` row `__all__` was near it, at about 61,500 bytes.
 
@@ -226,7 +226,7 @@ Exit codes: 0 for success, 2 for a refusal or a copy issue, 3 for a verify diffe
   - A target schema without independent fields (override: `--allow-shared-value-target`, for the synthetic proof only).
 - A record with an issue is not written: an unmapped field, a type error, a value over `--value-max-bytes`, or an alternate key problem.
 - A keyed read refuses an unresolved page, a repeated or foreign record, an incomplete cursor, or a missing listed record.
-- Each present field needs its actual atom metadata. An explicit null remains a value. An absent field stays absent.
+- The helper reads field values only. It does not read per-field metadata. An explicit null remains a value. An absent field stays absent.
 - A complete target digest and complete record coverage are required for an equal result.
 - A DateTime value with no offset is an issue. `--normalize-datetime` repairs date-only and similar values.
 - Plan, copy, and verify print no record value, no file pointer, and no secret. Digests use a random HMAC key.
