@@ -31,9 +31,14 @@ RECORD_FIELDS = {"slug": "knowledge_record_slug", "title": "knowledge_record_tit
                  "updated_at": "knowledge_record_updated_at"}
 
 
-def require(condition):
+def require(condition, what="synthetic seed contract refused"):
     if not condition:
-        raise ValueError("synthetic seed contract refused")
+        raise ValueError(what)
+
+
+def excerpt(raw):
+    """A short single-line excerpt of a node reply. The seed holds no secrets."""
+    return " ".join(raw[:300].decode("utf-8", errors="replace").split())
 
 
 def pairs(items):
@@ -106,9 +111,10 @@ def call(path, route, body):
                      "X-LastDB-Client": "lastdb-safe-upgrade-synthetic", "Connection": "close"})
         reply = conn.getresponse()
         payload = reply.read(CAP + 1)
-        require(reply.status == 200)
+        require(reply.status == 200, "%s returned HTTP %d: %s" % (route, reply.status, excerpt(payload)))
         result = decode(payload)
-        require(type(result) is dict and result.get("ok") is True)
+        require(type(result) is dict and result.get("ok") is True,
+                "%s returned ok=false: %s" % (route, excerpt(payload)))
         return result
     finally:
         conn.close()
@@ -172,7 +178,7 @@ def collect(brain, secrets, cards, records):
         add(secret, (slug, None),
             {"secret_locator_slug": slug, "secret_display_name": "Synthetic secret %d" % n,
              "secret_provider_name": "synthetic", "secret_usage_description": "safe-upgrade probe",
-             "secret_environment_name": "dev", "secret_text_envelope": "synthetic-public-envelope-%d" % n,
+             "secret_environment_name": "dev", "secret_text_envelope": {"value": "synthetic-public-envelope-%d" % n},
              "secret_created_at": STAMP, "secret_updated_at": STAMP})
     return operations, expected
 
@@ -234,8 +240,9 @@ def verify(path, expected):
     reply = call(path, "/api/queries/batch", {"queries": queries})
     require(reply.get("count") == len(queries) and type(reply.get("results")) is list)
     require(len(reply["results"]) == len(queries))
-    for group, item in zip(grouped.values(), reply["results"]):
-        require(type(item) is dict and item.get("status") == 200)
+    for (schema, group), item in zip(grouped.items(), reply["results"]):
+        require(type(item) is dict and item.get("status") == 200,
+                "verify query for %s returned status %r" % (schema, item.get("status") if type(item) is dict else None))
         value = item.get("response")
         require(type(value) is dict and value.get("ok") is True)
         require(type(value.get("unresolved_rows")) is int and value["unresolved_rows"] == 0)
@@ -250,7 +257,8 @@ def verify(path, expected):
             require(key in group["expected"] and key not in seen)
             require(row.get("fields") == group["expected"][key])
             seen.add(key)
-        require(seen == set(group["expected"]))
+        require(seen == set(group["expected"]),
+                "verify query for %s returned %d of %d keys" % (schema, len(seen), len(group["expected"])))
 
 
 def main():
@@ -287,10 +295,15 @@ def main():
     before = metadata(path.lstat())
     if args.mode == "write":
         reply = call(path, "/api/mutations/batch", {"mutations": operations, "convergence": "sync"})
-        require(type(reply.get("count")) is int and reply["count"] == len(operations))
-        require(reply.get("durability") == "durable")
-        require(type(reply.get("operations")) is dict and reply["operations"].get("total") == len(operations))
-        require(reply.get("background_tasks_drained") is True and reply.get("convergence_pending") is False)
+        shape = {k: reply.get(k) for k in ("count", "durability", "background_tasks_drained",
+                                            "convergence_pending")}
+        shape["operations.total"] = (reply.get("operations") or {}).get("total") \
+            if type(reply.get("operations")) is dict else None
+        what = "batch reply for %d mutations: %s" % (len(operations), json.dumps(shape, sort_keys=True))
+        require(type(reply.get("count")) is int and reply["count"] == len(operations), what)
+        require(reply.get("durability") == "durable", what)
+        require(type(reply.get("operations")) is dict and reply["operations"].get("total") == len(operations), what)
+        require(reply.get("background_tasks_drained") is True and reply.get("convergence_pending") is False, what)
     else:
         verify(path, expected)
     require(metadata(path.lstat()) == before)
@@ -301,6 +314,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, TypeError, KeyError, RecursionError, http.client.HTTPException):
-        print("synthetic record batch refused; no automatic retry", file=sys.stderr)
+    except (OSError, ValueError, TypeError, KeyError, RecursionError, http.client.HTTPException) as error:
+        print("synthetic record batch refused: %s: %s; no automatic retry"
+              % (type(error).__name__, str(error)[:400]), file=sys.stderr)
         raise SystemExit(1)

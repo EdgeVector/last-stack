@@ -485,11 +485,14 @@ write_cutover_recovery_state() {
 backup_essentials_ok() {
   local root="$1"
   # These durable files are also required by the DEV proof copy. Storage is
-  # either legacy sled (data/db) or Last Store under data/data/.
+  # legacy sled (data/db), Last Store under data/data/, or a format 7 record
+  # home (data/disk-run and the pack node marker, with no high-water file).
   [ -f "$root/identity.key" ] && [ -f "$root/.bootstrap_done" ] \
-    && [ -f "$root/data/.device_id" ] \
-    && [ -f "$root/laststore_high_water.json" ] \
     && [ -d "$root/data" ] || return 1
+  if [ -d "$root/data/disk-run" ] && [ -f "$root/data/laststore-pack-node-v1" ]; then
+    return 0
+  fi
+  [ -f "$root/data/.device_id" ] && [ -f "$root/laststore_high_water.json" ] || return 1
   [ -e "$root/data/db" ] || [ -d "$root/data/data" ] || [ -d "$root/data/laststore" ]
 }
 
@@ -2363,7 +2366,7 @@ case "$SEED_KEY_RC" in
   3) die "synthetic probe data: cannot identify the installed brain CLI" ;;
   *) die "synthetic probe data: cannot compute the seed key" ;;
 esac
-log "synthetic probe data: seed key $SEED_KEY (baseline $CURRENT_VER, cards=$SYNTH_CARDS records=$SYNTH_RECORDS, root $SEED_ROOT)"
+log "synthetic probe data: seed key $SEED_KEY (baseline $CURRENT_VER, range_rows=$SYNTH_CARDS records=$SYNTH_RECORDS, root $SEED_ROOT)"
 seed_started="$(date +%s)"
 set +e
 SYNTH_SEED_DIR="$(synth_seed_ensure "$SEED_ROOT" "$SEED_KEY" bash "$SYNTH_BUILD_SH" \
@@ -2381,7 +2384,7 @@ fi
 log "synthetic probe data ready after $(( $(date +%s) - seed_started ))s: $SYNTH_SEED_DIR"
 # Keep this exact seed through PROBE and CUTOVER. The operator releases its
 # owned container only after all proof and recovery consumers close.
-PROBE_DATA_LABEL="the synthetic seed ($(synth_meta_value "$SYNTH_SEED_DIR/seed.meta" cards) cards, $(synth_meta_value "$SYNTH_SEED_DIR/seed.meta" records) records)"
+PROBE_DATA_LABEL="the synthetic seed ($(synth_meta_value "$SYNTH_SEED_DIR/seed.meta" range_rows) range rows, $(synth_meta_value "$SYNTH_SEED_DIR/seed.meta" records) brain records, $(synth_meta_value "$SYNTH_SEED_DIR/seed.meta" secrets) LastSecrets locators)"
 log "candidate data: a fresh copy of $PROBE_DATA_LABEL"
 
 # --- 1) trial home from the seed -----------------------------------------------
@@ -2414,6 +2417,12 @@ step1_trial_home() {
   backup_data_is_not_live "$TRIAL_COPY" \
     || trial_clone_red "the synthetic trial home data aliases the live primary"
   for stable in identity.key .bootstrap_done; do
+    # A format 7 primary has no .bootstrap_done. The seed builder writes its own.
+    if [ "$stable" = .bootstrap_done ] && [ ! -e "$PRIMARY_HOME/$stable" ] && [ ! -L "$PRIMARY_HOME/$stable" ]; then
+      [ -f "$TRIAL_COPY/$stable" ] && [ ! -L "$TRIAL_COPY/$stable" ] \
+        || trial_clone_red "the synthetic trial home has a missing or changed identity file"
+      continue
+    fi
     [ ! -L "$TRIAL_COPY/$stable" ] && cmp -s "$PRIMARY_HOME/$stable" "$TRIAL_COPY/$stable" \
       || trial_clone_red "the synthetic trial home has a missing or changed identity file"
   done

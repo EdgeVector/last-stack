@@ -114,6 +114,12 @@ run `last-stack-lastdb-current set --bin-dir <old folder>`, then bootstrap the j
 The driver and `cutover-timeout-recovery.sh` do this from the recovery state.
 The old program folder stays in place.
 
+A format 7 home has `data/disk-run` and `data/laststore-pack-node-v1`. It has no
+`laststore_high_water.json`, `data/.device_id` or `.bootstrap_done`. The trial check accepts
+that layout. The seed builder writes its own `.bootstrap_done`.
+The `secret_text_envelope` field is an object (`{value: String}`). The seed writes it in that form.
+Format 7 status has no file-open counter, so hot latency samples are `nothot`. The cold bars apply.
+
 A Loom execution of the same pair under the old route keeps its key.
 Use `--retry 2` to start a new execution of that pair.
 
