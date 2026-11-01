@@ -155,7 +155,7 @@ Derived records:
 | `BrainBodyFile` | Copied as records. The file bytes go to the target as in Q5. |
 | `__braincompactlocator__` (`BrainCompactListLocator_v1`) | Copied as records through derived keys (below). Brain deletes the legacy locator when it writes the compact one, so a card that moved has only the compact row. |
 
-The compact locator schema has no key field, so no node lists it (`/api/list` says `has no hash_field to list`). Brain addresses each row by a hash of one list card (`src/list-locator.ts`, `compactKey`). The helper reads every source list page, derives the key of each typed card, and reads those keys. A keyword page (`kw#`) holds cards but never a locator, so the helper skips it. The route reports `derived keys: <pages>, <typed cards>, <compact rows>, <legacy rows>, <cards with no locator>`. A card with neither locator is a refusal: it means that the key formula no longer matches Brain. Verify reads the same keys on the target; a target row outside them stays unseen.
+The compact locator schema has no key field, so no node lists it (`/api/list` says `has no hash_field to list`). Brain addresses each row by a hash of one list card (`src/list-locator.ts`, `compactKey`). The helper reads every source list page, derives the key of each typed card, and reads those keys. A keyword page (`kw#`) holds cards but never a locator, so the helper skips it. The route reports `derived keys: <pages>, <typed cards>, <compact rows>, <legacy rows>, <cards with no locator>`. A card with neither locator is a refusal: it means that the key formula no longer matches Brain. The target cannot list the schema either, so the helper walks the target records: an unfiltered `/api/query` of a format 7 home pages by record key (`page_order: "record_key"`, `next_cursor`, at most 1,000 rows per page). The walk sends the admin/offline bulk opt-in `X-LastDB-Allow-Full-Scan: 1` to the target only. A target row that the source no longer derives (for example, a locator that Brain deleted on the source between two copy runs) is an extra key. Verify reports it, and `--delete-extra` deletes it. A target that cannot page the schema with a cursor makes the route a refusal.
 
 Primary census on 2026-10-31 (read-only): 38272 list pages, 33644 typed cards, 115 compact rows, 33582 legacy rows, 0 cards with no locator.
 
@@ -238,6 +238,7 @@ The copy compares each record with the target before a write.
 An equal record is not written. A changed record gets an `update`.
 When the target has a field that the source no longer has, the helper deletes and creates the record.
 `--delete-extra` deletes target keys that the source does not have. It runs before the final listing of the verify.
+It covers the derived compact locator route too: there, the source keys are the rows that the source derives now, and the target keys come from the record walk (Q6).
 
 ### 3.4 Batches and limits
 
