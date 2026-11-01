@@ -994,6 +994,7 @@ Gate before Step 8: the lastdb "Cloud backup recovery" workflow passed on main a
 | Apps | brain#484 and lastsecrets#14, installed in 11c | Brain 59852c3b0 and LastSecrets 9e121eac0, installed on 2026-11-01. Both run on format 6 and format 7 homes, so 11c installs nothing. Step 3 reads the key through this LastSecrets. |
 | Backup | turned off during the work | stays on. Step 12 runs before 11d. |
 | Search | 11e seed of all Brain records | the plist keeps `LASTDB_SEARCH_ENABLED`, and the schema identities stay the same. Run `brain search` after 11d. Run the 11e seed only if search misses records. |
+| Copy tool | walk keys of the target | a format 7 walk of a schema with no hash field names records by opaque tokens (lastdb#971). The tool then reads the expected keys by key and compares the record count. `--delete-extra` cannot remove a surplus record there, so the target home must be fresh. Use the tool with this fix in Steps 6, 9, and 11a. |
 
 The move does not copy these:
 

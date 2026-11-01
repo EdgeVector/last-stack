@@ -689,14 +689,19 @@ def walk_keys(node, name, fields, range_schema, page_size):
     An unfiltered /api/query of a format 7 home walks the records in record key order:
     total_count null, has_more, next_cursor, page_order "record_key", at most 1,000 rows
     per page. The target uses it to name each row it holds, so a derived row that the
-    source no longer derives shows as an extra key."""
+    source no longer derives shows as an extra key.
+
+    Returns (keys, opaque). Since lastdb#971 a walk of a schema with no hash key field
+    cannot decode the blinded key: its pages say key_form "opaque" and each row names
+    its record by a token, not by the API key. Then the keys only count the records;
+    the caller reads the expected keys by key."""
     if node.role != "target":
         raise Refusal(f"{node.role}: only the target walks the records of {short(name)}")
     if not fields:
         raise Refusal(f"{node.role}: {short(name)} has no field to page")
     limit = max(1, min(page_size, LIST_PAGE_MAX, 5000 // (1 + 2 * len(fields))))
     request = {"schema_name": name, "fields": list(fields), "limit": limit}
-    keys, seen_cursors = [], set()
+    keys, seen_cursors, opaque = [], set(), False
     for _ in range(1_000_000 // limit + 2):
         # The node refuses an unfiltered read without this admin/offline bulk opt-in.
         data = node.post("/api/query", request, WALK_HEADERS)
@@ -704,6 +709,10 @@ def walk_keys(node, name, fields, range_schema, page_size):
         if (not isinstance(results, list) or data.get("unresolved_rows") != 0
                 or not isinstance(data.get("has_more"), bool)):
             raise Refusal(f"{node.role}: an unfiltered page of {short(name)} is incomplete")
+        form = data.get("key_form")
+        if form not in (None, "opaque"):
+            raise Refusal(f"{node.role}: an unfiltered page of {short(name)} has an unknown key form")
+        opaque = opaque or form == "opaque"
         for row in results:
             key = row.get("key") if isinstance(row, dict) else None
             if (not isinstance(key, dict) or not isinstance(key.get("hash"), str)
@@ -721,7 +730,7 @@ def walk_keys(node, name, fields, range_schema, page_size):
         request = dict(request, cursor=cursor)
     else:
         raise Refusal(f"{node.role}: the unfiltered pages of {short(name)} exceeded the page limit")
-    return list(dict.fromkeys(keys))
+    return list(dict.fromkeys(keys)), opaque
 
 
 def read_rows(node, name, fields, keys, range_schema, batch, allow_missing=False, key_fields=()):
@@ -1173,9 +1182,10 @@ def run_route(ctx, route, mode, pre):
         tgt_range = is_range_schema(tgt_entry) if tgt_entry else range_schema
         written = skipped = empty = pointers = 0
         source_digests, target_digests = {}, {}
-        target_keys = set()
+        target_keys, target_opaque = set(), False
         if tgt_entry is not None and mode in ("apply", "verify"):
-            target_keys = set(target_key_list(ctx, route, target_name, tgt_range, target_fields))
+            listed, target_opaque = target_key_list(ctx, route, target_name, tgt_range, target_fields)
+            target_keys = set(listed)
             result["target_keys_before"] = len(target_keys)
         if mode == "apply" and result["refusals"]:
             return result
@@ -1184,10 +1194,11 @@ def run_route(ctx, route, mode, pre):
             rows = read_rows(ctx.src, src_entry["name"], source_fields, part, range_schema, args.read_batch)
             have = {}
             if tgt_entry is not None and mode == "apply":
-                present = [k for k in part if k in target_keys]
+                # An opaque walk names no key, so read the whole part by key.
+                present = list(part) if target_opaque else [k for k in part if k in target_keys]
                 if present:
                     have = read_rows(ctx.tgt, target_name, sorted(target_fields or []), present, tgt_range,
-                                     args.read_batch)
+                                     args.read_batch, allow_missing=target_opaque)
             to_write, recreate = [], []
             for key in part:
                 values = rows.get(key)
@@ -1240,10 +1251,11 @@ def run_route(ctx, route, mode, pre):
 
 def target_key_list(ctx, route, target_name, tgt_range, target_fields):
     """The stored target keys of a route. A derived route has no listable key, so it walks
-    the target records; a target row that the source no longer derives is then an extra key."""
+    the target records; a target row that the source no longer derives is then an extra key.
+    Returns (keys, opaque) as walk_keys does."""
     if route.get("derive_from"):
         return walk_keys(ctx.tgt, target_name, sorted(target_fields or []), tgt_range, ctx.args.page_size)
-    return list_keys(ctx.tgt, target_name, ctx.args.page_size, tgt_range)
+    return list_keys(ctx.tgt, target_name, ctx.args.page_size, tgt_range), False
 
 
 def digest_of(ctx, digests):
@@ -1256,22 +1268,39 @@ def verify_route(ctx, route, selected, source_digests, target_fields, tgt_range)
     args = ctx.args
     target_name = route["target"]["name"]
     expected = set(source_digests)
-    target_keys = target_key_list(ctx, route, target_name, tgt_range, target_fields)
+    target_keys, opaque = target_key_list(ctx, route, target_name, tgt_range, target_fields)
     deleted = 0
-    # A derived route deletes too: its expected keys are the rows the source derives now.
-    if args.mode == "apply" and args.delete_extra:
-        stale = sorted(set(target_keys) - expected)
-        if stale:
-            write_batches(ctx, route, [mutation(target_name, k, "delete", {}) for k in stale])
-            deleted = len(stale)
-            target_keys = target_key_list(ctx, route, target_name, tgt_range, target_fields)
-    found = set(target_keys)
-    rows = read_rows(ctx.tgt, target_name, sorted(target_fields or []), [k for k in target_keys if k in expected],
-                     tgt_range, args.read_batch)
+    if opaque:
+        # The walk names records by tokens (lastdb#971), so only its count is usable.
+        # Read the expected keys by key; a surplus count is a row this run cannot name.
+        rows = read_rows(ctx.tgt, target_name, sorted(target_fields or []),
+                         sorted(expected, key=lambda k: (k[0], k[1] or "")), tgt_range, args.read_batch,
+                         allow_missing=True)
+        found = set(rows)
+        surplus = len(target_keys) - len(found)
+        if surplus < 0:
+            raise Refusal(f"target: the walk of {short(target_name)} counts fewer records than its keyed reads find")
+        if surplus and args.mode == "apply" and args.delete_extra:
+            raise Refusal(f"target: {short(target_name)} holds {surplus} records that the source no longer "
+                          "derives; a format 7 walk cannot name them, so --delete-extra cannot remove them. "
+                          "Copy into a fresh target home")
+        extra, extra_count = [], surplus
+    else:
+        # A derived route deletes too: its expected keys are the rows the source derives now.
+        if args.mode == "apply" and args.delete_extra:
+            stale = sorted(set(target_keys) - expected)
+            if stale:
+                write_batches(ctx, route, [mutation(target_name, k, "delete", {}) for k in stale])
+                deleted = len(stale)
+                target_keys, _ = target_key_list(ctx, route, target_name, tgt_range, target_fields)
+        found = set(target_keys)
+        rows = read_rows(ctx.tgt, target_name, sorted(target_fields or []),
+                         [k for k in target_keys if k in expected], tgt_range, args.read_batch)
+        extra = sorted(found - expected)
+        extra_count = len(extra)
     target_digests = {k: ctx.digest(k, v) for k, v in rows.items()}
     differ = sorted(k for k in expected & set(target_digests) if target_digests[k] != source_digests[k])
     missing = sorted(expected - found)
-    extra = sorted(found - expected)
     file_checks = file_bad = 0
     for values in rows.values():
         found_pointers = []
@@ -1285,16 +1314,20 @@ def verify_route(ctx, route, selected, source_digests, target_fields, tgt_range)
     spot = spot_reads(ctx, route, sorted(expected & found), target_fields, tgt_range)
     digest_equal = (set(target_digests) == expected
                     and digest_of(ctx, source_digests) == digest_of(ctx, target_digests))
-    same = not differ and not missing and not extra and not file_bad and spot["mismatch"] == 0 and digest_equal
+    same = not differ and not missing and not extra_count and not file_bad and spot["mismatch"] == 0 and digest_equal
     shown = (lambda keys: [] if route["secret"] else [k[0] if k[1] is None else f"{k[0]}|{k[1]}" for k in keys[:10]])
-    out = {"equal": same, "source_records": len(expected), "target_records": len(found),
-           "missing": len(missing), "extra": len(extra), "different": len(differ),
+    out = {"equal": same, "source_records": len(expected),
+           "target_records": len(target_keys) if opaque else len(found),
+           "missing": len(missing), "extra": extra_count, "different": len(differ),
            "file_checks": file_checks, "file_mismatch": file_bad, "spot_reads": spot,
            "digest": "withheld" if route["secret"] else digest_of(ctx, source_digests)[:16],
            "target_digest_equal": digest_equal}
     if deleted:
         out["extra_deleted"] = deleted
-    if route.get("derive_from"):
+    if opaque:
+        out["extra_check"] = ("record count of the target walk; the walk names these records by opaque "
+                              "tokens (lastdb#971), so the expected keys were read by key")
+    elif route.get("derive_from"):
         out["extra_check"] = "unfiltered record walk of the target; the schema has no listable key"
     if not same:
         out.update({"missing_keys": shown(missing), "extra_keys": shown(extra), "different_keys": shown(differ)})
