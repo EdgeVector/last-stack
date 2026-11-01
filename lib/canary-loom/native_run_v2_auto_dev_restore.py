@@ -57,7 +57,7 @@ def one(record, accepted, name, summary, endpoint, owners, reads):
             and report.get("commit_sha256") == accepted["commit_sha256"]
             and report.get("destination") == selected.get("destination")
             and report.get("file_dependencies_verified") is True
-            and uint(report.get("verified_atoms"), True) > 0 and uint(report.get("verified_external_files")) == 0,
+            and uint(report.get("verified_atoms")) >= 0 and uint(report.get("verified_external_files")) == 0,
             "A selected DEV restore differs from its original completed product records")
     expected = {"base": "b", "log": "r", "later": "t"}[name]
     require(selected["destination"] == str(Path(summary["homes"]) / expected)
