@@ -22,6 +22,25 @@ Describe a change in this order:
 3. The result.
 4. The next action.
 
+## Warm set rules
+
+Tom set these rules on 2026-10-02. A byte limit replaced the record count (Tom, 2026-10-30).
+One record became the unit with the record model (decision D2, Tom, 2026-10-31).
+
+- The warm set keeps a record that a call fetched.
+- A warm set entry is one record at one key.
+- A fetch brings the full record. It does not bring other keys.
+- The warm set has a byte limit. The default byte limit is 256 MiB. There is no record count limit.
+- When the warm set is over the byte limit, the purge removes the least recently used records.
+- A new fetch marks that record as most recent.
+- The purge skips a record that a call still holds.
+- A write record enters the warm set only after the flush puts it on disk.
+- A used schema does not bring its other records.
+- An alternate entry does not enter the warm set.
+- A file blob stays outside the warm set.
+- A hash group does not enter the warm set.
+- A storage object does not stay in memory after the fetch.
+
 ## Database words
 
 | Word | Meaning |
@@ -31,25 +50,22 @@ Describe a change in this order:
 | Dynamo DB | The name Tom uses for the lookup model. You find a record by a key. |
 | scan | A read with no key. LastDB has no scan. |
 | schema | A schema names its fields, primary key, and named alternate keys. |
-| field | One named part of a schema. |
+| field | One named part of a schema. A record holds one value for each field. |
 | canonical field | One field identity. The same name with a different description is a different field. |
-| field reuse | Different schemas reuse one canonical field definition. Each schema owns its record values. |
 | schema service | The service that stores the definitive schema names. Get schema names from schema service. |
-| molecule | The keys for one field in one schema and one key layout. A molecule uses a hash, or a hash plus a range. |
-| index | Say molecule. |
 | hash | The first part of a key. |
 | range | The second part of a key. A range orders records under one hash. |
 | key | The value that finds a record. A key is a hash, or a hash plus a range. |
-| primary key | The key that identifies a record for a mutation. |
-| alternate key | A named key on one schema. It finds the same record through fields declared in that schema. |
-| multi-key schema | One schema with a primary key and named alternate keys. |
-| molecule key | One key in one molecule. |
-| atom | The data for one field at one key. An atom points at a file. |
-| tip | The current atom for one key. |
+| record | The fields of one schema at one primary key. LastDB stores the record as one value. |
+| stamp | The write time, logical counter, device, and mutation of one field value. |
+| field merge | The rule for two writes to one record. For each field, the newer stamp wins. |
+| record cap | The maximum size of one record: 64 KiB. Put a large field in a file blob. |
+| record metadata | The source file name and metadata of one record. A record has one metadata block. |
+| alternate entry | The stored link from one alternate key to one primary key. It holds no copy of the record. |
+| field history | Copies of old values of one field. A field policy keeps them. History is off by default. |
+| conflict record | The losing value of one field when two devices write it. LastDB keeps it for 30 days. |
 | file | The bytes on disk. |
-| file blob | A large file. An atom points at the file blob. |
-| record | The fields for one key. |
-| logical record | One path through one schema, one field, and one molecule to one atom. |
+| file blob | A large file. A record names the file blob. |
 | pointer | A link from one object to another object. |
 | tombstone | A deleted record that still appears. |
 | database | A named set of schemas on one node. |
@@ -64,26 +80,26 @@ Describe a change in this order:
 | LastSeek | The search store outside LastDB. |
 | query | A read by a key. |
 | read | A read returns data from memory. |
-| write | A write changes data in memory. LastDB then sends an ack. |
-| ack | The signal that the write is correct in memory. |
+| write | A write puts the data on disk first. LastDB then sends an ack. |
+| ack | The signal that the write is on disk. |
 | mutation | One write. |
 | stale | Old data after a new write. |
-| memory | The place that holds the correct data first. |
-| disk | The place that holds the data after the flush. |
+| memory | The place that holds the warm set. A read checks memory first. |
+| disk | The place that holds each write before the ack. |
 | cloud | The place that holds the backup. |
-| flush | The write of a memory record to disk. The flush interval is 500 ms. |
+| flush | The write of a batch to disk before the ack. Writes that arrive together share one flush. There is no flush interval. |
 | cloud sync | The copy of the local database to the cloud. |
 | backup | The cloud copy. |
 | snapshot | One full upload of the current data. |
 | manifest | The list for a backup. |
 | encryption | The protection on the bytes. The disk copy and the cloud copy use the same encryption keys. |
 | encryption key | The key that protects the bytes. |
-| warm set | The logical records in memory. The key budget is 10000. |
-| key budget | The limit of 10000 logical records in the warm set. |
-| fetch | The load of one logical record into the warm set. |
-| purge | The removal of logical records from the warm set. |
+| warm set | The records in memory. A byte limit controls its size. |
+| byte limit | The maximum memory size of the warm set. The default is 256 MiB. |
+| fetch | The load of one record into the warm set. |
+| purge | The removal of records from the warm set. |
 | least recently used | The records the purge removes first. |
-| used | A call used that schema, field, molecule key, or atom. A used schema does not bring the other fields. |
+| used | A call used that schema, record, or alternate entry. A used schema does not bring its other records. |
 | storage object | A hash group, a segment index, or a file handle. A storage object does not stay in memory after the fetch. |
 | hash group | A storage object on disk. A hash group does not enter the warm set. |
 | segment index | A storage object on disk. A segment index does not stay in memory. |
@@ -96,6 +112,10 @@ Describe a change in this order:
 | size | The disk space or the memory space. |
 | cap | A maximum size. |
 | memory guard | The control that acts when memory is too big. |
+| field reuse | Different schemas reuse one canonical field definition. Each schema owns its record values. |
+| primary key | The key that identifies a record for a mutation. |
+| alternate key | A named key on one schema. It finds the same record through fields declared in that schema. |
+| multi-key schema | One schema with a primary key and named alternate keys. |
 
 ## Change words
 
@@ -133,7 +153,7 @@ Describe a change in this order:
 | kanban | The board of cards. |
 | file a card | You create a card. |
 | North Star | The outcome that drives the work. |
-| logical resident set | The name of one North Star. The name means the logical records in memory. |
+| logical resident set | The name of one North Star. The name means the records in memory. |
 | milestone | One step under a North Star. |
 | factory | The process that moves cards to a merged result. |
 | routine | A scheduled job. |
@@ -161,7 +181,7 @@ Describe a change in this order:
 | GitHub | The host for the repos. |
 | LastGit | The one repo that stays on Forgejo. |
 | Forgejo | The host for LastGit. |
-| fold | The LastDB code repo. Do not use fold as a verb. Say: the write updates the related molecules. |
+| fold | The LastDB code repo. Do not use fold as a verb. Say: the write updates the record and its alternate entries. |
 
 ## Unapproved words
 
@@ -179,10 +199,15 @@ Say the approved word.
 | GSI, LSI | alternate key |
 | catalog | schema |
 | primary schema | schema |
-| dual-write | the write updates the related molecules |
-| thin projection | the write updates the related molecules |
-| fold (verb) | the write updates the related molecules |
-| reindex | the write updates the related molecules |
+| molecule, molecule key | key, record, or alternate entry |
+| atom | field value, or record |
+| tip | record |
+| index | alternate key, or key |
+| logical record | record |
+| dual-write | the write updates the record and its alternate entries |
+| thin projection | the write updates the record and its alternate entries |
+| fold (verb) | the write updates the record and its alternate entries |
+| reindex | the write updates the record and its alternate entries |
 | rehydrate | fetch |
 | apply | write |
 | evict | purge |
@@ -194,8 +219,8 @@ Say the approved word.
 | snapshot synchronization | cloud sync, or snapshot |
 | persist | flush, or cloud sync |
 | seal, reseal, AEAD | encryption |
-| content-addressed | the atom points at a file |
-| segment (as the atom target) | file |
+| content-addressed | the record names a file blob |
+| segment | file |
 | shard | file, or say the count of files |
 | overhang | size |
 | order log | use this name only for that object |

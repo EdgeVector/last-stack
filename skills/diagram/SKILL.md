@@ -74,7 +74,7 @@ consistent, never collapse into all-rectangles, legend row when 3+ classes:
 | rectangle | ONLY containers / devices / processes / services — never data | `<rect>` outline |
 | cylinder | database / store / persisted bytes | body `<path>` + `<ellipse>` top lid |
 | cut-corner document | data record / spec / definition sheet | `<polygon>` clipped corner + fold mark |
-| small square | one atomic data unit (atom, log entry) | tiny `<rect>` ~20–34px |
+| small square | one small data unit (field value, log entry) | tiny `<rect>` ~20–34px |
 | diamond | decision / check / human consent gate | 4-point `<polygon>` |
 | hexagon | sealed / encrypted parcel | 6-point `<polygon>`, flat L/R |
 | circle | party / actor / keyholder | `<circle>` |

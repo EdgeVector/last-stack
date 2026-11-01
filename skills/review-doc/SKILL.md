@@ -25,9 +25,9 @@ Ask what would make two copies diverge, or a photograph unrestorable.
 Check at least:
 
 - **Stamp.** Writer in-memory save, not disk / upload / receive time.
-- **Identity.** Same mutation → same atom id and same history key on every
-  device. Key includes enough fields to avoid collision (stamp + writer +
-  atom id, not apply-time `now()`).
+- **Identity.** Same mutation → same mutation ID, same field stamps and same
+  history key on every device. Key includes enough fields to avoid collision
+  (stamp + writer + mutation ID, not apply-time `now()`).
 - **Apply.** Idempotent: second apply of the same key is a no-op, no error,
   no extra history row.
 - **Visible vs shared.** Overlay (unsent local work) is not the photograph.
@@ -35,7 +35,7 @@ Check at least:
   Overlay does not win only because it is local.
 - **Photograph.** Built from the shared list at a named frontier, never from
   one local store. After install, put that device's overlay back.
-- **Byte identity.** After overlays drain, atoms / current pointers / history
+- **Byte identity.** After overlays drain, records / alternate entries / history
   rows match. Indexes may rebuild. Packed files need not match.
 - **Holes.** Clock skew, same-stamp collision, contiguous prefix vs late
   keys from *other* writers, one mutation writing several field history keys.
