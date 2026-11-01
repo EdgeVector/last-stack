@@ -1009,6 +1009,11 @@ host_track_situations_bin() {
 #     this script -- proceeds on an UNREADABLE policy, because requiring a
 #     working policy store in order to install the fix for a broken policy store
 #     is a deadlock. An explicit BLOCK still refuses, for those apps too.
+#   * last-stack also proceeds when the CLI's exit 3 is the missing-schema
+#     read error, not a situation record. The CLI uses exit 3 for both, so
+#     the bootstrap branch above never saw this case. Other apps stay refused:
+#     a situations install would declare schemas this host does not have.
+# A real block prints situation rows and does not contain the fail-closed line.
 HOST_TRACK_SITUATIONS_DEFAULT_OWNER="${HOST_TRACK_SITUATIONS_DEFAULT_OWNER:-EdgeVector}"
 HOST_TRACK_SITUATIONS_BOOTSTRAP_APPS="${HOST_TRACK_SITUATIONS_BOOTSTRAP_APPS:-situations last-stack}"
 refresh_preflight_guard() {
@@ -1031,6 +1036,13 @@ refresh_preflight_guard() {
   set -e
   [ "$rc" -ne 0 ] || return 0
   if [ "$rc" -eq 3 ]; then
+    if [ "$app" = "last-stack" ] \
+      && printf '%s\n' "$out" | grep -q "preflight error (fail closed, exit 3)" \
+      && printf '%s\n' "$out" | grep -q "Schema '" \
+      && printf '%s\n' "$out" | grep -q "not found"; then
+      printf 'host-track: %s Situations schema is missing; proceeding\n' "$app" >&2
+      return 0
+    fi
     printf 'host-track: %s REFUSED: Situations blocks host-track-refresh on %s\n' "$app" "$repo" >&2
     printf '%s\n' "$out" | head -3 | sed 's/^/host-track:   /' >&2
     return 3
