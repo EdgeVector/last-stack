@@ -177,10 +177,12 @@ if [ "$route" = "format7-v2" ]; then
     || ! grep -q 'live_install_programs' "$venue"; then
     result error driver-format7-v2-route-missing 1
   fi
-  # The V1 DEV photograph cannot read a V2 home. The driver refuses the cutover
-  # without Tom's clearance, so stop here. This source is not red.
-  if [ "${LASTDB_PROBE_DEV_STAMP_SKIP:-0}" != "1" ]; then
-    result error format7-v2-dev-proof-clearance-needed 1
+  # The V1 DEV photograph cannot read a V2 home. The installed driver must run
+  # the V2 DEV restore proof instead; an older install refuses the cutover.
+  # This source is not red.
+  if [ ! -f "$(dirname "$driver")/dev-v2-restore-proof.sh" ] \
+    || ! grep -q 'assert_dev_v2_restore_stamp_ok' "$driver"; then
+    result error driver-format7-v2-dev-proof-missing 1
   fi
 fi
 

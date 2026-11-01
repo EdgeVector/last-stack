@@ -85,8 +85,8 @@ The route has these steps:
 1. Probe. The candidate boots on a copy of the synthetic seed.
    The seed holds brain and LastSecrets records. Kanban is off since 2026-10-31.
 2. DEV proof. The V1 DEV photograph cannot read a V2 home.
-   The driver is RED here unless Tom sets `LASTDB_PROBE_DEV_STAMP_SKIP=1` on the run.
-   A V2 DEV restore proof is a follow-up.
+   The driver runs the [V2 DEV restore proof](#v2-dev-restore-proof) instead.
+   `LASTDB_PROBE_DEV_STAMP_SKIP=1` stays a Tom-clearance waiver only.
 3. Pre-live status. The native status must show automatic backup observed, enabled,
    not degraded, and an accepted backup. A legacy waiver is refused.
 4. Stage. The exact pair goes to `~/.lastdb/native-run-v2-programs/<full source oid>/`.
@@ -122,6 +122,35 @@ Format 7 status has no file-open counter, so hot latency samples are `nothot`. T
 
 A Loom execution of the same pair under the old route keeps its key.
 Use `--retry 2` to start a new execution of that pair.
+
+### V2 DEV restore proof
+
+`scripts/dev-v2-restore-proof.sh` is the DEV gate (2c) of the format 7 V2 route.
+It uses the exact candidate pair for every step:
+
+1. Clone this run's trial home. The clone must have no cloud state.
+   Boot the candidate on the clone with V2 backup enabled.
+2. Register a credentials-only DEV device for the seed identity:
+   `lastdb cloud recover-credentials-home --env dev --identity-seed-stdin`.
+3. Connect the clone with `backup-v2 connect --existing --env dev --api-key-stdin`.
+   Publish one manual snapshot with `backup-v2 start`. Stop the clone strictly.
+4. Restore that exact stream, generation and commit with `backup-v2 restore`.
+   The restore home holds only the paused DEV config. There is no source home.
+   `scripts/dev-v2-recovery-phrase.py` pipes the recovery phrase (the BIP39 form of the seed identity).
+5. Require Cloud Off on the restored home. Boot it, read every known seed key in one batch, and stop it strictly.
+6. Write receipt v5 (`proof_kind=format7-v2-dev-restore`) at the same exact receipt path as v4.
+   The receipt binds the Loom execution, the exact pair, the trial home, the DEV commit and the restore evidence.
+
+A v4 photograph receipt never passes the V2 gate. `--check-dev-stamp` reads the
+primary status and checks the receipt kind of that route.
+
+CAUTION: Each proof run adds one DEV backup stream. This release has no V2 delete command.
+
+The seed holds a copy of the primary `identity.key`. The DEV account is that identity in DEV.
+Registration needs no invite while that DEV account exists.
+If DEV loses the account, the proof stops at `dev_register`.
+Then mint one DEV invite (skill `exemem-credentials`, raw code in `ExememInviteCodes-dev`).
+Register once with the candidate CLI and `--invite-code-file <private 600 file>`. Then run the proof again.
 
 ## Ordinary RunV2 maintenance with a current V2 backup
 
@@ -906,8 +935,8 @@ Its gate downloads the GitHub nightly pair. It does not compile LastDB on
 this machine. A forward pair calls `last-stack-safe-upgrade-loom`. The gate
 refuses that call until this driver contains `primary_brain_and_secret_ok`.
 On a format 7 primary with automatic V2 backup, the gate also requires the
-format 7 V2 route in the driver. Without `LASTDB_PROBE_DEV_STAMP_SKIP=1` it stops
-with `format7-v2-dev-proof-clearance-needed` and does not mark the source red.
+format 7 V2 route and the V2 DEV restore proof in the installed driver. An older
+install stops with `driver-format7-v2-dev-proof-missing` and does not mark the source red.
 Do not call the cutover driver except through that Loom launcher.
 `lastdb-canary-candidate-set` stays paused. It compiles LastDB on this machine.
 
@@ -983,7 +1012,7 @@ The script:
 | **0b. Candidate data** | Build or reuse the synthetic seed (baseline writes it); candidate copies come from the trial home. |
 | **2. Candidate check** | Boot the exact candidate on a copy of the synthetic seed. Require schemas, the keyed brain point record, the brain range, a LastSecrets locator, stable primary PID, and memory size below the guard. The driver checks candidate persist status, read latency, and record counts on synthetic seed copies. |
 | Detect venue | programs (format 7 V2), sidebin or brew |
-| **2c. DEV photograph proof** | The exact pair clones the trial copy, scrubs production state, connects the copied identity to DEV, and publishes a snapshot. The exact CLI restores that manifest from DEV into a source-free home. The fresh v3 receipt must match this Loom execution, this run's trial copy, and the retained restore report. |
+| **2c. DEV photograph proof** | The exact pair clones the trial copy, scrubs production state, connects the copied identity to DEV, and publishes a snapshot. The exact CLI restores that manifest from DEV into a source-free home. The fresh v3 receipt must match this Loom execution, this run's trial copy, and the retained restore report. On the format 7 V2 route the exact pair instead publishes a `backup-v2` snapshot of a trial clone to DEV, restores that commit into a source-free home, and reads every known seed key there (receipt v5). |
 | **2d. Meter restart bar** | Read live status before restart. Refuse a `keep_small` plane above 1.5 GiB or a failed persist lane. The 2 GiB cold-group cap can prevent both new and old binaries from booting. |
 | **3. Live** | Refuse brew. For sidebin, write the boot-ledger restart intent. Stage and check both candidate files. Require a current cloud backup. Stop the old daemon without a forced kill. Require its exact flush receipt and clean session. No copy of the primary is made. Then replace the saved binary pair and reload the LaunchAgent job. |
 | **4. Post-check** | Exact installed pair hashes, live `/health`, schemas > 0, the live read mode classified before install (Board title, or one brain record plus one LastSecrets locator), **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **live peak RSS** vs guard, **live point-read latency** vs the candidate's probe numbers (the live range read has no known key and stays unmeasured) (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency in notice |
