@@ -9,8 +9,10 @@ It is one Python file. It uses only the two daemon sockets.
 
 CAUTION: This runbook ran on the primary on 2026-10-31. Section 10 records the state after the run: the upgrade to lastdb main b1076736 and the deletion schedule for the old homes.
 
-CAUTION: Tom permits cloud backup to stay off during this work, and requires it on again after the cutover (Step 12).
+CAUTION: Cloud backup stays on. Never run `cloud backup-v2 disable-automatic` (Tom, 2026-10-31). The old home keeps automatic backup until Step 10 stops its daemon. The new home turns it on in Step 12, before the apps open in 11d.
 The primary cutover also needs separate authorization. This document does not authorize a primary change.
+
+CAUTION: For the record model move (format 6 to format 7), read section 11 first. It lists the values and the order that change.
 
 ## 1. Summary
 
@@ -42,16 +44,16 @@ Source references name the LastDB revision of #803 at 209d4ec0 unless the text s
 - The NEW daemon boots on that home and makes a format 6 store (`alternate-keys=v2`) with the same identity (`run_admission.rs:13-14`).
 - The daemon mints a new identity when `identity.key` is absent (`lastdb_identity/src/lib.rs:57-66`). Prepare the home before the first start.
 - The OLD daemon opens format 4 only. It can never open the new home.
-- Record model move (format 7, lastdb #911 to #920): start the NEW daemon the first time with `LASTDB_RECORD_HOME=1`. It then makes a format 7 store (`records=v1`). The node marker decides every later start, so the variable can stay or go.
+- Record model move (format 7): since lastdb #929 (main 2cdc5531c) every new home is format 7 (`records=v1`), and the program refuses a format 4, 5, or 6 home. `LASTDB_RECORD_HOME` no longer exists.
   - A format 7 query reply has an empty `atom_uuid` for each field (decision D7). The helper accepts that on the target only. The source still needs an atom identity for each present field.
-  - A format 7 home refuses logical capture, share rules, retention policies, imported writes and aggregate writes. Keep `LASTDB_LOGICAL_CAPTURE` unset on the new home.
+  - A format 7 home refuses aggregate writes, content-hash CAS, and an alternate key change of a declared schema (Tom, 2026-11-01). Keep `LASTDB_LOGICAL_CAPTURE` unset on the new home.
   - A format 7 home stores each record as one value of at most 64 KiB (decision D3). Run the census with `--record-max-bytes 65536`. A row whose fields and stamps are larger is a `record-over-cap` issue, and `--apply` skips it. On 2026-10-31 no primary record was over the cap. The LastSecrets `LastSecretIndex` row `__all__` was near it, at about 61,500 bytes.
 
 Backup V2 uses a new stream for the new home.
 
 - The worker uses `data/cloud-byte-backup-v2/stream.json` again only for the same native home id (`worker/stream.rs:41-73`). Each new store gets a random native home id.
 - `backup-v2 connect --existing --env prod --api-key-stdin [--expected-user-hash H]` connects the new home to the same account. It writes `cloud-byte-backup-v2-manual.json` (`connection.rs:20,66-85`).
-- The old stream stays in the cloud. A NEW restore accepts format 4, 5, and 6 backups. An OLD restore accepts format 4 only.
+- The old stream stays in the cloud. Only the program that wrote a stream can restore it: a program from lastdb #929 or later restores format 7 backups only. Keep the old program pair while the old stream exists.
 
 ### Q2. A second daemon on its own socket
 
@@ -580,7 +582,7 @@ If `brain init` reports a `register` resolution or a Schema Service error, B2 is
 ```bash
 A=(--source-home "$OLD" --target-home "$NEW" --brain-release "$BR" --lastsecrets-release "$LR"
    --new-brain-config "$W/staging-config/brain.json" --new-lastsecrets-config "$W/staging-config/lastsecrets.json"
-   --value-max-bytes 524288 --accept-directory-count design=38 --source-owner fbrain --target-owner brain)
+   --value-max-bytes 524288 --record-max-bytes 65536 --accept-directory-count design=38 --source-owner fbrain --target-owner brain)
 python3 "$COPY" "${A[@]}" --census --report "$W/s6-plan.json" > "$W/s6-plan.txt"; echo "rc=$?"
 python3 "$COPY" "${A[@]}" --apply --report "$W/s6-copy.json" > "$W/s6-copy.txt"; echo "rc=$?"
 sed -n '1,45p' "$W/s6-copy.txt"
@@ -610,26 +612,22 @@ LASTSECRETS_CONFIG="$W/staging-config/lastsecrets.json" bun "$LR/src/cli.ts" adm
 
 Check: `get` shows the record. `search` gives slugs. The LastSecrets list count equals the plan (164 on 2026-10-30). No secret value appears.
 
-### Step 8. Freeze: cloud-off check, then a private socket for the old daemon
+### Step 8. Freeze: a last backup, then a private socket for the old daemon
 
-8a. Take one manual V2 backup of the old home (R0). Then check that automatic backup is off on both homes.
+8a. Take one manual V2 backup of the old home (R0). Automatic backup stays on. Do not turn it off on either home.
 
 ```bash
 export R0=$(uuidgen | tr 'A-Z' 'a-z'); echo "$R0" > "$W/R0.request-id"
 "$OLD/current/lastdb" --data-dir "$OLD" cloud backup-v2 start --request-id "$R0" --json > "$W/s8-start-R0.json" 2> "$W/s8-start-R0.err"; echo "rc=$?"
 "$OLD/current/lastdb" --data-dir "$OLD" cloud backup-v2 status --json > "$W/s8-v2-R0.json"
 jq -c '{request_id, phase, running, retained_source_bytes, ordinal: .last_accepted_backup.ordinal, commit: .last_accepted_backup.commit_sha256}' "$W/s8-v2-R0.json"
-"$OLD/current/lastdb" --data-dir "$OLD" cloud backup-v2 disable-automatic --json > "$W/s8-v2-disable.json"
 "$OLD/current/lastdb" --data-dir "$OLD" cloud backup-v2 status --json > "$W/s8-v2-before.json"
-jq -c '{running, phase, auto: .automatic_backup.enabled, pending: .automatic_backup.pending_request_id}' "$W/s8-v2-before.json"
-"$N/lastdb" --data-dir "$NEW" cloud backup-v2 disable-automatic --json > "$W/s8-new-v2-disable.json"
-"$N/lastdb" --data-dir "$NEW" cloud backup-v2 status --json > "$W/s8-new-v2-status.json"
-jq -e '.running == false and .automatic_backup.enabled == false' "$W/s8-v2-before.json" "$W/s8-new-v2-status.json"
+jq -c '{running, phase, auto: .automatic_backup.enabled, head: .mutation_log.head.frontiers, backed: .automatic_backup.last_backed_up_frontiers}' "$W/s8-v2-before.json"
 ```
 
 Check: R0 has `request_id == R0`, `phase=published`, `running=false`, and `retained_source_bytes=0`. Record the ordinal and the commit sha256. If `start` returns before publication, run `cloud backup-v2 resume --json`; do not start a second request. If the old stream refuses the backup, record the error and continue: the rollback home keeps every record.
 
-Check: `running` and `automatic_backup.enabled` are false on both homes. A missing status value is a refusal.
+Check: the old home shows `auto: true`, and `head == backed` after the R0 publication. A missing status value is a refusal. The new home has no backup connection until Step 12.
 
 8b. Stop the old LaunchAgent and hold the memory guard:
 
@@ -664,7 +662,7 @@ Rollback for Step 8: `kill -TERM "$(cat "$W/s8-old-private.pid")"`, then `launch
 ```bash
 F=(--source-socket "$FS/old.sock" --target-home "$NEW" --brain-release "$BR" --lastsecrets-release "$LR"
    --new-brain-config "$W/staging-config/brain.json" --new-lastsecrets-config "$W/staging-config/lastsecrets.json"
-   --value-max-bytes 524288 --accept-directory-count design=38 --source-owner fbrain --target-owner brain)
+   --value-max-bytes 524288 --record-max-bytes 65536 --accept-directory-count design=38 --source-owner fbrain --target-owner brain)
 python3 "$COPY" "${F[@]}" --apply --delete-extra --report "$W/s9-copy.json" > "$W/s9-copy.txt"; echo "rc=$?"
 python3 "$COPY" "${F[@]}" --verify --report "$W/s9-verify.json" > "$W/s9-verify.txt"; echo "rc=$?"
 python3 "$COPY" --source-socket "$FS/old.sock" --brain-release "$BR" --lastsecrets-release "$LR" \
@@ -766,6 +764,8 @@ The Brain install log shows `probe attempt 1/3 failed` for the old version tree.
 
 Until the install, read checks can use the merged release exports: `bun run "$LR/src/cli.ts" list` and the Brain CLI under `$BR`.
 
+CAUTION: Do Step 12 before 11d. App writes start in 11d. On 2026-10-31 Step 12 ran after 11d, so the first app writes on the new home had no backup.
+
 11d. Remove the hold and check the apps:
 
 ```bash
@@ -821,7 +821,7 @@ The LastSeek index keeps the old rows under the old schema identities. Brain doe
 
 ### Step 12. Turn cloud backup on for the new home
 
-Tom requires cloud backup on again after the work. The moved home has a new native home id, so it starts a new stream on the same account. The old stream stays for recovery (B7).
+Run this step after 11c and before 11d. The moved home has a new native home id, so it starts a new stream on the same account. The old stream stays for recovery (B7).
 
 ```bash
 set -o pipefail
@@ -855,10 +855,13 @@ CAUTION: A routine can turn automatic backup off again after Step 12 (B16). Read
 
 On 2026-10-31 at 02:25Z the routine `last-stack-lastdb-batch-apps` found automatic backup on and ran `disable-automatic`. It read the CLAUDE.md / AGENTS.md line "cloud sync is off" (the 2026-10-14 reset notice) as an order. The mutation log stopped. At 05:10Z the operator ran `enable-automatic` again. That gave revision 3, a new snapshot (ordinal 3), and `head == backed`. A restore to a point between 02:25Z and 05:10Z is not possible. The snapshot holds all data up to 05:10Z. A note at the end of `~/.routines/memory/last-stack-lastdb-batch-apps/memory.md` now tells that routine to leave backup on.
 
-Rollback: `lastdb --data-dir "$OLD" cloud backup-v2 disable-automatic --json`.
+Rollback: none. Backup stays on. If the first snapshot does not publish, use section 7.2 and keep the new home for review.
+
+CAUTION: The first snapshot is the first read of every record on the new home by the backup. Keep the section 7.2 rollback ready until `phase=published` and `head == backed`.
 
 ### Step 13. Clean up
 
+- Start this step only after the Step 12 check passes.
 - Remove `$FS` with `rmdir` after both private daemons stop.
 - Keep `$BACK` untouched until its removal date. It is the rollback home. Tom approved its removal on 2026-10-31 (section 10).
 - Keep `$W` and `$X`. They are outside Git.
@@ -888,7 +891,7 @@ rm "$OLD/monitoring/lastdbd-revive.hold"
 ```
 
 Then install the previous Brain and LastSecrets releases with `app-safe-upgrade`.
-Keep cloud sync and automatic cloud backup off after rollback. A later instruction from Tom can change this rule.
+After rollback, read `cloud backup-v2 status --json` on the restored home. Automatic backup must show `enabled: true` (the runbook never turns it off). If it is off, run `enable-automatic` with the Step 12 intervals. Never run `disable-automatic`.
 
 ## 8. Blockers and decisions
 
@@ -971,3 +974,36 @@ Tom approved these on 2026-10-31:
 | Notice text in CLAUDE.md and AGENTS.md | Rewrite (B16) | Done 2026-10-31 |
 
 Two Claude Desktop scheduled tasks carry the dates: `lastdb-old-homes-delete-20261107` and `lastdb-old-backup-stream-delete-20261130`. Each task checks the primary first, asks Tom once, and deletes only exact paths. On 2026-10-31 `lastdb cloud backup-v2` had no command that deletes a stream. The day-30 task does not delete through raw cloud calls; it asks for a product command if none exists.
+
+## 11. Record model move (format 6 to format 7)
+
+Tom, 2026-11-01: use this runbook again with two daemons. The old program serves the old home, and the new program serves the new home. Only the values and the backup order change.
+
+Gate before Step 8: the lastdb "Cloud backup recovery" workflow passed on main at the move build, or at an ancestor with no backup change after it. The step "Run automatic snapshots, mutation logs, restart and both recoveries" must run and pass. That run proves a source-free format 7 restore and a mutation log replay.
+
+| Item | 2026-10-31 run | Format 7 move |
+|---|---|---|
+| New program | e13ca0db pair, API 13 | the signed pair of the final lastdb main (`mini-upgrade-artifact.yml`), API 15 or later |
+| Old program | e13ca0db | the program on the primary at the move. Read `readlink "$OLD/current"` and `/api/version`. |
+| API checks | 13 in Steps 4 and 10, 7 in Step 8c | Steps 4 and 10: the new pair. Steps 8c and 11a: the old pair. |
+| Owner | `--source-owner fbrain --target-owner brain` | no rename. Remove both flags. |
+| Design count | `--accept-directory-count design=38` | the number from the Step 1 census |
+| Folders | NEW `~/.lastdb-v13`, BACK `~/.lastdb-v7-rollback` | new names, for example NEW `~/.lastdb-f7` and BACK `~/.lastdb-f6-rollback`. `~/.lastdb-v7-rollback` stays until its own deletion task runs. |
+| Census | no record cap | `--record-max-bytes 65536` in Steps 1, 6, and 9 |
+| Apps | brain#484 and lastsecrets#14, installed in 11c | Brain 59852c3b0 and LastSecrets 9e121eac0, installed on 2026-11-01. Both run on format 6 and format 7 homes, so 11c installs nothing. Step 3 reads the key through this LastSecrets. |
+| Backup | turned off during the work | stays on. Step 12 runs before 11d. |
+| Search | 11e seed of all Brain records | the plist keeps `LASTDB_SEARCH_ENABLED`, and the schema identities stay the same. Run `brain search` after 11d. Run the 11e seed only if search misses records. |
+
+The move does not copy these:
+
+- Field history (`rh:` records) and the delete ledger.
+- The original write stamps. TTL ages start again at the copy time.
+- Record metadata (`source_file_name` and the metadata map).
+- Tombstones, conflict records, idempotency entries, and the author clock state.
+- File blobs that no record references. Referenced file bytes are copied with new pointers.
+- The old V2 stream. It stays in the cloud. Only the old program pair can restore it.
+
+After Step 12:
+
+- Keep BACK and the old program pair until the first snapshot of the new home shows `phase=published` and `head == backed`.
+- Update the Claude Desktop scheduled tasks `lastdb-old-homes-delete-20261107` and `lastdb-old-backup-stream-delete-20261130`. Name the new BACK folder, the new stream id, and the old format 6 stream. The task must keep the old program pair while the format 6 stream exists.
