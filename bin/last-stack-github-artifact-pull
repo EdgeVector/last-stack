@@ -8,6 +8,8 @@ whose gate_main is a GitHub URL (or by hand), does the work `lastgit artifact
 publish` + `lastgit artifact promote` did after a green LastGit gate:
 
   1. Situations preflight (`artifact-promote`), before any network read.
+     last-stack proceeds when that read is the missing-schema error. A real
+     block still refuses. Other apps stay refused on that error.
   1b. Order: the commit is not an ancestor of, nor on a line divergent from,
      the channel's current head. A backward channel write installs an older
      build while every surface reports success, so it needs --allow-rollback.
@@ -116,7 +118,18 @@ class Gh:
         return r.stdout
 
 
-def situations_preflight(repo):
+def situations_schema_missing(text):
+    """True when exit 3 is the missing-schema read, not a situation record.
+
+    The CLI uses exit 3 for both. A real block prints situation rows and does
+    not contain the fail-closed line.
+    """
+    return ("preflight error (fail closed, exit 3)" in text
+            and "Schema '" in text
+            and "not found" in text)
+
+
+def situations_preflight(repo, app=""):
     exe = os.environ.get("LAST_STACK_SITUATIONS_BIN", "")
     if not exe:
         exe = shutil.which("situations") or ""
@@ -131,7 +144,12 @@ def situations_preflight(repo):
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Fail("situations preflight unreadable (%s); refusing" % exc)
     if r.returncode != 0:
-        raise Fail("situations blocks artifact-promote for %s: %s" % (repo, (r.stdout + r.stderr).strip()[:300]))
+        text = (r.stdout or "") + (r.stderr or "")
+        # last-stack only. A situations install would declare schemas.
+        if app == "last-stack" and situations_schema_missing(text):
+            log("last-stack Situations schema is missing; proceeding")
+            return
+        raise Fail("situations blocks artifact-promote for %s: %s" % (repo, text.strip()[:300]))
 
 
 def channel_oid(root, app, channel):
@@ -449,7 +467,7 @@ def pull(args):
     lg = args.lastgit
 
     if not args.dry_run:
-        situations_preflight(repo)
+        situations_preflight(repo, args.app)
 
     tip = gh.api_json("repos/%s/git/ref/heads/%s" % (repo, args.branch))["object"]["sha"].lower()
     oid = (args.oid or tip).lower()
