@@ -5,7 +5,8 @@
 # only when that source is a strict descendant of the running primary and an
 # ancestor of origin/main. Do not compile LastDB. Do not retry a red source.
 # Refuse Loom until the installed driver can prove brain and LastSecrets
-# before the live install.
+# before the live install. A format 7 primary with automatic V2 backup needs
+# the driver's format 7 V2 route (V2 recovery point, programs venue).
 set -euo pipefail
 
 export PATH="${HOME}/.local/bin:${PATH:-/usr/bin:/bin}"
@@ -15,6 +16,7 @@ mirror="${LASTDB_NIGHTLY_FOLD_GIT_DIR:-$HOME/.cache/edgevector-git/lastdb.git}"
 driver="${LASTDB_SAFE_UPGRADE_DRIVER:-$HOME/.last-stack/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh}"
 loom_bin="${LASTDB_NIGHTLY_LOOM:-last-stack-safe-upgrade-loom}"
 primary_bin="${LASTDB_NIGHTLY_PRIMARY_BIN:-$HOME/.lastdb/current/lastdbd}"
+primary_sock="${LASTDB_NIGHTLY_PRIMARY_SOCK:-$HOME/.lastdb/data/folddb.sock}"
 repo="EdgeVector/lastdb"
 target="aarch64-apple-darwin"
 lock_held=0
@@ -156,6 +158,30 @@ if [ -e "$state_root/red/$nightly_oid" ]; then
 fi
 if [ ! -f "$driver" ] || ! grep -q 'primary_brain_and_secret_ok' "$driver"; then
   result error driver-marker-missing 1
+fi
+
+# One status read picks the route. A format 7 home has durability, not sync.
+route="legacy"
+if curl -fsS --max-time 30 --unix-socket "$primary_sock" -H 'Host: localhost' \
+    -H 'X-LastDB-Client: lastdb-nightly-primary-upgrade' \
+    http://x/api/status >"$work/primary-status.json" 2>/dev/null \
+  && jq -e '.ok == true and (.status | has("sync") | not)
+      and .status.durability.automatic_enabled == true' \
+    "$work/primary-status.json" >/dev/null 2>&1; then
+  route="format7-v2"
+fi
+if [ "$route" = "format7-v2" ]; then
+  venue="$(dirname "$driver")/programs-venue.sh"
+  if ! grep -q 'PRIMARY_ROUTE="format7-v2"' "$driver" || [ ! -f "$venue" ] \
+    || ! grep -q 'v2_recovery_point_preflight' "$venue" \
+    || ! grep -q 'live_install_programs' "$venue"; then
+    result error driver-format7-v2-route-missing 1
+  fi
+  # The V1 DEV photograph cannot read a V2 home. The driver refuses the cutover
+  # without Tom's clearance, so stop here. This source is not red.
+  if [ "${LASTDB_PROBE_DEV_STAMP_SKIP:-0}" != "1" ]; then
+    result error format7-v2-dev-proof-clearance-needed 1
+  fi
 fi
 
 live_file="${LASTDB_LIVE_READ_FILE:-$state_root/live-read.env}"

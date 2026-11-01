@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Recover a sidebin primary after the bounded CUTOVER driver stops.
+# Recover a sidebin or programs primary after the bounded CUTOVER driver stops.
+# programs venue: the old pair stays unchanged in its own
+# native-run-v2-programs/<oid> directory; recovery points the plist and the
+# current link back at it and reloads the job.
 set -euo pipefail
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
@@ -95,7 +98,7 @@ if [ "$effect_started" != true ]; then
 fi
 
 venue="$(json_string "$STATE" venue)" || recovery_die "state-venue-invalid"
-[ "$venue" = sidebin ] || recovery_die "unsupported-live-venue"
+case "$venue" in sidebin|programs) ;; *) recovery_die "unsupported-live-venue" ;; esac
 primary_home="$(json_string "$STATE" primary_home)" \
   || recovery_die "state-primary-home-invalid"
 primary_socket="$(json_string "$STATE" primary_socket)" \
@@ -145,6 +148,66 @@ esac
   && [ "$(dirname -- "$backup_cli")" = "$sidebin_dir" ] \
   || recovery_die "backup-outside-sidebin-dir"
 
+launchctl_bin="${LASTDB_CUTOVER_RECOVERY_LAUNCHCTL_BIN:-launchctl}"
+command -v "$launchctl_bin" >/dev/null 2>&1 \
+  || recovery_die "launchctl-absent"
+uid="$(id -u)"
+domain="gui/$uid"
+service="$domain/$launchd_label"
+
+if [ "$venue" = programs ]; then
+  # The old pair is the unchanged program directory itself.
+  [[ "$(basename -- "$sidebin_dir")" =~ ^[0-9a-f]{40}$ ]] \
+    || recovery_die "programs-dir-name-invalid"
+  [ "$(dirname -- "$sidebin_dir")" = "$primary_home/native-run-v2-programs" ] \
+    || recovery_die "programs-dir-outside-home"
+  [ "$backup_daemon" = "$sidebin_dir/lastdbd" ] && [ "$backup_cli" = "$sidebin_dir/lastdb" ] \
+    || recovery_die "programs-pair-path-invalid"
+  case "$backup_daemon_sha$backup_cli_sha" in *[!0-9a-f]*|'') recovery_die "backup-pair-hash-invalid" ;; esac
+  hold="$sidebin_dir/lastdbd.prestop-hold"
+  if [ -e "$hold" ] || [ -L "$hold" ]; then
+    # An interrupted strict stop leaves the old program at its hold path.
+    [ -f "$hold" ] && [ ! -L "$hold" ] && [ "$(sha256_file "$hold")" = "$backup_daemon_sha" ] \
+      || recovery_die "prestop-hold-not-old-daemon"
+    if [ -e "$backup_daemon" ] || [ -L "$backup_daemon" ]; then
+      rm -f -- "$hold" || recovery_die "prestop-hold-remove-failed"
+    else
+      mv -f -- "$hold" "$backup_daemon" || recovery_die "prestop-hold-restore-failed"
+    fi
+  fi
+  [ -f "$backup_daemon" ] && [ ! -L "$backup_daemon" ] && [ -x "$backup_daemon" ] \
+    && [ -f "$backup_cli" ] && [ ! -L "$backup_cli" ] && [ -x "$backup_cli" ] \
+    || recovery_die "programs-pair-unsafe"
+  [ "$(sha256_file "$backup_daemon")" = "$backup_daemon_sha" ] \
+    && [ "$(sha256_file "$backup_cli")" = "$backup_cli_sha" ] \
+    || recovery_die "backup-pair-hash-mismatch"
+  current_program="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$launchd_plist" 2>/dev/null)" \
+    || recovery_die "launchd-plist-program-unreadable"
+  case "$stage" in
+    programs-stop-started|programs-stopped|programs-rollback-ready)
+      [ "$current_program" = "$backup_daemon" ] || recovery_die "plist-changed-before-switch" ;;
+    programs-switch-started|programs-reload-started|programs-supervisor-loaded) ;;
+    *) recovery_die "unsupported-programs-stage" ;;
+  esac
+  if [ "$current_program" != "$backup_daemon" ]; then
+    plist_tmp="$(dirname -- "$launchd_plist")/.$(basename -- "$launchd_plist").recovery.$$"
+    rm -f -- "$plist_tmp"
+    cp -p "$launchd_plist" "$plist_tmp" \
+      && /usr/libexec/PlistBuddy -c "Set :ProgramArguments:0 $backup_daemon" "$plist_tmp" >/dev/null \
+      && plutil -lint "$plist_tmp" >/dev/null \
+      && mv -f "$plist_tmp" "$launchd_plist" \
+      || { rm -f -- "$plist_tmp"; recovery_die "plist-restore-failed"; }
+  fi
+  current_tool="$SCRIPT_DIR/../../../bin/last-stack-lastdb-current"
+  [ -x "$current_tool" ] || current_tool="$(command -v last-stack-lastdb-current)" \
+    || recovery_die "current-link-tool-absent"
+  "$current_tool" set --lastdb-home "$primary_home" --bin-dir "$sidebin_dir" >/dev/null 2>&1 \
+    || recovery_die "current-link-restore-failed"
+  [ "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$launchd_plist" 2>/dev/null)" = "$backup_daemon" ] \
+    || recovery_die "plist-restore-unverified"
+fi
+
+if [ "$venue" = sidebin ]; then
 daemon_base="$(basename -- "$backup_daemon")"
 cli_base="$(basename -- "$backup_cli")"
 case "$daemon_base" in lastdbd.bak-pre-*) ;; *) recovery_die "daemon-backup-name-invalid" ;; esac
@@ -236,13 +299,8 @@ if [ -e "$hold" ] || [ -L "$hold" ]; then
     || recovery_die "prestop-hold-not-old-daemon"
   rm -f -- "$hold" || recovery_die "prestop-hold-remove-failed"
 fi
+fi
 
-launchctl_bin="${LASTDB_CUTOVER_RECOVERY_LAUNCHCTL_BIN:-launchctl}"
-command -v "$launchctl_bin" >/dev/null 2>&1 \
-  || recovery_die "launchctl-absent"
-uid="$(id -u)"
-domain="gui/$uid"
-service="$domain/$launchd_label"
 same_old_process() {
   local observed=""
   kill -0 "$old_pid" 2>/dev/null || return 1
@@ -250,6 +308,16 @@ same_old_process() {
     || recovery_die "old-process-start-unreadable-no-reload"
   [ -n "$observed" ] || recovery_die "old-process-start-absent-no-reload"
   [ "$observed" = "$old_ps_lstart" ]
+}
+
+# The driver's memory guard revive hold for the programs venue.
+release_programs_revive_hold() {
+  local revive="${LASTDBD_GUARD_REVIVE_HOLD_FILE:-$primary_home/monitoring/lastdbd-revive.hold}"
+  [ "$venue" = programs ] || return 0
+  if [ -f "$revive" ] && [ ! -L "$revive" ] \
+    && grep -q '^lastdb-safe-upgrade pid=[0-9]*$' "$revive" 2>/dev/null; then
+    rm -f -- "$revive"
+  fi
 }
 
 wait_for_exact_old_exit() {
@@ -276,7 +344,8 @@ wait_for_exact_old_exit() {
     "$old_pid" "$old_start_ts" "$waited"
 }
 case "$stage" in
-  sidebin-stop-started|sidebin-stopped|sidebin-rollback-copy-started|sidebin-rollback-ready)
+  sidebin-stop-started|sidebin-stopped|sidebin-rollback-copy-started|sidebin-rollback-ready|\
+  programs-stop-started|programs-stopped|programs-rollback-ready)
     # The candidate did not replace the old pair. A failed strict stop may
     # leave the old daemon in its flush drain. Wait for the exact saved
     # process identity to exit; never bootout or kill it.
@@ -300,6 +369,7 @@ case "$stage" in
       [ -n "$live_pid" ] \
         && lastdb_require_supervised_primary "$launchctl_bin" "$service" "$live_pid" \
         || recovery_die "old-primary-not-supervised"
+      release_programs_revive_hold
       printf 'CUTOVER_TIMEOUT_RECOVERY=green stage=%s rollback=old-primary-serving service=%s pid=%s\n' \
         "$stage" "$service" "$live_pid"
       exit 0
@@ -321,6 +391,8 @@ live_pid="$(live_unix_socket_health_pid "$primary_socket" || true)"
 [ -n "$live_pid" ] || recovery_die "primary-listener-pid-absent"
 lastdb_require_supervised_primary "$launchctl_bin" "$service" "$live_pid" \
   || recovery_die "primary-not-supervised"
+
+release_programs_revive_hold
 
 printf 'CUTOVER_TIMEOUT_RECOVERY=green stage=%s rollback=restored service=%s pid=%s\n' \
   "$stage" "$service" "$live_pid"

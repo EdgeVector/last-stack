@@ -13,15 +13,16 @@
 #      candidate check. The seed is cached per key; most runs build nothing.
 #   2. Boot the CANDIDATE lastdbd against a separate copy of that trial home.
 #      The candidate never boots on the live primary home.
-#   3. Require GREEN (identity decrypts, schemas load, keyed Board and
-#      BoardCards reads return valid responses from the seed)
+#   3. Require GREEN (identity decrypts, schemas load, the keyed brain point
+#      read, the brain range read and a LastSecrets locator read return the
+#      seed's records; kanban is off since 2026-10-31)
 #      AND probe RSS stays under the memory-guard ceiling (so live cutover
 #      does not immediately thrash-restart under lastdbd-memory-guard)
 #      AND the LATENCY BAR: real workloads on the candidate copy must not
 #      regress vs the current binary on an identical copy. Cold is the first
-#      Board point read and the first column list. Hot is a later sample of
-#      the same operation that opens no file. The hot read is one batch of
-#      the keys that list returned. The latency check does not write.
+#      brain point read and the first range read under one hash. Hot is a
+#      later sample of the same operation that opens no file. The hot read is
+#      one batch of the keys that range read returned. It does not write.
 #      correct-but-slow is RED (incident 2026-07-25/27: 0.23.1 passed the
 #      correctness+RSS bars while scans ran 5-20x slower; the live primary
 #      was the first place anyone noticed)
@@ -147,6 +148,7 @@ LAUNCHD_PLIST="${LASTDB_LAUNCHD_PLIST:-$HOME/Library/LaunchAgents/${LAUNCHD_LABE
 PROBE_ONLY=0
 ASSUME_YES=0
 CHECK_DEV_STAMP=0
+LIVE_READ_CHECK=0
 # Bounded waiver for a stale cloud recovery point (Tom, 2026-10-13). The Loom
 # execution input owns it; see cloud_recovery_point_preflight.
 STALE_RECOVERY_WAIVER="${LASTDB_SAFE_UPGRADE_STALE_RECOVERY_WAIVER:-}"
@@ -170,6 +172,7 @@ while [ "$#" -gt 0 ]; do
     --probe-only) PROBE_ONLY=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --check-dev-stamp) CHECK_DEV_STAMP=1; shift ;;
+    --live-read-check) LIVE_READ_CHECK=1; shift ;;
     --accept-stale-recovery-point) STALE_RECOVERY_WAIVER="${2:-}"; shift 2 ;;
     --data) PROBE_DATA="${2:-}"; shift 2 ;;
     --candidate) CANDIDATE_BIN="$2"; shift 2 ;;
@@ -201,7 +204,7 @@ emit_dev_photograph_failure() {
   printf 'NEXT: fix the candidate, DEV registration, or snapshot CAS path, then start a new bound Loom execution\n'
 }
 
-if [ "$PROBE_ONLY" -eq 0 ] && [ "$CHECK_DEV_STAMP" -eq 0 ]; then
+if [ "$PROBE_ONLY" -eq 0 ] && [ "$CHECK_DEV_STAMP" -eq 0 ] && [ "$LIVE_READ_CHECK" -eq 0 ]; then
   [ "${LASTDB_SAFE_UPGRADE_VIA_LOOM:-0}" = "1" ] \
     || die "live cutover requires the Loom lastdb-safe-upgrade graph; use last-stack-safe-upgrade-loom --candidate PATH"
   [ -n "${LOOM_EXEC_ID:-}" ] \
@@ -293,6 +296,8 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/live-socket-health.sh"
 # shellcheck source=post-cutover-status.sh
 . "$_SCRIPT_DIR/post-cutover-status.sh"
+# shellcheck source=programs-venue.sh
+. "$_SCRIPT_DIR/programs-venue.sh"
 # shellcheck source=owner-lock.sh
 . "$_SCRIPT_DIR/owner-lock.sh"
 # shellcheck source=deadline.sh
@@ -306,9 +311,8 @@ SYNTH_RECORDS="${LASTDB_SYNTHETIC_RECORDS:-$SYNTH_DEFAULT_RECORDS}"
 synth_count_valid "$SYNTH_CARDS" && synth_count_valid "$SYNTH_RECORDS" \
   || { echo "LASTDB_SYNTHETIC_CARDS and LASTDB_SYNTHETIC_RECORDS must be positive integers" >&2; exit 2; }
 # Every candidate copy starts from this run's trial home, a copy of the
-# synthetic seed. PROBE_CLI_HOME is the HOME that kanban and brain use on a probe
-# copy. The seed pins schema hashes that differ from the primary's, so the
-# ambient HOME would read the wrong config.
+# synthetic seed. PROBE_CLI_HOME is the HOME that brain and lastsecrets use on a
+# probe copy, so a CLI never reads the primary's config.
 PROBE_SOURCE_HOME=""
 PROBE_CLI_HOME=""
 SYNTH_SEED_DIR=""
@@ -386,6 +390,11 @@ cleanup_work() {
   [ -n "${WORK:-}" ] && [ -d "$WORK" ] && rm -rf "$WORK"
   [ -n "${CUTOVER_LOCK:-}" ] && rm -f "$CUTOVER_LOCK"
   [ -n "${CUTOVER_RECOVERY_STATE_TMP:-}" ] && rm -f "$CUTOVER_RECOVERY_STATE_TMP"
+  # A stopped primary must not stay held after this run exits; the guard then
+  # revives whatever program the plist names.
+  if type programs_release_revive_hold >/dev/null 2>&1; then
+    programs_release_revive_hold
+  fi
   if type cleanup_upgrade_restart_intent >/dev/null 2>&1; then
     cleanup_upgrade_restart_intent
   fi
@@ -603,27 +612,48 @@ median_of() {
 }
 
 # Latency ops. Each takes one arg and must exit non-zero on failure. These are
-# the keyed point read from the deployment check and the column list
-# that regressed in 0.23.1 (kanban list). These operations do not write.
-# The column list is cold only. The hot read is one batch of its keys.
+# the keyed point read from the deployment check and one range read under one
+# hash (the shape of the 0.23.1 list regression). These operations do not write.
+# The range read is cold only. The hot read is one batch of its keys.
+# The seed holds these keys (synthetic-record-batch.py). A live point read uses
+# the brain record named in live-read.env instead.
+SEED_POINT_SCHEMA="brain/Reference"
+SEED_POINT_FIELD="knowledge_record_title"
+SEED_POINT_KEY="synth-point-reference"
+SEED_RANGE_SCHEMA="brain/TagMembership"
+SEED_RANGE_FIELD="tag_membership_entry_key"
+SEED_RANGE_HASH="synth-tag-bucket"
+SEED_SECRET_SCHEMA="lastsecrets/LastSecret"
+SEED_SECRET_KEY="synth-secret-1"
+LAT_POINT_SCHEMA="$SEED_POINT_SCHEMA"
+LAT_POINT_FIELD="$SEED_POINT_FIELD"
+LAT_POINT_KEY="$SEED_POINT_KEY"
+
+# $1 = socket, $2 = schema, $3 = field, $4 = hash key. Prints the reply.
+keyed_query() {
+  curl -sS --max-time "$LAT_OP_TIMEOUT_SECS" --unix-socket "$1" -H 'Host: localhost' \
+    -H 'X-LastDB-Client: lastdb-safe-upgrade' -H 'Content-Type: application/json' \
+    --data "$(jq -nc --arg s "$2" --arg f "$3" --arg k "$4" \
+      '{schema_name:$s, fields:[$f], filter:{HashKey:$k}}')" \
+    http://x/api/query 2>/dev/null
+}
+
 op_lat_point() {
   # $1 = socket path
-  curl -sS --max-time "$LAT_OP_TIMEOUT_SECS" --unix-socket "$1" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
-    -H 'Content-Type: application/json' \
-    --data '{"schema_name":"Board","fields":["title"],"filter":{"HashKey":"default"}}' \
-    http://x/api/query 2>/dev/null | jq -e '.ok == true' >/dev/null 2>&1
+  keyed_query "$1" "$LAT_POINT_SCHEMA" "$LAT_POINT_FIELD" "$LAT_POINT_KEY" \
+    | jq -e '.ok == true' >/dev/null 2>&1
 }
 
 op_lat_scan() {
   # $1 = probe copy home
-  # Cold column list. This call can open files. It is not a hot test.
-  # When LAT_KEYS_OUT is set, keep only the key pairs for one later batch.
-  local home="$1" body
-  body="$(env ${PROBE_CLI_HOME:+"HOME=$PROBE_CLI_HOME"} \
-    FOLDDB_SOCKET_PATH="$home/data/folddb.sock" LASTDB_HOME="$home" FOLDDB_HOME="$home" \
-    kanban list --column todo --json 2>/dev/null)" || return 1
+  # Cold range read under one hash. This call can open files. It is not a hot
+  # test. When LAT_KEYS_OUT is set, keep only the key pairs for one later batch.
+  local body
+  body="$(keyed_query "$1/data/folddb.sock" "$SEED_RANGE_SCHEMA" "$SEED_RANGE_FIELD" "$SEED_RANGE_HASH")" \
+    || return 1
+  printf '%s' "$body" | jq -e '.ok == true' >/dev/null 2>&1 || return 1
   if [ -n "${LAT_KEYS_OUT:-}" ]; then
-    printf '%s' "$body" | jq -c '[.cards[]? | select(.board != null and .column != null and .slug != null and .position != null) | [.board, "\(.column)#\(.position)#\(.slug)"]]' \
+    printf '%s' "$body" | jq -c '[.results[]? | select(.key.hash != null and .key.range != null) | [.key.hash, .key.range]]' \
       >"$LAT_KEYS_OUT" || true
   fi
   return 0
@@ -648,10 +678,8 @@ op_lat_scan() {
 op_rows_point() {
   # $1 = socket path; prints the row count, or -1 when unmeasurable
   local body count
-  body="$(curl -sS --max-time "$LAT_OP_TIMEOUT_SECS" --unix-socket "$1" -H 'Host: localhost' \
-    -H 'X-LastDB-Client: lastdb-safe-upgrade' -H 'Content-Type: application/json' \
-    --data '{"schema_name":"Board","fields":["title"],"filter":{"HashKey":"default"}}' \
-    http://x/api/query 2>/dev/null)" || { echo "-1"; return 0; }
+  body="$(keyed_query "$1" "$LAT_POINT_SCHEMA" "$LAT_POINT_FIELD" "$LAT_POINT_KEY")" \
+    || { echo "-1"; return 0; }
   count="$(printf '%s' "$body" | jq -r 'if .ok != true then -1
     elif (.returned_count // empty) != null then .returned_count
     elif (.results // empty) != null then (.results | length)
@@ -662,18 +690,19 @@ op_rows_point() {
 }
 
 op_rows_scan() {
-  # $1 = probe copy home; prints the card count, or -1 when unmeasurable
+  # $1 = probe copy home; prints the range row count, or -1 when unmeasurable
   local body count
-  body="$(env ${PROBE_CLI_HOME:+"HOME=$PROBE_CLI_HOME"} \
-    FOLDDB_SOCKET_PATH="$1/data/folddb.sock" LASTDB_HOME="$1" FOLDDB_HOME="$1" \
-    kanban list --column todo --json 2>/dev/null)" || { echo "-1"; return 0; }
-  count="$(printf '%s' "$body" | jq -r '(.total // (.cards | length) // -1)' 2>/dev/null)"
+  body="$(keyed_query "$1/data/folddb.sock" "$SEED_RANGE_SCHEMA" "$SEED_RANGE_FIELD" "$SEED_RANGE_HASH")" \
+    || { echo "-1"; return 0; }
+  count="$(printf '%s' "$body" | jq -r 'if .ok != true then -1
+    elif (.returned_count // empty) != null then .returned_count
+    else (.results | length) end' 2>/dev/null)"
   case "$count" in ''|*[!0-9-]*) count="-1" ;; esac
   echo "$count"
 }
 
 # One batch read of the key pairs in LAT_BATCH_KEYS_FILE.
-# LAT_BATCH_SCHEMA is the BoardCards schema id the first try selected.
+# LAT_BATCH_SCHEMA is the seed range schema.
 # $1 = socket path. Exit non-zero when the batch does not return rows.
 op_lat_batch() {
   local sock="$1" req
@@ -681,7 +710,7 @@ op_lat_batch() {
   [ -s "${LAT_BATCH_KEYS_FILE:-}" ] || return 1
   req="${LAT_BATCH_KEYS_FILE}.req"
   jq -c --arg schema "$LAT_BATCH_SCHEMA" \
-    '{schema_name:$schema, fields:["title"], filter:{HashRangeKeys:.}}' \
+    --arg field "$SEED_RANGE_FIELD" '{schema_name:$schema, fields:[$field], filter:{HashRangeKeys:.}}' \
     "$LAT_BATCH_KEYS_FILE" >"$req" || return 1
   curl -sS --max-time "$LAT_OP_TIMEOUT_SECS" --unix-socket "$sock" \
     -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
@@ -702,29 +731,20 @@ shard_loads_of() {
   printf '%s\n' "$n"
 }
 
-# Pick the BoardCards schema whose one batch returns the captured keys.
+# Select the seed range schema when one batch returns the captured keys.
 # The successful call is the first test of that batch. It is not timed.
-# $1 = socket. Sets LAT_BATCH_SCHEMA. Returns non-zero when no schema hits.
-discover_board_cards_schema() {
-  local sock="$1" names name nkeys
+# $1 = socket. Sets LAT_BATCH_SCHEMA. Returns non-zero when the batch misses.
+select_batch_schema() {
+  local sock="$1" nkeys
   LAT_BATCH_SCHEMA=""
   [ -s "${LAT_BATCH_KEYS_FILE:-}" ] || return 1
   nkeys="$(jq 'length' "$LAT_BATCH_KEYS_FILE" 2>/dev/null || echo 0)"
   [ "$nkeys" -gt 0 ] 2>/dev/null || return 1
-  names="$(curl -sS --max-time 60 --unix-socket "$sock" -H 'Host: localhost' \
-    -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/schemas 2>/dev/null \
-    | jq -r '.schemas[]? | select(.descriptive_name=="BoardCards_hashrange_v1" and ((.key.hash_field // "")=="board")) | .name' 2>/dev/null || true)"
-  [ -n "$names" ] || return 1
-  while IFS= read -r name; do
-    [ -n "$name" ] || continue
-    LAT_BATCH_SCHEMA="$name"
-    if op_lat_batch "$sock"; then
-      log "latency batch: schema selected; keys=$nkeys"
-      return 0
-    fi
-  done <<EOF
-$names
-EOF
+  LAT_BATCH_SCHEMA="$SEED_RANGE_SCHEMA"
+  if op_lat_batch "$sock"; then
+    log "latency batch: schema $LAT_BATCH_SCHEMA selected; keys=$nkeys"
+    return 0
+  fi
   LAT_BATCH_SCHEMA=""
   return 1
 }
@@ -1161,8 +1181,8 @@ candidate_deployment_check() {
   sock="$LAST_PROBE_SOCK"
   blog="$LAST_PROBE_BLOG"
   schemas="$WORK/deployment-schemas.json"
-  query="$WORK/deployment-board.json"
-  cards="$WORK/deployment-board-cards.json"
+  query="$WORK/deployment-point.json"
+  cards="$WORK/deployment-range.json"
   status="$WORK/deployment-status.json"
   for i in $(seq 1 60); do
     if curl -fsS --max-time 60 --unix-socket "$sock" \
@@ -1175,28 +1195,32 @@ candidate_deployment_check() {
     sleep 5
   done
   if [ "$ready" -ne 1 ] \
-      || ! curl -fsS --max-time 60 --unix-socket "$sock" \
-        -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
-        -H 'Content-Type: application/json' \
-        -d '{"schema_name":"Board","fields":["title"],"filter":{"HashKey":"default"}}' \
-        http://x/api/query >"$query" 2>/dev/null \
-      || ! jq -e '
+      || ! keyed_query "$sock" "$SEED_POINT_SCHEMA" "$SEED_POINT_FIELD" "$SEED_POINT_KEY" >"$query" \
+      || ! jq -e --arg f "$SEED_POINT_FIELD" '
         .ok == true
         and (.results | length) > 0
-        and ((.results[0].fields.title // .results[0].title // "") | length) > 0
+        and ((.results[0].fields[$f] // "") | length) > 0
         and (.unresolved_rows // 0) == 0
       ' "$query" >/dev/null 2>&1; then
-    warn "the candidate did not serve the keyed Board read from the synthetic seed"
+    warn "the candidate did not serve the keyed brain read from the synthetic seed"
     stop_probe_node "$pid" "$copy" "$blog" || true
     return 1
   fi
-  if ! command -v kanban >/dev/null 2>&1 \
-      || ! env ${PROBE_CLI_HOME:+"HOME=$PROBE_CLI_HOME"} \
-        FOLDDB_SOCKET_PATH="$sock" LASTDB_HOME="$copy" FOLDDB_HOME="$copy" \
-        kanban list --board default --column todo --json >"$cards" 2>/dev/null \
-      || ! jq -e '(.cards | type == "array") and (.cards | length > 0)' \
+  if ! keyed_query "$sock" "$SEED_RANGE_SCHEMA" "$SEED_RANGE_FIELD" "$SEED_RANGE_HASH" >"$cards" \
+      || ! jq -e '.ok == true and (.results | length) > 0 and (.unresolved_rows // 0) == 0' \
         "$cards" >/dev/null 2>&1; then
-    warn "the candidate did not serve the keyed BoardCards read from the synthetic seed"
+    warn "the candidate did not serve the brain range read from the synthetic seed"
+    stop_probe_node "$pid" "$copy" "$blog" || true
+    return 1
+  fi
+  # A locator read asks for the locator only and must not return an envelope.
+  if ! keyed_query "$sock" "$SEED_SECRET_SCHEMA" secret_locator_slug "$SEED_SECRET_KEY" >"$cards" \
+      || ! jq -e --arg k "$SEED_SECRET_KEY" '
+        .ok == true and (.results | length) == 1
+        and .results[0].fields.secret_locator_slug == $k
+        and (.results[0].fields | has("secret_text_envelope") | not)
+      ' "$cards" >/dev/null 2>&1; then
+    warn "the candidate did not serve the LastSecrets locator read from the synthetic seed"
     stop_probe_node "$pid" "$copy" "$blog" || true
     return 1
   fi
@@ -1242,7 +1266,7 @@ candidate_deployment_check() {
     warn "the primary process changed during the deployment check"
     return 1
   fi
-  log "deployment check GREEN: candidate booted a copy of the synthetic seed and served keyed Board and BoardCards reads"
+  log "deployment check GREEN: candidate booted a copy of the synthetic seed and served the keyed brain, brain range and LastSecrets locator reads"
 }
 
 # Boot candidate and baseline CoWs together. Cold fetch = first query after
@@ -1325,7 +1349,7 @@ probe_like_to_like_metrics() {
       fi
     fi
     sample_cand_rss
-    if command -v kanban >/dev/null 2>&1; then
+    if :; then
       mkdir -p "$PROBE_ROOT"
       LAT_BATCH_KEYS_FILE="$PROBE_ROOT/lat-batch-keys.json"
       LAT_KEYS_OUT="$LAT_BATCH_KEYS_FILE"
@@ -1340,8 +1364,6 @@ probe_like_to_like_metrics() {
       fi
       LAT_KEYS_OUT=""
       sample_cand_rss
-    else
-      warn "latency: kanban CLI not on PATH — scan op unmeasured"
     fi
 
     log "latency: settling ${RSS_SETTLE_SECS}s before hot samples"
@@ -1383,7 +1405,7 @@ probe_like_to_like_metrics() {
     # The column list is not hot. One batch of its keys is the hot read,
     # and only after that same batch has already run.
     if [ -n "${LAT_BATCH_KEYS_FILE:-}" ] && [ -s "$LAT_BATCH_KEYS_FILE" ]; then
-      if discover_board_cards_schema "$c_sock"; then
+      if select_batch_schema "$c_sock"; then
         if [ -n "$b_sock" ] && op_lat_batch "$b_sock"; then
           LAT_HOT_FILE_GATE=1
           lat_measure_paired_medians_ms op_lat_batch "$c_sock" "$b_sock" "hot batch-read" || {
@@ -1403,12 +1425,12 @@ probe_like_to_like_metrics() {
           c_hot_sc="$(measure_op_hot_median_ms op_lat_batch "$c_sock" "candidate hot batch-read" "$c_sock")"
         fi
       else
-        warn "latency: no BoardCards batch returned the captured keys"
+        warn "latency: the range batch did not return the captured keys"
         c_hot_sc="nothot"
         [ -n "$b_sock" ] && b_hot_sc="nothot"
       fi
       sample_cand_rss
-    elif command -v kanban >/dev/null 2>&1; then
+    else
       c_hot_sc="nothot"
       [ -n "$b_sock" ] && b_hot_sc="nothot"
     fi
@@ -1440,12 +1462,8 @@ probe_like_to_like_metrics() {
   [ -n "$b_sock" ] && b_rows_pt="$(op_rows_point "$b_sock")"
   c_rows_sc="-1"
   b_rows_sc="-1"
-  if command -v kanban >/dev/null 2>&1; then
-    c_rows_sc="$(op_rows_scan "$c_copy")"
-    [ -n "$b_copy" ] && b_rows_sc="$(op_rows_scan "$b_copy")"
-  else
-    warn "rowcount: kanban CLI not on PATH — scan row count unmeasured"
-  fi
+  c_rows_sc="$(op_rows_scan "$c_copy")"
+  [ -n "$b_copy" ] && b_rows_sc="$(op_rows_scan "$b_copy")"
   log "row counts: point cand=${c_rows_pt} base=${b_rows_pt} · scan cand=${c_rows_sc} base=${b_rows_sc}"
 
   {
@@ -1506,6 +1524,19 @@ detect_live_venue() {
   VENUE=""
   LIVE_BIN=""
   local prog="" physical_sidebin=""
+
+  # A format 7 V2 primary runs one pair per full source oid under
+  # $PRIMARY_HOME/native-run-v2-programs. Its old directory never changes.
+  if [ -f "$LAUNCHD_PLIST" ] && OLD_PROGRAM_DIR="$(programs_old_dir_from_plist)"; then
+    VENUE="programs"
+    PROGRAMS_DIR="$(dirname -- "$OLD_PROGRAM_DIR")"
+    LIVE_BIN="$OLD_PROGRAM_DIR/lastdbd"
+    log "live venue: programs"
+    log "live binary: $LIVE_BIN"
+    log "launchd label: $LAUNCHD_LABEL"
+    return 0
+  fi
+  OLD_PROGRAM_DIR=""
 
   if [ -f "$LAUNCHD_PLIST" ]; then
     prog="$(plutil -extract ProgramArguments.0 raw "$LAUNCHD_PLIST" 2>/dev/null || true)"
@@ -1585,7 +1616,7 @@ assert_final_candidate_binding() {
 # the primary. Refuse rather than reload into the void — the old daemon keeps
 # serving and every downstream health check passes, so this fails silent.
 assert_launchd_label_usable() {
-  [ "$VENUE" = "sidebin" ] || return 0
+  [ "$VENUE" = "sidebin" ] || [ "$VENUE" = "programs" ] || return 0
   case "$LAUNCHD_LABEL" in
     com.REPLACE.*)
       die "unresolved launchd label ($LAUNCHD_LABEL) — cannot restart primary. Set LASTDB_LAUNCHD_LABEL to the real job (see: launchctl list | grep lastdbd)" ;;
@@ -1745,7 +1776,7 @@ strict_prestop_old_primary() {
     || die "old primary process start time is unreadable before the stop"
   [ -n "$OLD_PRIMARY_PS_LSTART" ] \
     || die "old primary process start time is absent before the stop"
-  write_cutover_recovery_state "sidebin-stop-started" true
+  write_cutover_recovery_state "${VENUE}-stop-started" true
   out="$(lastdb_launchd_graceful_prestop launchctl "$service" "$program" \
     "${LASTDB_PRIMARY_GRACEFUL_STOP_WAIT_SECS:-300}" \
     "$PRIMARY_EXIT_TIMEOUT_SECS" 1 2>&1)" \
@@ -1756,7 +1787,7 @@ strict_prestop_old_primary() {
     *) die "strict old-primary stop did not prove a clean exit" ;;
   esac
   verify_old_primary_stopped "$service"
-  write_cutover_recovery_state "sidebin-stopped" true
+  write_cutover_recovery_state "${VENUE}-stopped" true
 }
 
 # CLOUD RECOVERY POINT (Tom, 2026-10-12): the live cutover makes NO copy of the
@@ -2097,7 +2128,8 @@ resolve_live_primary_pid() {
     pid="$(lsof -a -t -c lastdbd "$PRIMARY_SOCK" 2>/dev/null | head -1 || true)"
   fi
   if [ -z "$pid" ]; then
-    pid="$(pgrep -f "$SIDEBIN_DIR/lastdbd\$|$SIDEBIN_DIR/lastdbd " 2>/dev/null | head -1 || true)"
+    local live_dir="${NEW_PROGRAM_DIR:-$SIDEBIN_DIR}"
+    pid="$(pgrep -f "$live_dir/lastdbd\$|$live_dir/lastdbd " 2>/dev/null | head -1 || true)"
   fi
   printf '%s\n' "$pid"
 }
@@ -2116,6 +2148,13 @@ live_install_brew() {
   brew services start lastdb || die "brew services start lastdb failed"
   RESTART_INTENT_START_REQUESTED=1
 }
+
+# --live-read-check: the Loom VERIFY step. One keyed live read, no lock, no write.
+if [ "$LIVE_READ_CHECK" -eq 1 ]; then
+  classify_live_read_mode || die "live read failed: Board did not answer and the brain plus LastSecrets locators are missing or unreadable"
+  echo "LIVE_READ=$LIVE_READ_MODE"
+  exit 0
+fi
 
 # --- preflight ---------------------------------------------------------------
 
@@ -2320,7 +2359,7 @@ SEED_KEY="$(synth_seed_key_for "$BASELINE_FOR_CLASS" "$PRIMARY_HOME" "$LAUNCHD_P
   "$SYNTH_CARDS" "$SYNTH_RECORDS")" || SEED_KEY_RC=$?
 case "$SEED_KEY_RC" in
   0) ;;
-  2) die "synthetic probe data: cannot identify the installed kanban CLI" ;;
+  2) die "synthetic probe data: cannot identify the installed lastsecrets CLI" ;;
   3) die "synthetic probe data: cannot identify the installed brain CLI" ;;
   *) die "synthetic probe data: cannot compute the seed key" ;;
 esac
@@ -2400,8 +2439,8 @@ step1_trial_home
 [ -n "$TRIAL_COPY" ] && [ "$TRIAL_READY" -eq 1 ] \
   || die "the deployment check needs a complete synthetic trial home"
 PROBE_SOURCE_HOME="$TRIAL_COPY"
-# kanban and brain read their own config for the seed. One CLI home per run,
-# cloned from the seed.
+# brain and lastsecrets read their own config for the seed. One CLI home per
+# run, cloned from the seed.
 PROBE_CLI_HOME="$WORK/cli-home"
 probe_clone_entry "$SYNTH_SEED_DIR/cli-home" "$PROBE_CLI_HOME" \
   || die "cannot clone the seed CLI home"
@@ -2477,7 +2516,7 @@ BASE_ROWS_SCAN="$(metric_val "$BASE_METRICS" rows_scan)"
 ROWS_RED=0
 ROWS_RED_REASON=""
 set +e
-for rows_pair in "point-read:${CAND_ROWS_POINT}:${BASE_ROWS_POINT}" "kanban-scan:${CAND_ROWS_SCAN}:${BASE_ROWS_SCAN}"; do
+for rows_pair in "point-read:${CAND_ROWS_POINT}:${BASE_ROWS_POINT}" "range-scan:${CAND_ROWS_SCAN}:${BASE_ROWS_SCAN}"; do
   rows_label="${rows_pair%%:*}"
   rows_rest="${rows_pair#*:}"
   ROWS_OUT="$(rowcount_verdict "$rows_label" "${rows_rest%%:*}" "${rows_rest#*:}")"
@@ -2583,6 +2622,22 @@ if [ "$PROBE_ONLY" -eq 1 ]; then
   exit 0
 fi
 
+# --- 2b2) primary route ---------------------------------------------------------
+# A format 7 home has no status.sync object. Its recovery point is the automatic
+# V2 backup, and it runs from $PRIMARY_HOME/native-run-v2-programs/<oid>.
+PRIMARY_ROUTE="legacy"
+ROUTE_STATUS="$WORK/route-status.json"
+(umask 077; set -C; : >"$ROUTE_STATUS") \
+  || die "route status path already exists or is unsafe; primary was not changed"
+curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
+  -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+  http://x/api/status >"$ROUTE_STATUS" 2>/dev/null \
+  || die "primary status unavailable; cannot select the cutover route; primary was not changed"
+if v2_status_is_format7 "$ROUTE_STATUS"; then
+  PRIMARY_ROUTE="format7-v2"
+fi
+log "primary route: $PRIMARY_ROUTE"
+
 # --- 2c) exact-candidate DEV photograph proof (Tom 2026-08-19) ---------------
 # Reuse the trial CoW that this safe-upgrade sequence selected in step 1.
 # The exact candidate pair clones that static point, connects its copied identity
@@ -2591,6 +2646,14 @@ fi
 # LASTDB_PROBE_DEV_STAMP_SKIP=1 is Tom clearance only.
 if [ "${LASTDB_PROBE_DEV_STAMP_SKIP:-0}" = "1" ]; then
   warn "DEV photograph stamp SKIPPED (LASTDB_PROBE_DEV_STAMP_SKIP=1) — Tom-clearance only; live cutover will not prove backup-to-DEV"
+elif [ "$PRIMARY_ROUTE" = "format7-v2" ]; then
+  # The photograph helper uses the retired V1 connect, snapshot and restore
+  # commands. The V2 route has no DEV restore proof of its own yet.
+  echo ""
+  echo "VERDICT: RED"
+  echo "REASON: the format 7 V2 route has no exact-candidate DEV restore proof; the V1 photograph helper uses retired commands. The primary is unchanged."
+  echo "NEXT:   Tom approves the cutover without a DEV restore proof by LASTDB_PROBE_DEV_STAMP_SKIP=1 on the Loom run, or a V2 DEV proof is added first"
+  exit 1
 else
   [ -x "$DEV_PHOTOGRAPH_PROOF_SH" ] \
     || die "exact-candidate DEV photograph proof helper is absent or not executable"
@@ -2670,20 +2733,28 @@ curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
   -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
   http://x/api/status >"$PRELIVE_STATUS" \
   || die "pre-live status unavailable; cannot prove the meter group is safe to restart"
-PRELIVE_STATUS_OUT="$(post_cutover_status_check "$PRELIVE_STATUS" 0 0 "$PRELIVE_METER_CAP_BYTES")" \
-  || die "pre-live status bar failed: $PRELIVE_STATUS_OUT; primary was not changed"
-jq -e '.status.sync.enabled | type == "boolean"' "$PRELIVE_STATUS" >/dev/null \
-  || die "pre-live status cannot determine whether Cloud Sync is enabled"
-SOAK_REQUIRE_CLOUD="$(jq -r 'if .status.sync.enabled == true then 1 else 0 end' "$PRELIVE_STATUS")"
 PRELIVE_CLOUD_FRONTIER=0
-if [ "$SOAK_REQUIRE_CLOUD" -eq 1 ]; then
-  PRELIVE_CLOUD_FRONTIER="$(jq -er '
-    .status.sync.mutation_log_frontier_f
-    | if type == "number" and . >= 0 then . else error("invalid cloud frontier") end
-  ' "$PRELIVE_STATUS")" \
-    || die "pre-live status has no numeric cloud frontier; primary was not changed"
+if [ "$PRIMARY_ROUTE" = "format7-v2" ]; then
+  # Automatic V2 backup must be on and healthy; it stays on through the soak.
+  PRELIVE_STATUS_OUT="$(post_cutover_status_check_v2 "$PRELIVE_STATUS")" \
+    || die "pre-live status bar failed: $PRELIVE_STATUS_OUT; primary was not changed"
+  SOAK_REQUIRE_CLOUD=1
+  log "pre-live status bar $PRELIVE_STATUS_OUT (format 7, automatic V2 backup on)"
+else
+  PRELIVE_STATUS_OUT="$(post_cutover_status_check "$PRELIVE_STATUS" 0 0 "$PRELIVE_METER_CAP_BYTES")" \
+    || die "pre-live status bar failed: $PRELIVE_STATUS_OUT; primary was not changed"
+  jq -e '.status.sync.enabled | type == "boolean"' "$PRELIVE_STATUS" >/dev/null \
+    || die "pre-live status cannot determine whether Cloud Sync is enabled"
+  SOAK_REQUIRE_CLOUD="$(jq -r 'if .status.sync.enabled == true then 1 else 0 end' "$PRELIVE_STATUS")"
+  if [ "$SOAK_REQUIRE_CLOUD" -eq 1 ]; then
+    PRELIVE_CLOUD_FRONTIER="$(jq -er '
+      .status.sync.mutation_log_frontier_f
+      | if type == "number" and . >= 0 then . else error("invalid cloud frontier") end
+    ' "$PRELIVE_STATUS")" \
+      || die "pre-live status has no numeric cloud frontier; primary was not changed"
+  fi
+  log "pre-live status bar $PRELIVE_STATUS_OUT (meter plane below 1.5 GiB)"
 fi
-log "pre-live status bar $PRELIVE_STATUS_OUT (meter plane below 1.5 GiB)"
 
 # Classify before any live write. Board is the proof when it answers.
 # Otherwise one brain record and one LastSecrets locator must answer.
@@ -2695,6 +2766,11 @@ log "live read mode ${LIVE_READ_MODE} classified before cutover"
 
 detect_live_venue
 assert_exact_candidate_live_venue
+case "$PRIMARY_ROUTE:$VENUE" in
+  format7-v2:programs|legacy:sidebin|legacy:brew) ;;
+  format7-v2:*) die "a format 7 V2 primary must run from $PRIMARY_HOME/native-run-v2-programs/<full oid>; venue=$VENUE; primary was not changed" ;;
+  *) die "the programs venue needs a format 7 V2 primary; route=$PRIMARY_ROUTE; primary was not changed" ;;
+esac
 write_cutover_recovery_state "pre-live" false
 
 if [ "$ASSUME_YES" -eq 0 ]; then
@@ -2703,7 +2779,10 @@ if [ "$ASSUME_YES" -eq 0 ]; then
   fi
   echo ""
   echo "Probe GREEN. About to perform LIVE cutover (venue=$VENUE):"
-  if [ "$VENUE" = "sidebin" ]; then
+  if [ "$VENUE" = "programs" ]; then
+    echo "  install → $PROGRAMS_DIR/${LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID:-<oid>}/{lastdb,lastdbd}"
+    echo "  V2 recovery point, strict stop, plist ProgramArguments:0 + current link switch, job reload"
+  elif [ "$VENUE" = "sidebin" ]; then
     echo "  atomic install → $SIDEBIN_DIR/lastdbd"
     echo "  launchctl bootout + bootstrap reload of $LAUNCHD_PLIST"
   else
@@ -2743,7 +2822,12 @@ assert_launchd_label_usable
 # request. A successful start leaves it for the new daemon.
 write_upgrade_restart_intent
 
-if [ "$VENUE" = "sidebin" ]; then
+if [ "$VENUE" = "programs" ]; then
+  live_install_programs
+  sidebin_pair_hashes_match_expected "$INSTALLED_DAEMON_BIN" "$INSTALLED_CLI_BIN" "post-install program pair" \
+    || die "the installed program pair differs from the photographed candidate; rollback pair: $OLD_PROGRAM_DIR"
+  INSTALLED="$("$INSTALLED_DAEMON_BIN" --version 2>/dev/null | awk '{print $NF}' || true)"
+elif [ "$VENUE" = "sidebin" ]; then
   live_install_sidebin
   INSTALLED_DAEMON_BIN="$SIDEBIN_DIR/lastdbd"
   INSTALLED_CLI_BIN="$SIDEBIN_DIR/lastdb"
@@ -2790,7 +2874,7 @@ done
 
 # THE cutover assertion: the RUNNING daemon must report the candidate version.
 #
-# Everything else in this post-check (health, identity, schemas, Board title,
+# Everything else in this post-check (health, identity, schemas, live read,
 # RSS, latency) passes perfectly against the OLD daemon — it is healthy, it is
 # serving, it is simply the wrong binary. Installing the file is not the
 # cutover; replacing the process is. Assert the claim, not a proxy for it.
@@ -2853,12 +2937,15 @@ if [ -n "${INSTALLED:-}" ] && [ "$RUNNING_VERSION" != "$INSTALLED" ]; then
   die "cutover did not take effect; primary still running $RUNNING_VERSION"
 fi
 log "cutover verified: running daemon reports $RUNNING_VERSION (matches installed candidate)"
+if [ "$VENUE" = "programs" ]; then
+  v2_record_stopped_cut
+fi
 
 # The file on disk and launchd's cached job definition are separate state.
 # Prove every configured EnvironmentVariables key exists in the new process;
 # report key names only so no secret or tuning value reaches logs.
 LIVE_PID="$(resolve_live_primary_pid)"
-if [ "$VENUE" = "sidebin" ]; then
+if [ "$VENUE" = "sidebin" ] || [ "$VENUE" = "programs" ]; then
   if [ -z "$LIVE_PID" ]; then
     if [ "$LIVE_CONFIG_ENFORCE" = "1" ]; then
       die "live config drift check could not resolve the primary pid"
@@ -2962,6 +3049,12 @@ live_lat_check_op() {
   fi
 }
 if [ "$LAT_SKIP" != "1" ]; then
+  # The seed keys do not exist on the primary. Time the classified live record.
+  case "${LIVE_READ_MODE:-}" in
+    board) LAT_POINT_SCHEMA="Board"; LAT_POINT_FIELD="title"; LAT_POINT_KEY="default" ;;
+    *) LAT_POINT_SCHEMA="brain/Decision"; LAT_POINT_FIELD="knowledge_record_title"
+       LAT_POINT_KEY="${LASTDB_LIVE_BRAIN_SLUG:-}" ;;
+  esac
   # The live point read must already have run once. Time only a later sample
   # that does not open files. The receipt still records this as live scan.
   if run_op_with_deadline "$LAT_OP_TIMEOUT_SECS" op_lat_point "$PRIMARY_SOCK"; then
@@ -2971,30 +3064,14 @@ if [ "$LAT_SKIP" != "1" ]; then
     LIVE_LAT_POINT_MS="nothot"
   fi
   live_lat_check_op "point-read" "$LIVE_LAT_POINT_MS" "${CAND_LAT_POINT_MS:--1}"
-  if command -v kanban >/dev/null 2>&1; then
-    LAT_BATCH_KEYS_FILE="${PROBE_ROOT:-${TMPDIR:-/tmp}}/live-lat-batch-keys.json"
-    LAT_KEYS_OUT="$LAT_BATCH_KEYS_FILE"
-    if op_lat_scan "$PRIMARY_HOME"; then
-      LAT_KEYS_OUT=""
-      if discover_board_cards_schema "$PRIMARY_SOCK"; then
-        LIVE_LAT_SCAN_MS="$(measure_op_hot_median_ms op_lat_batch "$PRIMARY_SOCK" "live scan batch-read" "$PRIMARY_SOCK")"
-      else
-        LIVE_LAT_SCAN_MS="nothot"
-      fi
-    else
-      LAT_KEYS_OUT=""
-      LIVE_LAT_SCAN_MS="nothot"
-    fi
-    live_lat_check_op "batch-read" "$LIVE_LAT_SCAN_MS" "${CAND_LAT_SCAN_MS:--1}"
-  else
-    warn "live scan latency: kanban CLI not on PATH — unmeasured"
-  fi
+  # The seed range keys do not exist on the primary, and kanban is off.
+  log "live range latency: unmeasured (no known live range key)"
 fi
 
 # A leftover listener + nohup --data-dir start can look healthy and still leave
 # the LaunchAgent unloaded (PPID=1). That is not GREEN. LIVE_CONFIG_DRIFT above
 # still names missing plist env keys. Bootstrap the job, or stay RED.
-if [ "$VENUE" = "sidebin" ]; then
+if [ "$VENUE" = "sidebin" ] || [ "$VENUE" = "programs" ]; then
   _uid="$(id -u)"
   _svc="gui/${_uid}/${LAUNCHD_LABEL}"
   if [ -z "${LIVE_PID:-}" ]; then
@@ -3043,27 +3120,35 @@ SOAK_STATUS="$WORK/post-cutover-soak-status.json"
 (umask 077; set -C; : >"$SOAK_STATUS") \
   || die "post-cutover status path already exists or is unsafe"
 SOAK_CONFIRMED=0
-while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
-  SOAK_OUT="unavailable"
-  if curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
-    -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
-    http://x/api/status >"$SOAK_STATUS" 2>/dev/null; then
-    SOAK_OUT="$(post_cutover_status_check "$SOAK_STATUS" "$PRELIVE_CLOUD_FRONTIER" "$SOAK_REQUIRE_CLOUD" "$PRELIVE_METER_CAP_BYTES")" \
-      || true
-    case "$SOAK_OUT" in
-      POST_CUTOVER_STATUS=GREEN)
-        SOAK_CONFIRMED=1 ;;
-      *)
-        if post_cutover_status_retryable "$SOAK_OUT"; then
-          SOAK_CONFIRMED=0
-        else
-          die "post-cutover status bar failed: $SOAK_OUT; recovery = saved binary pair and the cloud backup (no copy of the primary exists)"
-        fi ;;
-    esac
-  else
-    SOAK_CONFIRMED=0
-    log "post-cutover soak: status unavailable; retrying"
+# One status sample. The format 7 V2 sample also requires the automatic backup
+# to cover the stopped cut on the same stream.
+soak_sample() {
+  local soak_st="" soak_v2=""
+  if [ "$PRIMARY_ROUTE" = "format7-v2" ]; then
+    v2_capture_pair "$INSTALLED_CLI_BIN" soak_st soak_v2 || { echo unavailable; return 0; }
+    post_cutover_status_check_v2 "$soak_st" "$soak_v2" "$V2_PRESTOP_STREAM" "$V2_STOPPED_CUT" || true
+    return 0
   fi
+  curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
+    -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+    http://x/api/status >"$SOAK_STATUS" 2>/dev/null || { echo unavailable; return 0; }
+  post_cutover_status_check "$SOAK_STATUS" "$PRELIVE_CLOUD_FRONTIER" "$SOAK_REQUIRE_CLOUD" "$PRELIVE_METER_CAP_BYTES" || true
+}
+while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
+  SOAK_OUT="$(soak_sample)"
+  case "$SOAK_OUT" in
+    unavailable)
+      SOAK_CONFIRMED=0
+      log "post-cutover soak: status unavailable; retrying" ;;
+    POST_CUTOVER_STATUS=GREEN)
+      SOAK_CONFIRMED=1 ;;
+    *)
+      if post_cutover_status_retryable "$SOAK_OUT"; then
+        SOAK_CONFIRMED=0
+      else
+        die "post-cutover status bar failed: $SOAK_OUT; recovery = saved binary pair and the cloud backup (no copy of the primary exists)"
+      fi ;;
+  esac
   SOAK_ELAPSED="$(( $(date +%s) - SOAK_START ))"
   log "post-cutover soak: elapsed=${SOAK_ELAPSED}s minimum=${SOAK_MIN_SECS}s cloud_confirmed=${SOAK_CONFIRMED} status=${SOAK_OUT:-unavailable}"
   if post_cutover_soak_green_in_bounds "$SOAK_ELAPSED" "$SOAK_MIN_SECS" "$SOAK_MAX_SECS" "$SOAK_CONFIRMED"; then
@@ -3081,7 +3166,7 @@ write_cutover_recovery_state "cutover-green" false
 
 CUTOVER_T1="$(date +%s)"
 CUTOVER_SECS=$((CUTOVER_T1 - CUTOVER_T0))
-log "STEP 4/4: live post-check GREEN (schemas=$NSCHEMAS first Board title=\"$QVAL\" cutover_s=$CUTOVER_SECS venue=$VENUE peak_rss_mb=${LIVE_RSS_MB:-unknown} live_point_ms=${LIVE_LAT_POINT_MS:-unmeasured} live_scan_ms=${LIVE_LAT_SCAN_MS:-unmeasured} cloud_frontier=${PRELIVE_CLOUD_FRONTIER})"
+log "STEP 4/4: live post-check GREEN (schemas=$NSCHEMAS live_read=${LIVE_READ_MODE} cutover_s=$CUTOVER_SECS venue=$VENUE peak_rss_mb=${LIVE_RSS_MB:-unknown} live_point_ms=${LIVE_LAT_POINT_MS:-unmeasured} live_scan_ms=${LIVE_LAT_SCAN_MS:-unmeasured} cloud_frontier=${PRELIVE_CLOUD_FRONTIER})"
 
 # Post a Situations notice so other agents attribute post-upgrade flapping.
 POST_NOTICE=""
@@ -3148,11 +3233,13 @@ echo "VERDICT: GREEN"
 if [ -n "$CLOUD_RECOVERY_WAIVER_NOTE" ]; then
   echo "RECOVERY_POINT_WAIVER: $CLOUD_RECOVERY_WAIVER_NOTE"
 fi
-echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED and lastdb → ${INSTALLED_CLI:-?}; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + live Board read OK; probe_rss_mb=${PROBE_RSS_MB:-?} live_rss_mb=${LIVE_RSS_MB:-?} limit_mb=$(resolve_rss_limit_mb); trial retained for closed-consumer cleanup"
+echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED and lastdb → ${INSTALLED_CLI:-?}; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + live ${LIVE_READ_MODE:-?} read OK; probe_rss_mb=${PROBE_RSS_MB:-?} live_rss_mb=${LIVE_RSS_MB:-?} limit_mb=$(resolve_rss_limit_mb); trial retained for closed-consumer cleanup"
 echo "LATENCY: probe point/scan=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}ms baseline=${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}ms live_point=${LIVE_LAT_POINT_MS:-?}ms live_scan=${LIVE_LAT_SCAN_MS:-?}ms"
 echo ""
 echo "ROLLBACK (binary only, if new binary misbehaves but data is fine):"
-if [ "$VENUE" = "sidebin" ]; then
+if [ "$VENUE" = "programs" ]; then
+  programs_rollback_text
+elif [ "$VENUE" = "sidebin" ]; then
   # NEVER print the in-place `cp -a` onto the live path. It keeps the
   # destination inode, macOS still holds the cached code signature for that
   # inode from the binary that was just running, and the kernel then kills

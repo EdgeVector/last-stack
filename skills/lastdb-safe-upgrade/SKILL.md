@@ -71,6 +71,52 @@ It also refuses the broad setup uninstaller. Nested setup inherits the flag.
 Artifact provenance, probes, command and skill links, compatibility layout,
 and instruction updates retain the normal path.
 
+## Format 7 primary with automatic V2 backup (Tom, 2026-11-01)
+
+The default Loom route (protocol 7) reads the live status first.
+A format 7 home has `status.durability` and no `status.sync`.
+The driver then selects `PRIMARY_ROUTE=format7-v2`. Other homes keep the legacy route.
+
+CAUTION: Automatic V2 backup stays on through the whole upgrade.
+Do not run `lastdb cloud backup-v2 disable-automatic`. This route has no Cloud Off step.
+
+The route has these steps:
+
+1. Probe. The candidate boots on a copy of the synthetic seed.
+   The seed holds brain and LastSecrets records. Kanban is off since 2026-10-31.
+2. DEV proof. The V1 DEV photograph cannot read a V2 home.
+   The driver is RED here unless Tom sets `LASTDB_PROBE_DEV_STAMP_SKIP=1` on the run.
+   A V2 DEV restore proof is a follow-up.
+3. Pre-live status. The native status must show automatic backup observed, enabled,
+   not degraded, and an accepted backup. A legacy waiver is refused.
+4. Stage. The exact pair goes to `~/.lastdb/native-run-v2-programs/<full source oid>/`.
+   The driver checks both hashes and the code signatures before the folder name changes.
+5. Recovery point. The old CLI reads `lastdb cloud backup-v2 status --json`.
+   `cloud-recovery-status.py --v2-status` requires the log head to equal the backed frontiers.
+   It also requires an accepted backup, the same user hash, and no pause, block, log gap or retained bytes.
+   The driver retries for `LASTDB_V2_RECOVERY_WAIT_SECS` (default 300) seconds.
+   A refusal prints each failed check name.
+6. Strict stop. The driver holds the memory guard revive, stops the old daemon without
+   a forced kill, and checks the exact flush receipt and the clean session.
+7. Install. The plist `ProgramArguments:0` changes to the new program folder.
+   `last-stack-lastdb-current set` moves `~/.lastdb/current`. Then the job bootstrap runs.
+8. Live checks. The live read, configuration, memory and latency checks run as on the legacy route.
+9. Backup cut. The first log head of the new daemon is the stopped cut.
+   The five-minute soak requires the backed frontiers at or past that cut, on the same stream.
+
+The brief asked for a final stopped V2 backup before the program pair changes.
+Both releases refuse `backup-v2 start-stopped` while automatic backup is on.
+The route therefore checks head equals backed just before the stop.
+The soak then proves that the new daemon backs up the stopped cut.
+
+Rollback for the programs venue: set `ProgramArguments:0` back to the old program folder,
+run `last-stack-lastdb-current set --bin-dir <old folder>`, then bootstrap the job.
+The driver and `cutover-timeout-recovery.sh` do this from the recovery state.
+The old program folder stays in place.
+
+A Loom execution of the same pair under the old route keeps its key.
+Use `--retry 2` to start a new execution of that pair.
+
 ## Ordinary RunV2 maintenance with a current V2 backup
 
 Use [RunV2 maintenance](../../docs/lastdb-run-v2-maintenance.md) for the closed
@@ -376,12 +422,13 @@ python3 ~/.last-stack/skills/lastdb-safe-upgrade/scripts/cloud-recovery-status.p
 ## Live venue (important — 2026-07-16)
 
 Primary can use either supervisor, but exact-candidate live cutover supports
-only sidebin:
+only sidebin, or the programs venue on a format 7 V2 primary:
 
 | Venue | How primary runs | Live install |
 |-------|------------------|--------------|
 | **sidebin** (Tom’s default) | LaunchAgent → `~/.lastdb/bin-with-upload-cap/lastdbd` | Atomic install into that dir + `launchctl bootout` / `bootstrap` job reload |
 | **brew** | `brew services` + Cellar formula | Refused before a live mutation; move the primary to sidebin first |
+| **programs** (format 7 V2) | LaunchAgent `ProgramArguments:0` → `~/.lastdb/native-run-v2-programs/<oid>/lastdbd` | New program folder, plist change, `last-stack-lastdb-current set`, job bootstrap |
 
 The script **detects venue** from the LaunchAgent, the formula, and sidebin. It
 refuses a brew live cutover before a service stop.
@@ -427,23 +474,26 @@ writes on a fresh empty home (`scripts/build-synthetic-home.sh`). The candidate
 must read what the installed daemon wrote, so the baseline writes the seed. The
 builder copies only `identity.key` and `.bootstrap_done` from the primary (two
 small files, never printed), so the DEV photograph registers the same identity.
-It registers the kanban and brain schemas through the apps' own `init`.
-It collects all record and membership keys before one durable native batch.
-The default seed has one milestone, 10 cards and 8 brain records.
+It registers the brain and LastSecrets schemas through the apps' own `init`.
+Kanban is off since 2026-10-31, so the seed has no kanban records.
+It collects all record keys before one durable native batch.
+The seed has one `brain/Reference` point record, brain records of four types,
+`brain/TagMembership` range records under one hash, and four LastSecrets locators.
+The secret envelopes are synthetic public text.
 The builder stops and reaps the baseline, then reboots it.
 One query batch verifies every known key and every requested field.
 Both stops require the exact native clean session and shutdown flush receipt.
 The completion marker receives a file flush and a directory flush.
-The kanban and brain CLIs use a seed-owned `HOME` (`cli-home`), because the seed
-pins different schema hashes than the primary.
+The brain and LastSecrets CLIs use a seed-owned `HOME` (`cli-home`), so a CLI
+never reads the primary's config.
 
 The seed is cached per key under `/tmp/lastdb-safe-upgrade-synthetic-<uid>/`
 (override: `LASTDB_SYNTHETIC_SEED_ROOT`). The key covers the baseline bytes, the
-identity hash, the live tuning flags, the kanban and brain versions, the data
-sizes, and the generator version. A cache hit builds nothing. A new baseline
+identity hash, the live tuning flags, the LastSecrets and brain versions, the data
+sizes, and the generator version (4). A cache hit builds nothing. A new baseline
 builds a new seed. An existing incomplete or foreign seed path refuses.
 The driver never sweeps or replaces cache siblings. Counts are bounded to 64
-cards and 64 Brain records for the single complete batch.
+range records and 64 Brain records for the single complete batch.
 The build needs the network (schema service).
 
 CAUTION: Keep the exact seed through every PROBE, CUTOVER and recovery consumer.
@@ -486,13 +536,13 @@ The driver never selects or deletes a stale sibling by its source prefix.
 The candidate boots on a separate copy of this trial home.
 The candidate never boots on the live primary home. The driver checks:
 
-- The candidate loads schemas and serves the keyed `Board` title.
-- The candidate serves a read of `BoardCards` under the default board and todo column.
+- The candidate loads schemas and serves the keyed `brain/Reference` point record.
+- The candidate serves the `brain/TagMembership` range under the seed hash.
+- The candidate serves one `lastsecrets/LastSecret` locator read with no envelope.
 - The candidate memory size stays below the memory-guard limit.
 - The live primary process stays the same during the candidate check.
 
-The `BoardCards` result must contain at least one card. The `Board` title
-check requires a non-empty title.
+The point record must have a non-empty title. The range read must return rows.
 
 The DEV proof also clones the same trial home. It publishes one snapshot
 with the exact candidate pair. The candidate CLI restores that manifest into
@@ -526,8 +576,8 @@ The live cutover has no rollback copy of the primary. See
    stop and flush the old primary.
 3. **Never** restart/upgrade on a RED probe.
 3b. **A read that answers fast with ZERO rows is RED, not GREEN.** The
-   **row-count bar** counts the rows the Board point-read and the `kanban list
-   --column todo` scan return on the candidate and on the baseline, over the
+   **row-count bar** counts the rows the brain point read and the brain range
+   read return on the candidate and on the baseline, over the
    same seed data. Baseline > 0 with candidate == 0 is a read-path regression
    and fails the probe. There is **no skip flag**, and `LASTDB_PROBE_LAT_SKIP=1`
    does not buy a pass — this is a correctness bar, not a speed bar. Added
@@ -537,9 +587,10 @@ The live cutover has no rollback copy of the primary. See
 4. **Never** kill the primary unattended outside this skill's live step; if live
    post-check fails after upgrade, **stop and restore** (binary bak, then
    `lastdb restore` of the cloud backup if the data is damaged) — do not improvise.
-5. **Deployment check on the seed:** the candidate loads schemas, serves a keyed
-   `Board` title, and serves a keyed `BoardCards` list on its own copy of the
-   seed. The title and list must be non-empty. The primary process must not change.
+5. **Deployment check on the seed:** the candidate loads schemas, serves the keyed
+   brain point record, the brain range and a LastSecrets locator on its own copy
+   of the seed. The title and range must be non-empty. The locator read returns no
+   envelope. The primary process must not change.
 6. **RSS bar (memory-guard):** settle (~45s) and sample candidate memory size
    on the copy. **RED** if peak RSS ≥
    `LASTDBD_RSS_LIMIT_MB` minus headroom (default 10%). Limit is read from
@@ -551,12 +602,12 @@ The live cutover has no rollback copy of the primary. See
    -> thrash. Live post-check re-samples primary RSS the same way.
 7. **Latency bar (correct-but-slow is RED):** clone **two** CoWs and boot
    candidate and baseline to identity-ready **before** any timed query.
-   **Cold** = the first Board point read and the first column list after
+   **Cold** = the first brain point read and the first range read after
    that daemon reaches identity-ready. **Hot** = a later sample of that
    same operation after it has already finished, and only when the sample
    opens no file. A sample that opens a file is `nothot` and the pair is
    dropped. The hot read is one HashRangeKeys batch of the keys that the
-   column list returned. The first batch is not hot. The driver measures six
+   range read returned. The first batch is not hot. The driver measures six
    candidate and baseline samples in adjacent pairs. It alternates which
    daemon runs first and records each sample in the probe log. Compare
    **like with like only**: cold vs cold, hot vs hot. A mixed pair (cold
@@ -848,6 +899,9 @@ The nightly primary upgrade is the routine `lastdb-nightly-primary-upgrade`.
 Its gate downloads the GitHub nightly pair. It does not compile LastDB on
 this machine. A forward pair calls `last-stack-safe-upgrade-loom`. The gate
 refuses that call until this driver contains `primary_brain_and_secret_ok`.
+On a format 7 primary with automatic V2 backup, the gate also requires the
+format 7 V2 route in the driver. Without `LASTDB_PROBE_DEV_STAMP_SKIP=1` it stops
+with `format7-v2-dev-proof-clearance-needed` and does not mark the source red.
 Do not call the cutover driver except through that Loom launcher.
 `lastdb-canary-candidate-set` stays paused. It compiles LastDB on this machine.
 
@@ -861,6 +915,8 @@ The slugs come from `LASTDB_LIVE_BRAIN_SLUG` and `LASTDB_LIVE_SECRET_SLUG`,
 or from mode `600` file `live-read.env` under
 `${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/lastdb-nightly-primary-upgrade/`.
 The driver does not log the query body.
+The Loom VERIFY step runs `safe-upgrade-lastdb.sh --live-read-check`. That flag
+does one classified live read, takes no lock and writes nothing.
 
 `last-stack-canary-loom --recover` accepts only a complete protocol-v7 child
 receipt. Recovery rechecks both canonical paths, versions, hashes, the tuple
@@ -919,12 +975,12 @@ The script:
 | **1. Trial home** | Every run clones the cached synthetic seed (never the primary) under `${TMPDIR}/lastdb-safe-upgrade-rollback-<uid>/trial-<new>-from-<old>-<ts>/`. A clone error is RED. The trial home is not a rollback point. |
 | **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before any probe) |
 | **0b. Candidate data** | Build or reuse the synthetic seed (baseline writes it); candidate copies come from the trial home. |
-| **2. Candidate check** | Boot the exact candidate on a copy of the synthetic seed. Require schemas, the keyed Board title, a keyed BoardCards response, stable primary PID, and memory size below the guard. The driver checks candidate persist status, read latency, and record counts on synthetic seed copies. |
-| Detect venue | sidebin vs brew |
+| **2. Candidate check** | Boot the exact candidate on a copy of the synthetic seed. Require schemas, the keyed brain point record, the brain range, a LastSecrets locator, stable primary PID, and memory size below the guard. The driver checks candidate persist status, read latency, and record counts on synthetic seed copies. |
+| Detect venue | programs (format 7 V2), sidebin or brew |
 | **2c. DEV photograph proof** | The exact pair clones the trial copy, scrubs production state, connects the copied identity to DEV, and publishes a snapshot. The exact CLI restores that manifest from DEV into a source-free home. The fresh v3 receipt must match this Loom execution, this run's trial copy, and the retained restore report. |
 | **2d. Meter restart bar** | Read live status before restart. Refuse a `keep_small` plane above 1.5 GiB or a failed persist lane. The 2 GiB cold-group cap can prevent both new and old binaries from booting. |
 | **3. Live** | Refuse brew. For sidebin, write the boot-ledger restart intent. Stage and check both candidate files. Require a current cloud backup. Stop the old daemon without a forced kill. Require its exact flush receipt and clean session. No copy of the primary is made. Then replace the saved binary pair and reload the LaunchAgent job. |
-| **4. Post-check** | Exact installed pair hashes, live `/health`, schemas > 0, the live read mode classified before install (Board title, or one brain record plus one LastSecrets locator), **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **live peak RSS** vs guard, **live point-read + batch-read latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency in notice |
+| **4. Post-check** | Exact installed pair hashes, live `/health`, schemas > 0, the live read mode classified before install (Board title, or one brain record plus one LastSecrets locator), **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **live peak RSS** vs guard, **live point-read latency** vs the candidate's probe numbers (the live range read has no known key and stays unmeasured) (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency in notice |
 | **4a. Live soak** | Keep checking for at least five minutes by default. `--zero-live-soak` removes only that minimum. At least one fresh GREEN status sample remains required. Check persist failures, write access, and meter size on each status sample. If Cloud Sync was on before cutover, require the cloud frontier to stay at or beyond its pre-live value. A failed or stale bar is RED. |
 | **4b. Release** | The exact owned seed and trial stay through all Loom, proof, and recovery consumers. After consumer closure and driver exit, the operator preserves the public proof and uses the exact-container cleanup route. No sibling sweep runs. |
 | RED | Exit 1. No copy of the primary exists; recovery is the saved binary pair, then `lastdb restore` of the cloud backup. A class, probe or cloud-recovery-point failure leaves the primary unchanged. |
@@ -981,9 +1037,9 @@ Always print:
 - Venue (sidebin / brew)  
 - Candidate data: `PROBE_DATA: synthetic`, a copy of the cached seed (never the primary)
 - Recovery point: cloud `published_through` before the stop (no copy of the primary exists)
-- Probe GREEN/RED (+ first Board title if green)  
+- Probe GREEN/RED  
 - **Probe peak RSS MiB vs memory-guard limit / fail_at**  
-- **Latency: cold Board/column reads and hot Board/batch reads, candidate vs baseline (ms) + boot seconds.** The hot batch uses the receipt key `lat_hot_scan_ms`. A `nothot` pair is dropped.
+- **Latency: cold point/range reads and hot point/batch reads, candidate vs baseline (ms) + boot seconds.** The hot batch uses the receipt key `lat_hot_scan_ms`. A `nothot` pair is dropped.
 - Whether live upgrade ran + cutover seconds + live peak RSS + live point-read ms  
 - Recovery commands (the script prints them): binary pair, then `lastdb restore`
 
@@ -1021,8 +1077,12 @@ xattr -c $B/.lastdbd.rollback.tmp
 $B/.lastdbd.rollback.tmp --version    # MUST print a version before proceeding
 mv -f $B/.lastdbd.rollback.tmp $B/lastdbd
 launchctl kickstart -k gui/$(id -u)/com.REPLACE.lastdbd-primary-506
-kanban list
+bash ~/.last-stack/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh --live-read-check
 ```
+
+The programs venue has no `.bak` files. Point the plist and `~/.lastdb/current`
+back at the old program folder and bootstrap the job. See
+[Format 7 primary with automatic V2 backup](#format-7-primary-with-automatic-v2-backup-tom-2026-11-01).
 
 > **Never `cp -a` straight onto the live `lastdbd` path.** An in-place copy keeps
 > the destination **inode**, macOS still has the cached code signature for that
@@ -1047,7 +1107,7 @@ kanban list
 
 **Data (only if the home is corrupted and the run is RED).** No copy of the
 primary exists. Restore the latest cloud backup into a fresh home, check it, then
-swap the homes. Keep the broken home until the restored node serves real cards.
+swap the homes. Keep the broken home until the restored node serves real records.
 
 ```bash
 # stop the primary supervisor first
@@ -1056,7 +1116,7 @@ lastdb restore --into ~/.lastdb.restored-$(date +%Y%m%dT%H%M%S) --env prod --jso
 mv ~/.lastdb ~/.lastdb.broken-$(date +%Y%m%dT%H%M%S)
 mv ~/.lastdb.restored-<ts> ~/.lastdb
 # restart supervisor (kickstart or brew services start)
-kanban list   # must show real cards
+bash ~/.last-stack/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh --live-read-check
 ```
 
 ## Related skills / harnesses
