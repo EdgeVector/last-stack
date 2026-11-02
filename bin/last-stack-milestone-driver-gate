@@ -21,6 +21,13 @@
 # (papercut-milestone-driver-gate-blind-to-proof-pending-repair-20260926).
 set -euo pipefail
 
+# A mechanical gate runs before any harness can read the host policy.
+if [ "${LAST_STACK_APPS_OFF:-0}" = "1" ]; then
+  echo 'skipped: kanban and situations off (Tom, 2026-10-31)'
+  echo 'ROUTINE_RESULT outcome=noop detail=apps-off'
+  exit 0
+fi
+
 self_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
 if [ -n "${LAST_STACK_ROOT:-}" ] && [ -d "${LAST_STACK_ROOT}/bin" ]; then
   last_stack="$LAST_STACK_ROOT"
