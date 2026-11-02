@@ -307,6 +307,74 @@
       {
         "source": "bin/last-stack-registry-app",
         "command": "last-stack-registry-app"
+      },
+      {
+        "source": "bin/last-stack-forge-runner-watchdog",
+        "command": "last-stack-forge-runner-watchdog"
+      },
+      {
+        "source": "bin/last-stack-feature-prove-routine",
+        "command": "last-stack-feature-prove-routine"
+      },
+      {
+        "source": "bin/last-stack-canary-pipeline",
+        "command": "last-stack-canary-pipeline"
+      },
+      {
+        "source": "bin/last-stack-north-star-ledger-sync",
+        "command": "last-stack-north-star-ledger-sync"
+      },
+      {
+        "source": "bin/last-stack-lastdb-pressure",
+        "command": "last-stack-lastdb-pressure"
+      },
+      {
+        "source": "bin/last-stack-brain-append-heartbeat",
+        "command": "last-stack-brain-append-heartbeat"
+      },
+      {
+        "source": "bin/last-stack-forge-runner-lanes",
+        "command": "last-stack-forge-runner-lanes"
+      },
+      {
+        "source": "bin/last-stack-north-star-proof",
+        "command": "last-stack-north-star-proof"
+      },
+      {
+        "source": "bin/last-stack-ship-preflight",
+        "command": "last-stack-ship-preflight"
+      },
+      {
+        "source": "bin/last-stack-fold-ci-health",
+        "command": "last-stack-fold-ci-health"
+      },
+      {
+        "source": "bin/last-stack-board-closeout-install",
+        "command": "last-stack-board-closeout-install"
+      },
+      {
+        "source": "bin/last-stack-lastdb-canary-dogfood",
+        "command": "last-stack-lastdb-canary-dogfood"
+      },
+      {
+        "source": "bin/last-stack-repark-shared-checkouts",
+        "command": "last-stack-repark-shared-checkouts"
+      },
+      {
+        "source": "bin/last-stack-fleet-deadman",
+        "command": "last-stack-fleet-deadman"
+      },
+      {
+        "source": "bin/last-stack-generator-preflight",
+        "command": "last-stack-generator-preflight"
+      },
+      {
+        "source": "bin/last-stack-why-stopped-routine",
+        "command": "last-stack-why-stopped-routine"
+      },
+      {
+        "source": "bin/last-stack-revenant-classify",
+        "command": "last-stack-revenant-classify"
       }
     ],
     "requires": [],
