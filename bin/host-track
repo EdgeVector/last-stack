@@ -647,7 +647,7 @@ registry_index_local_copy() {
 # this function read `.sha` and dropped them.
 # papercut-host-track-registry-pin-lags-behind-published-artifact-20260927
 artifact_registry_pin_oid() {
-  local app="$1" json="$2" channel reg_app index out rc args
+  local app="$1" json="$2" channel reg_app index out rc args scratch diagnostic
   channel="$(artifact_registry_channel "$json")"
   [ -n "$channel" ] || return 1
   reg_app="$(field "$json" registry_app)"
@@ -662,11 +662,16 @@ artifact_registry_pin_oid() {
     index="$(registry_index_local_copy "$index" "$channel")" || return 3
     args+=(--index "$index")
   fi
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/host-track-registry.XXXXXX")"
   set +e
-  out="$(lastdb "${args[@]}" 2>&1)"
+  lastdb "${args[@]}" >"$scratch/result.json" 2>"$scratch/error"
   rc=$?
   set -e
+  out="$(cat "$scratch/result.json")"
+  diagnostic="$(cat "$scratch/error")"
+  rm -r "$scratch"
   if [ "$rc" -ne 0 ]; then
+    out="$diagnostic"
     case "$out" in
       *"is not in the"*"index"*) return 1 ;;
       # The index answered: it holds no row proved with this build.
@@ -683,7 +688,7 @@ artifact_registry_pin_oid() {
         return 3 ;;
     esac
   fi
-  printf '%s\n' "$out" | jq -r '[(.sha // ""), (.proved_at // ""), (.proof_run // "")] | @tsv'
+  printf '%s\n' "$out" | jq -r '[(.sha // ""), (.published_at // .proved_at // ""), (.publisher_account // .proof_run // "")] | @tsv'
 }
 
 # The LastDB build this host runs, which is the key `lastdb app resolve` filters
@@ -770,11 +775,15 @@ artifact_registry_index_newest() {
   { [ "$rc" -eq 0 ] && [ -n "$out" ]; } || return 3
   set +e
   row="$(printf '%s\n' "$out" | jq -r '
-    (.compat // []) | map(select((.proved_at // "") != ""))
-    | if length == 0 then ""
-      else (max_by(.proved_at)
-            | [(.lastdb_version // ""), (.proved_at // ""), (.sha // "")] | @tsv)
-      end')"
+    if .api_version then
+      [(.lastdb_build // ""), (.published_at // ""), (.sha // ""), (.api_version | tostring)] | @tsv
+    else
+      (.compat // []) | map(select((.proved_at // "") != ""))
+      | if length == 0 then ""
+        else (max_by(.proved_at)
+              | [(.lastdb_version // ""), (.proved_at // ""), (.sha // ""), ""] | @tsv)
+        end
+    end')"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || return 3
@@ -1749,8 +1758,7 @@ status_json_for() {
             # `cut` per field, not `IFS=$'\t' read`: tab is IFS whitespace, so
             # an empty field collapses and the rest shift left. An empty
             # `lastdb_version` would put `proved_at` in the version slot and the
-            # comparison below would be made against a timestamp. Covered by
-            # tests/host-track-registry-pin.sh case 2g, mutation-probed.
+            # comparison below would be made against a timestamp.
             registry_index_newest_version="$(cut -f1 <<<"$newest_row")"
             registry_index_newest_at="$(cut -f2 <<<"$newest_row")"
             registry_index_newest_oid="$(cut -f3 <<<"$newest_row")"
@@ -1758,8 +1766,13 @@ status_json_for() {
             # minutes behind a fresh publish reaches that arm too, and `status`
             # must not label ordinary publish lag a stalled prover.
             # registry_pin_proof_age_secs already carries the age.
-            registry_index_build_match="$(registry_build_match \
-              "$registry_index_newest_version" "$registry_lastdb_version")"
+            if [ -n "$(cut -f4 <<<"$newest_row")" ]; then
+              # The client already matched the running API exactly. The build is a label.
+              registry_index_build_match="match"
+            else
+              registry_index_build_match="$(registry_build_match \
+                "$registry_index_newest_version" "$registry_lastdb_version")"
+            fi
             ;;
           2) registry_index_build_match="no-rows" ;;
           *) registry_index_build_match="unread" ;;

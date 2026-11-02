@@ -9,8 +9,8 @@
       "post_flip_ticks": 2
     },
     "registry_channel": "next",
-    "registry_index": "https://raw.githubusercontent.com/EdgeVector/homebrew-lastdb/main/registry",
-    "_registry_note": "Apps on the LastDB app registry follow the `next` channel: host-track installs the artifact whose source_oid the signed index proves with the running LastDB build (lastdb app resolve). No proved row -> hold current. Apps not on the index keep following their artifact channel head. Per app: registry_follow=false opts out; registry_app maps the name. north-star-lastdb-app-registry-release-loop slice 7."
+    "registry_index": "https://lastdb-app-registry-prod-152335099025.s3.us-east-1.amazonaws.com/v1/lists",
+    "_registry_note": "Apps on the LastDB app registry follow the `next` channel: host-track installs the artifact whose source_oid the signed S3 list publishes for the running LastDB API version (lastdb app resolve). No proved row -> hold current. A missing app holds its installed copy. Per app: registry_follow=false opts out; registry_app maps the name. north-star-lastdb-app-registry-release-loop slice 7."
   },
   "apps": [
     {
