@@ -261,6 +261,7 @@ RSS_SAMPLE_SECS="${LASTDB_PROBE_RSS_SAMPLE_SECS:-15}"
 # candidate's CoW copy AND on an identical copy served by the CURRENT live
 # binary, and fails RED on regression. Correct-but-slow is NOT GREEN.
 LAT_SKIP="${LASTDB_PROBE_LAT_SKIP:-0}"              # 1 = skip bar (Tom clearance only)
+SAFE_UPGRADE_APPS_OFF="${LASTDB_SAFE_UPGRADE_APPS_OFF:-1}"
 LAT_SAMPLES="${LASTDB_PROBE_LAT_SAMPLES:-6}"        # paired hot samples per daemon; median wins
 LAT_RATIO="${LASTDB_PROBE_LAT_RATIO:-3}"            # RED if cand > ratio x baseline
 # Floor was 1000ms; exclusive CoW scans often sit under 1s so the ratio bar
@@ -1465,7 +1466,7 @@ probe_like_to_like_metrics() {
     fi
 
   else
-    warn "latency bar SKIPPED (LAT_SKIP=1) — RSS sampled after settle only"
+    log "performance qualified by CI; memory sampled after settle"
     sleep "$RSS_SETTLE_SECS"
   fi
 
@@ -2342,6 +2343,14 @@ if [ "$CAND_VER" = "$CURRENT_VER" ] && [ "$PROBE_ONLY" -eq 0 ]; then
   exit 0
 fi
 
+# Performance qualification runs in CI, never on the owner's Mac (Tom, 2026-10-23).
+# Preserve the gate by requiring successful checks for the exact accepted source.
+python3 "$_SCRIPT_DIR/ci-benchmark-gate.py" \
+  --source "${LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID:-}" --candidate "$CANDIDATE_BIN" \
+  || die "exact-source CI qualification failed"
+LAT_SKIP=1
+log "performance gate GREEN: exact-source CI checks passed; local timing retired"
+
 # --- 0) candidate class bar (before multi-GB rollback clone) -----------------
 # Incident 2026-08-01: agent safe-upgraded
 # ~/.fkanban/worktrees/…/target/debug/lastdbd (0.23.2-258-…-dirty) — exclusive
@@ -2627,7 +2636,7 @@ EOF
     exit 1
   fi
 else
-  warn "latency bar SKIPPED (LASTDB_PROBE_LAT_SKIP=1) — Tom-clearance only; correct-but-slow will NOT be caught"
+  log "performance qualified by exact-source CI; local timing retired"
 fi
 
 # The conflict stamp stays on the deployment copy. The primary plist must not carry it.
@@ -3265,6 +3274,10 @@ CUTOVER_T1="$(date +%s)"
 CUTOVER_SECS=$((CUTOVER_T1 - CUTOVER_T0))
 log "STEP 4/4: live post-check GREEN (schemas=$NSCHEMAS live_read=${LIVE_READ_MODE} cutover_s=$CUTOVER_SECS venue=$VENUE peak_rss_mb=${LIVE_RSS_MB:-unknown} live_point_ms=${LIVE_LAT_POINT_MS:-unmeasured} live_scan_ms=${LIVE_LAT_SCAN_MS:-unmeasured} cloud_frontier=${PRELIVE_CLOUD_FRONTIER})"
 
+# Kanban and Situations remain off until Tom restores them. Keep the local journal.
+if [ "$SAFE_UPGRADE_APPS_OFF" = "1" ]; then
+  log "skipped: kanban and situations off (Tom, 2026-10-31)"
+else
 # Post a Situations notice so other agents attribute post-upgrade flapping.
 POST_NOTICE=""
 for cand in \
@@ -3313,12 +3326,14 @@ else
   warn "situations CLI not on PATH — skipped agent-impact notice for this upgrade"
 fi
 
+fi
+
 # GREEN is terminal. Record the trial's required closed-consumer cleanup.
 release_rollback_point
 
 last_stack_root="$(printenv LAST_STACK_ROOT || printf '%s' "$HOME/.last-stack")"
 reopen_deferred_cards="$last_stack_root/bin/last-stack-kanban-reopen-deferred"
-if [ -x "$reopen_deferred_cards" ]; then
+if [ "$SAFE_UPGRADE_APPS_OFF" != "1" ] && [ -x "$reopen_deferred_cards" ]; then
   "$reopen_deferred_cards" --trigger lastdb-safe-upgrade >/dev/null 2>&1 || \
     warn "deferred-card reopen pass failed after GREEN cutover; next activation retries"
 fi

@@ -466,7 +466,7 @@ fi
 # Project the journal into LastDB so Loom readers see the run. This is a
 # report, not a gate: a slow or down node leaves the receipt pending in the
 # journal, and the next reconcile picks it up.
-if [ "$outcome" = "ok" ] && [ -z "$NATIVE_APPROVAL" ]; then
+if [ "$outcome" = "ok" ] && [ -z "$NATIVE_APPROVAL" ] && [ "${LASTDB_SAFE_UPGRADE_APPS_OFF:-1}" != "1" ]; then
   if ! loom reconcile-local "$LOCAL_RECOVERY_DIR/executions.jsonl" --json >/dev/null 2>&1; then
     printf 'last-stack-safe-upgrade-loom: local receipt remains pending reconciliation\n' >&2
   fi
