@@ -1,0 +1,72 @@
+name: registry-app-package
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: Runner label. Use macos-latest only when the build needs macOS or codesign.
+        type: string
+        default: ubuntu-24.04
+      setup-bun:
+        type: boolean
+        default: false
+      build-command:
+        description: Shell command run in the checkout before packing (for example bun run build).
+        type: string
+        default: ""
+      config:
+        description: Artifact declaration, relative to the repo root.
+        type: string
+        default: .last-stack/package.json
+      tools-ref:
+        description: last-stack ref that supplies the builder script.
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: publish registry app package
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 25
+    steps:
+      - name: Checkout the repo at the pushed commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout last-stack (builder script)
+        uses: actions/checkout@v4
+        with:
+          repository: EdgeVector/last-stack
+          ref: ${{ inputs.tools-ref }}
+          path: .last-stack-tools
+          persist-credentials: false
+
+      - name: Set up bun
+        if: ${{ inputs.setup-bun }}
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build
+        if: ${{ inputs.build-command != '' }}
+        env:
+          BUILD_COMMAND: ${{ inputs.build-command }}
+        run: bash -euo pipefail -c "$BUILD_COMMAND"
+
+      - name: Pack the declared paths
+        env:
+          ARTIFACT_CONFIG: ${{ inputs.config }}
+        run: |
+          python3 .last-stack-tools/bin/last-stack-app-package-build \
+            --repo "$GITHUB_REPOSITORY" --oid "$GITHUB_SHA" \
+            --config "$ARTIFACT_CONFIG" --out "$RUNNER_TEMP/registry-package"
+
+      - name: Upload the artifact (named by commit; tree oid is in provenance.json)
+        uses: actions/upload-artifact@v4
+        with:
+          name: registry-package-${{ github.sha }}
+          path: ${{ runner.temp }}/registry-package
+          retention-days: 30
+          if-no-files-found: error
