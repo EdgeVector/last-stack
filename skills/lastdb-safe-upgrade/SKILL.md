@@ -61,7 +61,7 @@ Prefer the **driver script** path below; do not hard-code a single harness dir.
 To install an accepted LastStack repair without a change to unrelated services:
 
 ```bash
-LAST_STACK_SETUP_PRESERVE_SERVICES=1 host-track refresh last-stack
+LAST_STACK_APPS_OFF=1 lastdb app upgrade last-stack
 ```
 
 The opt-in flag accepts only 0 or 1. The default remains 0.
@@ -1094,7 +1094,7 @@ After a GREEN **live** upgrade the script posts a Situations **notice** so other
 agents can attribute socket blips to the upgrade instead of opening a false
 incident.
 
-This driver does not create host-track registry rows. App installs may wait for the separate registry process.
+This driver does not publish app registry listings. App installs may wait for the separate registry process.
 
 ## Reading results
 
