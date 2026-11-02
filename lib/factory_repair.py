@@ -874,8 +874,8 @@ def validate_native_metadata(value, scope, row=False):
     for key, count in value.items():
         if key == 'truncated':
             require(type(count) is bool and count is False, scope + '-truncated')
-        elif re.search(r'skip|dangling|missing_atom|unresolved|failed|tombstoned', key, re.I):
-            if row and key in ('skipped', 'dangling', 'missing_atom', 'unresolved', 'failed', 'tombstoned'):
+        elif re.search(r'skip|dangling|failed', key, re.I):
+            if row and key in ('skipped', 'dangling', 'failed'):
                 require(type(count) is bool and count is False, scope + '-record-flag: ' + key)
             else:
                 require(type(count) is int and count == 0, scope + '-incomplete-counter: ' + key)

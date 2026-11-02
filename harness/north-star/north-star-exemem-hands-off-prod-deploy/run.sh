@@ -45,7 +45,7 @@ fi
 refuse_primary_root() {
   local candidate="$1"
   case "$candidate" in
-    "$HOME/.lastdb"|"$HOME/.lastdb/"*|"$HOME/.folddb"|"$HOME/.folddb/"*)
+    "$HOME/.lastdb"|"$HOME/.lastdb/"*)
       finish FAIL "The harness refuses a LastDB home path."
       ;;
   esac

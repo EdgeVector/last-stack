@@ -186,7 +186,7 @@ def completed(session, accepted, read_json):
             and integer(receipt["version"]) == 2 and report["commit_sha256"] == accepted["commit_sha256"]
             and report["destination"] == str(destination) and report["file_dependencies_verified"] is True
             and integer(report["native_files"]) > 0 and integer(report["native_bytes"]) > 0
-            and integer(report["verified_atoms"]) >= 0 and integer(report["verified_external_files"]) == 0,
+            and integer(report["verified_records"]) >= 0 and integer(report["verified_external_files"]) == 0,
             "prod_chain_completed_restore")
 
 

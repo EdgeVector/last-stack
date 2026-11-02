@@ -25,7 +25,7 @@ Included (all **public** on GitHub):
   install source: `https://github.com/EdgeVector/lastsecrets`.
 - **Search (`search`)**: local semantic search app used by Brain and Kanban.
 - **LastDB Browser (`lastdb-browser`)**: read-only local browser for schemas,
-  keys, records, and atoms. The installer builds the UI from the public mirror
+  keys, and records. The installer builds the UI from the public mirror
   and links its launcher onto `~/.local/bin`.
 
 Not included in this bundle:

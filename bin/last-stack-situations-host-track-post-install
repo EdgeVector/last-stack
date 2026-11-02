@@ -39,7 +39,7 @@
 # is []. Each entry is {"name": ..., "fields": [...]}; an entry that is only a
 # name pins no shape, and this hook does not accept it.
 #
-# The node is the one under $HOME (~/.lastdb, else ~/.folddb) and the config is
+# The node is the one under $HOME (~/.lastdb) and the config is
 # the one under $HOME (~/.situations, else ~/.fsituations). The hook pins the
 # candidate to both with FOLDDB_SOCKET_PATH and SITUATIONS_CONFIG, so an override
 # inherited from the caller cannot point it at another node or file.
@@ -208,13 +208,10 @@ run_timeout() {
 
 # --- the node and the config: the ones under $HOME ---------------------------
 sock=""
-for candidate in "$HOME/.lastdb/data/folddb.sock" "$HOME/.folddb/data/folddb.sock"; do
-  if [ -S "$candidate" ]; then
-    sock="$candidate"
-    break
-  fi
-done
-[ -n "$sock" ] || fail "no LastDB node socket under $HOME/.lastdb or $HOME/.folddb (is the node running?)"
+if [ -S "$HOME/.lastdb/data/folddb.sock" ]; then
+  sock="$HOME/.lastdb/data/folddb.sock"
+fi
+[ -n "$sock" ] || fail "no LastDB node socket under $HOME/.lastdb (is the node running?)"
 export FOLDDB_SOCKET_PATH="$sock"
 
 config_path="$HOME/.situations/config.json"

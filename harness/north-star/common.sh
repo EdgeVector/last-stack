@@ -47,7 +47,7 @@ ns_refuse_primary() {
   # Call when about to use a LastDB socket path.
   local sock="${1:-}"
   case "$sock" in
-    "$HOME/.lastdb/"*|"$HOME/.folddb/"*)
+    "$HOME/.lastdb/"*)
       echo "FAIL: refusing primary brain path: $sock" >&2
       return 1
       ;;

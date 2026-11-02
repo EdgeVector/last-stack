@@ -59,9 +59,7 @@ merge.
 ### Transport: the unix socket, NOT TCP — a `:9001` failure is NOT an outage
 
 The LastDB node serves the brain and board over the unix socket
-`~/.lastdb/data/folddb.sock`. After the 2026-07-12 Mini cutover,
-`~/.folddb` is only a compatibility path and may be a symlink to `~/.lastdb`;
-do not hard-code it as the primary. The legacy TCP port
+`~/.lastdb/data/folddb.sock` (`LASTDB_HOME` overrides the home). The legacy TCP port
 `http://127.0.0.1:9001` is retired — "connection refused" /
 `node not reachable at http://127.0.0.1:9001` does NOT mean the node is down.
 

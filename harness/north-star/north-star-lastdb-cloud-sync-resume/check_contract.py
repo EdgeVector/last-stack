@@ -18,9 +18,7 @@ SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"')
 PRIMARY_MARKERS = (
     "/.lastdb",
-    "/.folddb",
     "~/.lastdb",
-    "~/.folddb",
     "BEGIN PRIVATE",
     "BEGIN OPENSSH",
     "AKIA",

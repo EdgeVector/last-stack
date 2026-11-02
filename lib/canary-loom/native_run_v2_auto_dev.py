@@ -91,13 +91,10 @@ def memory_guard(proof, summary, programs, operation, limit):
             and owner.get("programs") == programs and owner.get("home") == str(Path(summary["homes"]) / "r")
             and owner.get("operation_sha256") == operation and value.get("memory_limit_mb") == limit,
             "The candidate memory observation belongs to another operation or limit")
-    failures = value.get("persist_failures", {})
-    require(set(failures) == {"persist_lane_failures", "deferred_persist_failed"}
-            and all(type(n) is int and n == 0 for n in failures.values())
-            and value.get("native_health", {}).get("version") == proof["candidate_version"]
+    require(value.get("native_health", {}).get("version") == proof["candidate_version"]
             and owner.get("version") in (None, proof["candidate_version"])
             and value["native_health"].get("native", {}).get("writer_failed") is False,
-            "The restored candidate persist or native writer health is absent or failed")
+            "The restored candidate native writer health is absent or failed")
     samples = value.get("samples_bytes")
     require(isinstance(samples, list) and 15 <= len(samples) <= 120
             and all(type(n) is int and 0 < n < limit * 1048576 * 0.9 for n in samples)
@@ -161,7 +158,7 @@ def check(candidate, evidence, memory_limit_mb, writer, *, maximum_age_seconds=3
     restore = unwrap(reference(proof["restore"]))
     require(restore["commit_sha256"] == summary["accepted_backup"]["commit_sha256"]
             and restore.get("destination") == str(homes / "r") and restore.get("file_dependencies_verified") is True
-            and uint(restore.get("verified_atoms")) >= 0, "The selected immutable log chain did not restore completely")
+            and uint(restore.get("verified_records")) >= 0, "The selected immutable log chain did not restore completely")
     provider = reference(proof["provider_accounting"])
     require(provider.get("source") == evidence["source_git_oid"] and provider.get("environment") == "dev"
             and provider.get("scope") == "selected-accepted-closures"

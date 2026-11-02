@@ -17,8 +17,8 @@
 # Never touches the live primary home:
 #   - the dev home is compared by realpath against the primary before any
 #     create, boot, or delete, and a symlinked dev home is refused;
-#   - the node is always started with --data-dir <dev home>, and LASTDB_HOME /
-#     FOLDDB_HOME are overridden to the dev home for that process;
+#   - the node is always started with --data-dir <dev home>, and LASTDB_HOME
+#     is overridden to the dev home for that process;
 #   - the dev home holds no primary credentials, so the dev node can never
 #     publish backups as the primary;
 #   - stop/reset only signal a pid this tool started, and only after its argv
@@ -251,8 +251,8 @@ memory_preflight() {
 
 # ---------- primary env mirror ----------
 # Shared with lastdb-safe-upgrade (HR-N1): a probe that boots without the
-# primary's LASTDB_* env is not running the primary's database — e.g. the
-# atom key encoding var decides whether 950k atom bodies are addressable.
+# primary's LASTDB_* env is not running the primary's database — e.g.
+# LASTDB_MAX_FIELD_VALUE_BYTES decides which field values the node accepts.
 # Never invent a second env-mirror; source the one the upgrade path uses.
 LIVE_ENV_SH="$ROOT/skills/lastdb-safe-upgrade/scripts/live-lastdb-env.sh"
 mirror_env_lines() {
@@ -266,7 +266,7 @@ mirror_env_lines() {
       | awk -F' = ' '
           $1 ~ /^ *LASTDB_/ {
             key=$1; gsub(/^ +| +$/,"",key)
-            if (key == "LASTDB_HOME" || key == "FOLDDB_HOME" || key == "LASTDB_DATA_DIR") next
+            if (key == "LASTDB_HOME" || key == "LASTDB_DATA_DIR") next
             val=$2; gsub(/^ +| +$/,"",val)
             if (key != "" && val != "") print key "=" val
           }'
@@ -435,7 +435,7 @@ EOF_ENV
   ' lastdb-dev-waiter "$LOG" "$PIDFILE" "$STATE/exit_status" \
     env -u SENTRY_DSN -u FOLD_SENTRY_DSN -u OBS_SENTRY_DSN \
     ${env_pairs[@]+"${env_pairs[@]}"} \
-    LASTDB_HOME="$DEV_HOME" FOLDDB_HOME="$DEV_HOME" \
+    LASTDB_HOME="$DEV_HOME" \
     "$bin" --data-dir "$DEV_HOME" >/dev/null 2>&1 &
   disown $! 2>/dev/null || true
   i=0
@@ -551,7 +551,6 @@ print_env() {
   cat <<EOF
 export LASTDB_DEV_ACTIVE=1
 export LASTDB_HOME='$DEV_HOME'
-export FOLDDB_HOME='$DEV_HOME'
 export LASTDB_SOCKET_PATH='$SOCK'
 export FOLDDB_SOCKET_PATH='$SOCK'
 export FBRAIN_FOLDDB_SOCKET='$SOCK'

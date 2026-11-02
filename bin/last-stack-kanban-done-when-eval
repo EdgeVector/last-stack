@@ -114,37 +114,37 @@ if [[ "$predicate" == *" AND "* ]]; then
   while :; do
     case "$rest" in
       *" AND "*)
-        atom="${rest%%" AND "*}"
+        side="${rest%%" AND "*}"
         rest="${rest#*" AND "}"
         ;;
       *)
-        atom="$rest"
+        side="$rest"
         rest=""
         ;;
     esac
     # Trim surrounding whitespace.
-    atom="${atom#"${atom%%[![:space:]]*}"}"
-    atom="${atom%"${atom##*[![:space:]]}"}"
-    if [ -z "$atom" ]; then
+    side="${side#"${side%%[![:space:]]*}"}"
+    side="${side%"${side##*[![:space:]]}"}"
+    if [ -z "$side" ]; then
       echo "malformed: empty side in compound DONE-WHEN predicate: $predicate"
       malformed_marker
       exit 2
     fi
     if [ "$check" = 1 ]; then
-      atom_out="$("$0" --check --predicate "$atom")"
+      side_out="$("$0" --check --predicate "$side")"
     else
-      atom_out="$("$0" --kind "${kind:-validation}" --predicate "$atom")"
+      side_out="$("$0" --kind "${kind:-validation}" --predicate "$side")"
     fi
-    atom_rc=$?
+    side_rc=$?
     # Only the whole predicate gets a marker line; drop the side's own.
-    atom_out="$(printf '%s\n' "$atom_out" | grep -v '^DONE-WHEN-MALFORMED:' || true)"
-    printf '  [%s] %s\n' "$atom_rc" "$atom_out"
-    if [ "$atom_rc" -eq 2 ]; then
-      echo "malformed: compound DONE-WHEN has an unsupported side: $atom"
+    side_out="$(printf '%s\n' "$side_out" | grep -v '^DONE-WHEN-MALFORMED:' || true)"
+    printf '  [%s] %s\n' "$side_rc" "$side_out"
+    if [ "$side_rc" -eq 2 ]; then
+      echo "malformed: compound DONE-WHEN has an unsupported side: $side"
       malformed_marker
       exit 2
     fi
-    if [ "$atom_rc" -ne 0 ]; then
+    if [ "$side_rc" -ne 0 ]; then
       overall=1
     fi
     [ -n "$rest" ] || break

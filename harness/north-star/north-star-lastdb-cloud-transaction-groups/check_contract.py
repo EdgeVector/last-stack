@@ -20,9 +20,7 @@ SHA_RE = re.compile(r"[0-9a-f]{64}")
 SOAK_SECONDS = 24 * 60 * 60
 PRIMARY_MARKERS = (
     "/.lastdb",
-    "/.folddb",
     "~/.lastdb",
-    "~/.folddb",
     "BEGIN PRIVATE",
     "BEGIN OPENSSH",
     "AKIA",

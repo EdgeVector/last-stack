@@ -1,9 +1,12 @@
 """Review every changed format, writer, crypto, dependency, and build Git object."""
+import hashlib
+import json
 from pathlib import Path
 from native_upgrade_common import require
 from native_v2_release import git
 from native_run_v2_inputs import read
-from native_run_v2_maintenance_blobs import REVIEWED_SOURCE, REVIEWED_TREE, EXACT_CHANGES
+from native_run_v2_maintenance_blobs import (REVIEWED_CHANGES_SHA256, REVIEWED_PATHS, REVIEWED_SOURCE,
+                                             REVIEWED_TREE)
 
 BASELINE = "1a8d65daa6477f386c446c106c92fb587396b22f"
 BASELINE_PROGRAMS = {
@@ -22,12 +25,12 @@ def tree(repo, source):
 
 
 def check(evidence):
-    return check_reviewed(evidence, REVIEWED_SOURCE, REVIEWED_TREE, EXACT_CHANGES)
+    return check_reviewed(evidence, REVIEWED_SOURCE, REVIEWED_TREE, REVIEWED_PATHS, REVIEWED_CHANGES_SHA256)
 
 
-def check_reviewed(evidence, reviewed_source, reviewed_tree, exact_changes):
+def check_reviewed(evidence, reviewed_source, reviewed_tree, reviewed_paths, reviewed_changes_sha256):
     source, repo = evidence["source_git_oid"], evidence["source_repository"]
-    require(reviewed_source is not None and reviewed_tree is not None and bool(exact_changes),
+    require(reviewed_source is not None and reviewed_tree is not None and reviewed_paths > 0,
             "The ordinary RunV2 maintenance source review is incomplete")
     require(source == reviewed_source and git(repo, "rev-parse", source + "^{tree}").decode().strip() == reviewed_tree,
             "The candidate is outside the closed maintenance source review")
@@ -35,7 +38,9 @@ def check_reviewed(evidence, reviewed_source, reviewed_tree, exact_changes):
     changes = {p: [before.get(p), after.get(p)] for p in before.keys() | after.keys()
                if before.get(p) != after.get(p)}
     proof = read(evidence["compatibility_record"], 512 * 1024, evidence["compatibility_sha256"])
-    require(changes == exact_changes and proof.get("reviewed_changes") == changes
+    changes_sha256 = hashlib.sha256(json.dumps(changes, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    require(len(changes) == reviewed_paths and changes_sha256 == reviewed_changes_sha256
+            and proof.get("reviewed_changes") == changes
             and proof.get("baseline") == BASELINE and proof.get("candidate") == source
             and proof.get("source_reviewed") is True and proof.get("no_native_format_change") is True
             and proof.get("primary_restore_or_migration") is False,

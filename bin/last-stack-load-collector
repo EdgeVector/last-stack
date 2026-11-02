@@ -34,7 +34,6 @@ Env (defaults):
   LOAD_MON_ALERT_CPU_CONSEC    5
   LOAD_MON_ALERT_FOOTPRINT_MB  13107  lastdbd phys_footprint (guard ceiling 16384)
   LOAD_MON_ALERT_FOOTPRINT_CONSEC 3
-  LOAD_MON_ALERT_LANES_CONSEC  2       passes with an unhealthy or quarantined persist lane
   LOAD_MON_ALERT_GOV_CONSEC    3       passes with the memory governor latched purge-failed
                                        (independent of footprint — fires even when phys_
                                        footprint stays under the footprint-high gate)
@@ -149,7 +148,6 @@ CPU_PCT = envf("LOAD_MON_ALERT_CPU_PCT", 100)
 CPU_CONSEC = int(envf("LOAD_MON_ALERT_CPU_CONSEC", 5))
 FP_MB = envf("LOAD_MON_ALERT_FOOTPRINT_MB", 13107)  # 80% of the 16 GiB guard
 FP_CONSEC = int(envf("LOAD_MON_ALERT_FOOTPRINT_CONSEC", 3))
-LANES_CONSEC = int(envf("LOAD_MON_ALERT_LANES_CONSEC", 2))
 GOV_CONSEC = int(envf("LOAD_MON_ALERT_GOV_CONSEC", 3))
 SWAP_MB = envf("LOAD_MON_ALERT_SWAP_MB", 20480)
 SWAP_CONSEC = int(envf("LOAD_MON_ALERT_SWAP_CONSEC", 3))
@@ -158,9 +156,6 @@ LOAD_CONSEC = int(envf("LOAD_MON_ALERT_LOAD_CONSEC", 5))
 HOG_PCT = envf("LOAD_MON_ALERT_HOG_PCT", 90)
 HOG_CONSEC = int(envf("LOAD_MON_ALERT_HOG_CONSEC", 15))
 COOLDOWN = envf("LOAD_MON_ALERT_COOLDOWN_SEC", 1800)
-# lastdbd refuses to load a cold group over its cap (LASTSTORE_COLD_GROUP_TOO_LARGE); warn at 90%
-COLD_CAP_BYTES = int(envf("LOAD_MON_COLD_GROUP_CAP_BYTES", 2147483648))
-COLD_WARN_PCT = envf("LOAD_MON_ALERT_COLD_GROUP_PCT", 90)
 # The routines fleet-freeze watchdog is the only detector that is not dispatched BY
 # routinesd, so it is the only one that can report a scheduler freeze. It is also
 # labelled com.edgevector.routines-freeze-watch, which puts it inside the family an
@@ -378,7 +373,6 @@ def host_sample():
             continue
     rows.sort(key=lambda r: r[1], reverse=True)
     h["top"] = [[p, c, r, os.path.basename(n)] for p, c, r, n in rows[:12]]
-    h["cold_group"] = cold_group_max()
     h["lastdbd"] = None
     h["lastdbd_other"] = []
     cands = [r for r in rows if os.path.basename(r[3]) == "lastdbd"]
@@ -402,29 +396,6 @@ def host_sample():
     return h
 
 
-def cold_group_max(data_root=None):
-    """Largest keep_small group dir in bytes, from stat only (about 20 files). Never raises."""
-    root = os.path.join(data_root or host_path("LOAD_MON_DATA_ROOT", os.path.join(HOME, ".lastdb/data/data")), "keep_small")
-    best = None
-    try:
-        for shard in os.scandir(root):
-            g = os.path.join(shard.path, "g")
-            if not os.path.isdir(g):
-                continue
-            for grp in os.scandir(g):
-                total = 0
-                with os.scandir(grp.path) as it:
-                    for i, f in enumerate(it):
-                        if i >= 5000:  # bound the walk
-                            break
-                        total += f.stat().st_size
-                if best is None or total > best[1]:
-                    best = (grp.name, total)
-    except OSError:
-        return None
-    return {"group": best[0], "bytes": best[1]} if best else None
-
-
 def status_vitals(buf):
     """Compact node internals from the /api/status body. Never raises."""
     try:
@@ -435,15 +406,7 @@ def status_vitals(buf):
         mb = st.get("memory_budget") or {}
         qos = st.get("qos") or {}
         uds = st.get("uds") or {}
-        lanes = (st.get("request_ops") or {}).get("persist_lanes") or []
-        res = st.get("resident") or {}
         return {
-            # write-path health: a node can answer /api/status "ok" while persist lanes refuse writes
-            "pl_unhealthy": sum(int(l.get("unhealthy_lanes") or 0) for l in lanes),
-            "pl_quarantined": sum(1 for l in lanes if l.get("quarantined")),
-            "pl_breaker": sum(int(l.get("breaker_trips") or 0) for l in lanes),
-            "pl_fail": res.get("persist_lane_failures"),
-            "dp_failed": res.get("deferred_persist_failed"),
             "fp_mb": int((st.get("phys_footprint_bytes") or 0) / 1048576),
             "cpu": st.get("cpu_percent"),
             "up_s": st.get("uptime_secs"),
@@ -1098,7 +1061,7 @@ def dispatch_frozen(now, watchdog_down):
 #
 # severity_hint is `warn` only where the system is REFUSING work or has become
 # UNREPORTABLE — a state an operator must act on, not a threshold crossing. Every
-# pressure rule (swap, load, hog, footprint, cpu, cold-group) stays `info`,
+# pressure rule (swap, load, hog, footprint, cpu) stays `info`,
 # because those fire on a bound being crossed and recover on their own. Disagree
 # with that criterion rather than with any single row.
 ALERT_SCOPE = {
@@ -1106,11 +1069,9 @@ ALERT_SCOPE = {
     "fleet_dispatch_frozen":           (("routinesd",), "other",   "warn"),
     "fleet_freeze_watchdog_down":      (("routinesd",), "other",   "warn"),
     "registry_delivery_frozen":        (("host-track",), "other",  "warn"),
-    "lastdb_persist_lanes_unhealthy":  (("lastdbd",),   "other",   "warn"),
     "lastdb_governor_purge_failed":    (("lastdbd",),   "other",   "warn"),
     "node_unresponsive":               (("lastdbd",),   "other",   "warn"),
     "lastdbd_restarted":               (("lastdbd",),   "restart", "info"),
-    "lastdb_cold_group_near_cap":      (("lastdbd",),   "other",   "info"),
     "lastdbd_footprint_high":          (("lastdbd",),   "other",   "info"),
     "lastdbd_cpu_high":                (("lastdbd",),   "other",   "info"),
     "host_swap_high":                  (("host",),      "other",   "info"),
@@ -1184,8 +1145,6 @@ def evaluate_alerts(rec, now):
     st["cpu_hot"] = st.get("cpu_hot", 0) + 1 if hot else 0
     v = rec["node"]["status"].get("vitals") or {}
     st["fp_hot"] = st.get("fp_hot", 0) + 1 if (v.get("fp_mb") or 0) >= FP_MB else 0
-    lanes_bad = bool(v.get("pl_unhealthy") or v.get("pl_quarantined"))
-    st["lanes_bad"] = st.get("lanes_bad", 0) + 1 if lanes_bad else 0
     # Gated on the STATE, not a duration field (the collector has none from
     # vitals) and not a bare bool: governor_state is reassigned every tick from
     # whether the LATEST purge succeeded, so a one-tick "purge-failed" reading is
@@ -1206,9 +1165,6 @@ def evaluate_alerts(rec, now):
             restart_msg = "lastdbd restarted: pid %s -> %s (node up %s)" % (
                 old, prim, "%ss" % v["up_s"] if v.get("up_s") is not None else "unknown")
         st["lastdbd_pid"] = prim
-    cold = rec["host"].get("cold_group")
-    cold_hot = bool(cold) and cold["bytes"] >= COLD_CAP_BYTES * COLD_WARN_PCT / 100
-    st["cold_hot"] = st.get("cold_hot", 0) + 1 if cold_hot else 0
     hog = next(((t[3], t[1]) for t in rec["host"].get("top") or [] if t[0] != prim), None)
     hog_name = hog[0] if hog and hog[1] >= HOG_PCT else None
     st["hog_hot"] = st.get("hog_hot", 0) + 1 if hog_name and hog_name == st.get("hog_name") else (1 if hog_name else 0)
@@ -1241,9 +1197,6 @@ def evaluate_alerts(rec, now):
         ("registry_delivery_frozen", st["frontier_frozen"] >= FRONTIER_CONSEC,
          "registry delivery frozen for %d passes: %s"
          % (st["frontier_frozen"], frozen_why)),
-        ("lastdb_cold_group_near_cap", st["cold_hot"] >= 2,
-         "keep_small group %s is %s MB of the %d MB cold-load cap (>= %d%%): the node refuses to load it over the cap"
-         % (cold and cold["group"], cold and cold["bytes"] // 1048576, COLD_CAP_BYTES // 1048576, COLD_WARN_PCT)),
         ("host_swap_high", st["swap_hot"] >= SWAP_CONSEC,
          "host swap %s MB >= %d MB for %d passes" % (swap, SWAP_MB, st["swap_hot"])),
         ("host_load_high", st["load_hot"] >= LOAD_CONSEC,
@@ -1258,10 +1211,6 @@ def evaluate_alerts(rec, now):
          % (st["gov_bad"], FP_MB)),
         ("lastdbd_footprint_high", st["fp_hot"] >= FP_CONSEC,
          "lastdbd footprint %s MB >= %d MB for %d passes (gov=%s)" % (v.get("fp_mb"), FP_MB, st["fp_hot"], v.get("gov"))),
-        ("lastdb_persist_lanes_unhealthy", st["lanes_bad"] >= LANES_CONSEC,
-         "LastDB persist lanes refuse writes for %d passes: unhealthy=%s quarantined=%s breaker_trips=%s failures=%s "
-         "(status can still read ok; this is the write path)"
-         % (st["lanes_bad"], v.get("pl_unhealthy"), v.get("pl_quarantined"), v.get("pl_breaker"), v.get("pl_fail"))),
         ("node_unresponsive", st["node_bad"] >= NODE_CONSEC,
          "LastDB node %s (%s) for %d passes"
          % (rec["node"]["status"]["state"], rec["node"]["status"].get("reason", ""), st["node_bad"])),

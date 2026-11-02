@@ -245,7 +245,6 @@ def verify(path, expected):
                 "verify query for %s returned status %r" % (schema, item.get("status") if type(item) is dict else None))
         value = item.get("response")
         require(type(value) is dict and value.get("ok") is True)
-        require(type(value.get("unresolved_rows")) is int and value["unresolved_rows"] == 0)
         require(value.get("has_more") is False and value.get("next_cursor") is None)
         require(not value.get("truncated", False) and not value.get("continuation"))
         require(type(value.get("results")) is list)

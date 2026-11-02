@@ -13,8 +13,8 @@
 
 live_lastdb_env_pairs() {
   # LASTDB_* EnvironmentVariables from the live LaunchAgent plist, KEY=VAL per
-  # line, so probe nodes boot with the primary's tuning (warm budget, atom
-  # limit, …). Without this, probes measure default-config behavior the live
+  # line, so probe nodes boot with the primary's tuning (warm budget, field
+  # value limit, …). Without this, probes measure default-config behavior the live
   # node does not have (e2e 2026-07-28: probe scan 43s vs live ~23s purely from
   # the missing 4 GiB LASTDB_HASH_GROUP_WARM_BYTES). HOME-shaped keys and
   # LASTDB_BUILD_CONFLICT_STAMP_ON_COPY are excluded — the probe must only
@@ -25,7 +25,7 @@ live_lastdb_env_pairs() {
     | awk -F' = ' '
         $1 ~ /^ *LASTDB_/ {
           key=$1; gsub(/^ +| +$/,"",key)
-          if (key == "LASTDB_HOME" || key == "FOLDDB_HOME" || key == "LASTDB_DATA_DIR" || key == "LASTDB_BUILD_CONFLICT_STAMP_ON_COPY") next
+          if (key == "LASTDB_HOME" || key == "LASTDB_DATA_DIR" || key == "LASTDB_BUILD_CONFLICT_STAMP_ON_COPY") next
           val=$2; gsub(/^ +| +$/,"",val)
           if (key != "" && val != "") print key "=" val
         }'

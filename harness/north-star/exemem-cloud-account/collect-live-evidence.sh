@@ -38,7 +38,7 @@ if [ -z "$HOME_DIR" ]; then
 fi
 resolved="$(cd "$HOME_DIR" 2>/dev/null && pwd -P || printf '%s\n' "$HOME_DIR")"
 case "$resolved" in
-  "$HOME/.lastdb"|"$HOME/.lastdb/"*|"$HOME/.folddb"|"$HOME/.folddb/"*)
+  "$HOME/.lastdb"|"$HOME/.lastdb/"*)
     echo "refusing primary brain path: $resolved" >&2
     exit 2
     ;;

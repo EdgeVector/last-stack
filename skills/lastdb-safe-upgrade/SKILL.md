@@ -4,7 +4,7 @@ description: |
   Required path for a primary LastDB Mini version change. The driver boots
   the exact candidate on a copy of a small synthetic seed. It never copies the
   primary database and never runs a node on a copy of it (Tom, 2026-10-12). It
-  requires keyed reads, read latency, memory and persist status checks, and a
+  requires keyed reads, read latency, memory checks, and a
   source-free restore of an exact DEV snapshot of the seed before a live
   cutover. It then requires a current cloud backup (the recovery point), a
   strict stopped flush receipt, supervised live health, and a cloud frontier
@@ -272,9 +272,7 @@ A synthetic compatibility check cannot prove that all primary data is readable.
 5. The candidate must pass the memory guard with ten percent headroom.
    The check retains the 45-second settle and 15-second memory observation.
    The live memory guard and five-minute status soak remain required.
-   Native writer, maintenance, reclaim, persist status, and fresh status samples must pass.
-   The retired LastStore `keep_small` meter does not describe native files.
-   Native status replaces that meter gate on this route only.
+   Native writer, maintenance, reclaim, and fresh status samples must pass.
    The old primary can retain a past maintenance failure count after a successful
    pack clears its current error. The route records that count with the exact old
    session. It refuses any later increase before stop or during recovery of the
@@ -669,10 +667,6 @@ The live cutover has no rollback copy of the primary. See
    candidate's own hot probe numbers (`LASTDB_LIVE_LAT_ENFORCE=1` makes
    either RED). The bar also checks correlated hot-operation regressions and
    avoids a cold sub-floor baseline as a raw ratio denominator.
-7c. **Candidate persist status:** the candidate serves `/api/status` on
-   the real copy. The driver requires both persist failure gauges to exist
-   and equal zero. This check reads status. It does not write a scratch card.
-   The memory guard and live status checks remain required.
 8. **Candidate-class bar (no debug / dirty / oversized):** before backup or
    probe, refuse candidates that look like a Cargo **debug** build
    (`…/target/debug/…`), a **-dirty** version stamp (uncommitted tree at
@@ -715,7 +709,7 @@ The live cutover has no rollback copy of the primary. See
     `.cloud_sync.json.tmp*` residue, and the `.cloud_resume_required`,
     `.cloud_resume_requested`, and `.cloud_resume_ready` markers. It does this
     before DEV connect. It unsets
-    `LASTDB_HOME`, `FOLDDB_HOME`, and `FOLD_SYNC_DEVICE_ID` for connect, daemon
+    `LASTDB_HOME` and `FOLD_SYNC_DEVICE_ID` for connect, daemon
     start, and snapshot.
 
     The candidate deployment check reads a separate copy of the same trial
@@ -1010,13 +1004,13 @@ The script:
 | **1. Trial home** | Every run clones the cached synthetic seed (never the primary) under `${TMPDIR}/lastdb-safe-upgrade-rollback-<uid>/trial-<new>-from-<old>-<ts>/`. A clone error is RED. The trial home is not a rollback point. |
 | **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before any probe) |
 | **0b. Candidate data** | Build or reuse the synthetic seed (baseline writes it); candidate copies come from the trial home. |
-| **2. Candidate check** | Boot the exact candidate on a copy of the synthetic seed. Require schemas, the keyed brain point record, the brain range, a LastSecrets locator, stable primary PID, and memory size below the guard. The driver checks candidate persist status, read latency, and record counts on synthetic seed copies. |
+| **2. Candidate check** | Boot the exact candidate on a copy of the synthetic seed. Require schemas, the keyed brain point record, the brain range, a LastSecrets locator, stable primary PID, and memory size below the guard. The driver checks read latency and record counts on synthetic seed copies. |
 | Detect venue | programs (format 7 V2), sidebin or brew |
 | **2c. DEV photograph proof** | The exact pair clones the trial copy, scrubs production state, connects the copied identity to DEV, and publishes a snapshot. The exact CLI restores that manifest from DEV into a source-free home. The fresh v3 receipt must match this Loom execution, this run's trial copy, and the retained restore report. On the format 7 V2 route the exact pair instead publishes a `backup-v2` snapshot of a trial clone to DEV, restores that commit into a source-free home, and reads every known seed key there (receipt v5). |
-| **2d. Meter restart bar** | Read live status before restart. Refuse a `keep_small` plane above 1.5 GiB or a failed persist lane. The 2 GiB cold-group cap can prevent both new and old binaries from booting. |
+| **2d. Pre-live status bar** | Read live status before restart. On the format 7 V2 route, refuse an automatic backup that is off, unobserved, degraded, or has no accepted backup. On other routes, refuse a status that is not ok or a home that is not writable. |
 | **3. Live** | Refuse brew. For sidebin, write the boot-ledger restart intent. Stage and check both candidate files. Require a current cloud backup. Stop the old daemon without a forced kill. Require its exact flush receipt and clean session. No copy of the primary is made. Then replace the saved binary pair and reload the LaunchAgent job. |
 | **4. Post-check** | Exact installed pair hashes, live `/health`, schemas > 0, the live read mode classified before install (Board title, or one brain record plus one LastSecrets locator), **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **live peak RSS** vs guard, **live point-read latency** vs the candidate's probe numbers (the live range read has no known key and stays unmeasured) (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency in notice |
-| **4a. Live soak** | Keep checking for at least five minutes by default. `--zero-live-soak` removes only that minimum. At least one fresh GREEN status sample remains required. Check persist failures, write access, and meter size on each status sample. If Cloud Sync was on before cutover, require the cloud frontier to stay at or beyond its pre-live value. A failed or stale bar is RED. |
+| **4a. Live soak** | Keep checking for at least five minutes by default. `--zero-live-soak` removes only that minimum. At least one fresh GREEN status sample remains required. Check the status bar on each status sample. If Cloud Sync was on before cutover, require the cloud frontier to stay at or beyond its pre-live value. A failed or stale bar is RED. |
 | **4b. Release** | The exact owned seed and trial stay through all Loom, proof, and recovery consumers. After consumer closure and driver exit, the operator preserves the public proof and uses the exact-container cleanup route. No sibling sweep runs. |
 | RED | Exit 1. No copy of the primary exists; recovery is the saved binary pair, then `lastdb restore` of the cloud backup. A class, probe or cloud-recovery-point failure leaves the primary unchanged. |
 

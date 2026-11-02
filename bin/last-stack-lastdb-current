@@ -257,7 +257,7 @@ check_current() {
 # 2026-08-01 the primary ran a CLI and a daemon 170 commits and two days apart
 # in one `current` dir; this command printed five oks. The consequence was not
 # cosmetic: `lastdb db order-log-audit` -- the detector shipped to measure a
-# known 458-molecule / 464,378-entry order-log truncation on that very node --
+# known 458-key / 464,378-entry order-log truncation on that very node --
 # existed in the daemon and not in the installed CLI, so the damage sat
 # unmeasured and the operator got `unrecognized subcommand`.
 #

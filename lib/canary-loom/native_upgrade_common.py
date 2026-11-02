@@ -24,6 +24,11 @@ def run(argv, timeout=30, check=True, env=None):
     return result
 
 
+def path_id(name):
+    """SHA-256 of one Git tree path; reviewed path tables key on it."""
+    return hashlib.sha256(name.encode()).hexdigest()
+
+
 def sha(path):
     result = hashlib.sha256()
     with Path(path).open("rb") as stream:
@@ -132,9 +137,6 @@ def _current_health(sock, version=None, pid=None):
     sampled = status.get("sampled_at")
     require(type(sampled) is int and 0 <= time.time() - sampled <= 300,
             "The status sample is absent, future, or stale")
-    resident = status.get("resident", {})
-    require(resident.get("persist_lane_failures") == 0 and resident.get("deferred_persist_failed") == 0,
-            "The persist status failure gauges are absent or nonzero")
     if sync is not None:
         require(sync.get("local_writable") is True, "The native home is not writable")
     native = call(sock, "/api/db/native-status")["native_disk"]
@@ -245,7 +247,7 @@ def exact_read(sock, schema, fields, keys, expected):
                   "filter": ({"HashKey": keys[0]} if len(keys) == 1 else
                              {"HashRangeKeys": [[key, ""] for key in keys]}),
                   "limit": len(keys)})
-    require(not result.get("unresolved_rows", 0) and not result.get("has_more", False),
+    require(not result.get("has_more", False),
             "The exact keyed read is incomplete")
     found = {row["key"]["hash"]: row["fields"] for row in result.get("results", [])}
     require(len(found) == len(result.get("results", [])) and found == expected,
