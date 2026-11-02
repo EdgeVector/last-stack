@@ -200,12 +200,10 @@ def read_stamp(path: Path) -> dict[str, Any]:
 
 def installed_heads() -> tuple[dict[str, str], dict[str, Any]]:
     home = Path.home()
-    stamps = home / ".host-track/stamps"
-    heads = {
-        "fkanban": str(read_stamp(stamps / "kanban.json").get("source_oid", "")),
-        "last-stack": str(read_stamp(stamps / "last-stack.json").get("source_oid", "")),
-        "routines": str(read_stamp(stamps / "routines.json").get("source_oid", "")),
-    }
+    rows = parse_json(run(['lastdb', 'app', 'status', '--check', '--json'], timeout=180).stdout, 'registry status')
+    by_app = {row['app']: row for row in rows if row.get('state') == 'current'}
+    heads = {repo: str(by_app.get(app, {}).get('installed_release', ''))
+             for repo, app in (('fkanban', 'kanban'), ('last-stack', 'last-stack'), ('routines', 'routines'))}
     status = parse_json(run(["lastdb", "status", "--json"], timeout=60).stdout, "lastdb status")
     build = str(status.get("daemon_build", ""))
     match = re.search(r"g([0-9a-f]{7,40})$", build)
@@ -249,7 +247,7 @@ def installed_root(app: str) -> Path:
     if app == "last-stack":
         return Path.home() / ".local/state/last-stack/artifacts/current"
     if app == "routines":
-        return Path.home() / ".host-track/apps/routines/current"
+        return Path.home() / ".local/share/lastdb-apps/routines/current/source"
     raise ProofError(f"unknown installed app: {app}")
 
 

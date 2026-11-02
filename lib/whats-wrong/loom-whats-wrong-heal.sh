@@ -119,24 +119,14 @@ def mechanical_heal(eid):
                 return "blocked", f"4778 still down: {e3}", "papercut-whats-wrong-routines-web-hung"
 
     if eid == "app.last-stack":
-        exe = shutil.which("host-track") or os.path.join(home, ".local/bin/host-track")
-        if not os.path.isfile(exe):
-            return "blocked", "host-track missing", ""
-        run([exe, "refresh", "last-stack"], 180)
-        r = run([exe, "status", "last-stack", "--json"], 30)
-        if r and r != "timeout" and r.stdout:
-            try:
-                d = json.loads(r.stdout)
-                if d.get("freshness") == "fresh" and d.get("stale") is False:
-                    return "healed", f"host_head={d.get('host_head')}", ""
-                return (
-                    "papercut",
-                    f"still {d.get('freshness')} host={str(d.get('host_head') or '')[:12]} gate={str(d.get('gate_head') or '')[:12]}",
-                    "papercut-lastgit-artifact-promote-requires-ci-on-merge-oid",
-                )
-            except json.JSONDecodeError:
-                pass
-        return "noop", "host-track refresh did not report fresh", ""
+        exe = shutil.which("lastdb") or os.path.join(home, ".local/bin/lastdb")
+        run([exe, "app", "upgrade", "last-stack"], 600)
+        r = run([exe, "app", "status", "last-stack", "--check", "--json"], 90)
+        if r and r != "timeout" and r.returncode == 0:
+            rows = json.loads(r.stdout)
+            if rows and all(row.get('state') == 'current' for row in rows):
+                return "healed", "registry source and probes are current", ""
+        return "blocked", "registry app health requires attention", ""
 
     if eid in ("machine.disk-lastdb", "machine.disk"):
         rec = which_ls("last-stack-worktree-reclaim")

@@ -22,7 +22,7 @@ set -uo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 
 stock_gate="${LAST_STACK_PICKUP_GATE:-$HOME/.last-stack/bin/last-stack-kanban-pickup-gate}"
-kick="${LOOM_KICKOFF:-$HOME/.host-track/apps/loom/current/scripts/loom-land-card-kickoff.sh}"
+kick="${LOOM_KICKOFF:-$HOME/.local/share/lastdb-apps/loom/current/source/scripts/loom-land-card-kickoff.sh}"
 log_root="${LOOM_KICKOFF_LOG_ROOT:-$HOME/.loom/kickoffs}"
 heartbeat_bin="${LAST_STACK_HEARTBEAT_BIN:-$HOME/.last-stack/bin/last-stack-brain-append-heartbeat}"
 

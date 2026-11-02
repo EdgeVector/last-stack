@@ -197,7 +197,7 @@ LAUNCHCTL = os.environ.get("LOAD_MON_LAUNCHCTL", "/bin/launchctl")
 # discriminator is that fix's own function name, the grep the papercut prescribes.
 FW_TWO_SOURCE_MARK = os.environ.get("LOAD_MON_FREEZE_WATCH_FIX_MARK", "newestDaemonDispatchAt")
 FW_ROUTINES_BIN = host_path(
-    "LOAD_MON_ROUTINES_BIN", os.path.join(HOME, ".host-track/apps/routines/current/dist/routines"))
+    "LOAD_MON_ROUTINES_BIN", os.path.join(HOME, ".local/bin/routines"))
 FW_DAEMON_LOG = host_path(
     "LOAD_MON_ROUTINESD_LOG", os.path.join(HOME, ".routines/daemon/routinesd.err.log"))
 FW_HEARTBEAT_LOG = host_path(
@@ -1173,7 +1173,7 @@ def evaluate_alerts(rec, now):
     st["fw_down"] = st.get("fw_down", 0) + 1 if fw_why else 0
     dispatch_why = guarded(lambda: dispatch_frozen(now, fw_why), None)
     st["dispatch_frozen"] = st.get("dispatch_frozen", 0) + 1 if dispatch_why else 0
-    frozen_why = guarded(lambda: frontier_frozen(now), None)
+    frozen_why = None  # The artifact-frontier controller is retired.
     st["frontier_frozen"] = st.get("frontier_frozen", 0) + 1 if frozen_why else 0
     paused_why = guarded(lambda: fleet_mass_paused(), None)
     st["fleet_paused"] = st.get("fleet_paused", 0) + 1 if paused_why else 0

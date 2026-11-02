@@ -2,7 +2,7 @@
 # Read a routine prompt through one guarded path: freshness first, then file read.
 #
 # One rule: when Last Stack is Host Track artifact-backed, the only upgrade path
-# is `host-track refresh last-stack`. Git self-upgrade / dirty-tree repair is
+# is `lastdb app upgrade last-stack`. Git self-upgrade / dirty-tree repair is
 # never used for that runtime (agents must develop in a worktree, not ~/.last-stack).
 #
 # Legacy checkout installs still attempt clean/self-upgrade before failing closed.
@@ -19,17 +19,10 @@ ROOT="$(cd "$(dirname "$_self_src")/.." && pwd -P)"
 
 # True when compatibility layout is active (bin → .artifacts/current/bin) or the
 # resolved root already lives under the artifact versions tree.
-is_artifact_runtime() {
+is_registry_runtime() {
   case "$ROOT" in
-    */.last-stack/.artifacts/*|*/.artifacts/versions/*|*/.artifacts/current*) return 0 ;;
+    */lastdb-apps/last-stack/versions/*/source) return 0 ;;
   esac
-  compat_bin="${LAST_STACK_COMPAT_ROOT:-$HOME/.last-stack}/bin"
-  if [ -L "$compat_bin" ]; then
-    link="$(readlink "$compat_bin" 2>/dev/null || true)"
-    case "$link" in
-      */.artifacts/current/bin|*/.artifacts/current/bin/) return 0 ;;
-    esac
-  fi
   return 1
 }
 
@@ -69,7 +62,7 @@ FETCH_FAIL_STATE_FILE="$FETCH_FAIL_STATE_DIR/self-upgrade-fetch-fail.count"
 
 is_stale_status() {
   case "$1" in
-    UPGRADE_AVAILABLE*|GIT_UPDATE_AVAILABLE*|ARTIFACT_UPDATE_AVAILABLE*) return 0 ;;
+    UPGRADE_AVAILABLE*|GIT_UPDATE_AVAILABLE*|REGISTRY_UPDATE_AVAILABLE*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -85,10 +78,10 @@ stale_fail() {
     echo "LAST_STACK_ROUTINE_DETAIL_END" >&2
   fi
   case "$stale_status" in
-    ARTIFACT_UPDATE_AVAILABLE*)
-      echo "LAST_STACK_ROUTINE_REMEDIATION inspect: host-track status --json last-stack" >&2
-      echo "LAST_STACK_ROUTINE_REMEDIATION upgrade: host-track refresh last-stack" >&2
-      echo "LAST_STACK_ROUTINE_REMEDIATION rollback: host-track rollback last-stack" >&2
+    REGISTRY_UPDATE_AVAILABLE*)
+      echo "LAST_STACK_ROUTINE_REMEDIATION inspect: lastdb app status last-stack --check --json" >&2
+      echo "LAST_STACK_ROUTINE_REMEDIATION upgrade: lastdb app upgrade last-stack" >&2
+      echo "LAST_STACK_ROUTINE_REMEDIATION rollback: lastdb app rollback last-stack" >&2
       ;;
     *)
       echo "LAST_STACK_ROUTINE_REMEDIATION inspect: cd \"$ROOT\" && git status --short --untracked-files=no && git remote -v" >&2
@@ -175,58 +168,14 @@ defer_fetch_failed_upgrade() {
   exit 75
 }
 
-# Artifact runtime only for the *live* install tree (never fixture worktrees).
-# When active: host-track refresh only — never git self-upgrade / dirty-tree heal.
+# The registry updater owns activation. Routine readers verify the installed
+# source without fetching or changing an app while a claim is in progress.
 artifact_mode=0
-live_install=0
-compat_root="${LAST_STACK_COMPAT_ROOT:-$HOME/.last-stack}"
-compat_res="$(cd "$compat_root" 2>/dev/null && pwd -P || printf '%s\n' "$compat_root")"
-case "$ROOT" in
-  "$compat_root"|"$compat_root"/*|"$compat_res"|"$compat_res"/*) live_install=1 ;;
-  */.last-stack/.artifacts/*|*/.artifacts/versions/*|*/.artifacts/current*|*/.last-stack) live_install=1 ;;
-esac
-if is_artifact_runtime; then
-  live_install=1
-fi
-
-if { [ "$live_install" -eq 1 ] || [ "${LASTSTACK_USE_HOST_TRACK_STATUS:-0}" = "1" ]; } && \
-   [ "${LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK:-0}" != "1" ] && \
-   command -v host-track >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-  artifact_status="$(host-track status --json last-stack 2>/dev/null || true)"
-  if [ "$(printf '%s\n' "$artifact_status" | jq -r '.install_mode // ""' 2>/dev/null)" = "artifact" ]; then
-    artifact_mode=1
-    artifact_stale="$(printf '%s\n' "$artifact_status" | jq -r '.stale | tostring' 2>/dev/null)"
-    artifact_freshness="$(printf '%s\n' "$artifact_status" | jq -r '.freshness // ""' 2>/dev/null)"
-    local_manifest="$(printf '%s\n' "$artifact_status" | jq -r '.manifest_digest // ""' 2>/dev/null)"
-    channel_manifest="$(printf '%s\n' "$artifact_status" | jq -r '.channel_manifest_digest // ""' 2>/dev/null)"
-    update_status="$("$ROOT/bin/last-stack-update-check" 2>/dev/null || true)"
-    [ -n "$update_status" ] || update_status="ARTIFACT_UPDATE_AVAILABLE"
-    # Claim path must not run host-track refresh. LaunchAgent does promote
-    # and install. A check fail during pickup is either publish lag (proceed)
-    # or a tree that is not usable (fail closed).
-    check_err="$(mktemp "${TMPDIR:-/tmp}/last-stack-routine-read-check.XXXXXX")"
-    if host-track check last-stack >"$check_err" 2>&1; then
-      rm -f "$check_err"
-    else
-      check_detail="$(cat "$check_err" 2>/dev/null || true)"
-      rm -f "$check_err"
-      artifact_problem="$(printf '%s\n' "$artifact_status" | jq -r '.artifact_problem // empty' 2>/dev/null || true)"
-      if [ "$artifact_stale" = "false" ] || [ -n "$artifact_problem" ]; then
-        stale_fail "ARTIFACT_UPDATE_AVAILABLE" "check failed and the install is not usable. $check_detail"
-      fi
-      local_manifest_short="$(printf '%.12s' "$local_manifest")"
-      channel_manifest_short="$(printf '%.12s' "$channel_manifest")"
-      echo "LAST_STACK_ROUTINE_STALE_PROCEED $update_status freshness=${artifact_freshness:-unknown} local_manifest=$local_manifest_short channel_manifest=$channel_manifest_short; claim path does not run host-track refresh. $check_detail" >&2
-      echo "LAST_STACK_ROUTINE_STALE_PROCEED means: a newer last-stack artifact is published but still in its install soak; the text you read is the installed, usable version. The host-track refresh LaunchAgent installs the new one. Proceed. This is expected lag, not a defect: do not file a papercut for it." >&2
-    fi
-    clear_fetch_fail_streak
-    LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1
-  fi
-fi
-
-if [ "$live_install" -eq 1 ] && [ "$artifact_mode" -eq 0 ] && is_artifact_runtime; then
-  # Layout active but host-track status unavailable — still refuse git heal.
+if is_registry_runtime; then
   artifact_mode=1
+  if ! "$HOME/.local/bin/lastdb" --data-dir "$HOME/.lastdb" app status last-stack --check --json >/dev/null; then
+    stale_fail "REGISTRY_UNHEALTHY" "Installed registry source failed its health check."
+  fi
   LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1
 fi
 
@@ -303,8 +252,8 @@ fi
 if [ ! -r "$routine_path" ]; then
   echo "LAST_STACK_ROUTINE_MISSING routine=$routine path=$routine_path" >&2
   echo "The installed Last Stack runtime does not contain this routine prompt." >&2
-  if [ "$artifact_mode" -eq 1 ] || is_artifact_runtime; then
-    echo "Remediation: host-track refresh last-stack" >&2
+  if [ "$artifact_mode" -eq 1 ] || is_registry_runtime; then
+    echo "Remediation: lastdb app upgrade last-stack" >&2
     echo "Develop routine prompts in a last-stack worktree, not under ~/.last-stack." >&2
   else
     echo "If the install is clean, run: \"$ROOT/bin/last-stack-self-upgrade\"" >&2

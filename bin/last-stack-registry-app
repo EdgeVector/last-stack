@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Compatibility entrypoints for the native, signed app registry installer."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+
+def command(args, capture=False):
+    cli = Path.home() / '.local/bin/lastdb'
+    return subprocess.run([str(cli), '--data-dir', str(Path.home() / '.lastdb'),
+                           'app', *args], text=True, capture_output=capture, timeout=1800)
+
+
+def main(name=None):
+    name = name or Path(sys.argv[0]).name
+    args = sys.argv[1:]
+    if '-h' in args or '--help' in args:
+        print('Use lastdb app status [app] --check, app upgrade [app|--all], or app rollback <app>.')
+        return 0
+    if name == 'last-stack-update-check':
+        local = command(['status', 'last-stack', '--check', '--json'], True)
+        if local.returncode:
+            print('UNKNOWN')
+            return 0
+        rows = json.loads(local.stdout)
+        if len(rows) != 1 or rows[0].get('state') != 'current':
+            print('UNKNOWN')
+            return 0
+        receipt = rows[0]['receipt']
+        desired = command(['resolve', 'last-stack', '--channel', receipt['channel'],
+                           '--index', receipt['index'], '--json'], True)
+        if desired.returncode:
+            print('UNKNOWN')
+            return 0
+        sha = json.loads(desired.stdout)['sha']
+        print('UP_TO_DATE' if sha == receipt['sha'] else
+              f"REGISTRY_UPDATE_AVAILABLE local={receipt['sha']} desired={sha}")
+        return 0
+    if name == 'last-stack-class-a-heal':
+        # Native health checks and the updater own recovery; never repoint a
+        # registry current link from a second controller.
+        result = command(['status', 'last-stack', '--check', '--json'], True)
+        rows = json.loads(result.stdout) if result.returncode == 0 else []
+        ok = bool(rows) and all(row.get('state') == 'current' for row in rows)
+        report = {'ok': ok, 'result': 'healthy' if ok else 'error',
+                  'detail': 'registry-health', 'actions': []}
+        print(json.dumps(report) if '--json' in args else
+              f"LAST_STACK_CLASS_A_HEAL result={report['result']} detail=registry-health")
+        return 0 if ok else 1
+    if name == 'last-stack-safe-activate-cli':
+        if len(args) != 3 or args[0] not in ('status', 'rollback') or args[1] != '--app':
+            sys.stderr.write('Activation requires a signed registry listing; use lastdb app install.\n')
+            return 2
+        return command([args[0], args[2], *(['--check'] if args[0] == 'status' else [])]).returncode
+    if name in ('last-stack-self-upgrade', 'last-stack-install-routines'):
+        app = 'routines' if name.endswith('install-routines') else 'last-stack'
+        if set(args) <= {'--check', '--check-only', '--json', '--quiet'} and args:
+            return command(['status', app, '--check', *(['--json'] if '--json' in args else [])]).returncode
+        if args:
+            sys.stderr.write('Unexpected arguments; use lastdb app upgrade for explicit options.\n')
+            return 2
+        return command(['upgrade', app]).returncode
+    if name in ('last-stack-safe-upgrade-all-local', 'last-stack-post-merge-safe-upgrade'):
+        if any(arg not in ('--all', '--once') for arg in args):
+            sys.stderr.write('Use lastdb app upgrade --all. The native updater owns polling.\n')
+            return 2
+        return command(['upgrade', '--all']).returncode
+    if len(args) != 1 or args[0].startswith('-'):
+        sys.stderr.write('Pass one registry app id; source-directory installs are retired.\n')
+        return 2
+    app = 'kanban' if args[0] == 'fkanban' else args[0]
+    if os.environ.get('LAST_STACK_APPS_OFF') == '1' and app in ('kanban', 'situations'):
+        sys.stderr.write('skipped: kanban and situations off (Tom, 2026-10-31)\n')
+        return 2
+    return command(['upgrade', app]).returncode
+
+
+if __name__ == '__main__':
+    sys.exit(main())
