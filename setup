@@ -614,7 +614,7 @@ ensure_agy_mcp_servers() {
     brain_args='["mcp"]'
   fi
 
-  local kanban_cmd=""
+  local kanban_cmd="" tmp
   if [ "${LAST_STACK_APPS_OFF:-0}" = "1" ]; then
     tmp="$(mktemp)"
     jq 'reduce ["kanban", "fkanban", "situations", "fsituations"][] as $name
@@ -627,7 +627,6 @@ ensure_agy_mcp_servers() {
     kanban_cmd="$(command -v kanban)"
   fi
 
-  local tmp
   tmp="$(mktemp)"
   if [ -n "$brain_cmd" ]; then
     if jq -e '.mcpServers.brain.command? // empty | length > 0' "$cfg" >/dev/null 2>&1; then
