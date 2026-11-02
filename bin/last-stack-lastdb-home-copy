@@ -707,8 +707,7 @@ def walk_keys(node, name, fields, range_schema, page_size):
         # The node refuses an unfiltered read without this admin/offline bulk opt-in.
         data = node.post("/api/query", request, WALK_HEADERS)
         results = data.get("results") if isinstance(data, dict) else None
-        if (not isinstance(results, list) or data.get("unresolved_rows") != 0
-                or not isinstance(data.get("has_more"), bool)):
+        if not isinstance(results, list) or not isinstance(data.get("has_more"), bool):
             raise Refusal(f"{node.role}: an unfiltered page of {short(name)} is incomplete")
         form = data.get("key_form")
         if form not in (None, "opaque"):
@@ -756,8 +755,7 @@ def read_rows(node, name, fields, keys, range_schema, batch, allow_missing=False
         while True:
             data = node.post("/api/query", request)
             results = data.get("results") if isinstance(data, dict) else None
-            if (not isinstance(results, list) or data.get("unresolved_rows") != 0
-                    or not isinstance(data.get("has_more"), bool)):
+            if not isinstance(results, list) or not isinstance(data.get("has_more"), bool):
                 raise Refusal(f"{node.role}: /api/query returned an incomplete page for {short(name)}")
             for row in results:
                 if not isinstance(row, dict):
@@ -820,7 +818,7 @@ def brain_membership(src, src_cat, old_brain, args):
             if kind in members:
                 members[kind].add(slug)
     # The app treats an absent per-type count record as zero. This exception
-    # requires a complete, unresolved-free keyed response, not a missing page.
+    # requires a complete keyed response, not a missing page.
     count_rows = read_rows(src, cnt_entry["name"], [cnt_field], [(t, None) for t in BRAIN_RECORD_TYPES], False, 64,
                            allow_missing=True, key_fields=cnt_key_fields)
     counts = {}

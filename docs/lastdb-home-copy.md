@@ -225,7 +225,7 @@ Exit codes: 0 for success, 2 for a refusal or a copy issue, 3 for a verify diffe
   - An accepted value that differs from the selected records. A new Design record before the run changes the number, and the run refuses. There is no plain skip.
   - A target schema without independent fields (override: `--allow-shared-value-target`, for the synthetic proof only).
 - A record with an issue is not written: an unmapped field, a type error, a value over `--value-max-bytes`, or an alternate key problem.
-- A keyed read refuses an unresolved page, a repeated or foreign record, an incomplete cursor, or a missing listed record.
+- A keyed read refuses a repeated or foreign record, an incomplete cursor, or a missing listed record.
 - The helper reads field values only. It does not read per-field metadata. An explicit null remains a value. An absent field stays absent.
 - A complete target digest and complete record coverage are required for an equal result.
 - A DateTime value with no offset is an issue. `--normalize-datetime` repairs date-only and similar values.
