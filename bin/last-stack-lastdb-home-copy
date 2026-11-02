@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Copy Brain and LastSecrets records from an old LastDB home to a new one.
 
-The old home keeps the shared-value (protein) layout. The new home runs the
-protein-free release, and the new app releases declared their own schemas
-there. This helper reads every kept record from the old daemon and writes it
-to the new daemon over the two Unix sockets, in batches.
+The old home runs the old LastDB program. The new home runs the new program,
+and the new app releases declare their own schemas there. This helper reads
+every kept record from the old daemon and writes it to the new daemon over the
+two Unix sockets, in batches. It reads field values only, never per-field
+metadata.
 
 Modes:
   (default)  plan: read-only. Lists the schemas, key counts, membership, and
@@ -40,7 +41,7 @@ Owners:
   * Record digests cover the key and the mapped field values only, so they do
     not depend on the schema name or the owner.
 
-Design and runbook: docs/lastdb-home-copy-protein-removal.md.
+Design and runbook: docs/lastdb-home-copy.md.
 """
 
 import argparse
@@ -90,7 +91,7 @@ NOT_MOVED_NOTES = {
     "Papercut": "dropped with no export (Brain no longer supports papercuts)",
     "PapercutStatusIndex_hashrange_v1": "dropped with no export (Brain no longer supports papercuts)",
 }
-EXPORT_NOTE = "export to the protein-removal artifacts folder, then drop"
+EXPORT_NOTE = "export to the home copy artifacts folder, then drop"
 # The old home keeps Sop records in the Concept schema; the new release declares its own Sop schema.
 BRAIN_SOURCE_DESCRIPTIVE = {"sop": ("Concept",)}
 NOT_MOVED_NOTES.update({name: EXPORT_NOTE for name in (
@@ -706,8 +707,7 @@ def walk_keys(node, name, fields, range_schema, page_size):
         # The node refuses an unfiltered read without this admin/offline bulk opt-in.
         data = node.post("/api/query", request, WALK_HEADERS)
         results = data.get("results") if isinstance(data, dict) else None
-        if (not isinstance(results, list) or data.get("unresolved_rows") != 0
-                or not isinstance(data.get("has_more"), bool)):
+        if not isinstance(results, list) or not isinstance(data.get("has_more"), bool):
             raise Refusal(f"{node.role}: an unfiltered page of {short(name)} is incomplete")
         form = data.get("key_form")
         if form not in (None, "opaque"):
@@ -755,8 +755,7 @@ def read_rows(node, name, fields, keys, range_schema, batch, allow_missing=False
         while True:
             data = node.post("/api/query", request)
             results = data.get("results") if isinstance(data, dict) else None
-            if (not isinstance(results, list) or data.get("unresolved_rows") != 0
-                    or not isinstance(data.get("has_more"), bool)):
+            if not isinstance(results, list) or not isinstance(data.get("has_more"), bool):
                 raise Refusal(f"{node.role}: /api/query returned an incomplete page for {short(name)}")
             for row in results:
                 if not isinstance(row, dict):
@@ -766,22 +765,15 @@ def read_rows(node, name, fields, keys, range_schema, batch, allow_missing=False
                         or (range_schema and not isinstance(key.get("range"), str))):
                     raise Refusal(f"{node.role}: /api/query returned an invalid primary key for {short(name)}")
                 ident = (key.get("hash"), key.get("range") if range_schema else None)
-                values, metadata = row.get("fields"), row.get("metadata")
+                values = row.get("fields")
                 if isinstance(values, dict):
                     unasked = set(values) - set(fields)
                     if unasked and all(f in key_fields and values[f] in (key.get("hash"), key.get("range"))
                                        for f in unasked):
                         values = {f: v for f, v in values.items() if f not in unasked}
                 if (ident not in expected or ident in found or not isinstance(values, dict)
-                        or not values or not isinstance(metadata, dict) or set(values) - set(fields)):
+                        or not values or set(values) - set(fields)):
                     raise Refusal(f"{node.role}: /api/query returned a foreign, repeated, or empty row for {short(name)}")
-                for field in values:
-                    info = metadata.get(field)
-                    # A format 7 target stores one record per key and returns an
-                    # empty atom identity (record model D7). The source keeps atoms.
-                    if (not isinstance(info, dict) or not isinstance(info.get("atom_uuid"), str)
-                            or (not info["atom_uuid"] and node.role != "target")):
-                        raise Refusal(f"{node.role}: a present field has no atom metadata for {short(name)}")
                 found.add(ident)
                 rows[ident] = dict(values)
             pages += 1
@@ -826,7 +818,7 @@ def brain_membership(src, src_cat, old_brain, args):
             if kind in members:
                 members[kind].add(slug)
     # The app treats an absent per-type count record as zero. This exception
-    # requires a complete, unresolved-free keyed response, not a missing page.
+    # requires a complete keyed response, not a missing page.
     count_rows = read_rows(src, cnt_entry["name"], [cnt_field], [(t, None) for t in BRAIN_RECORD_TYPES], False, 64,
                            allow_missing=True, key_fields=cnt_key_fields)
     counts = {}
@@ -1382,7 +1374,7 @@ def parse_args(argv):
     p = argparse.ArgumentParser(
         prog="last-stack-lastdb-home-copy",
         description="Copy Brain and LastSecrets records from an old LastDB home to a new home. "
-                    "Default: read-only plan. See docs/lastdb-home-copy-protein-removal.md.")
+                    "Default: read-only plan. See docs/lastdb-home-copy.md.")
     p.add_argument("--source-home", help="old home (its daemon serves <home>/data/folddb.sock)")
     p.add_argument("--source-socket", help="old daemon socket (overrides --source-home)")
     p.add_argument("--target-home", help="new home (its daemon serves <home>/data/folddb.sock)")

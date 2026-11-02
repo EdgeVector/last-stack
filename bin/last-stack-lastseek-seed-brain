@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Seed the LastSeek inbox with the Brain records of a LastDB home.
 
-After the protein-removal home copy, the Brain schemas have new names
+After the home copy, the Brain schemas have new names
 (`brain/Design`, ...). LastSeek only knows a local name after a batch with
 that name reaches its inbox, and the copy wrote with Search delivery off. So
 `brain search` fails with "unknown schema brain/Design" until every record is
 delivered once.
 
 `lastdb search-rebuild` is the intended tool, but on e13ca0db its offline open
-has no molecule wrap key and never loads the molecule key bundles, so it stops
-with "the typed molecule has no admitted range profile". This script does the
+has no field key wrap key and never loads the field key bundles, so it stops
+with a missing range profile error. This script does the
 same work through the running daemon: page the keys with /api/list, read the
 searchable fields by key with /api/query, and write IndexChangeBatch files in
 the format the daemon's own outbox writes. The LastSeek drain then applies them.
