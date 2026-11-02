@@ -1,33 +1,6 @@
-#!/usr/bin/env bash
-# Host-track refresh entry for any local-safe agent CLI.
-# Usage: last-stack-refresh-local-safe <app> [--force…]
-# App names: brain | situations | kanban | fkanban | routines | lastsecrets | configurations | search
-set -euo pipefail
-# Resolve the file symlink chain before dirname: the PATH link
-# ~/.local/bin/<name> points into the artifact tree, and siblings live there.
-_self_src="$0"
-while [ -L "$_self_src" ]; do
-  _self_link="$(readlink "$_self_src")"
-  case "$_self_link" in /*) _self_src="$_self_link" ;; *) _self_src="$(dirname "$_self_src")/$_self_link" ;; esac
-done
-ROOT="$(cd "$(dirname "$_self_src")" && pwd -P)"
-UPGRADE="$ROOT/last-stack-safe-upgrade-cli"
-if [ ! -x "$UPGRADE" ]; then
-  UPGRADE="$(command -v last-stack-safe-upgrade-cli 2>/dev/null || true)"
-fi
-[ -x "$UPGRADE" ] || {
-  echo "last-stack-safe-upgrade-cli not found" >&2
-  exit 127
-}
-app="${1:-}"
-[ -n "$app" ] || {
-  echo "usage: last-stack-refresh-local-safe <app>" >&2
-  exit 2
-}
-shift || true
-# host-track may pass --force; safe-upgrade ignores unknown flags — strip --force
-args=()
-for a in "$@"; do
-  case "$a" in --force) ;; *) args+=("$a") ;; esac
-done
-exec "$UPGRADE" "$app" ${args[@]+"${args[@]}"}
+#!/usr/bin/env python3
+from pathlib import Path
+import runpy
+entry = Path(__file__).resolve()
+bridge = runpy.run_path(str(entry.with_name('last-stack-registry-app')))
+raise SystemExit(bridge['main'](entry.name))

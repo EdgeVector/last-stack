@@ -12,7 +12,7 @@ map; that record no longer resolves, so the pointer is gone and the map is here.
 
 | Bucket | What it is | Paths (examples) | Agents may |
 |--------|------------|------------------|------------|
-| **RUN** | Installed CLIs + daemons | `~/.host-track/apps/*/current`, `~/.local/bin`, `lastdbd`, `routinesd` | **Use** binaries; never commit here |
+| **RUN** | Installed CLIs + daemons | `~/.local/share/lastdb-apps/*/current/source`, `~/.local/bin`, `lastdbd`, `routinesd` | **Use** binaries; never commit here |
 | **DEV** | Source you ship | Portal → worktree under `~/.fkanban/worktrees/…` (or explicit card worktree) | **Only place to edit/commit/push** |
 | **STATE** | Logs, proofs, DB, runtime data | `~/.lastdb`, `~/.local/state/last-stack/{runtime,artifacts}`, `~/.routines/{memory,runs}` | Append logs/proofs as tools allow; never "fix" by resetting primary DB |
 | **BOARD** | Work tracking + knowledge | brain + fkanban over `~/.lastdb/data/folddb.sock` | `brain` / `kanban` / Situations as normal |
@@ -42,7 +42,7 @@ gap — not a dead LastDB node. Check Situations notices; do not restart primary
 
 ## Hard don'ts
 
-1. **No product commits** under `~/.last-stack`, `~/.host-track/…/current`, or a portal directory.
+1. **No product commits** under `~/.last-stack`, `~/.local/share/lastdb-apps/…/current/source`, or a portal directory.
 2. **No "heal install with reset-hard"** from a routine without Tom clearance.
 3. **No third install tree** when something is sticky — use a worktree + CR.
 4. **No equating sandbox EPERM with outage** — fix allowlist/realpath or use STATE paths already allowed.
@@ -56,7 +56,7 @@ cd ~/code/edgevector/<portal>   # e.g. routines, last-stack portal if any
 # ONLY edit that path; ship via gh pr (venue github; Forgejo only for the lastgit repo)
 ```
 
-CLI hygiene: prefer host-track / `~/.local/bin` tools (`brain`, `kanban`,
+CLI hygiene: prefer registry / `~/.local/bin` tools (`brain`, `kanban`,
 `situations`) over random WIP checkouts. If a CLI misbehaves:
-`host-track status` / `command -v <cmd>` first. Use `<cmd> which` only when
+`lastdb app status --check` / `command -v <cmd>` first. Use `<cmd> which` only when
 the CLI documents that subcommand. Routines and Loom do not implement it.

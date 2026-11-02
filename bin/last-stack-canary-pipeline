@@ -2729,26 +2729,16 @@ def proof_expand_oid(short: str) -> str:
     return short
 
 
-def proof_host_track_oid() -> str:
+def proof_installed_oid() -> str:
     override = os.environ.get("LAST_STACK_CANARY_PROOF_INSTALLED_OID", "").strip()
     if override:
         return override
     try:
-        completed = subprocess.run(
-            ["host-track", "status", "lastdb"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=8,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return ""
-    if completed.returncode != 0:
-        return ""
-    for token in completed.stdout.replace("\t", " ").split():
-        if token.startswith("host_head="):
-            return token.split("=", 1)[1].strip()
-    return ""
+        release = (Path.home() / '.lastdb/current').resolve()
+        source = release / 'SOURCE_COMMIT'
+        return source.read_text().strip() if source.is_file() else ''
+    except OSError:
+        return ''
 
 
 def proof_brew_stable_build() -> str:
@@ -2820,7 +2810,7 @@ def proof_boot_evidence(live: bool) -> tuple[str, str]:
     if payload is None and identity is None and not live_build:
         return "", ""
     source = running_source_oid()
-    installed = proof_host_track_oid() or source
+    installed = proof_installed_oid() or source
     source = proof_expand_oid(source)
     installed = proof_expand_oid(installed)
     if not proof_git_oid(source) or not proof_git_oid(installed):

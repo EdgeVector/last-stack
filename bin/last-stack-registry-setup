@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Point compatibility code paths at the registry current, preserving state."""
+import os
+from pathlib import Path
+import subprocess
+
+
+def main():
+    home = Path.home()
+    apps = Path(os.environ.get('LASTDB_APPS_ROOT', home / '.local/share/lastdb-apps'))
+    source = apps / 'last-stack/current/source'
+    if Path(os.environ['LASTDB_APP_SOURCE_DIR']).resolve() != source.resolve():
+        raise RuntimeError('setup requires the active registry source')
+    compat = home / '.last-stack'
+    if compat.is_symlink():
+        raise RuntimeError('compatibility root must be a directory')
+    compat.mkdir(exist_ok=True)
+    paths = ('VERSION', 'setup', 'bin', 'config', 'docs', 'harness', 'hooks',
+             'instructions', 'lib', 'routines', 'skills', 'templates')
+    saved = {}
+    try:
+        for name in paths:
+            target = compat / name
+            if not (source / name).exists():
+                raise RuntimeError(f'registry source is missing {name}')
+            if target.exists() and not target.is_symlink():
+                raise RuntimeError(f'compatibility path needs deliberate migration: {target}')
+            saved[target] = os.readlink(target) if target.is_symlink() else None
+            temporary = target.with_name(name + f'.registry-{os.getpid()}')
+            temporary.symlink_to(source / name)
+            temporary.replace(target)
+        env = dict(os.environ, LAST_STACK_ROOT=str(source),
+                   LAST_STACK_SETUP_REGISTRY='1', LAST_STACK_SETUP_PRESERVE_SERVICES='1')
+        subprocess.run([str(source / 'setup'), '--host', 'auto'], env=env,
+                       check=True, timeout=480)
+    except BaseException:
+        for target, old in saved.items():
+            if old is None:
+                target.unlink(missing_ok=True)
+            else:
+                temporary = target.with_name(target.name + f'.restore-{os.getpid()}')
+                temporary.symlink_to(old)
+                temporary.replace(target)
+        raise
+
+
+if __name__ == '__main__':
+    main()

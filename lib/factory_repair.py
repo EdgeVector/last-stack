@@ -193,7 +193,7 @@ COUNT_PREDECESSOR_CONTRACT_JSON = '''{
 RUNTIME_REQUIRED = {
     'lib/forge-token.sh',
     'lib/factory_repair.py', 'lib/factory_bootstrap.py', 'lib/closeout_evidence.py', 'lib/sanitize_structured_fields.py',
-    'bin/host-track', 'bin/last-stack-factory-repair-contract', 'bin/last-stack-factory-repair-controller',
+    'bin/last-stack-factory-repair-contract', 'bin/last-stack-factory-repair-controller',
     'bin/last-stack-factory-repair-kanban-adapter', 'bin/last-stack-factory-repair-proof',
     'bin/last-stack-factory-repair-routine', 'bin/last-stack-factory-bootstrap-closeout', 'bin/last-stack-kanban-show-batch',
     'bin/last-stack-papercut-reconcile-finite', 'bin/last-stack-papercut-lifecycle-close',
@@ -202,9 +202,9 @@ RUNTIME_REQUIRED = {
     'bin/last-stack-lastdb-retry', 'lib/lastdb-retry-schedule.sh',
     'bin/last-stack-legacy-residue-probe', 'bin/last-stack-shell-prelude',
     'bin/last-stack-worktree-reclaim', 'bin/last-stack-brain-append-heartbeat',
-    'bin/last-stack-github-artifact-pull', 'bin/last-stack-papercut-queue',
+    'bin/last-stack-papercut-queue',
     'bin/last-stack-kanban-file-pr', 'bin/last-stack-kanban-decision-check',
-    'bin/last-stack-closeout-index', 'lib/factory_reconcile.py', 'lib/host-track-install-lock.sh',
+    'bin/last-stack-closeout-index', 'lib/factory_reconcile.py',
     'config/factory-canonical-active-counts.md', 'config/factory-reviewed-decision.json', 'config/factory-create-only-contract.json', 'config/factory-bootstrap-closeout.json', 'routines/factory-repair.md',
     'routines/papercut-reconciler.md', 'config/routines-registry/last-stack-factory-repair.toml',
 }
@@ -1377,56 +1377,10 @@ class Runtime:
         return json_call([str(self.loom / 'dist/loom'), 'show', state['execution_id'], '--json'], 30)
 
     def candidate(self, state):
-        gh = shutil.which('gh', path=str(Path.home() / '.local/bin') + os.pathsep + os.environ.get('PATH', ''))
-        require(gh is not None, 'installed-github-cli-unavailable')
-        pr = json_call([gh, 'pr', 'view', state['handoff']['pr_url'], '-R', state['repo'], '--json',
-                        'state,mergedAt,mergeCommit,baseRefName,headRefName,body,url'], 30)
-        require(pr.get('url') == state['handoff']['pr_url'] and pr.get('state') == 'MERGED' and pr.get('mergedAt') and pr.get('baseRefName') == state['base'] and
-                pr.get('headRefName') == 'factory/' + state['execution_id'] + '#IMPLEMENT', 'merged-pr-execution-binding')
-        oid = pr.get('mergeCommit', {}).get('oid', '')
-        require(OID.fullmatch(oid), 'merged-source-oid')
-        require(re.search(r'(?m)^Papercut:\s*' + re.escape(COUNT_PAPERCUT) + r'\s*$', pr.get('body', '')) and
-                re.search(r'(?m)^Keep-open:\s*papercut-loom-execution-status-backlog-sweep-pending-20260928\s*$', pr.get('body', '')), 'merged-pr-labeled-claim')
-        content = json_call([gh, 'api', 'repos/' + state['repo'] + '/contents/release/factory-dispatch-contract.json?ref=' + oid], 30)
-        import base64
-        raw = base64.b64decode(content.get('content', ''), validate=False); reviewed = strict_json(raw)
-        baseline_raw = read_bytes(self.loom / 'release/factory-dispatch-contract.json').decode()
-        merge_source = json_call([gh, 'api', 'repos/' + state['repo'] + '/git/commits/' + oid], 30)
-        tree_oid = merge_source.get('tree', {}).get('sha', '') if isinstance(merge_source, dict) and isinstance(merge_source.get('tree'), dict) else ''
-        require(isinstance(tree_oid, str) and OID.fullmatch(tree_oid), 'candidate-merge-tree-oid')
-        reviewed = validate_count_candidate_contract(raw.decode(), baseline_raw, COUNT_PREDECESSOR_SOURCE,
-            COUNT_PREDECESSOR_CONTRACT_JSON, merge_source, oid, tree_oid)
-        pull = json_call([str(self.root / 'bin/last-stack-github-artifact-pull'), '--app', 'loom', '--repo', state['repo'],
-                          '--branch', state['base'], '--oid', oid, '--channel', 'candidate', '--json'], 180)
-        require(pull.get('status') in ('promoted', 'verified') and pull.get('oid') == oid and
-                pull.get('tree_oid') == tree_oid and type(pull.get('artifact_id')) is int and pull['artifact_id'] > 0 and type(pull.get('run_id')) is int and pull['run_id'] > 0, 'candidate-official-publish-receipt')
-        digest = pull.get('manifest_digest', ''); require(HEX.fullmatch(digest), 'candidate-manifest-digest')
-        manifest_path = Path.home() / '.lastgit/artifacts/manifests' / (digest + '.json'); manifest = read_json(manifest_path)
-        require(manifest.get('source_oid') == oid and manifest.get('manifest_digest') == digest and manifest.get('app') == 'loom', 'candidate-manifest-source')
-        indexed = {item['path']: item for item in manifest['files']}
-        require(indexed.get('release/factory-dispatch-contract.json', {}).get('sha256') == sha(raw), 'candidate-source-contract-not-in-artifact')
-        for rel, expected in reviewed['files'].items():
-            require(indexed.get(rel, {}).get('sha256') == expected, 'candidate-official-source-file: ' + rel)
-        authority = {'app': 'loom', 'source_oid': oid, 'manifest_sha256': digest, 'manifest_file_sha256': file_sha(manifest_path),
-                     'manifest_path': str(manifest_path), 'contract_sha256': sha(raw),
-                     'root': str(Path.home() / '.host-track/apps/loom/versions' / digest),
-                     'current': str(Path.home() / '.host-track/apps/loom/current')}
-        return {'source_oid': oid, 'tree_oid': pull['tree_oid'], 'manifest_sha256': digest, 'contract_sha256': sha(raw),
-                'manifest_json': read_bytes(manifest_path).decode(), 'source_contract_json': raw.decode(),
-                'baseline_contract_json': baseline_raw, 'merge_receipt': pr, 'merge_source_receipt': merge_source,
-                'count_predecessor_source_oid': COUNT_PREDECESSOR_SOURCE,
-                'count_predecessor_contract_json': COUNT_PREDECESSOR_CONTRACT_JSON,
-                'official': pull, 'authority': authority, 'dispatch_authority_sha256': value_sha(state['dispatch_authority']),
-                'completed_execution_sha256': state['completed_execution_sha256'], 'intent_sha256': state['intent_sha256'], 'pr_url': state['handoff']['pr_url']}
+        raise Refusal('artifact-bound repair protocol retired; a reviewed registry authority is required')
 
     def install(self, state):
-        candidate = state['candidate']
-        rc, out, err = bounded_call([str(self.root / 'bin/host-track'), 'install', '--channel', 'candidate',
-                                    '--expected-oid', candidate['source_oid'], '--expected-manifest', candidate['manifest_sha256'], '--json', 'loom'], 900)
-        require(rc in (0, 75), 'official-exact-install-refused')
-        receipt = strict_json(out)
-        require((rc == 75) == (receipt.get('result') == 'pending'), 'installer-exit-receipt-mismatch')
-        return receipt
+        raise Refusal('artifact-bound repair protocol retired; use signed registry activation')
 
     def prove(self, state):
         path = self.directory / ('proof-input-' + state['proof_attempt'] + '.json'); atomic_json(path, state)

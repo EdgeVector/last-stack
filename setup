@@ -5,7 +5,7 @@
 # installed (Claude Code, Codex, Factory/droid, OpenCode, Grok, Antigravity CLI/agy).
 # Skills stay in this repo; the harness gets a real directory with a
 # symlinked SKILL.md, so a later `git pull` updates every installed skill at
-# once. Host-track last-stack post_install runs this with --host auto.
+# once. Registry last-stack post_install runs this with --host auto.
 #
 # Usage:
 #   ./setup                 # auto-detect harnesses, install where present
@@ -20,43 +20,16 @@ case "$LAST_STACK_SETUP_PRESERVE_SERVICES" in
   0|1) ;;
   *) echo "LAST_STACK_SETUP_PRESERVE_SERVICES must be 0 or 1" >&2; exit 2 ;;
 esac
-# Nested artifact-layout setup keeps the same opt-in service policy.
+# Registry setup keeps the same opt-in service policy.
 export LAST_STACK_SETUP_PRESERVE_SERVICES
 umask 077
 
 ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 
-resolve_source_root() {
-  local candidate
-  for candidate in \
-    "${LAST_STACK_ROOT:-}" \
-    "${HOST_TRACK_INSTALL_ROOT:+$HOST_TRACK_INSTALL_ROOT/current}" \
-    "$HOME/.local/state/last-stack/artifacts/current" \
-    "$HOME/.last-stack/.artifacts/current" \
-    "$ROOT" \
-    "$HOME/.last-stack"
-  do
-    [ -n "$candidate" ] || continue
-    if [ -f "$candidate/VERSION" ] && [ -d "$candidate/skills" ]; then
-      cd "$candidate" && pwd -P
-      return 0
-    fi
-  done
-  printf '%s\n' "$ROOT"
-}
-
-SOURCE_ROOT="$(resolve_source_root)"
-ARTIFACT_INSTALL=0
-artifact_roots=()
-[ -n "${HOST_TRACK_INSTALL_ROOT:-}" ] && artifact_roots+=("$HOST_TRACK_INSTALL_ROOT")
-artifact_roots+=("$HOME/.local/state/last-stack/artifacts" "$HOME/.last-stack/.artifacts")
-for artifact_root in "${artifact_roots[@]}"; do
-  [ -n "$artifact_root" ] || continue
-  artifact_root="$(cd "$artifact_root" 2>/dev/null && pwd -P || printf '%s\n' "$artifact_root")"
-  case "$SOURCE_ROOT" in
-    "$artifact_root"|"$artifact_root"/*) ARTIFACT_INSTALL=1 ;;
-  esac
-done
+SOURCE_ROOT="$ROOT"
+if [ -n "${LASTDB_APP_SOURCE_DIR:-}" ]; then
+  SOURCE_ROOT="$(cd "$LASTDB_APP_SOURCE_DIR" && pwd -P)"
+fi
 SKILLS_SRC="$SOURCE_ROOT/skills"
 HOOKS_SRC="$SOURCE_ROOT/hooks"
 SOURCE_TOP_LOADED=0
@@ -260,7 +233,7 @@ install_claude_hooks() {
   # Install the DIRECTORY, not a literal list. This loop used to name four
   # hooks, so a hook added to last-stack/hooks/ installed nowhere and nothing
   # said so: the installer ran, reported success, and skipped the file because
-  # it was not in the list. Same silent-enumeration shape host-track's
+  # it was not in the list. Same silent-enumeration shape the old installer's
   # apps.json documents for routines' dist/probes links.
   # The registration calls below are still a literal enumeration by design —
   # each hook needs its own event, matcher and notice text.
@@ -558,8 +531,11 @@ ensure_codex_mcp_servers() {
   [ -f "$cfg" ] || : > "$cfg"
   local name cmd
   for name in brain kanban; do
+    if [ "$name" = "kanban" ] && [ "${LAST_STACK_APPS_OFF:-0}" = "1" ]; then
+      continue
+    fi
     case "$name" in
-      brain)  cmd="$HOME/.bun/bin/brain" ;;
+      brain)  cmd="$HOME/.local/bin/brain" ;;
       kanban) cmd="$HOME/.local/bin/kanban" ;;
     esac
     if [ ! -x "$cmd" ]; then
@@ -695,24 +671,6 @@ ensure_agy_mcp_servers() {
   fi
 }
 
-install_host_track_shim() {
-  local src="$SOURCE_ROOT/bin/host-track"
-  local dest="$HOME/.local/bin/host-track"
-  local registry_src="$SOURCE_ROOT/config/host-track/apps.json"
-  local registry_dest="$HOME/.local/share/last-stack/config/host-track/apps.json"
-  [ -f "$src" ] || return 0
-  mkdir -p "$(dirname "$dest")"
-  [ -L "$dest" ] && rm -f "$dest"
-  _link_or_copy "$src" "$dest"
-  chmod 700 "$dest" 2>/dev/null || true
-  if [ -f "$registry_src" ]; then
-    mkdir -p "$(dirname "$registry_dest")"
-    cp -f "$registry_src" "$registry_dest"
-    chmod 600 "$registry_dest" 2>/dev/null || true
-  fi
-  echo "  host-track: $dest"
-}
-
 install_shared_checkout_guards() {
   local local_bin="$HOME/.local/bin"
   local name src dest
@@ -741,161 +699,6 @@ xml_escape() {
     -e "s/'/\&apos;/g"
 }
 
-host_track_launchd_plist_path() {
-  printf '%s\n' "${LAST_STACK_HOST_TRACK_PLIST:-$HOME/.last-stack/launchd/com.edgevector.host-track-refresh.plist}"
-}
-
-host_track_real_home_matches() {
-  local real_home
-  real_home="$(eval "printf '%s' ~$(id -un)" 2>/dev/null || true)"
-  [ -n "$real_home" ] && [ "$HOME" = "$real_home" ]
-}
-
-host_track_refresh_watch_paths() {
-  local registry="$SOURCE_ROOT/config/host-track/apps.json"
-  local raw path git_dir
-  [ -f "$registry" ] || return 0
-  command -v jq >/dev/null 2>&1 || return 0
-  command -v git >/dev/null 2>&1 || return 0
-
-  jq -r '.apps[]? | select(.gate == "forgejo") | .host_track // empty' "$registry" |
-    while IFS= read -r raw; do
-      [ -n "$raw" ] || continue
-      case "$raw" in
-        '$HOME') path="$HOME" ;;
-        '$HOME'/*) path="$HOME/${raw#\$HOME/}" ;;
-        "~") path="$HOME" ;;
-        "~"/*) path="$HOME/${raw#~/}" ;;
-        *) path="$raw" ;;
-      esac
-      [ -d "$path" ] || continue
-      git_dir="$(git -C "$path" rev-parse --git-dir 2>/dev/null || true)"
-      [ -n "$git_dir" ] || continue
-      case "$git_dir" in
-        /*) ;;
-        *) git_dir="$path/$git_dir" ;;
-      esac
-      if [ -e "$git_dir/FETCH_HEAD" ]; then
-        printf '%s\n' "$git_dir/FETCH_HEAD"
-      fi
-    done
-}
-
-write_host_track_refresh_agent_plist() {
-  local plist="$1"
-  local program="$HOME/.local/bin/host-track"
-  local log_dir="$HOME/Library/Logs/last-stack"
-  local watch_paths
-  mkdir -p "$(dirname "$plist")" "$log_dir"
-  watch_paths="$(host_track_refresh_watch_paths | awk '!seen[$0]++')"
-
-  {
-    cat <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>com.edgevector.host-track-refresh</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>$(printf '%s' "$program" | xml_escape)</string>
-    <string>refresh</string>
-    <string>--force-if-stale</string>
-    <string>--all</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key>
-    <string>$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-  </dict>
-  <key>StartInterval</key>
-  <integer>1200</integer>
-  <key>StandardOutPath</key>
-  <string>$(printf '%s' "$log_dir/host-track-refresh.log" | xml_escape)</string>
-  <key>StandardErrorPath</key>
-  <string>$(printf '%s' "$log_dir/host-track-refresh.err.log" | xml_escape)</string>
-EOF
-    if [ -n "$watch_paths" ]; then
-      cat <<'EOF'
-  <key>WatchPaths</key>
-  <array>
-EOF
-      printf '%s\n' "$watch_paths" | while IFS= read -r watch_path; do
-        [ -n "$watch_path" ] || continue
-        printf '    <string>%s</string>\n' "$(printf '%s' "$watch_path" | xml_escape)"
-      done
-      cat <<'EOF'
-  </array>
-EOF
-    fi
-    cat <<'EOF'
-</dict>
-</plist>
-EOF
-  } > "$plist"
-  chmod 600 "$plist" 2>/dev/null || true
-}
-
-install_host_track_refresh_agent() {
-  [ "$(uname -s)" = "Darwin" ] || return 0
-  local plist disabled_reply disabled_state label="com.edgevector.host-track-refresh"
-  plist="$(host_track_launchd_plist_path)"
-  write_host_track_refresh_agent_plist "$plist"
-  echo "  host-track refresh agent: $plist"
-
-  if ! host_track_real_home_matches; then
-    echo "  host-track refresh agent: launchctl skipped for non-login HOME"
-    return 0
-  fi
-  command -v launchctl >/dev/null 2>&1 || {
-    echo "  host-track refresh agent: launchctl not found; plist written only" >&2
-    return 0
-  }
-
-  if ! disabled_reply="$(launchctl print-disabled "gui/$(id -u)")"; then
-    echo "  host-track refresh agent: disabled overrides unavailable; load skipped" >&2
-    return 0
-  fi
-  if ! disabled_state="$(printf '%s\n' "$disabled_reply" | awk -v label="$label" '
-    {
-      sub(/^[[:space:]]+/, "")
-      sub(/[[:space:]]+$/, "")
-      if ($0 == "") next
-      if ($0 == "disabled services = {" && !opened && !closed) { opened=1; next }
-      if ($0 == "}" && opened && !closed) { closed=1; next }
-      if (!opened || closed || $0 !~ /^"[^"]+"[[:space:]]*=>[[:space:]]*(enabled|disabled)$/) {
-        invalid=1; next
-      }
-      key=$0
-      sub(/^"/, "", key)
-      sub(/"[[:space:]]*=>.*$/, "", key)
-      value=$0
-      sub(/^.*=>[[:space:]]*/, "", value)
-      if (key == label) { count++; state=value }
-    }
-    END {
-      if (invalid || !opened || !closed || count > 1) exit 1
-      print count == 0 ? "absent" : state
-    }
-  ')"; then
-    echo "  host-track refresh agent: disabled overrides malformed; load skipped" >&2
-    return 0
-  fi
-  if [ "$disabled_state" = "disabled" ]; then
-    echo "  host-track refresh agent: deliberate disabled override preserved; load skipped"
-    return 0
-  fi
-
-  launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
-  if launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1; then
-    launchctl enable "gui/$(id -u)/$label" >/dev/null 2>&1 || true
-    echo "  host-track refresh agent: loaded $label"
-  else
-    echo "  host-track refresh agent: launchctl bootstrap failed; plist written only" >&2
-  fi
-}
-
 install_routines_cli() {
   local routines_bin=""
   if [ "${LAST_STACK_SKIP_ROUTINES_INSTALL:-0}" = "1" ]; then
@@ -913,7 +716,7 @@ install_routines_cli() {
   # Test/sandbox HOME values must never clone into or relink the login user's
   # real app tree. Production callers can override only for a deliberate
   # hermetic install proof.
-  if ! host_track_real_home_matches && [ "${LAST_STACK_ROUTINES_FORCE_INSTALL:-0}" != "1" ]; then
+  if [ "$HOME" != "$(eval echo ~$(id -un))" ] && [ "${LAST_STACK_ROUTINES_FORCE_INSTALL:-0}" != "1" ]; then
     echo "  routines CLI: install skipped for non-login HOME"
     return 0
   fi
@@ -1019,13 +822,13 @@ echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) ..."
 [ "$INSTALL_AGY"      -eq 1 ] && upsert_harness_instruction_blocks "$HOME/.gemini/GEMINI.md" "agy"
 [ "$INSTALL_AGY"      -eq 1 ] && upsert_harness_instruction_blocks "$HOME/.gemini/config/GEMINI.md" "agy (config)"
 [ "$INSTALL_AGY"      -eq 1 ] && ensure_agy_mcp_servers
-install_host_track_shim
 if [ "$LAST_STACK_SETUP_PRESERVE_SERVICES" -eq 0 ]; then
   install_routines_cli
 fi
-install_shared_checkout_guards
+if [ "${LAST_STACK_SETUP_REGISTRY:-0}" != "1" ]; then
+  install_shared_checkout_guards
+fi
 if [ "$LAST_STACK_SETUP_PRESERVE_SERVICES" -eq 0 ]; then
-install_host_track_refresh_agent
 
 # Zero-LLM board closeout (merged PR/CR → done) — survives low-credit watch pause.
 # Point LaunchAgents at the stable public root, not SOURCE_ROOT's version hash.
@@ -1036,7 +839,7 @@ if [ -x "$SOURCE_ROOT/bin/last-stack-board-closeout-install" ]; then
 fi
 
 # Hourly zero-LLM Loom recovery. The runner fixes the five-minute grace and
-# one-resume cap, and it calls the Host Track binary through ~/.local/bin.
+# one-resume cap, and it calls the registry command through ~/.local/bin.
 if [ -x "$SOURCE_ROOT/bin/last-stack-loom-reaper-install" ]; then
   LAST_STACK_PUBLIC_ROOT="${LAST_STACK_PUBLIC_ROOT:-$HOME/.last-stack}" \
     "$SOURCE_ROOT/bin/last-stack-loom-reaper-install" install || \
@@ -1084,7 +887,7 @@ if [ -x "$SOURCE_ROOT/bin/last-stack-admin-deliver-install" ]; then
 fi
 
 # Seed missing registry TOMLs only. Existing ~/.routines/registry entries are
-# the canonical live registry and are not rewritten on host-track refresh.
+# the canonical live registry and are not rewritten on registry activation.
 #
 # Every bin/last-stack-*-routine script is a seed-if-missing registry
 # installer with the same no-argument contract, so iterate the directory
@@ -1102,48 +905,8 @@ for routine_seeder in "$SOURCE_ROOT"/bin/last-stack-*-routine; do
 done
 unset routine_seeder seeder_name
 
-# Zero-LLM self-upgrade healer (every 30m) — checkout installs only.
-# Artifact runtime (one rule): host-track refresh agent is the only upgrader.
-if [ -x "$SOURCE_ROOT/bin/last-stack-self-upgrade-install" ]; then
-  if [ "$ARTIFACT_INSTALL" -eq 1 ]; then
-    "$SOURCE_ROOT/bin/last-stack-self-upgrade-install" uninstall || \
-      echo "  last-stack-self-upgrade LaunchAgent: uninstall failed (non-fatal)" >&2
-  else
-    "$SOURCE_ROOT/bin/last-stack-self-upgrade-install" install || \
-      echo "  last-stack-self-upgrade LaunchAgent: install failed (non-fatal)" >&2
-  fi
-fi
 else
   echo "  unrelated services and routine registry entries preserved"
-fi
-
-# One rule: when this setup is running from the Host Track artifact, ensure
-# ~/.last-stack/{bin,skills,routines,...} are compatibility symlinks into
-# .artifacts/current — never a second mutable copy agents can dirty.
-# Nested call from last-stack-activate-artifact-layout sets SKIP=1.
-if [ "$ARTIFACT_INSTALL" -eq 1 ] && \
-   [ "${LAST_STACK_SKIP_ARTIFACT_LAYOUT:-0}" != "1" ] && \
-   [ -x "$SOURCE_ROOT/bin/last-stack-activate-artifact-layout" ]; then
-  compat_root="${LAST_STACK_COMPAT_ROOT:-$HOME/.last-stack}"
-  need_layout=0
-  if [ ! -L "$compat_root/bin" ]; then
-    need_layout=1
-  else
-    link="$(readlink "$compat_root/bin" 2>/dev/null || true)"
-    case "$link" in
-      */.artifacts/current/bin|*/.artifacts/current/bin/) ;;
-      *) need_layout=1 ;;
-    esac
-  fi
-  if [ "$need_layout" -eq 1 ]; then
-    echo "  activating artifact compatibility layout under $compat_root ..."
-    # Always allow replacing a residual git-owned ~/.last-stack when setup is
-    # installing from the Host Track artifact (the live stack is not a checkout).
-    LAST_STACK_SKIP_ARTIFACT_LAYOUT=1 \
-    LAST_STACK_ARTIFACT_LAYOUT_ALLOW_GIT_WORKTREE=1 \
-      "$SOURCE_ROOT/bin/last-stack-activate-artifact-layout" || \
-      echo "  artifact layout activation failed (non-fatal this run)" >&2
-  fi
 fi
 
 # ── Guard against foreign installers (e.g. gstack) stomping our skill links ────
@@ -1164,11 +927,7 @@ if [ -x "$guard" ]; then
 fi
 
 echo
-if [ "$ARTIFACT_INSTALL" -eq 1 ]; then
-  echo "Done. Upgrade later with:  host-track refresh last-stack"
-else
-  echo "Done. Upgrade later with:  cd \"$SOURCE_ROOT\" && git pull && ./setup"
-fi
+echo "Done. Upgrade later with: lastdb app upgrade last-stack"
 echo "  (run this AFTER any gstack ./setup — it re-points Last Stack skill links"
 echo "   that a colliding gstack skill name would otherwise stomp)"
 echo "Uninstall with:           \"$SOURCE_ROOT/setup\" --uninstall"

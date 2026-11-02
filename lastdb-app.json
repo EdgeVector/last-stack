@@ -1,0 +1,340 @@
+{
+  "app_id": "last-stack",
+  "version": "0.4.0",
+  "source": "https://github.com/EdgeVector/last-stack.git",
+  "audience": "private",
+  "metadata": {
+    "display_name": "Last Stack",
+    "description": "Agent skills, shared commands and operational workflows.",
+    "homepage_url": "https://github.com/EdgeVector/last-stack"
+  },
+  "run": {
+    "runtime": "command",
+    "entrypoint": "bin/last-stack-update-check"
+  },
+  "schemas": [],
+  "install": {
+    "prepare": [],
+    "links": [
+      {
+        "source": "bin/last-stack-post-merge-safe-upgrade",
+        "command": "last-stack-post-merge-safe-upgrade"
+      },
+      {
+        "source": "bin/last-stack-kanban-reopen-deferred",
+        "command": "last-stack-kanban-reopen-deferred"
+      },
+      {
+        "source": "bin/last-stack-class-a-heal",
+        "command": "last-stack-class-a-heal"
+      },
+      {
+        "source": "bin/last-stack-papercut-lifecycle-close",
+        "command": "last-stack-papercut-lifecycle-close"
+      },
+      {
+        "source": "bin/last-stack-papercut-ledger-append",
+        "command": "last-stack-papercut-ledger-append"
+      },
+      {
+        "source": "bin/last-stack-papercut-queue",
+        "command": "last-stack-papercut-queue"
+      },
+      {
+        "source": "bin/last-stack-prose-citation-check",
+        "command": "last-stack-prose-citation-check"
+      },
+      {
+        "source": "bin/last-stack-vocab",
+        "command": "last-stack-vocab"
+      },
+      {
+        "source": "bin/last-stack-locate-file",
+        "command": "last-stack-locate-file"
+      },
+      {
+        "source": "bin/last-stack-kanban-done-when-sweep",
+        "command": "last-stack-kanban-done-when-sweep"
+      },
+      {
+        "source": "bin/last-stack-kanban-show-batch",
+        "command": "last-stack-kanban-show-batch"
+      },
+      {
+        "source": "bin/last-stack-pipeline-stuck-papercut-file",
+        "command": "last-stack-pipeline-stuck-papercut-file"
+      },
+      {
+        "source": "bin/last-stack-kanban-pickup-workers",
+        "command": "last-stack-kanban-pickup-workers"
+      },
+      {
+        "source": "bin/last-stack-kanban-validate-routine",
+        "command": "last-stack-kanban-validate-routine"
+      },
+      {
+        "source": "bin/last-stack-routines-prompt-doctor",
+        "command": "last-stack-routines-prompt-doctor"
+      },
+      {
+        "source": "bin/last-stack-safe-upgrade-loom",
+        "command": "last-stack-safe-upgrade-loom"
+      },
+      {
+        "source": "bin/last-stack-why-shipping-stopped",
+        "command": "last-stack-why-shipping-stopped"
+      },
+      {
+        "source": "bin/last-stack-pipeline-forge-pr-ledger",
+        "command": "last-stack-pipeline-forge-pr-ledger"
+      },
+      {
+        "source": "bin/last-stack-kanban-file-pr",
+        "command": "last-stack-kanban-file-pr"
+      },
+      {
+        "source": "bin/last-stack-kanban-done-when-eval",
+        "command": "last-stack-kanban-done-when-eval"
+      },
+      {
+        "source": "bin/last-stack-json-capture",
+        "command": "last-stack-json-capture"
+      },
+      {
+        "source": "bin/last-stack-json-get",
+        "command": "last-stack-json-get"
+      },
+      {
+        "source": "bin/last-stack-lastdb-dev",
+        "command": "lastdb-dev"
+      },
+      {
+        "source": "bin/last-stack-design-pack",
+        "command": "last-stack-design-pack"
+      },
+      {
+        "source": "bin/last-stack-kanban-decision-check",
+        "command": "last-stack-kanban-decision-check"
+      },
+      {
+        "source": "bin/last-stack-feature-portfolio-admission",
+        "command": "last-stack-feature-portfolio-admission"
+      },
+      {
+        "source": "bin/last-stack-milestone-slice-satisfaction",
+        "command": "last-stack-milestone-slice-satisfaction"
+      },
+      {
+        "source": "bin/last-stack-feature-delivery-effective-flow-proof",
+        "command": "last-stack-feature-delivery-effective-flow-proof"
+      },
+      {
+        "source": "bin/last-stack-ship-handoff",
+        "command": "last-stack-ship-handoff"
+      },
+      {
+        "source": "bin/last-stack-real-human-notify",
+        "command": "last-stack-real-human-notify"
+      },
+      {
+        "source": "bin/last-stack-routine-read",
+        "command": "last-stack-routine-read"
+      },
+      {
+        "source": "bin/last-stack-update-check",
+        "command": "last-stack-update-check"
+      },
+      {
+        "source": "bin/last-stack-self-upgrade",
+        "command": "last-stack-self-upgrade"
+      },
+      {
+        "source": "bin/last-stack-shell-prelude",
+        "command": "last-stack-shell-prelude"
+      },
+      {
+        "source": "bin/last-stack-cli-preflight",
+        "command": "last-stack-cli-preflight"
+      },
+      {
+        "source": "bin/last-stack-board-closeout-sweep",
+        "command": "last-stack-board-closeout-sweep"
+      },
+      {
+        "source": "bin/last-stack-card-closeout",
+        "command": "last-stack-card-closeout"
+      },
+      {
+        "source": "bin/last-stack-closeout-index",
+        "command": "last-stack-closeout-index"
+      },
+      {
+        "source": "bin/last-stack-legacy-residue-probe",
+        "command": "last-stack-legacy-residue-probe"
+      },
+      {
+        "source": "bin/last-stack-forge-api",
+        "command": "last-stack-forge-api"
+      },
+      {
+        "source": "bin/last-stack-forge-pr-update-branch",
+        "command": "last-stack-forge-pr-update-branch"
+      },
+      {
+        "source": "bin/last-stack-kanban-mark-once",
+        "command": "last-stack-kanban-mark-once"
+      },
+      {
+        "source": "bin/last-stack-forge-git",
+        "command": "last-stack-forge-git"
+      },
+      {
+        "source": "bin/last-stack-forge-dead-trigger",
+        "command": "last-stack-forge-dead-trigger"
+      },
+      {
+        "source": "bin/last-stack-forge-ci-log",
+        "command": "last-stack-forge-ci-log"
+      },
+      {
+        "source": "bin/last-stack-forge-json-jq",
+        "command": "last-stack-forge-json-jq"
+      },
+      {
+        "source": "bin/last-stack-unattached-outcome-heal",
+        "command": "last-stack-unattached-outcome-heal"
+      },
+      {
+        "source": "bin/last-stack-why-stopped",
+        "command": "last-stack-why-stopped"
+      },
+      {
+        "source": "bin/last-stack-whats-wrong-loom",
+        "command": "last-stack-whats-wrong-loom"
+      },
+      {
+        "source": "bin/last-stack-factory-health",
+        "command": "last-stack-factory-health"
+      },
+      {
+        "source": "bin/last-stack-factory-ready-buffer-controller",
+        "command": "last-stack-factory-ready-buffer-controller"
+      },
+      {
+        "source": "bin/last-stack-factory-ready-buffer-install",
+        "command": "last-stack-factory-ready-buffer-install"
+      },
+      {
+        "source": "bin/last-stack-loom-reaper-run",
+        "command": "last-stack-loom-reaper-run"
+      },
+      {
+        "source": "bin/last-stack-loom-reaper-install",
+        "command": "last-stack-loom-reaper-install"
+      },
+      {
+        "source": "bin/last-stack-ship-pipeline-gap-snapshot",
+        "command": "last-stack-ship-pipeline-gap-snapshot"
+      },
+      {
+        "source": "bin/last-stack-pr-venue",
+        "command": "last-stack-pr-venue"
+      },
+      {
+        "source": "bin/last-stack-aws-cost-hygiene",
+        "command": "last-stack-aws-cost-hygiene"
+      },
+      {
+        "source": "bin/last-stack-canary-loom",
+        "command": "last-stack-canary-loom"
+      },
+      {
+        "source": "bin/last-stack-card-reaper-run",
+        "command": "last-stack-card-reaper-run"
+      },
+      {
+        "source": "bin/last-stack-heartbeats-path",
+        "command": "last-stack-heartbeats-path"
+      },
+      {
+        "source": "bin/last-stack-kanban-pickup-gate",
+        "command": "last-stack-kanban-pickup-gate"
+      },
+      {
+        "source": "bin/last-stack-portal-wt",
+        "command": "last-stack-portal-wt"
+      },
+      {
+        "source": "bin/last-stack-refresh-local-safe",
+        "command": "last-stack-refresh-local-safe"
+      },
+      {
+        "source": "bin/last-stack-routine-job-shrink-gate",
+        "command": "last-stack-routine-job-shrink-gate"
+      },
+      {
+        "source": "bin/last-stack-routine-observer-gate",
+        "command": "last-stack-routine-observer-gate"
+      },
+      {
+        "source": "bin/last-stack-routine-outcome-classify",
+        "command": "last-stack-routine-outcome-classify"
+      },
+      {
+        "source": "bin/last-stack-safe-activate-cli",
+        "command": "last-stack-safe-activate-cli"
+      },
+      {
+        "source": "bin/last-stack-safe-upgrade-all-local",
+        "command": "last-stack-safe-upgrade-all-local"
+      },
+      {
+        "source": "bin/last-stack-safe-upgrade-cli",
+        "command": "last-stack-safe-upgrade-cli"
+      },
+      {
+        "source": "bin/last-stack-shared-checkout-guard",
+        "command": "last-stack-shared-checkout-guard"
+      },
+      {
+        "source": "bin/last-stack-install-shared-checkout-guards",
+        "command": "last-stack-install-shared-checkout-guards"
+      },
+      {
+        "source": "bin/last-stack-registry-setup",
+        "command": "last-stack-registry-setup"
+      },
+      {
+        "source": "bin/last-stack-registry-app",
+        "command": "last-stack-registry-app"
+      }
+    ],
+    "requires": [],
+    "probe": [
+      {
+        "argv": [
+          "bash",
+          "-n",
+          "setup"
+        ],
+        "timeout_s": 15
+      },
+      {
+        "argv": [
+          "bin/last-stack-factory-repair-contract",
+          "--local",
+          "--json"
+        ],
+        "timeout_s": 30
+      }
+    ],
+    "post_install": [
+      {
+        "argv": [
+          "bin/last-stack-registry-setup"
+        ],
+        "timeout_s": 600
+      }
+    ]
+  }
+}

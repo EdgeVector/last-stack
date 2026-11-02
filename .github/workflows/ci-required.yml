@@ -15,9 +15,7 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# A main push must never cancel an earlier main run: its publish job is the only
-# thing that makes a merged commit installable (host-track pulls the artifact of
-# the exact commit). PR runs cancel their superseded runs.
+# Preserve main validation runs. Registry publication binds a checked source commit.
 concurrency:
   group: ci-required-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -57,16 +55,3 @@ jobs:
         run: |
           echo "lint=$LINT"
           [ "$LINT" = "success" ]
-
-  publish:
-    name: publish
-    needs: [ci-required]
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    permissions:
-      contents: read
-    # Same-repo reusable workflow. Other repos call the same file by
-    # EdgeVector/last-stack/.github/workflows/host-track-artifact.yml@main.
-    uses: ./.github/workflows/host-track-artifact.yml
-    with:
-      tools-ref: ${{ github.sha }}
-      config: .lastgit/artifacts.json

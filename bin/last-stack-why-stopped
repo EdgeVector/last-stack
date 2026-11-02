@@ -53,7 +53,6 @@ export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 
 # Test seams (product defaults keep live CLI names).
 CLASS_A_HEAL_BIN="${LASTSTACK_CLASS_A_HEAL_BIN:-last-stack-class-a-heal}"
-HOST_TRACK_BIN="${LASTSTACK_WHY_STOPPED_HOST_TRACK_BIN:-host-track}"
 KANBAN_BIN="${LASTSTACK_WHY_STOPPED_KANBAN_BIN:-kanban}"
 LASTDB_BIN="${LASTSTACK_WHY_STOPPED_LASTDB_BIN:-lastdb}"
 CLASS_A_TIMEOUT_S="${LASTSTACK_WHY_STOPPED_CLASS_A_TIMEOUT_S:-8}"
@@ -112,22 +111,6 @@ have_cmd() {
 
 # Hard-broken / hard-stale only. Soft-stale (stale=true, usable current) is
 # not Class A — see design-last-stack-class-a-atomic-install-soft-stale.
-host_track_hard_unhealthy() {
-  local st freshness problem
-  have_cmd "$HOST_TRACK_BIN" || return 1
-  command -v jq >/dev/null 2>&1 || return 1
-  st="$("$HOST_TRACK_BIN" status --json last-stack 2>/dev/null || true)"
-  [ -n "$st" ] || return 1
-  freshness="$(printf '%s\n' "$st" | jq -r '.freshness // empty' 2>/dev/null || true)"
-  problem="$(printf '%s\n' "$st" | jq -r '.artifact_problem // empty' 2>/dev/null || true)"
-  case "$freshness" in
-    hard_broken|hard-broken|hard_stale|hard-stale) return 0 ;;
-  esac
-  if [ -n "$problem" ] && [ "$problem" != "null" ]; then
-    return 0
-  fi
-  return 1
-}
 
 parse_heal_result() {
   printf '%s\n' "${1:-}" | awk '{
@@ -198,9 +181,9 @@ class_a_from_heal_probe() {
 emit_class_a() {
   classes+=("A")
   if [ "$CLASS_A_HEAL_RC" -eq 124 ] || [ "$CLASS_A_HEAL_RC" -eq 137 ]; then
-    detail+=("host-track/install hard-broken (heal timed out)")
+    detail+=("registry install hard-broken (heal timed out)")
   else
-    detail+=("host-track/install unhealthy")
+    detail+=("registry install unhealthy")
   fi
   actions+=("run:last-stack-class-a-heal")
 }
@@ -224,13 +207,7 @@ if have_cmd "$CLASS_A_HEAL_BIN"; then
       emit_class_a
     fi
   fi
-elif have_cmd "$HOST_TRACK_BIN"; then
-  if host_track_hard_unhealthy; then
-    class_a=1
-    classes+=("A")
-    detail+=("host-track hard-broken/hard-stale")
-    actions+=("host-track refresh --force last-stack")
-  fi
+
 fi
 
 # --- Class E: LastDB pressure ---
@@ -524,37 +501,7 @@ pin_newest_version=""
 pin_newest_at=""
 pin_newest_oid=""
 pin_running_version=""
-if have_cmd "$HOST_TRACK_BIN" && command -v jq >/dev/null 2>&1 \
-  && [ "${CLASS_H_MAX_PROOF_AGE_S}" -gt 0 ] 2>/dev/null; then
-  ht_all="$("$HOST_TRACK_BIN" status --json 2>/dev/null || true)"
-  if [ -n "$ht_all" ]; then
-    # One row per blocked app: name, age, proof run. Printing the INPUTS the
-    # verdict used is what lets two passes that disagree be told apart.
-    pin_rows="$(
-      printf '%s\n' "$ht_all" | jq -r --argjson maxage "$CLASS_H_MAX_PROOF_AGE_S" '
-        (if type=="array" then . else [.] end)
-        | map(select(
-            (.registry_pin_state // "") == "pinned"
-            and ((.pin_behind_oid // "") | tostring) != ""
-            and ((.pin_behind_oid // null) != null)
-            and ((.registry_pin_proof_age_secs // null) != null)
-            and ((.registry_pin_proof_age_secs | tonumber?) // -1) >= $maxage
-          ))
-        | map([(.app // "?"), ((.registry_pin_proof_age_secs|tostring)), (.registry_pin_proof_run // "-"),
-               (.registry_channel // "-"), (.pin_behind_oid // "-")] | @tsv)
-        | .[]
-      ' 2>/dev/null || true
-    )"
-    if [ -n "$pin_rows" ]; then
-      pin_frozen_apps="$(printf '%s\n' "$pin_rows" | awk -F'\t' '{printf "%s%s", sep, $1; sep=","} END{print ""}')"
-      pin_frozen_age="$(printf '%s\n' "$pin_rows" | awk -F'\t' 'NR==1{print $2}')"
-      pin_frozen_run="$(printf '%s\n' "$pin_rows" | awk -F'\t' 'NR==1{print $3}')"
-      pin_frozen_first="$(printf '%s\n' "$pin_rows" | awk -F'\t' 'NR==1{print $1}')"
-      pin_frozen_channel="$(printf '%s\n' "$pin_rows" | awk -F'\t' 'NR==1{print $4}')"
-      pin_frozen_behind="$(printf '%s\n' "$pin_rows" | awk -F'\t' 'NR==1{print $5}')"
-    fi
-  fi
-fi
+# Artifact-frontier holds no longer exist in source registry installs.
 # Which of the two causes is this? Both render an identical stale frontier, and
 # they have OPPOSITE remedies, so the class is useless without the discriminator.
 #
