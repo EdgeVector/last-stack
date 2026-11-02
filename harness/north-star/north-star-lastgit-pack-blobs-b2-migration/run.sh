@@ -48,15 +48,14 @@ refuse_primary() {
   local candidate="$1" canon root
   [ -n "$candidate" ] || return 0
   canon="$(canonical_path "$candidate")" || finish FAIL "The harness could not resolve the path."
-  for root in "$HOME/.lastdb" "$HOME/.folddb"; do
-    [ -e "$root" ] || [ -L "$root" ] || continue
-    root="$(canonical_path "$root")" || finish FAIL "The harness could not resolve the primary home."
-    case "$canon" in
-      "$root"|"$root"/*)
-        finish FAIL "The harness refuses a LastDB home path."
-        ;;
-    esac
-  done
+  root="$HOME/.lastdb"
+  [ -e "$root" ] || [ -L "$root" ] || return 0
+  root="$(canonical_path "$root")" || finish FAIL "The harness could not resolve the primary home."
+  case "$canon" in
+    "$root"|"$root"/*)
+      finish FAIL "The harness refuses a LastDB home path."
+      ;;
+  esac
 }
 
 REPO="${LASTGIT_REPO:-}"

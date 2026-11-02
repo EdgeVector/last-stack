@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """Append lines to the papercut reconciler ledger, rolling to a dated
-successor record before the active one hits LastDB's atom content limit.
+successor record before the active one hits LastDB's field value limit.
 
 Both writers of this ledger (`last-stack-papercut-lifecycle-close` and the
 `papercut-reconciler` routine's Step 5) previously ran a bare
 `brain append <base-slug> --type reference` with no size check, no successor
 routing, and no way for one writer to discover a successor the other one
-created. The base record hit LastDB's 524288-byte atom limit on 2026-09-27
+created. The base record hit LastDB's 524288-byte field value limit on 2026-09-27
 (a 234-line reconciler pass could not append), a successor was created by
 hand, and — because nothing links the two — later passes kept appending to
-the now-almost-full base record anyway
-(papercut-reconciler-ledger-reaches-lastdb-atom-limit-20260927).
+the now-almost-full base record anyway.
 
 This tool is the one place that decides which record is currently writable.
 It walks a `Successor: <slug>` pointer chain from the base slug, and when the
@@ -38,11 +37,11 @@ import re
 import subprocess
 import sys
 
-ATOM_LIMIT_BYTES = 524288
+FIELD_VALUE_LIMIT_BYTES = 524288
 # Leave headroom for the successor-pointer line this tool itself appends to
 # the outgoing tail, and for whatever the next caller sends before anyone
 # re-checks size.
-ROLLOVER_THRESHOLD_BYTES = ATOM_LIMIT_BYTES - 24288
+ROLLOVER_THRESHOLD_BYTES = FIELD_VALUE_LIMIT_BYTES - 24288
 
 SUCCESSOR_RE = re.compile(r"(?im)^\s*Successor:\s*(\S+)\s*$")
 
@@ -125,10 +124,9 @@ def create_successor_record(brain_bin: str, slug: str, predecessor: str) -> None
         f"slug: {slug}\n"
         f"title: Papercut reconciler ledger successor {today}\n"
         "---\n\n"
-        f"Successor to `{predecessor}`, which reached (or was near) LastDB's atom "
-        "content limit. This record carries new routing lines until it, too, needs "
-        "a successor -- see `last-stack-papercut-ledger-append` and "
-        "papercut-reconciler-ledger-reaches-lastdb-atom-limit-20260927.\n"
+        f"Successor to `{predecessor}`, which reached (or was near) LastDB's field "
+        "value limit. This record carries new routing lines until it, too, needs "
+        "a successor -- see `last-stack-papercut-ledger-append`.\n"
     )
     proc = run([brain_bin, "put", "--type", "reference"], stdin=frontmatter, timeout=30)
     if proc.returncode != 0:

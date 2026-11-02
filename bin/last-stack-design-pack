@@ -31,7 +31,7 @@ CANONICAL_LASTDB = (
 )
 
 LASTDB_TOPIC_RE = re.compile(
-    r"lastdb|last-db|folddb|hash[_ -]?key|hash_field|molecule|atom\b|"
+    r"lastdb|last-db|folddb|hash[_ -]?key|hash_field|field[_ -]?key|alternate[_ -]?key|"
     r"no-?scan|access.?pattern|canonical.?model",
     re.IGNORECASE,
 )

@@ -35,11 +35,7 @@ def health(node, account, readiness=False):
     for key in ("persist_lane_failures", "deferred_persist_failed"):
         require(type(measured["resident"][key]) is int and measured["resident"][key] == 0,
                 "no_persist_failure")
-    for key in ("unresolved_atom_skips", "unresolved_atom_distinct", "unresolved_atom_rows"):
-        require(type(measured["integrity"][key]) is int and measured["integrity"][key] == 0,
-                "no_unresolved_native_read")
-    require(measured["integrity"]["unresolved_distinct_capped"] is False
-            and native["native_disk"]["writer_failed"] is False, "native_health")
+    require(native["native_disk"]["writer_failed"] is False, "native_health")
     durability = measured["durability"]
     if not node.backup_source:
         require(durability["automatic_enabled"] is False and durability["running"] is False,

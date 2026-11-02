@@ -34,8 +34,7 @@ def query(spec):
 
 def record_digest(spec, response):
     keys = {(key["hash"], key["range"]) for key in spec["keys"]}
-    require(response.get("ok") is True and response.get("unresolved_rows") == 0
-            and response.get("tombstoned_rows") == 0 and response.get("has_more") is False
+    require(response.get("ok") is True and response.get("has_more") is False
             and response.get("next_cursor") is None and isinstance(response.get("results"), list)
             and len(response["results"]) == len(keys), "The approved application read is incomplete")
     found = {}

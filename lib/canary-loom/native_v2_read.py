@@ -45,8 +45,7 @@ def observe(approval):
         "limit": len(keys),
     })
     records = response.get("results")
-    require(response.get("unresolved_rows") == 0 and response.get("tombstoned_rows") == 0
-            and response.get("has_more") is False and response.get("next_cursor") is None
+    require(response.get("has_more") is False and response.get("next_cursor") is None
             and isinstance(records, list) and len(records) == len(keys),
             "The approved keyed-data read is empty or incomplete")
     found = {}

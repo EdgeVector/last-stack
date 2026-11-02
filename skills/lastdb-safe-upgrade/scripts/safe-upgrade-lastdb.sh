@@ -1028,7 +1028,7 @@ EOF_ENV
   local stamp_env
   stamp_env="$(probe_stamp_env_for_label "$label")"
   env -u SENTRY_DSN -u FOLD_SENTRY_DSN \
-    -u LASTDB_HOME -u FOLDDB_HOME -u LASTDB_DATA_DIR \
+    -u LASTDB_HOME -u LASTDB_DATA_DIR \
     -u LASTDB_BUILD_CONFLICT_STAMP_ON_COPY \
     -u MIMALLOC_PURGE_DELAY \
     ${env_pairs[@]+"${env_pairs[@]}"} \
@@ -1246,14 +1246,13 @@ candidate_deployment_check() {
         .ok == true
         and (.results | length) > 0
         and ((.results[0].fields[$f] // "") | length) > 0
-        and (.unresolved_rows // 0) == 0
       ' "$query" >/dev/null 2>&1; then
     warn "the candidate did not serve the keyed brain read from the synthetic seed"
     stop_probe_node "$pid" "$copy" "$blog" || true
     return 1
   fi
   if ! keyed_query "$sock" "$SEED_RANGE_SCHEMA" "$SEED_RANGE_FIELD" "$SEED_RANGE_HASH" >"$cards" \
-      || ! jq -e '.ok == true and (.results | length) > 0 and (.unresolved_rows // 0) == 0' \
+      || ! jq -e '.ok == true and (.results | length) > 0' \
         "$cards" >/dev/null 2>&1; then
     warn "the candidate did not serve the brain range read from the synthetic seed"
     stop_probe_node "$pid" "$copy" "$blog" || true

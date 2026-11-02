@@ -61,7 +61,7 @@ class PrivateTarget:
         require(self.process is None, "A target process already exists")
         environment = dict(self.environment)
         environment.update({"HOME": str(self.home), "LASTDB_HOME": str(self.home),
-            "FOLDDB_HOME": str(self.home), "LASTDB_ISOLATED_COPY": "0",
+            "LASTDB_ISOLATED_COPY": "0",
             "LASTDB_SUPPRESS_RECOVERY_PHRASE": "1", "LASTDBD_STDIO_LOG_ROTATION": "0"})
         self.stream = os.fdopen(os.open(self.output / "target.log",
             os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "ab")

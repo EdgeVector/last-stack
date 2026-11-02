@@ -84,8 +84,8 @@ class Data:
         require(len(reply["results"]) == len(queries), "exact_read_batch_count")
         for (key, fields), item in zip(expected.items(), reply["results"]):
             result = item["response"]
-            require(item["status"] == 200 and result["ok"] is True and not result.get("has_more", False)
-                    and result.get("unresolved_rows", 0) == 0, "complete_keyed_read")
+            require(item["status"] == 200 and result["ok"] is True and not result.get("has_more", False),
+                    "complete_keyed_read")
             if fields is None:
                 require(result["returned_count"] == 0 and result["results"] == [], "declared_key_absent")
             else:

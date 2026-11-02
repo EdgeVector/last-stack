@@ -21,8 +21,7 @@ actions noted below.
 
 - **NEVER kill the primary LastDB brain (`lastdbd`, or legacy `folddb_server`).** It's Tom's primary brain with live Chrome
   connections; long uptime is NOT an orphan signal. Identify the primary brain by its live
-  LastDB socket (`lsof /Users/REPLACE/.lastdb/data/folddb.sock`), with the old
-  `~/.folddb/data/folddb.sock` path only as a fallback, or by the app process
+  LastDB socket (`lsof /Users/REPLACE/.lastdb/data/folddb.sock`), or by the app process
   (`pgrep -fl 'MacOS/[f]old-app'`) or Mini daemon (`pgrep -fl '[l]astdbd'`) before
   touching any LastDB-like process — the TCP port is gone, so a port probe no longer finds it.
   The **preview-port reaper (§4a)** is brain-safe by construction: it excludes any PID bound to
@@ -121,7 +120,6 @@ actions noted below.
 df -h /System/Volumes/Data | tail -1                       # free space
 ps aux | grep -E 'lastdbd|folddb_server' | grep -v grep    # confirm primary brain only
 lsof /Users/REPLACE/.lastdb/data/folddb.sock 2>/dev/null   # identify the primary brain by its live socket
-lsof /Users/REPLACE/.folddb/data/folddb.sock 2>/dev/null    # stale-path fallback only
 pgrep -fl 'MacOS/[f]old-app'                               # process fallback for the app-hosted brain
 pgrep -fl '[l]astdbd'                                      # Mini primary brain fallback; socket lsof can be empty
 ```
@@ -226,7 +224,6 @@ not an orphan signal). Known preview ports: **5173** (lastdb-ui), **5178**,
 brain_pids=$(
   {
     lsof -t /Users/REPLACE/.lastdb/data/folddb.sock 2>/dev/null
-    lsof -t /Users/REPLACE/.folddb/data/folddb.sock 2>/dev/null
     pgrep -f 'MacOS/[f]old-app' 2>/dev/null
     pgrep -f '[l]astdbd' 2>/dev/null
   } | sort -u
@@ -248,7 +245,7 @@ done
 ```
 
 Guardrails: skip any PID in `brain_pids` (the live `~/.lastdb/data/folddb.sock` brain,
-with `~/.folddb/data/folddb.sock` only as a fallback, the `MacOS/fold-app` process,
+the `MacOS/fold-app` process,
 or the post-2026-07-12 `lastdbd` Mini primary),
 skip a port whose owning session is still live or whose cwd is a `doing`/`todo`
 kanban worktree, and log every PID + port + cmdline reaped (and every one spared
@@ -274,7 +271,6 @@ name or uptime (the brain is also a long-lived `lastdb_server`/`fold-app`):
 brain_pids=$(
   {
     lsof -t /Users/REPLACE/.lastdb/data/folddb.sock 2>/dev/null
-    lsof -t /Users/REPLACE/.folddb/data/folddb.sock 2>/dev/null
     pgrep -f 'MacOS/[f]old-app' 2>/dev/null
     pgrep -f '[l]astdbd' 2>/dev/null
   } | sort -u
@@ -300,9 +296,9 @@ find /Volumes -maxdepth 1 -type d -name 'LastDB*' -print 2>/dev/null |
 ```
 
 Guardrails: the brain (`fold-app` / `lastdb_server` / `lastdbd` on the live
-`~/.lastdb/data/folddb.sock`, with `~/.folddb/data/folddb.sock` only as a fallback)
+`~/.lastdb/data/folddb.sock`)
 is excluded by construction before temp/DMG classification. A high-CPU
-`lastdb_server` under `~/code/.../target/*`, `~/.lastdb`, or `~/.folddb` is NOT a
+`lastdb_server` under `~/code/.../target/*` or `~/.lastdb` is NOT a
 target (could be a legit dev/brain proc) — only temp-home/DMG nodes are. Log every
 PID reaped and every one spared.
 The proper upstream fix is the gate cleaning up its own node on exit — track that

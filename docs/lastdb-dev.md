@@ -70,10 +70,10 @@ last build, then the canary build of current main.
 
 The node boots with the primary's `LASTDB_*` environment, read from the
 primary's LaunchAgent plist through the same helper `lastdb-safe-upgrade`
-uses (`skills/lastdb-safe-upgrade/scripts/live-lastdb-env.sh`). `LASTDB_ATOM_KEY_ENCODING=partition_prefix` decides how the node addresses atom
-bodies, so the dev node writes data in the same layout as the primary.
+uses (`skills/lastdb-safe-upgrade/scripts/live-lastdb-env.sh`), so the dev node
+runs with the same limits and tuning as the primary.
 
-The node does not inherit `LASTDB_HOME`, `FOLDDB_HOME`, or any Sentry DSN.
+The node does not inherit `LASTDB_HOME` or any Sentry DSN.
 The empty home has no `cloud_sync.json` and no primary credentials, so the dev
 node never publishes a backup as the primary.
 
@@ -93,7 +93,7 @@ The env the node booted with is in `~/.local/state/lastdb-dev/boot.env`.
 
 `lastdb-dev env` exports these variables:
 
-- `LASTDB_HOME`, `FOLDDB_HOME` → the dev home (the `lastdb` CLI and the SDK)
+- `LASTDB_HOME` → the dev home (the `lastdb` CLI and the SDK)
 - `FBRAIN_FOLDDB_SOCKET`, `FOLDDB_SOCKET_PATH`, `LASTDB_SOCKET_PATH`,
   `LAST_STACK_LASTDB_SOCKET` → the dev socket
 - `BRAIN_CONFIG`, `KANBAN_CONFIG` → copies of `~/.brain/config.json` and

@@ -2,7 +2,7 @@
 # Measure cloud-sync resume proof on a real, throwaway ephemeral LastDB home.
 #
 # Boots a real lastdbd against a home under /tmp (never the primary
-# ~/.lastdb or ~/.folddb), runs the actual `lastdb cloud status`,
+# ~/.lastdb), runs the actual `lastdb cloud status`,
 # `lastdb cloud snapshot`, and `lastdb db put-file-blob` commands against it,
 # and records the real exit codes and output. Cloud sync is paused
 # product-wide pending the laststore redesign (Situation
@@ -50,14 +50,13 @@ MEASURE_ID="csr-$(date -u +'%Y%m%d-%H%M%S')-$$"
 # ephemeral home directly under /tmp, which stays short on every host this
 # proof runs on, instead of under $TMPDIR.
 EPHEMERAL_HOME="$(mktemp -d /tmp/csr.XXXXXX)"
-for root in "$HOME/.lastdb" "$HOME/.folddb"; do
-  case "$EPHEMERAL_HOME" in
-    "$root"|"$root"/*)
-      echo "Refusing an ephemeral home under $root" >&2
-      exit 1
-      ;;
-  esac
-done
+root="$HOME/.lastdb"
+case "$EPHEMERAL_HOME" in
+  "$root"|"$root"/*)
+    echo "Refusing an ephemeral home under $root" >&2
+    exit 1
+    ;;
+esac
 
 EVIDENCE_JSON="$HERE/measured-evidence.json"
 RUN_LOG="$HERE/measured-evidence.log"

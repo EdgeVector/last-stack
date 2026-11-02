@@ -715,7 +715,7 @@ The live cutover has no rollback copy of the primary. See
     `.cloud_sync.json.tmp*` residue, and the `.cloud_resume_required`,
     `.cloud_resume_requested`, and `.cloud_resume_ready` markers. It does this
     before DEV connect. It unsets
-    `LASTDB_HOME`, `FOLDDB_HOME`, and `FOLD_SYNC_DEVICE_ID` for connect, daemon
+    `LASTDB_HOME` and `FOLD_SYNC_DEVICE_ID` for connect, daemon
     start, and snapshot.
 
     The candidate deployment check reads a separate copy of the same trial

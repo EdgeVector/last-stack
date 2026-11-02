@@ -107,7 +107,6 @@ RETRY_LIMIT = 30
 # An unfiltered /api/query needs the explicit admin/offline bulk opt-in. Only the target walk sends it.
 WALK_HEADERS = {"X-LastDB-Allow-Full-Scan": "1"}
 # lastdb#803 (API 13) owns the values of every schema and refuses a shared-value home at startup.
-# lastdb#901 stage 2 stops sending independent_fields, so from this API on a missing key means owned.
 OWNED_VALUES_API = 13
 
 
@@ -429,14 +428,10 @@ class Catalog:
         for entry in matches:
             if not entry.get("field_mappers") and "/" not in entry.get("name", ""):
                 return entry
-        independent = [e for e in matches if e.get("independent_fields")]
-        return (independent or matches or [None])[0]
+        return (matches or [None])[0]
 
     def owns_values(self, entry):
-        """The target owned check. A present independent_fields key decides as before: only true passes.
-        A missing key passes only on API 13 or later (OWNED_VALUES_API); an older node without it fails."""
-        if "independent_fields" in entry:
-            return entry["independent_fields"] is True
+        """The target owned check: every schema owns its values on API 13 or later (OWNED_VALUES_API)."""
         return self.api_version is not None and self.api_version >= OWNED_VALUES_API
 
     def detail(self, name):
@@ -1118,7 +1113,7 @@ def run_route(ctx, route, mode, pre):
                          "layout": layout(src_entry), "fields": len(src_entry.get("fields") or [])},
               "target": ({"name": tgt_entry["name"], "descriptive": tgt_entry.get("descriptive_name"),
                           "owner": show_owner(norm_owner(tgt_entry)),
-                          "layout": layout(tgt_entry), "independent_fields": tgt_entry.get("independent_fields")}
+                          "layout": layout(tgt_entry)}
                          if tgt_entry else None),
               "target_descriptive": route["target_descriptive"], "issues": {}, "refusals": list(pre["refusals"])}
     result.update(pre["info"])
@@ -1168,7 +1163,7 @@ def run_route(ctx, route, mode, pre):
         if mode == "plan" and not args.census:
             return result
         if tgt_entry is not None and not ctx.tgt_cat.owns_values(tgt_entry) and not args.allow_shared_value_target:
-            result["refusals"].append("the target schema does not report independent_fields")
+            result["refusals"].append("the target node is older than API 13 and does not own schema values")
         census, issue_counts, absent = {}, {}, {}
         target_name = tgt_entry["name"] if tgt_entry else None
         tgt_range = is_range_schema(tgt_entry) if tgt_entry else range_schema
@@ -1422,7 +1417,7 @@ def parse_args(argv):
     p.add_argument("--allow-different-identity", action="store_true",
                    help="permit a target node whose user hash differs from the source (synthetic homes only)")
     p.add_argument("--allow-shared-value-target", action="store_true",
-                   help="permit a target schema without independent_fields (synthetic runs on an older daemon only)")
+                   help="permit a target node older than API 13 (synthetic runs on an older daemon only)")
     p.add_argument("--protect-home", action="append", default=[],
                    help="--apply refuses a target socket under this home (repeatable; ~/.lastdb is always protected)")
     p.add_argument("--page-size", type=int, default=LIST_PAGE_MAX)
@@ -1431,7 +1426,7 @@ def parse_args(argv):
     p.add_argument("--write-bytes", type=int, default=4 * 1024 * 1024)
     p.add_argument("--value-max-bytes", type=int, default=256 * 1024,
                    help="largest field value the target accepts: the node default is 256 KiB; "
-                        "LASTDB_MAX_ATOM_CONTENT_BYTES on the target daemon changes it")
+                        "LASTDB_MAX_FIELD_VALUE_BYTES on the target daemon changes it")
     p.add_argument("--record-max-bytes", type=int, default=None,
                    help="census: the full-record cap of a format 7 target (65536). A row whose stored record "
                         "would be larger is a record-over-cap issue")

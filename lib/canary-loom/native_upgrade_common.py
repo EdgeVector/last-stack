@@ -24,6 +24,11 @@ def run(argv, timeout=30, check=True, env=None):
     return result
 
 
+def path_id(name):
+    """SHA-256 of one Git tree path; reviewed path tables key on it."""
+    return hashlib.sha256(name.encode()).hexdigest()
+
+
 def sha(path):
     result = hashlib.sha256()
     with Path(path).open("rb") as stream:
@@ -245,7 +250,7 @@ def exact_read(sock, schema, fields, keys, expected):
                   "filter": ({"HashKey": keys[0]} if len(keys) == 1 else
                              {"HashRangeKeys": [[key, ""] for key in keys]}),
                   "limit": len(keys)})
-    require(not result.get("unresolved_rows", 0) and not result.get("has_more", False),
+    require(not result.get("has_more", False),
             "The exact keyed read is incomplete")
     found = {row["key"]["hash"]: row["fields"] for row in result.get("results", [])}
     require(len(found) == len(result.get("results", [])) and found == expected,

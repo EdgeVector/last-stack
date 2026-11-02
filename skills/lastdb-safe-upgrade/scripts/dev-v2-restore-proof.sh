@@ -124,7 +124,7 @@ $(live_lastdb_env_pairs "${LASTDB_LAUNCHD_PLIST:-}")
 EOF_ENV
 # The daemon and every CLI call get the primary's LASTDB_* tuning, V2 enabled,
 # and no inherited home, device or error-report target.
-CAND_ENV=(env -u LASTDB_HOME -u FOLDDB_HOME -u FOLD_SYNC_DEVICE_ID -u OBS_SENTRY_DSN
+CAND_ENV=(env -u LASTDB_HOME -u FOLD_SYNC_DEVICE_ID -u OBS_SENTRY_DSN
   ${LIVE_LASTDB_ENV_ARGS[@]+"${LIVE_LASTDB_ENV_ARGS[@]}"} LASTDB_BYTE_BACKUP_V2_ENABLED=true)
 
 FAILURE_PHASE="candidate_binding"

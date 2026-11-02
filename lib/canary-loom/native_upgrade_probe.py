@@ -37,7 +37,7 @@ class GeneratedNode:
         # A fresh synthetic identity, with no inherited account or service configuration.
         environment = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C",
                        "HOME": str(self.home), "TMPDIR": str(self.root),
-                       "LASTDB_HOME": str(self.home), "FOLDDB_HOME": str(self.home),
+                       "LASTDB_HOME": str(self.home),
                        "LASTDB_ISOLATED_COPY": "1", "LASTDB_SUPPRESS_RECOVERY_PHRASE": "1",
                        "FOLDDB_DISABLE_KEYCHAIN": "1", "LASTDBD_STDIO_LOG_ROTATION": "0",
                        "RUST_MIN_STACK": "16777216"}

@@ -61,7 +61,6 @@ else
   fi
 
   p99="$(sed -n 's/^- Warm apply-gate p99: \([0-9][0-9]*\) microseconds.*$/\1/p' "$EVIDENCE" | head -1)"
-  false_zero="$(sed -n 's/^- Reverse-index false-zero atoms: \([0-9][0-9]*\).*$/\1/p' "$EVIDENCE" | head -1)"
   barriers="$(sed -n 's/^- Purge schema-barrier acquisitions: \([0-9][0-9]*\).*$/\1/p' "$EVIDENCE" | head -1)"
   fixture="$(sed -n 's/^- Fixture: //p' "$EVIDENCE" | head -1)"
 
@@ -69,11 +68,6 @@ else
     pass_note "warm apply-gate p99 is ${p99} microseconds (<5000)"
   else
     fail_note "warm apply-gate p99 is ${p99:-missing} microseconds"
-  fi
-  if [ "$false_zero" = 0 ]; then
-    pass_note "reverse-index false-zero atoms are 0"
-  else
-    fail_note "reverse-index false-zero atoms are ${false_zero:-missing}"
   fi
   if [ "$barriers" = 0 ]; then
     pass_note "purge schema-barrier acquisitions are 0"

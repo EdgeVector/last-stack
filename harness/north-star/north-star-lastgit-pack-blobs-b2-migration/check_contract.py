@@ -12,7 +12,7 @@ from pathlib import Path
 
 SCHEMA = "lastgit-pack-blobs-b2-proof.v1"
 SHA_RE = re.compile(r"^ok ([0-9a-f]{64})$")
-PRIMARY_MARKERS = ("/.lastdb", "/.folddb", "~/.lastdb", "~/.folddb")
+PRIMARY_MARKERS = ("/.lastdb", "~/.lastdb")
 
 REQUIRED = (
     "schema",
@@ -34,7 +34,7 @@ REQUIRED = (
     "new_push_pointerless",
     "disabled_plane_visible",
     "silent_offsite_claim",
-    "pack_bytes_in_atoms",
+    "pack_bytes_in_records",
     "db_sync_plane",
     "pack_file_plane",
 )
@@ -154,7 +154,7 @@ def source_failures(pointer, client, cli, doctor):
     upload = method_body(client, "private async putPackFileBlob(")
     require(upload, 'this.req("POST", "/api/db/file-blob"', "The pack upload does not use the file-blob plane.", failures)
     require(upload, "key: { hash: contentHash, range: null }", "The pack upload key is not a HashRange key.", failures)
-    require(upload, 'data: ""', "The pack upload does not keep the atom body empty.", failures)
+    require(upload, 'data: ""', "The pack upload does not keep the record body empty.", failures)
     require(upload, 'bytes_b64: plaintext.toString("base64")', "The pack upload does not send the pack bytes.", failures)
     require(upload, "cache_local_plaintext: false", "The pack upload caches local plaintext.", failures)
     require(upload, 'mapper?.pack_file ?? mapper?.file ?? "pack_file"', "The pack upload field is not pack_file.", failures)
@@ -178,7 +178,7 @@ def source_failures(pointer, client, cli, doctor):
         "A disabled file plane can stay silent.",
         failures,
     )
-    require(put, 'data: ""', "A new push writes pack bytes into the atom.", failures)
+    require(put, 'data: ""', "A new push writes pack bytes into the record.", failures)
     require_absent(put, "bytes_b64", "A new push embeds pack bytes in the metadata row.", failures)
 
     recover = method_body(client, "private static packBytesFromFileBlobPlaintext(")
@@ -278,7 +278,7 @@ def evidence_failures(text):
     second_skipped = need_int(fields, "backfill_second_skipped", failures)
     new_push = need_int(fields, "new_push_count", failures)
     new_pointerless = need_int(fields, "new_push_pointerless", failures)
-    atoms = need_int(fields, "pack_bytes_in_atoms", failures)
+    in_records = need_int(fields, "pack_bytes_in_records", failures)
     if reachable is not None and reachable < 1:
         failures.append("The evidence has no reachable pack blob.")
     if pointerless not in (None, 0):
@@ -316,8 +316,8 @@ def evidence_failures(text):
         failures.append("A disabled file plane is not visible.")
     if fields["silent_offsite_claim"] != "false":
         failures.append("The evidence allows a silent offsite claim.")
-    if atoms not in (None, 0):
-        failures.append("Pack bytes are in atoms.")
+    if in_records not in (None, 0):
+        failures.append("Pack bytes are in records.")
     if fields["db_sync_plane"] != "r2":
         failures.append("Database sync does not stay on R2.")
     if fields["pack_file_plane"] != "b2":
