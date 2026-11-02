@@ -4,7 +4,7 @@ description: |
   Required path for a primary LastDB Mini version change. The driver boots
   the exact candidate on a copy of a small synthetic seed. It never copies the
   primary database and never runs a node on a copy of it (Tom, 2026-10-12). It
-  requires keyed reads, read latency, memory checks, and a
+  requires keyed reads, exact-source CI performance qualification, memory checks, and a
   source-free restore of an exact DEV snapshot of the seed before a live
   cutover. It then requires a current cloud backup (the recovery point), a
   strict stopped flush receipt, supervised live health, and a cloud frontier
@@ -72,6 +72,16 @@ Artifact provenance, probes, command and skill links, compatibility layout,
 and instruction updates retain the normal path.
 
 ## Format 7 primary with automatic V2 backup (Tom, 2026-11-01)
+
+Local builds and benchmarks are retired. The driver requires the exact candidate's
+accepted main source and successful `ci-required` and `benchmark-complete` GitHub
+checks before any probe or cutover. It performs no local latency timings. Memory,
+keyed reads, DEV restore, backup currency, strict stop and supervised live health
+remain required. A CI failure is a refusal, not permission to benchmark locally.
+
+Kanban and Situations are off. `LASTDB_SAFE_UPGRADE_APPS_OFF` defaults to `1`:
+no notice, card reopening, or Loom journal projection into LastDB runs. The local
+recovery journal remains available. Set it to `0` only after Tom restores those apps.
 
 The default Loom route (protocol 7) reads the live status first.
 A format 7 home has `status.durability` and no `status.sync`.
