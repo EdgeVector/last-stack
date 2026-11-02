@@ -112,6 +112,10 @@ have_cmd() {
 # Hard-broken / hard-stale only. Soft-stale (stale=true, usable current) is
 # not Class A — see design-last-stack-class-a-atomic-install-soft-stale.
 
+registry_hard_unhealthy() {
+  ! "$HOME/.local/bin/lastdb" app status last-stack --check --json >/dev/null 2>&1
+}
+
 parse_heal_result() {
   printf '%s\n' "${1:-}" | awk '{
     for (i = 1; i <= NF; i++) {
@@ -168,13 +172,13 @@ class_a_from_heal_probe() {
   fi
   # GNU timeout: 124. kill -9 after -k grace: 137.
   if [ "$CLASS_A_HEAL_RC" -eq 124 ] || [ "$CLASS_A_HEAL_RC" -eq 137 ]; then
-    host_track_hard_unhealthy && return 0
+    registry_hard_unhealthy && return 0
     return 1
   fi
   if [ "$heal_result" = "error" ] || [ "$CLASS_A_HEAL_RC" -eq 1 ]; then
     return 0
   fi
-  host_track_hard_unhealthy && return 0
+  registry_hard_unhealthy && return 0
   return 1
 }
 
