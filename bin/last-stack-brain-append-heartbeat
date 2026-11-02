@@ -2,7 +2,7 @@
 # Append one heartbeat line to a local log file — NOT LastDB / brain.
 #
 # Heartbeats are fleet "I ran" pings. They must not use LastDB (versioned
-# full-body rewrites of a Reference record ballooned atom storage).
+# full-body rewrites of a Reference record ballooned record storage).
 #
 # Default log: ~/.last-stack/logs/routine-heartbeats.log
 # Override:    LAST_STACK_HEARTBEATS_FILE=/path/to/file

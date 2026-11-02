@@ -44,11 +44,11 @@ Memory: `project_app_identity`, `project_fbrain`.
 1. DEV only. Every endpoint and credential must target the dev environment.
    Abort if anything resolves to prod.
 2. Never use Tom's primary LastDB/Brain state. Do not read or write
-   `$HOME/.lastdb`, `$HOME/.folddb`, `$HOME/.brain`, or the primary socket as
+   `$HOME/.lastdb`, `$HOME/.brain`, or the primary socket as
    part of this dogfood.
 3. Use a dedicated persistent dogfood home, not a temp home, for the developer
    identity:
-   `FOLDDB_HOME=$HOME/.last-stack/dogfood/app-identity/brain`.
+   `LASTDB_HOME=$HOME/.last-stack/dogfood/app-identity/brain`.
    This is intentionally stable so reruns use the same owner key. Do not pass
    `folddb login --force` unless Tom explicitly asks for an owner rotation.
 4. Keep secrets out of chat, Brain, Kanban, docs, logs, and PR bodies. If a run
@@ -104,23 +104,21 @@ Set the CLI home before every `folddb` command. This home is persistent across
 runs by design; it owns the `brain` app registration.
 
 ```bash
-export FOLDDB_HOME="$HOME/.last-stack/dogfood/app-identity/brain"
+export LASTDB_HOME="$HOME/.last-stack/dogfood/app-identity/brain"
 export FOLDDB_DISABLE_KEYCHAIN=1
-mkdir -p "$FOLDDB_HOME"
+mkdir -p "$LASTDB_HOME"
 
-echo "dogfood home: $FOLDDB_HOME"
-test "$FOLDDB_HOME" != "$HOME/.lastdb"
-test "$FOLDDB_HOME" != "$HOME/.folddb"
-test "$FOLDDB_HOME" != "$HOME/.brain"
+echo "dogfood home: $LASTDB_HOME"
+test "$LASTDB_HOME" != "$HOME/.lastdb"
+test "$LASTDB_HOME" != "$HOME/.brain"
 
-for sock in "$HOME/.lastdb/data/folddb.sock" "$HOME/.folddb/data/folddb.sock"; do
-  if [ -S "$sock" ]; then
-    echo "primary socket observed and left untouched: $sock"
-  fi
-done
+sock="$HOME/.lastdb/data/folddb.sock"
+if [ -S "$sock" ]; then
+  echo "primary socket observed and left untouched: $sock"
+fi
 ```
 
-Do not use `mktemp` for `FOLDDB_HOME`; a temporary home creates a new developer
+Do not use `mktemp` for `LASTDB_HOME`; a temporary home creates a new developer
 owner and can fail the registry's first-write-wins ownership model.
 
 ## Step 2 - Login
@@ -275,14 +273,13 @@ not a literal `brain/Concept` string. Namespacing is proven by
 ```bash
 rm -rf "$WORK"
 
-for sock in "$HOME/.lastdb/data/folddb.sock" "$HOME/.folddb/data/folddb.sock"; do
-  if [ -S "$sock" ]; then
-    echo "primary socket still present and untouched: $sock"
-  fi
-done
+sock="$HOME/.lastdb/data/folddb.sock"
+if [ -S "$sock" ]; then
+  echo "primary socket still present and untouched: $sock"
+fi
 ```
 
-Keep `$FOLDDB_HOME` and the dogfood developer identity. That state is the
+Keep `$LASTDB_HOME` and the dogfood developer identity. That state is the
 idempotency anchor for future runs. Do not delete it unless Tom asks for a full
 owner reset and accepts the registry consequences.
 
@@ -312,7 +309,7 @@ Do not file Tom-only manual gates as bugs; report them plainly.
 End with a tight report:
 
 - Step 0 readiness result.
-- Dedicated `FOLDDB_HOME` used, with confirmation that primary sockets were not
+- Dedicated `LASTDB_HOME` used, with confirmation that primary sockets were not
   touched.
 - `folddb login`, `folddb init`, `folddb push`, and `folddb app status` result.
 - The nine schema names observed, including `Sop`.

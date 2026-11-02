@@ -28,7 +28,7 @@ resolve_home() {
   [ -n "$candidate" ] || return 1
   resolved="$(cd "$candidate" 2>/dev/null && pwd -P || printf '%s\n' "$candidate")"
   case "$resolved" in
-    "$HOME/.lastdb"|"$HOME/.lastdb/"*|"$HOME/.folddb"|"$HOME/.folddb/"*)
+    "$HOME/.lastdb"|"$HOME/.lastdb/"*)
       echo "FAIL: refusing primary brain path: $resolved" >&2
       return 1
       ;;

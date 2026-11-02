@@ -52,9 +52,9 @@ CAUSES = frozenset({
     "invalid_transform", "invalid_data", "delete_barrier_changed",
     "permission_denied", "catalog_membership_denied", "transport_not_attested",
     "transform_gas_exceeded", "transform_call_depth_exceeded", "cas_conflict",
-    "atom_content_too_large", "invalid_cursor", "storage_full", "persist_queue_full",
+    "invalid_cursor", "storage_full", "persist_queue_full",
     "capture_queue_full", "materialization_failed", "missing_mutation_applier",
-    "legacy_molecule_delete", "raw_delete_barrier_put", "delete_barrier_identity_mismatch",
+    "raw_delete_barrier_put", "delete_barrier_identity_mismatch",
     "unknown",
 })
 
@@ -111,22 +111,12 @@ def require_u64(value: object) -> int:
 
 def public_replay(value: object) -> dict[str, object]:
     required = {"seq", "operation", "cause"}
-    optional = {"atom_content_bytes", "atom_limit_bytes"}
-    if (not isinstance(value, dict) or not required <= value.keys()
-            or not value.keys() <= required | optional):
+    if not isinstance(value, dict) or value.keys() != required:
         raise ValueError("unsupported replay fields")
     if value["operation"] not in OPERATIONS or value["cause"] not in CAUSES:
         raise ValueError("unsupported replay enums")
-    replay = {"seq": require_u64(value["seq"]),
-              "operation": value["operation"], "cause": value["cause"]}
-    supplied = value.keys() & optional
-    if supplied:
-        if (supplied != optional or value["cause"] != "atom_content_too_large"
-                or value["operation"] != "mutation_intent"):
-            raise ValueError("unsupported atom diagnosis")
-        for field in sorted(optional):
-            replay[field] = require_u64(value[field])
-    return replay
+    return {"seq": require_u64(value["seq"]),
+            "operation": value["operation"], "cause": value["cause"]}
 
 
 def public_error(data: bytes) -> dict[str, object]:

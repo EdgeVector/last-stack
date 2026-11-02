@@ -39,7 +39,7 @@ def restored(original, home, report, baseline, replay=None, observe=None):
             and report["file_dependencies_verified"] is True
             and original.nonnegative(report["native_files"]) > 0
             and original.nonnegative(report["native_bytes"]) > 0
-            and original.nonnegative(report["verified_atoms"]) >= 0
+            and original.nonnegative(report["verified_records"]) >= 0
             and original.nonnegative(report["verified_external_files"]) == 0, "restore_report_binding")
     receipt_path = original.owned(home, "byte-cloud-restore-receipt.json")
     receipt = original.read_json(receipt_path, max_bytes=65536)

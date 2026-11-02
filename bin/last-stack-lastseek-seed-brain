@@ -129,8 +129,6 @@ def read_rows(node, name, fields, keys, batch):
         seen = set()
         while True:
             data = node.call("POST", "/api/query", request)
-            if data.get("unresolved_rows") != 0:
-                raise SystemExit(f"/api/query returned unresolved rows for {name}")
             for row in data.get("results") or []:
                 key = row["key"]
                 values = {f: v for f, v in (row.get("fields") or {}).items() if f in fields}

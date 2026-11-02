@@ -29,9 +29,8 @@ An append-only index puts the NEWEST entry at the BOTTOM, and `brain get`
 windows a long body at ~40K chars, so for an hourly routine the newest entry
 would fall outside the window in about two weeks -- the one entry a recency
 pointer exists to serve. (The append-only papercut ledger in this same repo
-hit LastDB's 524288-byte atom limit and needed successor chaining:
-papercut-reconciler-ledger-reaches-lastdb-atom-limit-20260927.) A bounded,
-newest-first rewrite keeps the record small enough that neither limit is ever
+hit LastDB's 524288-byte field value limit and needed successor chaining.) A
+bounded, newest-first rewrite keeps the record small enough that neither limit is ever
 in play. `brain put` on a fixed slug is an idempotent upsert that REPLACES the
 body -- measured 2026-10-03: first write `created`, second `updated`, the first
 body's text gone and the new body round-tripped exactly.

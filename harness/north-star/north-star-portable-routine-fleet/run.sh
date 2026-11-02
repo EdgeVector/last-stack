@@ -37,7 +37,7 @@ finish() {
 refuse_primary_path() {
   local label="$1" candidate="$2"
   case "$candidate" in
-    "$HOME/.lastdb"|"$HOME/.lastdb/"*|"$HOME/.folddb"|"$HOME/.folddb/"*)
+    "$HOME/.lastdb"|"$HOME/.lastdb/"*)
       finish FAIL "The harness refuses ${label} because it is a primary LastDB home."
       ;;
   esac
@@ -262,7 +262,7 @@ else:
         placeholder_count += len(seen)
         if leftover:
             add_fail(name + " still has placeholders: " + ", ".join(sorted(set(leftover))))
-        if ".lastdb" in filled or ".folddb" in filled:
+        if ".lastdb" in filled:
             add_fail(name + " names a primary LastDB home after the fill.")
         if "EdgeVector" in filled:
             add_fail(name + " still names EdgeVector after the fill.")
@@ -303,7 +303,7 @@ else:
             continue
         if "throwaway" not in isolation and str(work_root) not in isolation:
             add_fail("A probe isolation line does not name a throwaway surface.")
-        if ".lastdb" in isolation or ".folddb" in isolation:
+        if ".lastdb" in isolation:
             add_fail("A probe isolation line names a primary LastDB home.")
     if probe_sections < 1:
         add_fail("The filled probe registry has no probe entry.")
@@ -357,7 +357,7 @@ def require_engine(path, before, needles, label):
     for needle in needles:
         if needle not in text:
             add_fail(label + " skill lost the contract text: " + needle)
-    if ".lastdb" in text or ".folddb" in text:
+    if ".lastdb" in text:
         add_fail(label + " skill names a primary LastDB home.")
     if "sop-routine-shared-contract" not in text:
         add_fail(label + " skill does not cite sop-routine-shared-contract.")

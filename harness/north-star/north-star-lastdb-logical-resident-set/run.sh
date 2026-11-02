@@ -81,7 +81,7 @@ for root in roots:
     if canon == base or canon.startswith(base + os.sep):
         raise SystemExit(0)
 raise SystemExit(1)
-' "$1" "$HOME/.lastdb" "$HOME/.folddb"
+' "$1" "$HOME/.lastdb"
 }
 
 refuse_home() {

@@ -41,7 +41,7 @@ Three things, in order:
    to. `init` defaults to the local LastDB node — the Unix socket at
    `$HOME/.lastdb/data/folddb.sock` (the current LastDB data dir) — so a locally
    started node works out of the box; point elsewhere with `--node-url` (or move
-   the data dir with `FOLDDB_HOME`). Start a node (e.g. from your LastDB install /
+   the data dir with `LASTDB_HOME`). Start a node (e.g. from your LastDB install /
    daemon) before running `init`. On a
    fresh, unprovisioned node, `kanban init` auto-provisions the node identity on
    first run, so you can skip any interactive identity wizard — handy for

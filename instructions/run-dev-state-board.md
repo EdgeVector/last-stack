@@ -21,7 +21,6 @@ map; that record no longer resolves, so the pointer is gone and the map is here.
 
 | Prefer | Also exists | Notes |
 |--------|-------------|--------|
-| `~/.lastdb` | `~/.folddb` → symlink | Socket + Mini home |
 | `~/.fkanban` | `~/.kanban` → symlink | Board worktrees + CLI state |
 | `~/.local/state/last-stack/…` | many `~/.last-stack/*` symlinks | **Managed install**: `logs`, `bin`, `skills`, `routines`, `proofs`, … point into state |
 

@@ -8,7 +8,7 @@ import stat
 import os
 import time
 
-from native_upgrade_common import regular, require, sha
+from native_upgrade_common import path_id, regular, require, sha
 from native_v2_artifact import verify as verify_archive
 from native_v2_release import accepted_release, command_json, git
 from native_v2_source import root as native_root
@@ -16,53 +16,54 @@ from native_v2_source import root as native_root
 BASELINE = "0a9d8cf48470c21f0b7b9fef250a2d5598ca2b09"
 PROTECTED = ("vendor/", "fold_db/", "lastdb_storage_policy/", "app_identity_crypto/",
              "lastdb_identity/", "schema_service/", "cloud_backup_protocol/", "lastdb_app_sdk/")
-NEUTRAL = {
-    "vendor/laststore/src/disk_pack/backup/export.rs",
-    "fold_db/crates/core/src/storage/disk_pack/mod.rs",
-    "fold_db/crates/core/src/fold_db_core/query/hash_range_query/pending_values.rs",
-    "lastdb_storage_policy/src/lib.rs",
-    "vendor/laststore/src/disk_pack/home.rs",
-    "vendor/laststore/src/disk_pack/home/boundary.rs",
-    "vendor/laststore/src/disk_pack/maintenance/cache.rs",
-    "fold_db/crates/core/src/db_operations/atom_store/conflict_record/mod.rs",
-    "fold_db/crates/core/src/db_operations/atom_store/counter/mod.rs",
-    "fold_db/crates/core/src/db_operations/atom_store/counter/molecule.rs",
-    "fold_db/crates/core/src/db_operations/atom_store/counter/recount/blobs.rs",
-    "fold_db/crates/core/src/db_operations/atom_store/counter/restore_validation.rs",
-    "fold_db/crates/core/src/db_operations/atom_store/counter/restore_validation/reader.rs",
-    "fold_db/crates/core/src/db_operations/atom_store/counter/verify/state.rs",
-    "fold_db/crates/core/src/db_operations/atom_store/delete_replay.rs",
-    "fold_db/crates/core/src/db_operations/atom_store/locks.rs",
-    "fold_db/crates/core/src/db_operations/atom_store/mod.rs",
-    "fold_db/crates/core/src/fold_db_core/factory/local.rs",
-    "fold_db/crates/core/src/fold_db_core/fold_db/init.rs",
-    "fold_db/crates/core/src/storage/current_keys.rs",
-    "fold_db/crates/core/src/storage/disk_pack/initialization.rs",
-    "fold_db/crates/core/src/storage/disk_pack/read.rs",
-    "fold_db/crates/core/src/storage/disk_pack/restore.rs",
-    "fold_db/crates/core/src/storage/disk_pack/restore_safety.rs",
-    "fold_db/crates/core/src/storage/disk_pack/transaction/request.rs",
-    "fold_db/crates/core/src/storage/disk_pack/write.rs",
-    "fold_db/crates/core/src/sync/auth/byte_backup/publication.rs",
-    "fold_db/crates/core/src/sync/engine/bootstrap/snapshot.rs",
-    "fold_db/crates/core/src/sync/engine/helpers/record_keys.rs",
-    "fold_db/crates/core/src/sync/engine/replay/apply.rs",
-    "fold_db/crates/core/src/sync/engine/replay/counter_writer.rs",
-    "fold_db/crates/core/src/sync/engine/replay/decode.rs",
-    "fold_db/crates/core/src/sync/engine/replay/entry.rs",
-    "fold_db/crates/core/src/sync/engine/replay/fence.rs",
-    "fold_db/crates/core/src/sync/engine/replay/merge.rs",
-    "fold_db/crates/core/src/sync/engine/replay/mod.rs",
-    "fold_db/crates/core/src/sync/engine/replay/records.rs",
-    "fold_db/crates/core/src/sync/policy.rs",
-    "fold_db/crates/core/src/sync/replay_diagnosis.rs",
-    "fold_db/crates/core/src/sync/snapshot/current_format.rs",
-    "fold_db/crates/core/src/sync/snapshot/mod.rs",
-    "fold_db/crates/core/src/sync/snapshot/restore.rs",
-    "fold_db/crates/core/src/sync/snapshot/restore_guard.rs",
-    "fold_db/crates/core/src/sync/snapshot/restore_scan.rs",
-    "fold_db/crates/core/src/sync/snapshot/restore_scan/clear.rs",
-}
+# SHA-256 of each reviewed format-neutral path (native_upgrade_common.path_id).
+NEUTRAL = frozenset({
+    "7489bf2201c35a4519450a1b921e4559788dab5b6854f99eda45211906fa5761",
+    "d813d30f9ed25d18d8e34268716fb0cb094dcc63a84f709238428d30dc0a5056",
+    "c5d5d2c7fbfbb0de55c74fd19c8fa065d0effe89a5d4163ae61a0666ddb6133d",
+    "c20a42afc388cb33d2b0bffc6577d2fb4a6092c02bfcc45e1ecd801511803538",
+    "1e35870a3910611cf9334a2a72687502e49a660fe23bf4d97952d0b3f890f88c",
+    "f75147ac4d86b36db4c4a0ce887ba46e89baf6c6b64054f7363c8c2f377c6db9",
+    "a5bbfdc353081ba2ae89d6b72f943268823256fd68a21831b99fb8373932f5bf",
+    "b7da32d6dea181fc802f224811548baba87834f300b1253c700699a5ffedda56",
+    "4327bef86664be3360514e516b46b7d674f39c00d0b10055e0010cbeab22a84d",
+    "0a1b7a3ffe9717d8ec940ff778ed218a86dcfae02901440578ce5101525469b3",
+    "403030fb4be965b12db55662c9259ae85251067efa62b5356004463dbebdb222",
+    "5a193ffa4d8866a69a34a19b53d6b5b910271f6883e127e3b6d131968c36e1d9",
+    "75008e107f88f75b84f6798db65ea96e648ef3388e1f66d65b8fcd58b05be715",
+    "845ddd4f1701547ac2291a99e42fdfc278b46facb7e3fb645149b3979e5bdaf2",
+    "2076c3ba6ac5cb3fc58e07f14db355262fb6dd561dc22eadd54fa7a031c00155",
+    "7587be9ebc43e079640b16937f6750bdb8dbbe828d2dce6a46fc847af240c792",
+    "616566b9698028caf6e1772512bac56ab53bbd04899c8182deae8c8f829d8e98",
+    "e13fce2e68742a03315b43dfbf8f3bed430e2d54ebca78db636c933ef1942bca",
+    "c3facd7379c4e430efafb7ea80102f8f8408baa87de4d969f3db9bd68bc608e8",
+    "3d21090641f3af3660ec6e5583bb46157f92465aee7451098f54d192a3358959",
+    "83fd6b36598a5ff5b15d153dbdb4fa91046b5a1d14b1d0e08ea26c557b623d07",
+    "56e0714bea478073bc5d5b60b8d5f1a8dbd8872e3571f8fad91c7c48b79b2268",
+    "c54489f77a1e73a0e24388967663547d1f859e265d30a281d221d2e29a8ac497",
+    "5e39cdaeb97fef5687a0e8a4f9c993b95cf447f928bfe83d4f12d9aa61f4c11d",
+    "dfaf10a3157d15b4eed38a78ac6bad9976b857149c07143a0227f38862f68702",
+    "6a95e7cf4ef1136b74729a9674f8629bb8af4d2946b8d020578b8646a5492a49",
+    "2e2024afa32edc0cf8bbde01e2824d07f86d46da48d1706acc16672d8d9afd9b",
+    "e53f8c5c533a0cd1f1c4369d38b262007c2e56d4c132738660bd8667d78d7998",
+    "bfcc5b53604fecb730365857afd538d64c7e0ea1283a9bc996f48f75830bcdeb",
+    "653eef86398c39bcf50b33001ab3e10c23b1949c8915903a5eca7618687f4d6a",
+    "de6a368b7f0469599e6e8c76d3bbbcac415a0ad5b487ebcd014a5282460a57d4",
+    "03441c08d80ae179673da84e90c8bc6f60d467f71730202caf31b9a2f97946a6",
+    "2f17a52877388578e93d4ca6a76d1e0f7164a1c4d8d5ee59b570f1d498384a2b",
+    "05e78417a8d57685a640621b35b50bdc31dedf5135c95f563b50402e2861dc95",
+    "1c84b591800b05cec26ea93a7b1acce5304cedc6dd98df34a11fb00e6f09af71",
+    "a5d3aa13752570ea41e6487afa48497d12f4a4dc9f9eec3596238804f54b1cde",
+    "76a784ced386a5b40d5105b9d8f87ecba11bfa9aa0bdfd67f379f091027a5d2d",
+    "da953c05df04f42a86b625763844a08878f12e1511df9f5304d2c303519807fd",
+    "4a346b45622452d0e96e62df71f61b3ecc0fbaad1edab02ace3ec856cc987800",
+    "13d70be557479a4e9e8b2f16203b88902666ccdc443e02ba8c46c0e063a7da7f",
+    "fcabe583e76b1bad808542c8d815d366b75476b493db7f5feaac9049bdd78640",
+    "6ce121a763ef6d9e325380a7b52522c36081a9671efad3636dbfc67abdfc4da2",
+    "7779f4a585503e1d16324e4fb51a60c4d0ee7e75fb6cb1b9bd7c80d8ac10cbbf",
+    "9415b57fb1326a354c49f8e2fbfab5a7b3a14f656e7c2a2650229961a6c4242f",
+    "b6088304ab848a6bccd302ae14f8bfead241f2e0772e2fe56abf1c1f0057cc2f",
+})
 
 
 def private_json(path, maximum=1024 * 1024, expected_sha256=None):
@@ -173,7 +174,7 @@ def development(candidate, evidence):
             and restored["native_files"] == state["restored_native_files_exact"] == state["frozen_native_files"]
             and restored["native_bytes"] == state["restored_native_bytes_exact"] == state["frozen_native_bytes"]
             and restored["file_dependencies_verified"] is True
-            and type(restored["verified_atoms"]) is int and restored["verified_atoms"] >= 0
+            and type(restored["verified_records"]) is int and restored["verified_records"] >= 0
             and status["objects_verified"] == state["frozen_transport_objects"] > 0
             and status["metadata_pack_objects"] > 0 and status["multi_file_pack_objects"] > 0,
             "DEV native bytes or packing proof differs")
@@ -209,7 +210,7 @@ def compatibility(evidence, baseline_source):
         protected = name.startswith(PROTECTED) or Path(name).name in (
             "Cargo.toml", "Cargo.lock", "rust-toolchain.toml") or name.startswith(".cargo/")
         if protected and old.get(name) != new.get(name):
-            require(name in NEUTRAL or name.startswith("fold_db/crates/core/src/storage/disk_pack/byte_backup/"),
+            require(path_id(name) in NEUTRAL or name.startswith("fold_db/crates/core/src/storage/disk_pack/byte_backup/"),
                     "An unreviewed writer, codec, feature or dependency changed: " + name)
             changes[name] = {"before": old.get(name), "after": new.get(name)}
     require(proof["reviewed_format_neutral_changes"] == changes,

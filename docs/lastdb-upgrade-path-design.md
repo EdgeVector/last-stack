@@ -174,7 +174,7 @@ The old reader emits logical data; the new writer validates and imports it with 
 The transfer must preserve these facts:
 
 - Database and account identities, schema identities, canonical fields, and key layouts.
-- Schema-owned molecules, named alternate keys, current tips, and atom identities.
+- Schema-owned records, named alternate keys, and alternate entries.
 - Current values, original write-order facts, tombstones, retained conflicts, and their expiry rules.
 - Every required file blob and the encryption material that permits its use.
 - App capabilities, grants, and other required durable control data.
@@ -239,7 +239,7 @@ Resume requires the same source boundary, old reader, new writer, transfer contr
 Verification compares all exported objects and required files, not only record counts.
 Source and target compute the same canonical logical digest despite different disk bytes.
 The target proves that every required reference resolves and every required file is complete.
-The checks include deletion state, schema-owned values, alternate-key membership, atom identity, retained conflicts, and app access.
+The checks include deletion state, schema-owned values, alternate-key membership, record identity, retained conflicts, and app access.
 Use migration-owned keys for write checks and exclude those declared checks from the source-to-target digest comparison.
 Read migrated values by their exact source keys in batches.
 Do not use real secret values as operator-visible examples.
@@ -413,8 +413,8 @@ Do not add a test suite, fixture harness, local benchmark, or filesystem clone o
 - [Old disk-format refusal](https://github.com/EdgeVector/lastdb/blob/b94a10a786baa6168a22aa78b2b80c9df7603bbc/vendor/laststore/src/disk_pack/current.rs).
 - [Old cloud repair marker check](https://github.com/EdgeVector/lastdb/blob/b94a10a786baa6168a22aa78b2b80c9df7603bbc/fold_db/crates/core/src/sync/retired_cloud_repair.rs).
 - [Startup check order](https://github.com/EdgeVector/lastdb/blob/b94a10a786baa6168a22aa78b2b80c9df7603bbc/lastdb_node/src/host/boot.rs).
-- [Installed reader format](https://github.com/EdgeVector/lastdb/blob/f7e77989a050aa490d64231474c6d7df847c24af/fold_db/crates/core/src/db_operations/atom_store/key_format.rs).
-- [Record format transition](https://github.com/EdgeVector/lastdb/blob/b94a10a786baa6168a22aa78b2b80c9df7603bbc/fold_db/crates/core/src/db_operations/atom_store/key_format.rs).
+- [Installed reader source](https://github.com/EdgeVector/lastdb/tree/f7e77989a050aa490d64231474c6d7df847c24af).
+- [Record format transition source](https://github.com/EdgeVector/lastdb/tree/b94a10a786baa6168a22aa78b2b80c9df7603bbc).
 - [Native automatic backup policy](https://github.com/EdgeVector/lastdb/blob/b94a10a786baa6168a22aa78b2b80c9df7603bbc/docs/designs/native-cloud-backup-auto-v1.md).
 - [Cloud V2 scope](https://github.com/EdgeVector/lastdb/blob/b94a10a786baa6168a22aa78b2b80c9df7603bbc/docs/designs/cloud-byte-transport-v2.md).
 - [Current native backup file transfer](https://github.com/EdgeVector/lastdb/blob/b94a10a786baa6168a22aa78b2b80c9df7603bbc/fold_db/crates/core/src/storage/disk_pack/backup_manifest/content.rs).

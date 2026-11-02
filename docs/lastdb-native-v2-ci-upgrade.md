@@ -108,7 +108,7 @@ Native codecs, native5 identity, file formats, crypto, protocol, dependencies, a
 The only Cargo exception removes the exact retired `csync_e2e_write` binary stanza and its source file.
 Every other Cargo byte, feature, dependency, and build setting must remain unchanged.
 Two further exceptions permit only exact source byte changes from `96`.
-They add the direct `BTreeSet` import in the query-slice builder and remove two unused atom-store re-exports.
+They add the direct `BTreeSet` import in the query-slice builder and remove two unused store re-exports.
 Every other byte in those files must remain unchanged.
 The callerless writer cleanup adds 29 closed Git blob pairs for sensitive store, progress, and helper paths.
 Each pair binds the exact `96` blob to the reviewed native5 cleanup blob.

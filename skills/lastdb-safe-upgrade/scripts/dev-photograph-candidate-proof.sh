@@ -535,7 +535,7 @@ FAILURE_PHASE="dev_connect"
 CLOUD_ACCESS_ATTEMPTED=1
 set +e
 "$LASTSECRETS_BIN" get "$DEV_INVITE_SLUG" 2>/dev/null \
-  | env -u LASTDB_HOME -u FOLDDB_HOME -u FOLD_SYNC_DEVICE_ID \
+  | env -u LASTDB_HOME -u FOLD_SYNC_DEVICE_ID \
       ${LIVE_LASTDB_ENV_ARGS[@]+"${LIVE_LASTDB_ENV_ARGS[@]}"} \
       "$CANDIDATE_CLI" --data-dir "$COW_HOME" connect \
         --env dev --invite-code-stdin --use-existing-identity \
@@ -625,7 +625,7 @@ FAILURE_PHASE="daemon_start"
 # client gave up" to "the server said busy" (2026-09-14, execution
 # lx-20260914T232101.801-28273-1, which reported client_timeout_secs=960 and
 # still failed). Server and client stay matched here.
-env -u LASTDB_HOME -u FOLDDB_HOME -u FOLD_SYNC_DEVICE_ID \
+env -u LASTDB_HOME -u FOLD_SYNC_DEVICE_ID \
   ${LIVE_LASTDB_ENV_ARGS[@]+"${LIVE_LASTDB_ENV_ARGS[@]}"} \
   LASTDB_UDS_ADMIN_TIMEOUT_SECS="$snapshot_client_timeout" \
   "$CANDIDATE_DAEMON" --data-dir "$COW_HOME" >"$DAEMON_LOG" 2>&1 &
@@ -679,7 +679,7 @@ while [ "$attempt" -le "$snapshot_attempts" ]; do
   (umask 077; : >"$SNAPSHOT_LOG")
   set +e
   snapshot_json="$(run_op_with_deadline "$snapshot_timeout" \
-    env -u LASTDB_HOME -u FOLDDB_HOME -u FOLD_SYNC_DEVICE_ID \
+    env -u LASTDB_HOME -u FOLD_SYNC_DEVICE_ID \
     ${LIVE_LASTDB_ENV_ARGS[@]+"${LIVE_LASTDB_ENV_ARGS[@]}"} \
     LASTDB_UDS_ADMIN_TIMEOUT_SECS="$snapshot_client_timeout" \
     "$CANDIDATE_CLI" --data-dir "$COW_HOME" cloud snapshot --json 2>"$SNAPSHOT_LOG")"
@@ -773,7 +773,7 @@ cp -p "$COW_HOME/identity.key" "$RESTORE_CREDS_HOME/identity.key" \
 [ ! -e "$RESTORE_CREDS_HOME/data" ] \
   || proof_die "the source-free restore credential home contains local data"
 if ! run_op_with_deadline "$restore_timeout" \
-    env -u LASTDB_HOME -u FOLDDB_HOME -u FOLD_SYNC_DEVICE_ID \
+    env -u LASTDB_HOME -u FOLD_SYNC_DEVICE_ID \
     ${LIVE_LASTDB_ENV_ARGS[@]+"${LIVE_LASTDB_ENV_ARGS[@]}"} \
     "$CANDIDATE_CLI" --data-dir "$RESTORE_CREDS_HOME" restore \
       --remote-latest --env dev --db-hash "$cloud_db_hash" \

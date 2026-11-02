@@ -9,7 +9,7 @@ from native_v2_release import accepted_release, git
 from native_run_v2_gate import required_ci
 from native_run_v2_inputs import read, digest
 from native_run_v2_maintenance_source import BASELINE, BASELINE_PROGRAMS, check_reviewed
-from native_run_v2_final_blobs import REVIEWED_SOURCE, REVIEWED_TREE, EXACT_CHANGES
+from native_run_v2_final_blobs import REVIEWED_CHANGES_SHA256, REVIEWED_PATHS, REVIEWED_SOURCE, REVIEWED_TREE
 from native_run_v2_final_recovery import request_id
 from native_run_v2_final_dev import check as development
 from native_run_v2_final_ci import source_ci
@@ -30,7 +30,8 @@ def check(candidate, evidence, approval):
         "artifact_receipt_sha256", "development_sha256", "compatibility_sha256")}
     require(approval.get("proofs") == proofs, "The maintenance approval binds another proof")
     request_id(approval)
-    source_review = check_reviewed(evidence, REVIEWED_SOURCE, REVIEWED_TREE, EXACT_CHANGES)
+    source_review = check_reviewed(evidence, REVIEWED_SOURCE, REVIEWED_TREE, REVIEWED_PATHS,
+                                   REVIEWED_CHANGES_SHA256)
     metadata = PublicMetadata()
     source, accepted = evidence["source_git_oid"], evidence["accepted_main_commit"]
     release = accepted_release(evidence, metadata)

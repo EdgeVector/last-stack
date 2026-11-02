@@ -32,7 +32,7 @@ def key_digest(sock, spec):
     value = call(sock, "/api/query", {"schema_name": spec["schema"], "fields": spec["fields"],
         "filter": {"HashRangeKeys": [[key, ""] for key in spec["keys"]]}, "limit": len(spec["keys"])})
     found = {row["key"]["hash"]: row["fields"] for row in value.get("results", [])}
-    require(not value.get("has_more") and not value.get("unresolved_rows")
+    require(not value.get("has_more")
             and len(found) == len(value.get("results", [])) and set(found) == set(spec["keys"]),
             "Known migration keys are absent or incomplete")
     return hashlib.sha256(json.dumps(found, sort_keys=True).encode()).hexdigest()

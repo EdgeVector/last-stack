@@ -63,11 +63,9 @@ file is the whole procedure.
 
 ## Never
 
-- Copy `~/.lastdb` or `~/.folddb` (also with `cp -cR`), or boot a node on a
-  copy of either.
+- Copy `~/.lastdb` (also with `cp -cR`), or boot a node on a copy of it.
 - `cargo build` / `cargo test` in this scheduled canary.
-- Touch `~/.lastdb` or `~/.folddb` directly, or kill/restart the primary LastDB
-  brain.
+- Touch `~/.lastdb` directly, or kill/restart the primary LastDB brain.
 - Build in the shared `~/code/edgevector/lastdb` checkout in place.
 - Treat a green smoke run as sufficient to promote a build to stable.
 

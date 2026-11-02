@@ -162,8 +162,7 @@ without it.
 ### Approved schema registration
 
 A LastDB node registers a new schema in the Schema Service of its own
-environment. A node with no `EXEMEM_ENV=dev` registers in PROD (open papercut
-`papercut-atom-proof-node-registers-schemas-in-prod-schema-service-by-default-20261012`).
+environment. A node with no `EXEMEM_ENV=dev` registers in PROD.
 Tom approved on 2026-10-14 that the schemas below may register in PROD when the
 new builds install. Nothing else in the PROD catalog is approved. No
 exemem-infra or schema-infra deploy is approved.
@@ -279,7 +278,7 @@ first run may fail with a timeout. The hook then leaves the config as it was,
 and a second `host-track refresh situations` retries. The node may already have
 registered the schemas; the retry finds them loaded.
 
-The node is the one under `$HOME` (`~/.lastdb`, else `~/.folddb`) and the
+The node is the one under `$HOME` (`~/.lastdb`) and the
 config is the one under `$HOME` (`~/.situations`, else `~/.fsituations`). The
 hook sets `FOLDDB_SOCKET_PATH` and `SITUATIONS_CONFIG` for the candidate and
 unsets `FSITUATIONS_CONFIG`, so an override in the caller cannot point it at

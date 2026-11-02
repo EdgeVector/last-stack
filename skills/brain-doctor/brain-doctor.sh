@@ -2,15 +2,13 @@
 # brain-doctor.sh — READ-ONLY triage of the LastDB brain (Tom's primary
 # brain/kanban daily-driver node) and the orphan procs that masquerade as it.
 #
-# The brain (the desktop `fold-app` process) is reached over a Unix socket — it
-# serves the same node over BOTH ~/.lastdb/data/folddb.sock and the legacy
-# ~/.folddb/data/folddb.sock (both return HTTP 200). The legacy local TCP endpoint
-# is intentionally SHUT DOWN, so a TCP probe (or an `lsof -i` on the old port) finds
+# The brain is reached over the Unix socket $LASTDB_HOME/data/folddb.sock
+# (LASTDB_HOME defaults to ~/.lastdb). The legacy local TCP endpoint is
+# intentionally SHUT DOWN, so a TCP probe (or an `lsof -i` on the old port) finds
 # nothing even when the brain is perfectly healthy. NEVER treat a missing TCP
-# listener as a node outage; the socket is the source of truth. Note: on the
-# ~/.folddb path `lsof -t` can return EMPTY while the socket is healthy, so this
-# script defaults to ~/.lastdb (where lsof attributes the listener PID) and
-# identifies the brain by process name (fold-app) too, not lsof alone.
+# listener as a node outage; the socket is the source of truth. `lsof -t` can
+# return EMPTY while the socket is healthy, so this script identifies the brain
+# by process name too, not lsof alone.
 #
 # Codifies the hand-run recipe that recurs across every "is kanban down / is the
 # brain wedged / why is my computer slow / couldn't take over" incident. Pulls
@@ -21,23 +19,16 @@
 # reads state and PRINTS the recommended recovery command for a human to run.
 # That honors the standing rule: never kill the brain / surface-don't-act unattended.
 #
-# Usage:  brain-doctor.sh [SOCKET]   (SOCKET defaults to ~/.lastdb/data/folddb.sock,
-#         falling back to ~/.folddb/data/folddb.sock; FOLDDB_SOCKET env also overrides)
+# Usage:  brain-doctor.sh [SOCKET]   (SOCKET defaults to $LASTDB_HOME/data/folddb.sock;
+#         FOLDDB_SOCKET env also overrides)
 # Exit:   0 = healthy   1 = degraded/partial   2 = wedged/down   3 = not running
 
 set -u
 LASTDB_HOME="${LASTDB_HOME:-$HOME/.lastdb}"
-FOLDDB_HOME="${FOLDDB_HOME:-$HOME/.folddb}"
-# The brain (the desktop `fold-app` process) serves the SAME node over BOTH
-# ~/.lastdb/data/folddb.sock and ~/.folddb/data/folddb.sock (both return HTTP 200).
-# Prefer ~/.lastdb: `lsof -t` reliably attributes the listener PID there, whereas on
-# ~/.folddb `lsof -t` can return EMPTY even though the socket is perfectly healthy
-# (curl still gets 200). Arg / FOLDDB_SOCKET override wins; else prefer lastdb, fall
-# back to the legacy ~/.folddb path.
+# Arg / FOLDDB_SOCKET override wins; else the socket under LASTDB_HOME.
 if [ -n "${1:-}" ]; then SOCKET="$1"
 elif [ -n "${FOLDDB_SOCKET:-}" ]; then SOCKET="$FOLDDB_SOCKET"
-elif [ -S "$LASTDB_HOME/data/folddb.sock" ]; then SOCKET="$LASTDB_HOME/data/folddb.sock"
-else SOCKET="$FOLDDB_HOME/data/folddb.sock"; fi
+else SOCKET="$LASTDB_HOME/data/folddb.sock"; fi
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-8}"
 
 # --- tiny output helpers (bash 3.2 safe, no associative arrays) ---------------
@@ -72,7 +63,7 @@ if [ -S "$SOCKET" ]; then
     esac
   done
   # fall back to the brain process if lsof is restricted (sandbox) OR returns empty
-  # (on ~/.folddb `lsof -t` can be empty while the socket is healthy — see header).
+  # (`lsof -t` can be empty while the socket is healthy — see header).
   if [ -z "$BRAIN_PID" ]; then
     for pid in $(pgrep -f 'MacOS/fold-app|lastdb_server|folddb_server' 2>/dev/null); do
       CMD="$(ps -o command= -p "$pid" 2>/dev/null)"
@@ -146,8 +137,7 @@ if [ -S "$SOCKET" ]; then
     # closed without a valid HTTP reply. That is not a responsive HTTP read path.
     warn "GET / over socket → HTTP 000 (connection accepted, no valid HTTP reply) — NOT alive."
     info "Confirm with a socket-backed op:  cd ~/code/edgevector/kanban && bun run src/cli.ts doctor"
-    info "If that also fails: the node is up but wedged/mid-restart, not down. Re-check shortly —"
-    info "~/.folddb/watchdog.sh self-heals a confirmed wedge (3 consecutive failures) automatically."
+    info "If that also fails: the node is up but wedged/mid-restart, not down. Re-check shortly."
     bump 2
   else
     ok "GET / over socket → HTTP $BODY in ${LAT}s (read path is alive)."
@@ -194,21 +184,9 @@ if [ -n "$BREW_F" ]; then
   fi
 fi
 
-# ── 5. Stale port breadcrumb (vestigial since TCP shutdown) ──────────────────
+# ── 5. Orphan / impostor legacy LastDB procs (sweep candidates) ───────────────
 bold ""
-bold "5. ~/.folddb/port breadcrumb"
-PORTFILE="$FOLDDB_HOME/port"
-if [ -f "$PORTFILE" ]; then
-  WROTE="$(tr -d '[:space:]' < "$PORTFILE" 2>/dev/null)"
-  info "Breadcrumb file present (value '$WROTE'). VESTIGIAL — the TCP endpoint is shut down;"
-  info "the brain is reached over $SOCKET now. Harmless; takeover uses the lock file (fold#812)."
-else
-  info "No $PORTFILE (fine — the socket, not a TCP port, is the rendezvous now)."
-fi
-
-# ── 6. Orphan / impostor legacy LastDB procs (sweep candidates) ───────────────
-bold ""
-bold "6. Orphan lastdb_server/folddb_server test-node procs (NOT the primary-socket brain)"
+bold "5. Orphan lastdb_server/folddb_server test-node procs (NOT the primary-socket brain)"
 FOUND_ORPHAN=0
 # Orphaned TEST-NODE binaries (lastdb_server / folddb_server) that are NOT the brain
 # pid. Deliberately do NOT match `fold-app`: the desktop brain (and its crash-reporter
@@ -247,7 +225,7 @@ fi
 
 # ── 7. Disk (orphans + shared target are the usual hog) ──────────────────────
 bold ""
-bold "7. Disk"
+bold "6. Disk"
 DF="$(df -h /System/Volumes/Data 2>/dev/null | tail -1)"
 if [ -n "$DF" ]; then
   USEP="$(echo "$DF" | awk '{print $5}' | tr -d '%')"

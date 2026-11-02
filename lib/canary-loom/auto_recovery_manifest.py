@@ -46,7 +46,7 @@ def binding(session, restored, accepted, endpoint, references):
             and report.get("file_dependencies_verified") is True
             and uint(report.get("native_files"), True) > 0
             and uint(report.get("native_bytes"), True) > 0
-            and uint(report.get("verified_atoms")) >= 0
+            and uint(report.get("verified_records")) >= 0
             and uint(report.get("verified_external_files")) == 0,
             "The original completed snapshot report or receipt differs")
     return identifier, report

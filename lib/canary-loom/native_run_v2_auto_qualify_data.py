@@ -84,8 +84,8 @@ class Data:
         require(len(reply["results"]) == len(queries), "exact_read_batch_count")
         for (key, fields), item in zip(expected.items(), reply["results"]):
             result = item["response"]
-            require(item["status"] == 200 and result["ok"] is True and not result.get("has_more", False)
-                    and result.get("unresolved_rows", 0) == 0, "complete_keyed_read")
+            require(item["status"] == 200 and result["ok"] is True and not result.get("has_more", False),
+                    "complete_keyed_read")
             if fields is None:
                 require(result["returned_count"] == 0 and result["results"] == [], "declared_key_absent")
             else:
@@ -124,12 +124,10 @@ def memory(operation, node):
         require(0 < samples[-1] < operation.plan["memory_limit_mb"] * 1048576 * 0.9, "memory_guard")
         time.sleep(1)
     node.health()
-    status, native = node.call("/api/status"), node.call("/api/db/native-status")
+    native = node.call("/api/db/native-status")
     return {"source": operation.plan["source"], "programs": operation.plan["programs"],
         "owner": node.owner, "operation_sha256": operation.operation_sha256,
         "memory_limit_mb": operation.plan["memory_limit_mb"], "samples_bytes": samples,
         "peak_bytes": max(samples), "settle_seconds": 45, "observation_seconds": 15,
         "elapsed_seconds": time.monotonic() - started,
-        "persist_failures": {key: status["status"]["resident"][key]
-                             for key in ("persist_lane_failures", "deferred_persist_failed")},
         "native_health": {"version": operation.candidate.version, "native": native["native_disk"]}}

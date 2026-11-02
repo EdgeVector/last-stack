@@ -5,7 +5,7 @@ from native_v2_benchmark import job, check_id, positive, success, unexpired
 
 LANES = {
     "speed": ("Measure alternating baseline and candidate pairs", "Publish benchmark summary"),
-    "disk": ("Measure v2 disk size against logical atom bytes", "Require the single-pass v2 disk size limit and publish the summary"),
+    "disk": ("Measure v2 disk size against logical record or record bytes", "Require the single-pass v2 disk size limit and publish the summary"),
     "growth": ("Measure disk and memory growth in fresh generated homes", "Publish advisory disk and memory growth summary"),
 }
 UPLOAD = ("Upload measurements and build receipts", "Verify upload and record its download receipt",

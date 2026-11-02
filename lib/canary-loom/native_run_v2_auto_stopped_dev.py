@@ -82,7 +82,7 @@ def restored(proof, parent, summary, programs, report, manifest, *, files=None):
             and selected.get("endpoint") == reference(base["selection"])["endpoint"]
             and actual == result and receipt == {"version": 2, "session_id": selected["session_id"], "report": actual}
             and actual.get("destination") == str(home) and actual.get("commit_sha256") == accepted["commit_sha256"]
-            and actual.get("file_dependencies_verified") is True and uint(actual.get("verified_atoms")) >= 0
+            and actual.get("file_dependencies_verified") is True and uint(actual.get("verified_records")) >= 0
             and actual.get("verified_external_files") == 0
             and record.get("restored_boots") == record.get("strict_clean_stops") == 2,
             "The final stopped snapshot lacks its completed source-free restore and two clean boots")

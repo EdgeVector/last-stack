@@ -199,7 +199,7 @@ boot_baseline() {
   local label="$1" uh="" i=0
   rm -f "$HOME_DIR"/data/*.sock
   env -u SENTRY_DSN -u FOLD_SENTRY_DSN -u OBS_SENTRY_DSN \
-    -u LASTDB_HOME -u FOLDDB_HOME -u LASTDB_DATA_DIR \
+    -u LASTDB_HOME -u LASTDB_DATA_DIR \
     -u LASTDB_BUILD_CONFLICT_STAMP_ON_COPY -u MIMALLOC_PURGE_DELAY \
     ${env_pairs[@]+"${env_pairs[@]}"} \
     "$BASELINE_BIN" --data-dir "$HOME_DIR" >>"$BOOT_LOG" 2>&1 &
@@ -286,7 +286,7 @@ phase first-boot
 boot_baseline first
 
 cli_env() {
-  env HOME="$CLI_HOME" LASTDB_HOME="$HOME_DIR" FOLDDB_HOME="$HOME_DIR" \
+  env HOME="$CLI_HOME" LASTDB_HOME="$HOME_DIR" \
     LASTSECRETS_CONFIG="$CLI_HOME/.lastsecrets/config.json" \
     BRAIN_CONFIG="$CLI_HOME/.brain/config.json" FBRAIN_CONFIG="$CLI_HOME/.brain/config.json" \
     FOLDDB_SOCKET_PATH="$SOCK" FBRAIN_FOLDDB_SOCKET="$SOCK" "$@"

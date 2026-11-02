@@ -38,7 +38,7 @@ if [ "$MODE" = offline ]; then
   NODE="$(mktemp -d "${TMPDIR:-/tmp}/ns-mini-proof.XXXXXX")"
   ns_refuse_primary "$NODE/data/folddb.sock" || true
   set +e
-  LASTDB_HOME="$NODE" FOLDDB_HOME="$NODE" "$lastdbd" --data-dir "$NODE" >"$NODE/node.log" 2>&1 &
+  LASTDB_HOME="$NODE" "$lastdbd" --data-dir "$NODE" >"$NODE/node.log" 2>&1 &
   pid=$!
   sock2=""
   for _ in $(seq 1 40); do

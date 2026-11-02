@@ -50,16 +50,15 @@ refuse_primary() {
   local candidate="$1" canon root
   [ -n "$candidate" ] || return 0
   canon="$(canonical_path "$candidate")" || finish FAIL "The harness could not resolve the path."
-  for root in "$HOME/.lastdb" "$HOME/.folddb"; do
-    if [ -e "$root" ] || [ -L "$root" ]; then
-      root="$(canonical_path "$root")" || finish FAIL "The harness could not resolve the primary home."
-    fi
-    case "$canon" in
-      "$root"|"$root"/*)
-        finish FAIL "The harness refuses a LastDB home path."
-        ;;
-    esac
-  done
+  root="$HOME/.lastdb"
+  if [ -e "$root" ] || [ -L "$root" ]; then
+    root="$(canonical_path "$root")" || finish FAIL "The harness could not resolve the primary home."
+  fi
+  case "$canon" in
+    "$root"|"$root"/*)
+      finish FAIL "The harness refuses a LastDB home path."
+      ;;
+  esac
 }
 
 copy_from_tree() {

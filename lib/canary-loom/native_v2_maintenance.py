@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 import time
 
-from native_upgrade_common import regular, require, sha
+from native_upgrade_common import path_id, regular, require, sha
 import native_v2_baseline as baseline
 import native_v2_gate as legacy
 from native_v2_artifact import verify as verify_archive
@@ -19,12 +19,13 @@ BUILD_INPUTS = (".github/", ".lastgit/", "scripts/ci/", "scripts/lints/", "scrip
 RETIRED_BIN = "lastdb_node/src/bin/csync_e2e_write.rs"
 RETIRED_BIN_STANZA = (b'[[bin]]\nbench = false\ntest = false\nname = "csync_e2e_write"\n'
                       b'path = "src/bin/csync_e2e_write.rs"\n\n')
-RETIRED_BIN_ALLOW = "scripts/lints/atom-counter-writers.allow"
+# The retired counter-writer lint allow file and the transformed sources, keyed by path_id.
+RETIRED_BIN_ALLOW = "b1bcb10be752c9164393a476714ae1428ecc5f30372ec936ca227f3f93fb090d"
 EXACT_TRANSFORMS = {
-    "fold_db/crates/core/src/sharing/query_slice/builder.rs": (
+    "a14bdc610efc28af50b5e0e99604ebfc3bbdb8284eae4a2b86ed2e8392e4b0d4": (
         (b"use super::*;\n", b"use super::*;\nuse std::collections::BTreeSet;\n"),
     ),
-    "fold_db/crates/core/src/db_operations/atom_store/mod.rs": (
+    "0a1b7a3ffe9717d8ec940ff778ed218a86dcfae02901440578ce5101525469b3": (
         (b"pub(crate) use delete_replay::CUTOFF_KEY as DELETE_REPLAY_CUTOFF_KEY;\n", b""),
         (b"pub(crate) use retired_intent_retention::{\n"
          b"    RetiredIntentRetentionGuard, RetiredIntentRetentionProof,\n};\n",
@@ -132,7 +133,7 @@ def exact_source_change(repo, source, name):
     before = git(repo, "show", baseline.SOURCE + ":" + name)
     after = git(repo, "show", source + ":" + name)
     expected = before
-    for original, replacement in EXACT_TRANSFORMS[name]:
+    for original, replacement in EXACT_TRANSFORMS[path_id(name)]:
         require(expected.count(original) == 1, "An exact maintenance source transform is absent or duplicated")
         expected = expected.replace(original, replacement, 1)
     require(after == expected, "A maintenance source change exceeds its exact byte transform")
@@ -158,10 +159,11 @@ def compatibility(evidence):
             "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "build.rs") or name.startswith(".cargo/")
         if not protected or before == after:
             continue
-        if name in EXACT_BLOBS:
-            require((before, after) == EXACT_BLOBS[name],
+        name_id = path_id(name)
+        if name_id in EXACT_BLOBS:
+            require((before, after) == EXACT_BLOBS[name_id],
                     "A sensitive maintenance source differs from its exact reviewed Git blobs: " + name)
-            if name == RETIRED_BIN_ALLOW:
+            if name_id == RETIRED_BIN_ALLOW:
                 require(RETIRED_BIN in old and RETIRED_BIN not in new,
                         "The retired fixture lint entry requires deletion of its exact source")
         elif before is None:
@@ -169,12 +171,12 @@ def compatibility(evidence):
         elif after is None:
             require(name in DELETED, "Unreviewed maintenance source deletion: " + name)
         else:
-            require((name in MODIFIED or name in EXACT_TRANSFORMS or name == "lastdb_node/Cargo.toml")
+            require((name in MODIFIED or name_id in EXACT_TRANSFORMS or name == "lastdb_node/Cargo.toml")
                     and before[:2] == after[:2] == ("100644", "blob"),
                     "An unreviewed writer, native format, feature, build input or dependency changed: " + name)
             if name == "lastdb_node/Cargo.toml":
                 fixture_stanza_only(evidence["source_repository"], source, old, new)
-            elif name in EXACT_TRANSFORMS:
+            elif name_id in EXACT_TRANSFORMS:
                 exact_source_change(evidence["source_repository"], source, name)
         changes[name] = {"before": before[2] if before else None, "after": after[2] if after else None}
     require(proof.get("reviewed_format_neutral_changes") == changes, "Fresh exact96 reviewed source blobs differ")

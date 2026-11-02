@@ -73,7 +73,7 @@ For each `offenders[]` row, decide whether it can actually be improved.
 1. Resolve schema hash → name (`lastdb ops` text, or a targeted brain/code
    read). Do not guess.
 2. Read `phase_top` — that is "where the time went"
-   (`schema_reload`, `purge_*`, `hydrate`, `molecule_gate`, …).
+   (`schema_reload`, `hydrate`, `field_key_gate`, `persist`, …).
 3. Dedupe before writing:
    - `kanban search "<client> <schema-or-symptom>" --json` then `kanban show`
    - `brain ask "<client> <schema> lastdb ops offender"`

@@ -19,7 +19,7 @@ CAUTION: For the record model move (format 6 to format 7), read section 11 first
 
 - The old home `~/.lastdb` stays as it is. It becomes the rollback home.
 - A new home gets the same identity and cloud credentials, and no data.
-- A second daemon serves the new home on its own socket. It runs the protein-free release (#803, API 13).
+- A second daemon serves the new home on its own socket. It runs the release that ends shared values (#803, API 13).
 - The new Brain and LastSecrets releases declare their own schemas on the new home.
 - The helper reads every kept record from the old daemon and writes it to the new daemon in batches.
 - The helper verifies each schema by key set, by a value digest per record, by file bytes, and by spot reads.
@@ -121,8 +121,8 @@ The copy keeps:
 
 The copy does not keep:
 
-- The atom history (old versions), the atom UUIDs, the author key and signature, and the write clocks and times.
-- The molecule IDs. The NEW node builds new molecules for each write.
+- The field history (old versions), the old value IDs, the author key and signature, and the write clocks and times.
+- The field key IDs. The NEW node builds new field keys for each write.
 - The tombstones of deleted records.
 - The old file `blob_ref` and `dek`.
 - The old V2 backup stream. The new home starts a new stream.
@@ -246,7 +246,7 @@ It covers the derived compact locator route too: there, the source keys are the 
 - Writes: 64 mutations or 4 MiB per batch (`--write-batch`, `--write-bytes`).
 - Routes run in parallel (`--concurrency`, default 4, maximum 8).
 - 503 gets a retry after `Retry-After`. 423 (maintenance) stops the run.
-- A value over `--value-max-bytes` (default 256 KiB, the node default) is an issue. The primary LaunchAgent sets `LASTDB_MAX_ATOM_CONTENT_BYTES=524288`. Give the staging daemon the same value.
+- A value over `--value-max-bytes` (default 256 KiB, the node default) is an issue. The primary LaunchAgent sets `LASTDB_MAX_FIELD_VALUE_BYTES=524288`. Give the staging daemon the same value.
 
 ## 4. Facts on the primary (2026-10-30, read-only)
 
@@ -298,7 +298,7 @@ Plan: 312 source calls in 11.6 s. Census: 1340 source calls in 27 s. No write.
 | Compaction recovery receipt c010ab51… | Export, then drop. |
 | `lastsecrets/LastSecret`, `lastsecrets/LastSecretIndex` | Aliases with no own values. lastsecrets#14 retires them. |
 
-The export goes to `${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/artifacts/protein-removal-20261030/`. It is not in Git.
+The export goes to `${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/artifacts/home-copy-20261030/`. It is not in Git.
 The primary has no F-Kanban, Situations, Routines, or Loom schemas.
 
 ## 5. Synthetic proof (2026-10-30)
@@ -333,7 +333,7 @@ Setup:
   - A sync would write to a shared Schema Service, so the proof did not do it.
   - The run used `--owner-map brain:-=brain --owner-map lastsecrets:-=lastsecrets --app-tag-rename fbrain=brain`.
 - Target home: the OLD CLI `prepare-recovery-home` (`--env dev`, a synthetic API key) made it, with the same identity.
-- Target daemon: the #803 program on that home. API 13, format 6, `LASTDB_MAX_ATOM_CONTENT_BYTES=524288`.
+- Target daemon: the #803 program on that home. API 13, format 6, a 524288-byte field value limit.
 - App schemas: `brain init` (brain#484 at 7c0a573e0) and `lastsecrets init` (lastsecrets#14 at 8b2d8720) ran against the target only, with Bun.
   - Brain used `BRAIN_CONFIG` and `BRAIN_FOLDDB_SOCKET` with a staging config.
   - A read-only `check` of the 25 `brain/*` definitions gave `reuse` for each in DEV. This includes `BrainCompactListLocator_v1`.
@@ -435,8 +435,8 @@ export LABEL=$(launchctl list | awk '/lastdbd-primary/ {print $3}')
 export PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 export KICK=$(launchctl list | awk '/lastdb-cloud-backup-kick/ {print $3}')
 export BASE=$(basename "$(readlink "$OLD/current")")
-export W="${LAST_STACK_EVIDENCE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/artifacts/last-stack}/home-copy-protein-removal-20261030"
-export X="${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/artifacts/protein-removal-20261030/home-copy-export"
+export W="${LAST_STACK_EVIDENCE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/artifacts/last-stack}/home-copy-20261030"
+export X="${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/artifacts/home-copy-20261030/home-copy-export"
 export COPY="<accepted last-stack checkout>/bin/last-stack-lastdb-home-copy"
 export SEED="<accepted last-stack checkout>/bin/last-stack-lastseek-seed-brain"
 export BR="<brain checkout at the merged brain#484 commit>"
@@ -527,7 +527,7 @@ The key goes through the pipe only. It does not go to the terminal or to a file.
 
 Use the key that the source home uses now ("Primary Cloud V2 backup access"). On 2026-10-30 that was `cloud-v2-completion-20261027-0os3adpz-prod-api-key`. The older `lastdb-primary-cloud-api-key-prod` does not match, and the command refuses it with `stdin API key does not match the source cloud credentials`. To find the correct slug, compare hashes only, never values.
 
-Give `--into` and `--data-dir` as real absolute paths. The command refuses a path with a symlink part, for example `~/.folddb` or `/var` on macOS (use `/private/var`). `--env` must agree with the saved URL.
+Give `--into` and `--data-dir` as real absolute paths. The command refuses a path with a symlink part, for example `/var` on macOS (use `/private/var`). `--env` must agree with the saved URL.
 
 Check: `ok`, both `matches` fields, `saved_url_matches_environment`, and `cloud_sync_off` are true. `data_directory_created` is false. `files` is 3. `home_mode` is `0700`.
 
@@ -538,8 +538,8 @@ Rollback: `rm "$NEW/identity.key" "$NEW/cloud_sync.json.paused" "$NEW/.cloud_res
 ```bash
 export N="$NEW/native-run-v2-programs/$C803"
 mkdir -p "$N" && cp -p "$CAND/bin/lastdb" "$CAND/bin/lastdbd" "$N/"
-env -u LASTDB_HOME -u FOLDDB_HOME -u LASTDB_SOCKET_PATH -u ENVIRONMENT -u EXEMEM_ENV -u FOLD_SCHEMA_SERVICE_URL \
-  LASTDB_ENGINE=laststore LASTDB_MAX_ATOM_CONTENT_BYTES=524288 \
+env -u LASTDB_HOME -u LASTDB_SOCKET_PATH -u ENVIRONMENT -u EXEMEM_ENV -u FOLD_SCHEMA_SERVICE_URL \
+  LASTDB_ENGINE=laststore LASTDB_MAX_FIELD_VALUE_BYTES=524288 \
   nohup "$N/lastdbd" --data-dir "$NEW" > "$W/s4-staging.log" 2>&1 &
 echo $! > "$W/s4-staging.pid"
 curl -s --unix-socket "$NEW/data/folddb.sock" http://localhost/api/version | jq -c '{api_version, build}'
@@ -646,7 +646,7 @@ Check: no `lastdbd` process uses `--data-dir $OLD`. The staging daemon still run
 
 ```bash
 export FS=$(mktemp -d "$TMPDIR/hc.XXXXXX")
-env -u LASTDB_HOME -u FOLDDB_HOME -u LASTDB_SOCKET_PATH LASTDB_ENGINE=laststore \
+env -u LASTDB_HOME -u LASTDB_SOCKET_PATH LASTDB_ENGINE=laststore \
   nohup "$OLD/native-run-v2-programs/$BASE/lastdbd" --data-dir "$OLD" \
   --socket-path "$FS/old.sock" --full-socket-path "$FS/old-full.sock" > "$W/s8-old-private.log" 2>&1 &
 echo $! > "$W/s8-old-private.pid"
@@ -702,14 +702,14 @@ Wait for each `kill` until `pgrep` shows no daemon on `$OLD`, `$NEW`, or the pri
 
 CAUTION: Do not use `plutil -replace ProgramArguments.0`. It inserts a new first element and keeps the old path. The daemon then gets four arguments, exits with `lastdbd: invalid_arguments`, and KeepAlive restarts it in a loop. The 2026-10-30 run hit this. Recovery: `launchctl bootout "gui/$(id -u)/$LABEL"`, copy `$W/s10-plist.before` back, run the PlistBuddy line, then bootstrap.
 
-Check: `ProgramArguments` has three entries: the new `lastdbd`, `--data-dir`, and `$OLD`. API 13 on `~/.lastdb/data/folddb.sock`. `last-stack-lastdb-current check` passes. `~/.folddb` still points to `~/.lastdb`.
+Check: `ProgramArguments` has three entries: the new `lastdbd`, `--data-dir`, and `$OLD`. API 13 on `~/.lastdb/data/folddb.sock`. `last-stack-lastdb-current check` passes.
 
 ### Step 11. Verify after the move, then open the apps
 
 11a. Verify the moved home against the rollback home on a private socket:
 
 ```bash
-env -u LASTDB_HOME -u FOLDDB_HOME -u LASTDB_SOCKET_PATH LASTDB_ENGINE=laststore \
+env -u LASTDB_HOME -u LASTDB_SOCKET_PATH LASTDB_ENGINE=laststore \
   nohup "$BACK/native-run-v2-programs/$BASE/lastdbd" --data-dir "$BACK" \
   --socket-path "$FS/old.sock" --full-socket-path "$FS/old-full.sock" > "$W/s11-back.log" 2>&1 &
 echo $! > "$W/s11-back.pid"
@@ -816,7 +816,7 @@ Check:
 
 CAUTION: Brain 73ca4d41 (#484) still fails every search without `--type` when one Brain type holds no record. On 2026-10-31 `task` and `agent` were empty, and the error was `unknown schema "brain/Task"`. LastSeek learns a `brain/<Type>` name only from a stored row. brain#485 leaves the empty types out of the LastSeek scope. Install a Brain release with brain#485 (Step 11c path), then repeat the check. Until then, `brain search --type <type>` works.
 
-Do not use `lastdb search-rebuild` on e13ca0db. Its offline open has no molecule wrap key and does not load the molecule key bundles, so it stops with `the typed molecule has no admitted range profile`. The LastDB fix: open with `from_namespaced_store_with_content_and_molecule_keys` and call `molecule_keys().load_schema` before the field reads, as the query path does.
+Do not use `lastdb search-rebuild` on e13ca0db. Its offline open has no field key wrap key and does not load the field key bundles, so it stops with a range profile error. The LastDB fix: open the store with its field keys and load the field key bundles of the schema before the field reads, as the query path does.
 
 The LastSeek index keeps the old rows under the old schema identities. Brain does not query those identities. They use space only.
 
@@ -901,7 +901,7 @@ After rollback, read `cloud backup-v2 status --json` on the restored home. Autom
 | B1 | Closed 2026-10-30. #803 merged as lastdb main e13ca0db. The signed Mini pair is run 41150186693 (digest `sha256:34cdcd3c…050932`, expires 2026-11-14). Section 5.6 ran on it. | done |
 | B2 | Closed 2026-10-30. A read-only PROD `check` gave `reuse` for all 25 `brain/*` and both LastSecrets definitions (section 5.6). The PROD app `brain` stays in the sandbox tier; Brain init and writes do not use the tier. | done |
 | B3 | Closed 2026-10-31. brain#484 merged as brain main 73ca4d41 and lastsecrets#14 as lastsecrets main 8d50002f. Both installed through the registry `next` channel with GREEN probes (Step 11c). | done |
-| B15 | Closed 2026-10-31 by Step 11e. `lastdb search-rebuild` fails on e13ca0db (no molecule wrap key on the offline open). The seed helper delivered the Brain records through the running daemon. The LastDB fix is still open. | LastDB |
+| B15 | Closed 2026-10-31 by Step 11e. `lastdb search-rebuild` fails on e13ca0db (no field key wrap key on the offline open). The seed helper delivered the Brain records through the running daemon. The LastDB fix is still open. | LastDB |
 | B16 | Closed 2026-10-31. The 2026-10-14 notice said "cloud sync is off". A routine read it as an order and turned automatic backup off after Step 12. Tom approved a new notice (`tom:primary-state-20261031`) in CLAUDE.md and both AGENTS.md files. It says that automatic backup must stay on. The routine memory note stays too. | done |
 | B4 | Decided 2026-10-30. Design: trust the 38 records over the stored count of 37. The new Brain rebuilds its counts. The runbook names `--accept-directory-count design=38`. | done |
 | B5 | Decided 2026-10-30 (changed). `appIdentityEnforce` stays at the init value `false`. On Mini a write with `true` has no capability and fails (section 5.6). | done |
@@ -910,14 +910,14 @@ After rollback, read `cloud backup-v2 status --json` on the restored home. Autom
 | B8 | Closed by the proof. The #803 daemon ran in the synthetic run (section 5.2). The first check on real data is still Step 6. | operator |
 | B9 | Closed by the proof. The home move ran on a format 6 store, and the #803 daemon started on the moved home. If the real move fails, point the plist, the configs, and `current` at `~/.lastdb-v13` instead. | operator |
 | B10 | Closed. #803 a83d5f06d accepts the keyless `BrainCompactListLocator_v1` (one field, no alternate keys). In section 5.2, `brain init` on head 9196e5be9 declared all 25 schemas with no stand-in. | done |
-| B11 | Decided by Tom on 2026-10-30: "Just build a new database and then do a one-time read of the old one and put it into the new one", and do not worry about the data too much. New mutations with new atom identities, authors, and clocks are accepted (section 9). | done |
+| B11 | Decided by Tom on 2026-10-30: "Just build a new database and then do a one-time read of the old one and put it into the new one", and do not worry about the data too much. New mutations with new value identities, authors, and clocks are accepted (section 9). | done |
 | B12 | Decided by the same instruction. The one-time read uses the existing list route of the old daemon for key membership, with bounded pages and the Brain type directory. | done |
 | B13 | Closed. Tests are retired. The product proof is the synthetic end-to-end run on the signed pair (section 5.6) and the read-only census of the primary. | done |
 | B14 | Not on the primary. The primary has 0 TagIndex and 0 TagMembership records, and the census found 0 app-id tags (section 5.6). The helper still refuses a changed tag address. | done |
 
 The source review at `ee0a9cd16946f38bf15d4cd81fe32f24a0fab1ff` found explicit-null loss and incomplete target digest coverage.
 The corrective source preserves nulls and refuses incomplete reads and digests. Section 5.6 is the product proof on the signed pair.
-The existing peer import is not a replacement: it requires unchanged schema and molecule identities and refuses signed tips and file references.
+The existing peer import is not a replacement: it requires unchanged schema and field key identities and refuses signed records and file references.
 Do not relax those peer admission rules for this migration.
 
 ## 9. Loss compared with the in-place conversion
@@ -926,10 +926,10 @@ The in-place conversion was removed on 2026-10-30. This section stays as the rec
 
 | Item | In place (removed) | Home copy |
 |---|---|---|
-| Atom history, atom UUIDs, authors, clocks | Kept | Lost |
+| Field history, old value IDs, authors, clocks | Kept | Lost |
 | LastDB tombstones of deleted records | Kept | Lost |
 | Brain soft-delete and backlink tags | - | Kept, renamed to `__brain_deleted__` and `__brain_backlink__:` |
-| Molecule IDs and file `blob_ref`/`dek` | Kept | New |
+| Field key IDs and file `blob_ref`/`dek` | Kept | New |
 | V2 backup stream | Same stream | New stream; the old stream stays for recovery |
 | Not-moved schemas | Convert or drop. On 2026-10-30 Brain and LastDB refuse the drop of named legacy schemas. | Export. They stay only in the rollback home. No drop is necessary. |
 | Sop in the Concept schema | The Brain conversion refuses it on 2026-10-30. | The copy writes Sop records to the new Sop schema. |
@@ -945,7 +945,7 @@ The home copy keeps every current value, every key, every file byte, the identit
 
 - lastdb#879 (main d897ee85) removed FieldMapper and the `field_mappers` path from the schema types, the Schema Service, the node, the host, and the SDK.
 - lastdb#880 (main b1076736) removed the retired shared-value words from the docs and scripts.
-- These stay on purpose: the boot refusal of a home with the old layout, the `independent_fields` serde name and wire key, and the refusal of a non-empty `field_mappers` at the declare routes.
+- These stay on purpose: the boot refusal of a home with the old layout and the refusal of a non-empty `field_mappers` at the declare routes.
 
 ### 10.2 LastSeek
 
