@@ -1147,56 +1147,46 @@ primary_board_read_ok() {
 
 # Marker primary_brain_and_secret_ok: the nightly gate refuses Loom without it.
 primary_brain_and_secret_ok() {
-  local brain_payload secret_payload brain_out secret_out
+  local payload out schema="${LASTDB_LIVE_BRAIN_SCHEMA:-brain/Decision}"
   load_live_read_slugs || return 1
-  brain_out="$(mktemp "${TMPDIR:-/tmp}/lastdb-live-brain.XXXXXX")"
-  secret_out="$(mktemp "${TMPDIR:-/tmp}/lastdb-live-secret.XXXXXX")"
-  chmod 600 "$brain_out" "$secret_out" || {
-    rm -f "$brain_out" "$secret_out"
+  case "$schema" in brain/Decision|brain/Reference) ;; *) return 1 ;; esac
+  out="$(mktemp "${TMPDIR:-/tmp}/lastdb-live-locators.XXXXXX")"
+  chmod 600 "$out" || {
+    rm -f "$out"
     return 1
   }
-  brain_payload="$(jq -nc --arg k "$LASTDB_LIVE_BRAIN_SLUG" \
-    '{schema_name:"brain/Decision",fields:["knowledge_record_slug","knowledge_record_title"],filter:{HashKey:$k}}')"
+  payload="$(jq -nc --arg b "$LASTDB_LIVE_BRAIN_SLUG" --arg s "$LASTDB_LIVE_SECRET_SLUG" --arg schema "$schema" \
+    '{queries:[
+      {schema_name:$schema,fields:["knowledge_record_slug","knowledge_record_title"],filter:{HashKey:$b},limit:1},
+      {schema_name:"lastsecrets/LastSecret",fields:["secret_locator_slug"],filter:{HashKey:$s},limit:1}
+    ]}')"
   if ! curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
       -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
       -H 'Content-Type: application/json' \
-      --data "$brain_payload" http://x/api/query >"$brain_out" 2>/dev/null; then
-    rm -f "$brain_out" "$secret_out"
+      --data "$payload" http://x/api/queries/batch >"$out" 2>/dev/null; then
+    rm -f "$out"
     return 1
   fi
-  if ! jq -e --arg k "$LASTDB_LIVE_BRAIN_SLUG" '
+  if ! jq -e --arg b "$LASTDB_LIVE_BRAIN_SLUG" --arg s "$LASTDB_LIVE_SECRET_SLUG" '
       .ok == true
-      and (.results | length) > 0
-      and ((.results[0].fields.knowledge_record_slug // "") == $k)
-      and (((.results[0].fields.knowledge_record_title // "") | length) > 0)
-    ' "$brain_out" >/dev/null 2>&1; then
-    rm -f "$brain_out" "$secret_out"
+      and .count == 2 and (.results | length) == 2
+      and all(.results[]; .status == 200 and .response.ok == true
+        and .response.returned_count == 1 and (.response.results | length) == 1
+        and .response.has_more == false and .response.next_cursor == null
+        and ((.response.truncated // false) | not))
+      and .results[0].response.results[0].fields.knowledge_record_slug == $b
+      and ((.results[0].response.results[0].fields.knowledge_record_title // "") | length) > 0
+      and .results[1].response.results[0].fields == {secret_locator_slug:$s}
+    ' "$out" >/dev/null 2>&1; then
+    rm -f "$out"
     return 1
   fi
-  secret_payload="$(jq -nc --arg k "$LASTDB_LIVE_SECRET_SLUG" \
-    '{schema_name:"lastsecrets/LastSecret",fields:["secret_locator_slug"],filter:{HashKey:$k}}')"
-  if ! curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
-      -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
-      -H 'Content-Type: application/json' \
-      --data "$secret_payload" http://x/api/query >"$secret_out" 2>/dev/null; then
-    rm -f "$brain_out" "$secret_out"
-    return 1
-  fi
-  if ! jq -e --arg k "$LASTDB_LIVE_SECRET_SLUG" '
-      .ok == true
-      and (.results | length) > 0
-      and ((.results[0].fields.secret_locator_slug // "") == $k)
-      and ((.results[0].fields | has("secret_text_envelope")) | not)
-    ' "$secret_out" >/dev/null 2>&1; then
-    rm -f "$brain_out" "$secret_out"
-    return 1
-  fi
-  rm -f "$brain_out" "$secret_out"
+  rm -f "$out"
   return 0
 }
 
 classify_live_read_mode() {
-  if primary_board_read_ok; then
+  if [ "$SAFE_UPGRADE_APPS_OFF" != "1" ] && primary_board_read_ok; then
     LIVE_READ_MODE=board
     return 0
   fi

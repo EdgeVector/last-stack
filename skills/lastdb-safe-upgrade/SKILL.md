@@ -83,6 +83,11 @@ Kanban and Situations are off. `LASTDB_SAFE_UPGRADE_APPS_OFF` defaults to `1`:
 no notice, card reopening, or Loom journal projection into LastDB runs. The local
 recovery journal remains available. Set it to `0` only after Tom restores those apps.
 
+The current posture also skips the historical Board read. The live gate batches
+one known Brain key and one LastSecrets locator key; it never requests secret
+text. `LASTDB_LIVE_BRAIN_SCHEMA=brain/Reference` can select a known reference
+instead of the default `brain/Decision`. Both known slugs remain required.
+
 The default Loom route (protocol 7) reads the live status first.
 A format 7 home has `status.durability` and no `status.sync`.
 The driver then selects `PRIMARY_ROUTE=format7-v2`. Other homes keep the legacy route.
