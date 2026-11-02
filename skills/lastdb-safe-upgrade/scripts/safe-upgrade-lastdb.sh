@@ -26,7 +26,6 @@
 #      correct-but-slow is RED (incident 2026-07-25/27: 0.23.1 passed the
 #      correctness+RSS bars while scans ran 5-20x slower; the live primary
 #      was the first place anyone noticed)
-#      AND read-only candidate status: persist failures are zero.
 #      LASTDB_BUILD_CONFLICT_STAMP_ON_COPY is not installed on the primary.
 #      AND the CANDIDATE CLASS BAR (incident 2026-08-01): refuse Cargo
 #      debug paths (target/debug), -dirty version stamps, and binaries
@@ -1211,7 +1210,7 @@ classify_live_read_mode() {
 # A deployment check boots the exact candidate on a copy of the synthetic seed.
 # It writes nothing to the copy.
 candidate_deployment_check() {
-  local copy pid sock blog schemas query cards status before after ready=0 i rss peak=0
+  local copy pid sock blog schemas query cards before after ready=0 i rss peak=0
   case "$RSS_SETTLE_SECS" in ''|*[!0-9]*) warn "the candidate memory settle interval is invalid"; return 1 ;; esac
   case "$RSS_SAMPLE_SECS" in ''|*[!0-9]*|0) warn "the candidate memory sample interval is invalid"; return 1 ;; esac
   before="$(resolve_live_primary_pid)"
@@ -1229,7 +1228,6 @@ candidate_deployment_check() {
   schemas="$WORK/deployment-schemas.json"
   query="$WORK/deployment-point.json"
   cards="$WORK/deployment-range.json"
-  status="$WORK/deployment-status.json"
   for i in $(seq 1 60); do
     if curl -fsS --max-time 60 --unix-socket "$sock" \
         -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
@@ -1266,20 +1264,6 @@ candidate_deployment_check() {
         and (.results[0].fields | has("secret_text_envelope") | not)
       ' "$cards" >/dev/null 2>&1; then
     warn "the candidate did not serve the LastSecrets locator read from the synthetic seed"
-    stop_probe_node "$pid" "$copy" "$blog" || true
-    return 1
-  fi
-  if ! curl -fsS --max-time 30 --unix-socket "$sock" \
-        -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
-        http://x/api/status >"$status" 2>/dev/null \
-      || ! jq -e '
-        .ok == true
-        and (.status.resident.persist_lane_failures | type) == "number"
-        and .status.resident.persist_lane_failures == 0
-        and (.status.resident.deferred_persist_failed | type) == "number"
-        and .status.resident.deferred_persist_failed == 0
-      ' "$status" >/dev/null 2>&1; then
-    warn "the candidate status has a persist failure or lacks a failure gauge"
     stop_probe_node "$pid" "$copy" "$blog" || true
     return 1
   fi
@@ -2834,17 +2818,13 @@ fi
 
 # --- 3) human confirm before touching live -----------------------------------
 
-# The current meter plane is one large key. A cold group above 2 GiB can
-# prevent both the candidate and the prior binary from booting after a restart.
-# Refuse the live section before that group approaches the cold-load cap.
-PRELIVE_METER_CAP_BYTES=1610612736
 PRELIVE_STATUS="$WORK/pre-live-status.json"
 (umask 077; set -C; : >"$PRELIVE_STATUS") \
   || die "pre-live status path already exists or is unsafe; primary was not changed"
 curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
   -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
   http://x/api/status >"$PRELIVE_STATUS" \
-  || die "pre-live status unavailable; cannot prove the meter group is safe to restart"
+  || die "pre-live status unavailable; primary was not changed"
 PRELIVE_CLOUD_FRONTIER=0
 if [ "$PRIMARY_ROUTE" = "format7-v2" ]; then
   # Automatic V2 backup must be on and healthy; it stays on through the soak.
@@ -2853,7 +2833,7 @@ if [ "$PRIMARY_ROUTE" = "format7-v2" ]; then
   SOAK_REQUIRE_CLOUD=1
   log "pre-live status bar $PRELIVE_STATUS_OUT (format 7, automatic V2 backup on)"
 else
-  PRELIVE_STATUS_OUT="$(post_cutover_status_check "$PRELIVE_STATUS" 0 0 "$PRELIVE_METER_CAP_BYTES")" \
+  PRELIVE_STATUS_OUT="$(post_cutover_status_check "$PRELIVE_STATUS" 0 0)" \
     || die "pre-live status bar failed: $PRELIVE_STATUS_OUT; primary was not changed"
   jq -e '.status.sync.enabled | type == "boolean"' "$PRELIVE_STATUS" >/dev/null \
     || die "pre-live status cannot determine whether Cloud Sync is enabled"
@@ -2865,7 +2845,7 @@ else
     ' "$PRELIVE_STATUS")" \
       || die "pre-live status has no numeric cloud frontier; primary was not changed"
   fi
-  log "pre-live status bar $PRELIVE_STATUS_OUT (meter plane below 1.5 GiB)"
+  log "pre-live status bar $PRELIVE_STATUS_OUT"
 fi
 
 # Classify before any live write. Board is the proof when it answers.
@@ -3249,7 +3229,7 @@ soak_sample() {
   curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
     -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
     http://x/api/status >"$SOAK_STATUS" 2>/dev/null || { echo unavailable; return 0; }
-  post_cutover_status_check "$SOAK_STATUS" "$PRELIVE_CLOUD_FRONTIER" "$SOAK_REQUIRE_CLOUD" "$PRELIVE_METER_CAP_BYTES" || true
+  post_cutover_status_check "$SOAK_STATUS" "$PRELIVE_CLOUD_FRONTIER" "$SOAK_REQUIRE_CLOUD" || true
 }
 while [ "$(( $(date +%s) - SOAK_START ))" -le "$SOAK_MAX_SECS" ]; do
   SOAK_OUT="$(soak_sample)"

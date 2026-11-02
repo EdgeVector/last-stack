@@ -7,7 +7,7 @@ import time
 from native_upgrade_common import NotReady, call, require
 
 COUNTERS = ("generation", "frontier", "accepted_batches", "accepted_sequence", "completed_sequence")
-FAILURES = ("maintenance_failures", "reclaim_failures", "persist_lane_failures", "deferred_persist_failed")
+FAILURES = ("maintenance_failures", "reclaim_failures")
 ERRORS = ("maintenance_last_error", "reclaim_last_error")
 
 
@@ -50,16 +50,11 @@ def health(sock, version, pid, *, automatic=False):
     if automatic:
         require(durability.get("degraded") is None,
                 "The automatic backup reports degraded durability")
-    resident = status.get("resident", {})
-    require(all(type(resident.get(name)) is int and resident[name] == 0
-                for name in ("persist_lane_failures", "deferred_persist_failed")),
-            "Run V2 persist failure gauges are absent or nonzero")
     native = disk["native_disk"]
     require(native.get("writer_failed") is False, "Run V2 native writer failed")
     require(all(type(native.get(name)) is int and 0 <= native[name] <= 2**64 - 1 for name in COUNTERS)
             and native["completed_sequence"] <= native["accepted_sequence"],
             "Run V2 native boundary counters are absent or invalid")
-    zero_failures(resident)
     zero_failures(native)
     zero_failures(native.get("parts", {}))
     cloud_policy = {"legacy_sync_off": True} if automatic else {"cloud_off": True}

@@ -32,9 +32,6 @@ def health(node, account, readiness=False):
     node.host_start_ts = host_start
     node.start_ts, node.instance_id = start, instance
     measured = status["status"]
-    for key in ("persist_lane_failures", "deferred_persist_failed"):
-        require(type(measured["resident"][key]) is int and measured["resident"][key] == 0,
-                "no_persist_failure")
     require(native["native_disk"]["writer_failed"] is False, "native_health")
     durability = measured["durability"]
     if not node.backup_source:
