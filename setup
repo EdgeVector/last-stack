@@ -615,7 +615,13 @@ ensure_agy_mcp_servers() {
   fi
 
   local kanban_cmd=""
-  if [ -x "$HOME/.local/bin/kanban" ]; then
+  if [ "${LAST_STACK_APPS_OFF:-0}" = "1" ]; then
+    tmp="$(mktemp)"
+    jq 'reduce ["kanban", "fkanban", "situations", "fsituations"][] as $name
+      (. ; if .mcpServers[$name] then .mcpServers[$name].disabled = true else . end)' "$cfg" > "$tmp"
+    mv "$tmp" "$cfg"
+    echo "  agy mcp: Kanban and Situations remain disabled by host policy"
+  elif [ -x "$HOME/.local/bin/kanban" ]; then
     kanban_cmd="$HOME/.local/bin/kanban"
   elif command -v kanban >/dev/null 2>&1; then
     kanban_cmd="$(command -v kanban)"
