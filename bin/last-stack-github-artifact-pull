@@ -130,6 +130,13 @@ def situations_schema_missing(text):
 
 
 def situations_preflight(repo, app=""):
+    # Tom disabled this app on the primary. Do not probe or repair its schemas.
+    posture = os.environ.get("LAST_STACK_SITUATIONS_OFF", "1")
+    if posture not in ("0", "1"):
+        raise Fail("LAST_STACK_SITUATIONS_OFF must be 0 or 1")
+    if posture == "1":
+        log("skipped: kanban and situations off (Tom, 2026-10-31)")
+        return
     exe = os.environ.get("LAST_STACK_SITUATIONS_BIN", "")
     if not exe:
         exe = shutil.which("situations") or ""

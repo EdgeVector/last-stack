@@ -1,5 +1,10 @@
 # Host Track
 
+The primary's Kanban and Situations apps remain off (Tom, 2026-10-31).
+`LAST_STACK_SITUATIONS_OFF` defaults to `1`. Artifact download and refresh do
+not call Situations in this posture. Set it to `0` only after Tom restores the
+app. Required CI, provenance, digest, source, probe and install gates still apply.
+
 `host-track` is the shared agent-facing command for checking and refreshing
 durable host installs. It keeps agents pointed at known host tracks instead of
 ad hoc worktrees under `~/code/edgevector`.

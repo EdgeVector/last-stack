@@ -1027,6 +1027,11 @@ HOST_TRACK_SITUATIONS_DEFAULT_OWNER="${HOST_TRACK_SITUATIONS_DEFAULT_OWNER:-Edge
 HOST_TRACK_SITUATIONS_BOOTSTRAP_APPS="${HOST_TRACK_SITUATIONS_BOOTSTRAP_APPS:-situations last-stack}"
 refresh_preflight_guard() {
   local app="$1" json="$2" repo sit out rc bootstrap
+  case "${LAST_STACK_SITUATIONS_OFF:-1}" in
+    1) printf 'host-track: skipped: kanban and situations off (Tom, 2026-10-31)\n' >&2; return 0 ;;
+    0) ;;
+    *) die "LAST_STACK_SITUATIONS_OFF must be 0 or 1" ;;
+  esac
   if [ "${HOST_TRACK_REFRESH_PREFLIGHT_SKIP:-0}" = "1" ]; then
     # An escape hatch that leaves no trace is a gate nobody can audit.
     printf 'host-track: %s Situations preflight SKIPPED by HOST_TRACK_REFRESH_PREFLIGHT_SKIP=1\n' "$app" >&2
