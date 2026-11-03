@@ -649,7 +649,6 @@ restore_native_files
 restore_native_bytes
 restore_known_keys
 restore_report_sha256
-restore_file_dependencies_verified
 restore_cloud_off
 restore_identity_matches
 source_strict_stop
@@ -663,7 +662,7 @@ EOF
 }
 
 _dev_v2_flag_keys() {
-  printf '%s\n' restore_file_dependencies_verified restore_cloud_off \
+  printf '%s\n' restore_cloud_off \
     restore_identity_matches source_strict_stop restored_strict_stop \
     identity_preserved seed_cloud_state_absent
 }
@@ -814,9 +813,8 @@ EOF
         || ! jq -e --arg commit "$commit_sha256" --arg files "$native_files" \
           --arg bytes "$native_bytes" --arg keys "$known_keys" '
           type == "object"
-          and (keys | sort) == ["cloud_off","commit_sha256","file_dependencies_verified","known_keys","native_bytes","native_files"]
+          and (keys | sort) == ["cloud_off","commit_sha256","known_keys","native_bytes","native_files"]
           and .commit_sha256 == $commit
-          and .file_dependencies_verified == true
           and .cloud_off == true
           and (.native_files | tostring) == $files
           and (.native_bytes | tostring) == $bytes

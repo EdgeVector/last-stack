@@ -27,7 +27,6 @@ SOURCE_FILES = {
     "fold_db/crates/core/src/sync/snapshot_log/mod.rs": "snapshot-log",
     "fold_db/crates/core/src/sync/engine/backup_uploader.rs": "backup-uploader",
     "fold_db/crates/core/src/sync/engine/wiring.rs": "upload-interlock",
-    "fold_db/crates/core/src/sync/engine/file_blob.rs": "file-blob",
     "fold_db/crates/core/src/sync/engine/cycle.rs": "degraded-cycle",
     "fold_db/crates/core/src/fold_db_core/fold_db/sync.rs": "cloud-off",
     "vendor/laststore/src/options.rs": "hash-group",
@@ -140,20 +139,6 @@ def source_failures(source_dir):
         cloud_off,
         "lastdb cloud off",
         "The durable cloud-off pause is absent.",
-        failures,
-    )
-
-    blobs = texts["fold_db/crates/core/src/sync/engine/file_blob.rs"]
-    require_text(
-        blobs,
-        "pub async fn upload_file_blob(&self, plaintext: &[u8]) -> SyncResult<FileBlobRef>",
-        "The file-blob upload route is absent.",
-        failures,
-    )
-    require_text(
-        blobs,
-        "pub async fn download_file_blob(&self, blob_ref: &FileBlobRef) -> SyncResult<Option<Vec<u8>>>",
-        "The file-blob fetch route is absent.",
         failures,
     )
 

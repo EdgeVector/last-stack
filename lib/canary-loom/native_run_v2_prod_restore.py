@@ -183,7 +183,7 @@ def run(plan_path, expected):
                                 lambda path: read(path, 262144),
                                 lambda path: names(path, 65538), expected_base=plan["base"])
             return {"kind": "snapshot", "accepted_backup": accepted,
-                    "product_inventory_closure_verified": True, "file_dependencies_verified": report["file_dependencies_verified"]}
+                    "product_inventory_closure_verified": True}
 
         restored = qualify(request, lambda n: node(context, homes / "r", pair, "restored-" + str(n)),
                            observe, capture, product_proof=product_proof)

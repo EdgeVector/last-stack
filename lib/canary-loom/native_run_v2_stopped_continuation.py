@@ -75,7 +75,7 @@ def check(proof, parent, summary, source_identity):
     required, expected = current(parent, summary)
     require(intent.get("current_expected") == proof.get("current_expected") == expected
             and intent.get("current_files") == proof.get("current_files") == required,
-            "The current files do not derive from the original final expected record pointers")
+            "The current files do not derive from the original final expected records")
     source_identity(intent)
     expected_sha = original["parent_final_records_sha256"]
     observed = diagnostic(proof, original, summary, required, expected_sha)

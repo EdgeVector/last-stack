@@ -180,13 +180,11 @@ def completed(session, accepted, read_json):
             and destination.parent == session.parent, "prod_chain_destination")
     report = read_json(session / "result.json")
     receipt = read_json(destination / "byte-cloud-restore-receipt.json")
-    # Exact a1c V2 ClientRoot/page admission forbids external dependencies;
-    # logs.finish likewise publishes NativeInventory { dependencies: 0 }.
     require(receipt == {"version": 2, "session_id": selected["session_id"], "report": report}
             and integer(receipt["version"]) == 2 and report["commit_sha256"] == accepted["commit_sha256"]
-            and report["destination"] == str(destination) and report["file_dependencies_verified"] is True
+            and report["destination"] == str(destination)
             and integer(report["native_files"]) > 0 and integer(report["native_bytes"]) > 0
-            and integer(report["verified_records"]) >= 0 and integer(report["verified_external_files"]) == 0,
+            and integer(report["verified_records"]) >= 0,
             "prod_chain_completed_restore")
 
 

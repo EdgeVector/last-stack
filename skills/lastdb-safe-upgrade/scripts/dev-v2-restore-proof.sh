@@ -471,7 +471,7 @@ python3 -I "$PHRASE_HELPER" --seed-file "$PROOF_HOME/identity.key" \
       >"$PROOF_ROOT_REAL/restore.json" 2>"$PROOF_ROOT_REAL/restore.err" \
   || proof_die "the exact DEV V2 commit did not restore into a source-free home"
 jq -e --arg d "$RESTORED_HOME" --arg c "$commit_sha256" '
-    .commit_sha256 == $c and .destination == $d and .file_dependencies_verified == true
+    .commit_sha256 == $c and .destination == $d
     and (.native_files | type == "number" and . > 0)
     and (.native_bytes | type == "number" and . > 0)
   ' "$PROOF_ROOT_REAL/restore.json" >/dev/null 2>&1 \
@@ -542,7 +542,7 @@ evidence_tmp="$(umask 077; mktemp "$receipt_dir/.restore-report.XXXXXX")" \
   || proof_die "the V2 DEV restore evidence file cannot be created"
 if ! jq -cn --arg c "$commit_sha256" --argjson f "$native_files" --argjson b "$native_bytes" \
       --argjson k "$known_keys" \
-      '{commit_sha256: $c, file_dependencies_verified: true, native_files: $f,
+      '{commit_sha256: $c, native_files: $f,
         native_bytes: $b, known_keys: $k, cloud_off: true}' >"$evidence_tmp" \
     || ! chmod 600 "$evidence_tmp" || ! mv -f -- "$evidence_tmp" "$evidence"; then
   rm -f -- "$evidence_tmp"

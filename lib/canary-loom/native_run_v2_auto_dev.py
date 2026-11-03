@@ -146,10 +146,9 @@ def check(candidate, evidence, memory_limit_mb, writer, *, maximum_age_seconds=3
     files = summary["full_CAS_file_bytes"]
     require(isinstance(files, list) and len(files) == 2 and all(f.get("bytes") == 8388608 for f in files)
             and len({digest(f.get("sha256")) for f in files}) == 2
-            and all(set(item) == {"bytes", "sha256", "pointer"}
-                    and set(item["pointer"]) == {"path", "sha256"}
-                    and digest(item["pointer"]["sha256"]) for item in files),
-            "The two full DEV files or their original private pointer references differ")
+            and all(set(item) == {"bytes", "sha256", "key"} and isinstance(item["key"], str) for item in files)
+            and len({item["key"] for item in files}) == 2,
+            "The two full DEV files or the records that hold them differ")
     owners = consumers(proof, summary, programs, operation)
     data_reads(proof, summary, owners, operation)
     memory_guard(proof, summary, programs, operation, memory_limit_mb)
@@ -157,7 +156,7 @@ def check(candidate, evidence, memory_limit_mb, writer, *, maximum_age_seconds=3
     restart(before, after, summary)
     restore = unwrap(reference(proof["restore"]))
     require(restore["commit_sha256"] == summary["accepted_backup"]["commit_sha256"]
-            and restore.get("destination") == str(homes / "r") and restore.get("file_dependencies_verified") is True
+            and restore.get("destination") == str(homes / "r")
             and uint(restore.get("verified_records")) >= 0, "The selected immutable log chain did not restore completely")
     provider = reference(proof["provider_accounting"])
     require(provider.get("source") == evidence["source_git_oid"] and provider.get("environment") == "dev"

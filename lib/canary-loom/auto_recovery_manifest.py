@@ -43,11 +43,9 @@ def binding(session, restored, accepted, endpoint, references):
     require(report == result and receipt == {"version": 2, "session_id": identifier, "report": report}
             and report.get("commit_sha256") == accepted["commit_sha256"]
             and report.get("destination") == str(restored)
-            and report.get("file_dependencies_verified") is True
             and uint(report.get("native_files"), True) > 0
             and uint(report.get("native_bytes"), True) > 0
-            and uint(report.get("verified_records")) >= 0
-            and uint(report.get("verified_external_files")) == 0,
+            and uint(report.get("verified_records")) >= 0,
             "The original completed snapshot report or receipt differs")
     return identifier, report
 

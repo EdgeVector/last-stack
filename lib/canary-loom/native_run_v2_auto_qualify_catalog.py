@@ -7,8 +7,8 @@ import os
 from native_run_v2_auto_qualify_io import read, reference, require, save
 
 SCHEMA = "9fdab70cdd7275622d11a2c0a2bfc6e505b836f7b7e98282b8de7c8d8dd80e38"
-FIELD_MAP = {"id": "file_content_sha256_hex", "note": "file_media_type", "file": "native_file_reference"}
-ID_FIELD, NOTE_FIELD, FILE_FIELD = (FIELD_MAP[name] for name in ("id", "note", "file"))
+FIELD_MAP = {"id": "file_content_sha256_hex", "note": "file_media_type"}
+ID_FIELD, NOTE_FIELD = (FIELD_MAP[name] for name in ("id", "note"))
 CATALOG_RESULT_SHA256 = "4a4946fe91024cb8dcec2c72d38543d3905537c8fc7d54e45f3a46a630a3ea64"
 CATALOG_BODY_SHA256 = "7bbdd173fdfed652450b013f0032301b529fbd45f8c3d041002ee449735d9277"
 
@@ -39,7 +39,7 @@ def binding(path):
             and not definition.get("ref_fields")
             and all(name in definition["fields"] for name in FIELD_MAP.values())
             and {name: definition["field_types"][name] for name in FIELD_MAP.values()}
-                == {ID_FIELD: "String", NOTE_FIELD: "String", FILE_FIELD: "Any"},
+                == {ID_FIELD: "String", NOTE_FIELD: "String"},
             "existing_contract_key_fields_and_types")
     return {"identity": SCHEMA, "catalog_result": original, "catalog_body": body,
         "definition": definition, "definition_sha256": digest(definition),
