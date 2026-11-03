@@ -293,7 +293,7 @@ Goal
 3. Print one HEAL_RESULT line when done.
 
 Venue
-- Every EdgeVector repo except `lastgit` is on GitHub (2026-09-30). Open the change with `gh pr create -R EdgeVector/<repo>`, then `gh pr merge <n> -R EdgeVector/<repo> --auto --squash`. The required check is `ci-required`. LastGit is retired; do not use `lastgit cr`. Forgejo copies are frozen.
+- Every EdgeVector repo is on GitHub (lastgit moved last, 2026-10-08). Open the change with `gh pr create -R EdgeVector/<repo>`, then `gh pr merge <n> -R EdgeVector/<repo> --auto --squash`. The required check is `ci-required`. LastGit is retired; do not use `lastgit cr`. Forgejo holds archived copies only.
 - Prefer fold when the RED is a binary/latency/RSS/correctness bar.
 - Prefer last-stack when the RED is the probe harness itself.
 

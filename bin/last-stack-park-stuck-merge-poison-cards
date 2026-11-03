@@ -5,7 +5,7 @@
 # milestone/North Star (or with empty bodies) cause pickup write-guard no-claims
 # that block unrelated valid work. This helper:
 #   1) closes cards whose underlying PR is point-read closed/merged (GitHub via
-#      `gh api`; the lastgit repo via Forgejo; LastGit CRs are retired)
+#      `gh api`; every repo is on GitHub; LastGit CRs are retired)
 #   2) parks remaining poison-shaped cards to backlog (never needs_human)
 #
 # Intentionally narrow: only todo, only stuck-merge/pipeline-stuck shapes, never

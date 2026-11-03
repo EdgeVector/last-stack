@@ -4,7 +4,7 @@
 LastGit is retired (2026-09-30, decision-2026-09-29-retire-lastgit-all-repos-to-github).
 There is no LastGit change request to be stuck. A stuck pull request is filed as one
 row per PR by `last-stack-pipeline-forge-pr-ledger sync --apply` (GitHub through gh,
-the lastgit repo through Forgejo). This helper keeps its argument contract and
+every repo is on GitHub). This helper keeps its argument contract and
 always answers `skip-lastgit-retired`, exit 0, and writes nothing to the brain.
 """
 

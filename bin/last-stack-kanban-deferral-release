@@ -290,12 +290,10 @@ class Checker:
 
     def _check_pr(self, cond: dict[str, str]) -> tuple[bool, str]:
         ref = cond["ref"]
-        # GitHub is the default venue. Forgejo stays for the `lastgit` repo and
-        # for an explicit non-GitHub URL (a card that recorded an old Forgejo PR).
-        forge = (
-            cond["repo"] == "lastgit"
-            or (re.match(r"https?://", ref) is not None and "github.com" not in ref)
-        )
+        # Every repo is on GitHub (lastgit moved with EdgeVector/lastgit#5). The
+        # archived Forgejo copy is read only for an explicit non-GitHub URL (a
+        # card that recorded an old Forgejo PR).
+        forge = re.match(r"https?://", ref) is not None and "github.com" not in ref
         if not forge:
             return self._check_github_pr(cond)
         path = f"repos/{cond['owner']}/{cond['repo']}/pulls/{cond['number']}"

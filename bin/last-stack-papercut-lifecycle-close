@@ -1092,7 +1092,7 @@ def pr_keeps_open(body: str, slug: str) -> bool:
 
 
 def search_repair_prs(args: argparse.Namespace, slug: str) -> list[ReviewRef]:
-    """Discover exact labeled merged GitHub repairs; LastGit alone uses Forgejo."""
+    """Discover exact labeled merged GitHub repairs (every repo is on GitHub)."""
     if not getattr(args, "forge_search", True):
         return []
     if getattr(args, "search_repo", "") == "lastgit":
@@ -1601,7 +1601,7 @@ def main() -> int:
         "--no-forge-search",
         action="store_false",
         dest="forge_search",
-        help="do not search merged repair PRs (GitHub, or Forgejo for LastGit); legacy option name",
+        help="do not search merged repair PRs on GitHub; legacy option name",
     )
     parser.add_argument(
         "--ignore-keep-open",

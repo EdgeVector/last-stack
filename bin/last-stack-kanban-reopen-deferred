@@ -142,11 +142,10 @@ def pr_shas(card: dict[str, Any], forge_api: str, gh: str) -> tuple[str, str]:
     if not pr_match or "/" not in repo:
         return "", ""
     owner, name = repo.split("/", 1)
-    # GitHub is the default venue. Forgejo stays for the `lastgit` repo and
-    # for a card that recorded an explicit non-GitHub URL.
-    forgejo = name == "lastgit" or (
-        re.match(r"https?://", url) is not None and GITHUB_PR_RE.search(url) is None
-    )
+    # Every repo is on GitHub (lastgit moved with EdgeVector/lastgit#5). The
+    # archived Forgejo copy is read only for a card that recorded an explicit
+    # old non-GitHub PR URL.
+    forgejo = re.match(r"https?://", url) is not None and GITHUB_PR_RE.search(url) is None
     if forgejo:
         argv = [forge_api, f"repos/{owner}/{name}/pulls/{pr_match.group(1)}"] if forge_api else []
     else:

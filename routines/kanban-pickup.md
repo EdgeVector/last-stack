@@ -215,7 +215,7 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   after the 10-minute remaining stop line; `kanban-watch` or a later pickup fire
   can reconcile a visible in-flight PR/CR, but routinesd cannot recover a killed
   foreground process cleanly.
-- GitHub venue (every repo except `lastgit`): a `ci-required` check run that has
+- GitHub venue (every repo): a `ci-required` check run that has
   not started or is still pending is a handoff condition, not pickup work. After
   the PR is recorded on the card, run **one** `gh -R <repo> pr checks <n>`
   read. If `ci-required` is still absent, do not re-run it by hand and do not
@@ -435,14 +435,12 @@ back to `todo` (or `pending_rollback=` in memory) per transport rules below.
   `last-stack` checkout and follow that canonical source directly.
 - **Venue routing:** resolve the concrete checkout and run
   `"$last_stack/bin/last-stack-pr-venue" --json <owner/repo> "$target_repo"`.
-  Every EdgeVector repo except `lastgit` is on GitHub (2026-09-30; LastGit and
-  the gaming PC are retired), so the answer is normally `github`: use `gh`
+  Every EdgeVector repo is on GitHub (LastGit and the gaming PC are retired;
+  `lastgit` moved last, 2026-10-08), so the answer is `github`: use `gh`
   (`gh -R <repo> pr create`, `gh -R <repo> pr merge <n> --auto --squash
   --delete-branch`, and `gh -R <repo> pr checks <n>` for the `ci-required`
-  check run). Only the `lastgit` repo
-  answers `forgejo`: use the local Forgejo API through
-  `last-stack-forge-api` for it, and poll forge PR/CI JSON with
-  `"$last_stack/bin/last-stack-forge-json-jq"` rather than raw `jq`. A repo
+  check run). A `forgejo` answer is stale config (Forgejo holds archived
+  copies only): stop, push nothing, and file a brain papercut. A repo
   whose marker or git config still says `lastgit` is a stale marker: LastGit is
   retired. Run no `lastgit` command; see the `venue=lastgit` step below.
 
@@ -714,7 +712,7 @@ Why this runs after the claim, not before, as of 2026-09-05:
    ```bash
    route_json="$("$last_stack/bin/last-stack-pr-venue" --json "<repo>" "$target_repo")"
    ```
-   - `venue=github` (the default for every repo except `lastgit`): push the
+   - `venue=github` (every repo): push the
      branch to the GitHub repo → `gh -R <repo> pr create --fill --base <base>`
      (write a body that has backticks to a file and pass `--body-file`) →
      immediately record `pr_url` and `branch` on the card with
@@ -725,9 +723,9 @@ Why this runs after the claim, not before, as of 2026-09-05:
      `gh pr merge` returns a GraphQL 502, read `gh -R <repo> pr view <n> --json state`
      first (it may have landed), then retry with
      `gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f merge_method=squash`.
-   - `venue=forgejo` (only the `lastgit` repo): local Forgejo SOP/API only —
-     never `gh` for it; record `pr_url` and `branch` on the card immediately
-     after create.
+   - `venue=forgejo` (no repo answers it since 2026-10-08; Forgejo holds
+     archived copies only): stop, do not push. Report `noop` with
+     `reason=venue-forgejo-stale` and file a brain papercut.
    - `venue=lastgit` (retired; no repo answers it since 2026-09-30): stop, do not
      push. Report `noop` with `reason=venue-lastgit-retired` and let a human fix
      the stale marker. Never run a `lastgit` command.

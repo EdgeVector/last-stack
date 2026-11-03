@@ -84,8 +84,6 @@ loom ping                        # node reachable
 - Per-venue CI and merge after each slice:
   - github: `gh pr checks` (required `ci-required`), then
     `gh pr merge <n> -R <repo> --auto --squash`
-  - forgejo (`lastgit` repo only): required context `Forge CI / ci-required`, then
-    `merge_when_checks_succeed`
 - If loom is missing or the node is down, use the legacy fallback and say so.
   Venue is not a reason to skip the factory.
 

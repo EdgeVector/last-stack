@@ -1,8 +1,10 @@
 # Forge runner lanes — merge gate vs heavy release/deploy
 
-> **2026-09-30:** only the `lastgit` repo stays on Forgejo; every other EdgeVector
-> repo is on GitHub (GitHub Actions). Only the merge-gate lane below is live. The
-> heavy lane is retired (`heavy.retired` in `config/forge-runner-lanes.json`): its
+> **2026-10-08:** every EdgeVector repo is on GitHub (GitHub Actions). `lastgit`,
+> the last repo on Forgejo, moved with EdgeVector/lastgit#5; Forgejo holds
+> archived copies only. Both lanes below are retired (`merge_gate` and `heavy` in
+> `config/forge-runner-lanes.json`). The merge-gate lane last gated `lastgit`. The
+> heavy lane retired on 2026-09-30 (`heavy.retired` in `config/forge-runner-lanes.json`): its
 > repo-scoped runners served fold and exemem-infra. The watchdog and
 > `last-stack-fold-ci-health` no longer check or revive them; Tom may leave
 > `com.edgevector.forgejo-runner-host*` loaded or boot them out. The tables below

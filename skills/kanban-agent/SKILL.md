@@ -49,8 +49,8 @@ genuinely blocked.
 > ⚠️ **Route repo review artifacts before opening or reconciling one.** After
 > resolving the concrete checkout, run
 > `"$last_stack/bin/last-stack-pr-venue" --json <owner/repo> "$target_repo"` and
-> branch on `.venue`. Since 2026-09-30 every EdgeVector repo except
-> `EdgeVector/lastgit` is on **GitHub** (brain
+> branch on `.venue`. Every EdgeVector repo is on **GitHub** (since 2026-09-30;
+> `EdgeVector/lastgit` moved last, on 2026-10-08, EdgeVector/lastgit#5; brain
 > `decision-2026-09-29-retire-lastgit-all-repos-to-github`): open PRs with
 > `gh pr create`, arm auto-merge with
 > `gh pr merge <n> -R EdgeVector/<repo> --auto --squash`, and watch the
@@ -61,27 +61,9 @@ genuinely blocked.
 > file a brain papercut. Store secrets only as LastSecrets locators; never put
 > raw secret values in Brain/Kanban/logs/PR text.
 >
-> ⚠️ **Only `EdgeVector/lastgit` stays on the local Forgejo forge.** For that
-> repo, and no other, use the Forgejo API equivalent of each `gh` command
-> against `http://localhost:3300`. Full command map and auth:
-> `brain get sop-forge-pr-workflow`. Use
-> `$HOME/.last-stack/bin/last-stack-forge-api` for the API calls and
-> `$HOME/.last-stack/bin/last-stack-forge-git -C <repo> <git-args...>` when
-> plain `git fetch` / `push` cannot read credentials. Create a PR with
-> `last-stack-forge-api --method POST --data @body.json repos/EdgeVector/lastgit/pulls`.
-> Arm auto-merge with
-> `last-stack-forge-api --method POST --data '{"Do":"merge","merge_when_checks_succeed":true,"delete_branch_after_merge":true}' repos/EdgeVector/lastgit/pulls/<n>/merge`.
-> Read PR state with `last-stack-forge-api repos/EdgeVector/lastgit/pulls/<n>`
-> (`.merged`, `.mergeable`, `.draft`) and CI with
-> `last-stack-forge-api repos/EdgeVector/lastgit/commits/<head-sha>/status`.
-> Update a BEHIND branch with
-> `last-stack-forge-pr-update-branch --repo EdgeVector/lastgit --pr <n> --apply`
-> (never POST `pulls/<n>/update` raw). If `commits/<sha>/status` is the empty
-> envelope and `actions/tasks` has no run for the head, the CI trigger is dead:
-> run `last-stack-forge-dead-trigger probe` then `supersede`. Arm auto-merge
-> when you open the PR, or write `proof in flight — do not arm` in the body.
-> If an armed PR is green but open, run
-> `last-stack-pipeline-forge-pr-ledger merge-green --repo EdgeVector/lastgit --pr <n> --apply --wait-sec 900`.
+> No repo is on the local Forgejo forge. Forgejo holds archived copies only:
+> never push to it or open a PR there. If the venue answers `forgejo`, the
+> repo's venue config is stale: stop and file a brain papercut.
 > Keepside_Desktop is GitHub-primary and hands-off.
 
 > **Drive to merge, but never idle-park or sleep-loop.** The rule that prevents
@@ -407,16 +389,11 @@ to `review`, append a one-line note explaining what's missing, and exit.
    kanban add <slug> --pr-url "$pr_url" --branch "$branch"
    gh -R <repo> pr merge <n> --auto --squash   # ci-required is the required check
    ```
-   The GitHub `gh` flow above is the default for every EdgeVector repo except
-   `EdgeVector/lastgit`. Merge command for a GitHub repo:
+   The GitHub `gh` flow above applies to every EdgeVector repo. Merge command:
    `gh pr merge <n> -R <repo> --auto --squash`. If GraphQL returns a 502, use
    `gh api -X PUT repos/<repo>/pulls/<n>/merge -f merge_method=squash`.
-   For `EdgeVector/lastgit` only (venue `forgejo`), use the local-forge API
-   path from `sop-forge-pr-workflow` and Forgejo's `merge_when_checks_succeed`
-   request. Immediately after the Forgejo create call returns, record the
-   returned PR URL and current branch on the card:
-   `kanban add <slug> --pr-url "$pr_url" --branch "$branch"`.
-   If the route says `lastgit`, LastGit is retired: stop, do not push to a
+   If the route says `forgejo`, the venue config is stale (Forgejo holds
+   archived copies only): stop and file a brain papercut. If it says `lastgit`, LastGit is retired: stop, do not push to a
    `lastdb:///` remote, and file a brain papercut.
 6. **Drive it to MERGED — do not hand off a green-but-unmerged PR.** Arming
    auto-merge is necessary but not always sufficient: a PR/CR can fall out of
@@ -455,7 +432,7 @@ to `review`, append a one-line note explaining what's missing, and exit.
      (lightweight, no worktree). Don't assume the queue self-updates a BEHIND
      branch. Then keep watching; auto-merge fires once it re-greens.
      Never while a CI run on the head is pending/running: the update cancels
-     it. Forgejo (`lastgit` repo only): `last-stack-forge-pr-update-branch --repo <r> --pr <n> --apply`.
+     it.
    - **DIRTY / CONFLICTING** → rebase in your worktree (`git fetch origin
      <base>` → rebase onto `origin/<base>` → resolve → re-run VERIFY →
      force-push with lease). If the conflict needs product judgment you can't
@@ -552,8 +529,6 @@ is released by the Loom kickoff (engine park) or by a human, not by this sweep.
    for PR checks) and select the newest relevant item explicitly, or query the
    Actions API.
 
-   Only the `lastgit` repo is on Forgejo: use the local-forge API equivalents
-   from `sop-forge-pr-workflow` there.
 3. **Decide from PR state:**
    - **Merged** (`state=MERGED` / `mergedAt` set) → `move <slug>
      done`. Done. A `Kind: pr` card reaches `done` ONLY this way — a verified
@@ -578,8 +553,7 @@ is released by the Loom kickoff (engine park) or by a human, not by this sweep.
      (or died mid-work). Finish WORK MODE step 5 for it. Don't thrash.
    - **CI red** (a real failing required check in `statusCheckRollup`, not just
      BEHIND) → enter the worktree, read the failing job logs
-     (GitHub: `gh run view --log-failed`; Forgejo, `lastgit` repo only:
-     `last-stack-forge-ci-log EdgeVector/lastgit --pr <n>`), fix, re-run VERIFY, push. HEAVY (see
+     (`gh run view --log-failed`), fix, re-run VERIFY, push. HEAVY (see
      budget). A log that ends in `CI_DEADLINE_EXCEEDED` or runner `context
      deadline exceeded` is a timeout, not a test failure: do not edit code for it.
    - **Auto-merge dropped** (`autoMergeRequest` is null) while the PR is CLEAN /
@@ -601,8 +575,7 @@ is released by the Loom kickoff (engine park) or by a human, not by this sweep.
      still has auto-merge armed. They re-green and advance. CHEAP advance
      (uncapped). **Skip any PR whose CI is in flight** — an update cancels the
      run (papercut-forge-pr-branch-update-cancels-in-flight-ci-20260922).
-     Forgejo (`lastgit` repo only): `last-stack-forge-pr-update-branch --repo <r> --pr <n> --apply`
-     (exit 3 = in flight). GitHub: no PENDING/IN_PROGRESS/QUEUED check.
+     In flight means a PENDING/IN_PROGRESS/QUEUED check.
    - **Conflicts / dirty** (`mergeStateStatus` = DIRTY/CONFLICTING) → enter the
      worktree, `git fetch origin <base>`, rebase onto `origin/<base>`, resolve,
      re-verify, force-push with lease. HEAVY. If the conflict needs product
@@ -624,8 +597,7 @@ that's what lets a burst of BEHIND PRs rot. Each wake:
 - Do EVERY CHEAP advance (uncapped): move every merged card to `done`; re-arm
   auto-merge on every clean-but-unarmed/stuck PR (including ones whose auto-merge
   was *dropped*); update-branch the oldest few clean-green-BEHIND carded
-  PRs (not just one) whose CI is NOT in flight (GitHub: no PENDING check;
-  Forgejo, `lastgit` repo only: `last-stack-forge-pr-update-branch --apply`).
+  PRs (not just one) whose CI is NOT in flight (no PENDING check).
 - Do at most ONE HEAVY unit: a worktree CI-fix OR a conflict rebase. Pick the
   highest-value one, then exit.
 
@@ -662,7 +634,7 @@ Scheduled entrypoint: routine `kanban-validate` /
      `needs_human`/`deferred`/`design_first`, not dep-blocked, with a concrete
      `DONE-WHEN` and/or autonomous `VERIFY` / `## END STATE`. Prefer
      `north-star-proof` / milestone proof cards when tagged.
-   Use the same `Repo:` / `Base:` / `PR:` parsing and GitHub-vs-Forgejo
+   Use the same `Repo:` / `Base:` / `PR:` parsing and GitHub
    venue rules as RECONCILE mode. **Never** `pickup claim`. Pool A still
    requires merged PR/commit evidence; Pool B does **not** (proof cards are not
    implementation PRs). Prefer Pool B when it has ready candidates and Pool A
@@ -730,8 +702,8 @@ Repositories differ in how they merge. Match your repo's policy:
   `gh -R <repo> pr create` → `gh -R <repo> pr checks <n> --watch` (block
   sleeplessly until CI is green) → `gh -R <repo> pr merge <n> --squash` to land
   it manually.
-- **Forgejo (only `EdgeVector/lastgit`):** when `last-stack-pr-venue` returns
-  `forgejo`, use the Forgejo API helpers (`last-stack-forge-api`) and never `gh`.
+- **Forgejo:** no repo is on Forgejo (archived copies only). A `forgejo` venue
+  answer is stale config: stop and file a brain papercut.
 
 Check the repo's contributor docs (`CONTRIBUTING.md` / `AGENTS.md` /
 `CLAUDE.md`) for which applies.
