@@ -901,6 +901,33 @@ rm "$OLD/monitoring/lastdbd-revive.hold"
 Then install the previous Brain and LastSecrets releases with `app-safe-upgrade`.
 After rollback, read `cloud backup-v2 status --json` on the restored home. Automatic backup must show `enabled: true` (the runbook never turns it off). If it is off, run `enable-automatic` with the Step 12 intervals. Never run `disable-automatic`.
 
+#### Carry the writes made on the new home
+
+Every client wrote to the new home between Step 10 and the rollback. Find those writes and write them again on the restored home. Do it soon, before more writes land on the restored home.
+
+1. Start the new program on the new home. Do not use the launchd label; it stays on the restored home.
+
+   ```bash
+   env -u LASTDB_HOME -u LASTDB_SOCKET_PATH -u OBS_SENTRY_DSN LASTDB_ENGINE=laststore LASTDB_MAX_FIELD_VALUE_BYTES=524288 \
+     nohup "$NEW/native-run-v2-programs/$C/lastdbd" --data-dir "$NEW" > "$W/rb-new-private.log" 2>&1 < /dev/null &
+   echo $! > "$W/rb-new-private.pid"
+   ```
+
+2. Run the Step 9 verify with the restored home as the source. Use the Step 9 flags, with `--source-socket "$OLD/data/folddb.sock"`. Update `--accept-directory-count` if the restored home's counts changed.
+
+   ```bash
+   python3 "$COPY" "${F[@]}" --verify --report "$W/rb-verify.json" > "$W/rb-verify.txt"; echo "rc=$?"
+   jq -c '.routes[] | select(.verify.equal != true) | {key, d: .verify.different_keys, x: .verify.extra_keys, m: .verify.missing_keys}' "$W/rb-verify.json"
+   ```
+
+   On the app routes, `different_keys` and `extra_keys` name the records that changed on the new home. Records that other sessions wrote on the restored home after the rollback also show up; compare `updated_at` to tell them apart. The `__brainlistpage__` and `__braincompactlocator__` routes change as a side effect and need no carry.
+
+3. Read each changed record on both homes. For the new home, set `BRAIN_CONFIG="$W/staging-config/brain.json"` and `BRAIN_FOLDDB_SOCKET="$NEW/data/folddb.sock"`. Write the difference on the restored home with the app's own commands (`brain append`, `brain status`, `brain put`, `lastsecrets set`). Read each record back.
+
+4. Stop the private daemon: `kill -TERM "$(cat "$W/rb-new-private.pid")"`.
+
+The format 9 rollback on 2026-11-03 came about 13 minutes after the cutover. Other sessions had written three brain changes to the new home in that window: two papercut appends with one status change, and one decision append.
+
 ## 8. Blockers and decisions
 
 | ID | Blocker or decision | Owner |
