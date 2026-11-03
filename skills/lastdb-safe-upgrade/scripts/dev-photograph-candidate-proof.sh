@@ -299,7 +299,7 @@ FAILURE_PHASE="proof_root"
 proof_root_template="$proof_tmp_base/lastdb-dev-photograph-${safe_exec_id}.XXXXXX"
 [ "$RETAIN_FOR_CLOUD_CLEANUP" -eq 0 ] || proof_root_template="$proof_tmp_base/photo-XXXXXX"
 if [ "$RETAIN_FOR_CLOUD_CLEANUP" -eq 1 ]; then
-  socket_bytes="$(printf '%s' "$proof_tmp_base/photo-XXXXXX/cow/data/folddb-full.sock" | wc -c | tr -d ' ')"
+  socket_bytes="$(printf '%s' "$proof_tmp_base/photo-XXXXXX/cow/data/folddb.sock.tmp" | wc -c | tr -d ' ')"
   [ "$socket_bytes" -le 103 ] || proof_die "the retained DEV home exceeds the native socket path cap"
 fi
 PROOF_ROOT="$(mktemp -d "$proof_root_template")" \
@@ -506,7 +506,6 @@ find "$COW_HOME" -maxdepth 1 \
   || proof_die "a copied cloud credential residue cannot be removed"
 rm -f -- \
   "$COW_HOME/data/folddb.sock" \
-  "$COW_HOME/data/folddb-full.sock" \
   "$COW_HOME/data/.device_id" \
   "$COW_HOME/current-session.json" \
   "$COW_HOME/laststore_backup_known_present.json" \
@@ -521,7 +520,6 @@ rm -f -- \
   || proof_die "copied cloud credential residue remains before DEV connect"
 for absent in \
   "$COW_HOME/data/folddb.sock" \
-  "$COW_HOME/data/folddb-full.sock" \
   "$COW_HOME/data/.device_id" \
   "$COW_HOME/current-session.json" \
   "$COW_HOME/laststore_backup_known_present.json" \

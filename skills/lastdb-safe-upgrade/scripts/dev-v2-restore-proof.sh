@@ -165,7 +165,7 @@ PROOF_TMP_BASE="$(_dev_stamp_real_dir "${LASTDB_DEV_V2_PROOF_TMP_ROOT:-/tmp}")" 
 case "$PROOF_TMP_BASE" in /|"") proof_die "the V2 DEV proof temporary root is unsafe" ;; esac
 _dev_stamp_paths_do_not_overlap "$PROOF_TMP_BASE/dev-v2-placeholder" "$PRIMARY_HOME_ARG" \
   || proof_die "the V2 DEV proof temporary root overlaps the primary home"
-socket_bytes="$(printf '%s' "$PROOF_TMP_BASE/lastdb-dev-v2-XXXXXX/restored/data/folddb-full.sock" | wc -c | tr -d ' ')"
+socket_bytes="$(printf '%s' "$PROOF_TMP_BASE/lastdb-dev-v2-XXXXXX/restored/data/folddb.sock.tmp" | wc -c | tr -d ' ')"
 [ "$socket_bytes" -le 103 ] || proof_die "the V2 DEV proof home exceeds the native socket path cap"
 safe_exec_id="$(printf '%s' "${LOOM_EXEC_ID:-missing}" | tr -c 'A-Za-z0-9._-' '_')"
 
@@ -355,7 +355,7 @@ for rel in cloud_sync.json cloud_sync.json.paused .cloud_resume_required native_
   [ ! -e "$PROOF_HOME/$rel" ] && [ ! -L "$PROOF_HOME/$rel" ] \
     || proof_die "the trial clone carries cloud state ($rel); the synthetic seed must be Cloud Off"
 done
-rm -f -- "$PROOF_HOME/data/folddb.sock" "$PROOF_HOME/data/folddb-full.sock"
+rm -f -- "$PROOF_HOME/data/folddb.sock"
 identity_before="$(dev_stamp_sha256_file "$PROOF_HOME/identity.key")" \
   || proof_die "the cloned identity cannot be read"
 

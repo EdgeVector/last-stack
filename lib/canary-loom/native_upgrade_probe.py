@@ -45,7 +45,7 @@ class GeneratedNode:
         log = self.output / "generated-node.log"
         self.stream = os.fdopen(os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "ab")
         self.process = subprocess.Popen([str(binary), "--data-dir", str(self.home),
-            "--socket-path", str(self.sock), "--full-socket-path", str(self.root / "f.sock")],
+            "--socket-path", str(self.sock)],
             env=environment, stdin=subprocess.DEVNULL, stdout=self.stream, stderr=self.stream)
         result = wait_health(self.sock, build, self.process.pid)
         self.sample_memory()

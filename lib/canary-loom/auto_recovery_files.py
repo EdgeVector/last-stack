@@ -15,7 +15,7 @@ from native_run_v2_state import NODE, Metadata, descriptor, file_identity
 MAXIMUM = 32 * 1024 * 1024
 MAX_FILES = 1000000
 ABSENT = ("current-session.json", "sessions.jsonl", "boot-error.json", ".shutdown_flush_ready",
-          "data/folddb.sock", "data/folddb-full.sock")
+          "data/folddb.sock")
 
 
 def original(path, maximum=MAXIMUM):

@@ -497,15 +497,15 @@ post-check names configured keys absent from the new process, and
 
 **Hot swap:** a single-process image swap still needs a worker handoff. For
 near-zero client impact, run the `lastdb-proxy` from Fold PR #2091. It owns the
-stable public sockets while `lastdbd` uses private worker sockets. The proxy
+stable public socket while `lastdbd` uses a private worker socket. The proxy
 does not open the LastDB home, and it never permits two workers to own one
 home. Dogfood and service-manager wiring remain required before deployment.
 
-Use these worker flags when the proxy owns the public paths:
+Use this worker flag when the proxy owns the public path (home format 11 has
+one owner socket; a format 10 worker also took `--full-socket-path`):
 
 ```text
-lastdbd --data-dir <home> --socket-path <run>/worker.sock \
-  --full-socket-path <run>/worker-full.sock
+lastdbd --data-dir <home> --socket-path <run>/worker.sock
 ```
 
 The cutover must stop the old worker, start the new worker, run the full

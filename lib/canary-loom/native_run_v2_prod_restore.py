@@ -51,7 +51,7 @@ def candidate(receipt):
 def prepare(args):
     root, homes = external(args.output), external(args.homes)
     require(not os.path.lexists(root) and not os.path.lexists(homes), "fresh_prod_restore_paths")
-    require(len(os.fsencode(homes / "r/data/folddb-full.sock.tmp")) <= 103, "prod_restore_socket_path")
+    require(len(os.fsencode(homes / "r/data/folddb.sock.tmp")) <= 103, "prod_restore_socket_path")
     programs, version = candidate(args.candidate_receipt)
     expected = BASELINE_PROGRAMS if args.primary_source == BASELINE else programs
     current_version = BASELINE_VERSION if args.primary_source == BASELINE else version

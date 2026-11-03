@@ -12,7 +12,7 @@ from native_run_v2_dev_session import original_gone
 from native_run_v2_inputs import external
 
 ABSENT = ("current-session.json", "sessions.jsonl", "boot-error.json", "restart-intent.json",
-          ".shutdown_flush_ready", "data/folddb.sock", "data/folddb-full.sock")
+          ".shutdown_flush_ready", "data/folddb.sock")
 
 
 def unbooted(home):

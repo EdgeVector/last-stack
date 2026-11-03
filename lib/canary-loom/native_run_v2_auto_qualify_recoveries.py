@@ -13,7 +13,7 @@ def stopped(operation):
     require(operation.node is None or operation.node.process is None, "source_owned_child_stopped")
     home = operation.homes / "s"
     require(all(not os.path.lexists(home / name) for name in
-                ("current-session.json", "data/folddb.sock", "data/folddb-full.sock")), "source_stays_stopped")
+                ("current-session.json", "data/folddb.sock")), "source_stays_stopped")
 
 
 def recover(operation, flow, kind):
