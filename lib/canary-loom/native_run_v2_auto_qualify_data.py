@@ -7,8 +7,8 @@ import os
 import subprocess
 import time
 
-from native_run_v2_auto_qualify_io import hash_file, read, reference, require, save
-from native_run_v2_auto_qualify_catalog import FIELD_MAP, ID_FIELD, NOTE_FIELD, FILE_FIELD, SCHEMA, load
+from native_run_v2_auto_qualify_io import hash_file, require, save
+from native_run_v2_auto_qualify_catalog import FIELD_MAP, ID_FIELD, NOTE_FIELD, SCHEMA, load
 
 
 def canonical(value):
@@ -29,7 +29,8 @@ class Data:
         self.operation, self.expected, self.files = operation, {}, []
         self.records = operation.plan["records"]
 
-    def file(self, number, pair):
+    def file(self, number, pair, key):
+        """Write declared file `number` and put it as the file of record `key`."""
         specification = self.operation.plan["files"][number - 1]
         path = self.operation.output / ("file-" + str(number) + ".bin")
         block = hashlib.shake_256((self.operation.plan["nonce"] + ":" + str(number)).encode()).digest(1024 * 1024)
@@ -41,11 +42,12 @@ class Data:
             os.fsync(stream.fileno())
         require(path.stat().st_size == specification["bytes"] and hash_file(path) == specification["sha256"],
                 "declared_file_bytes")
-        pointer = pair.command(self.operation.homes / "s", ["db", "put-blob-local", "--file", str(path)])
-        require(isinstance(pointer, dict) and "$lastdb_file" in pointer, "product_native_file_pointer")
-        pointer_ref = save(self.operation.output / ("file-" + str(number) + "-pointer.json"), pointer)
-        self.files.append({"bytes": specification["bytes"], "sha256": specification["sha256"], "pointer": pointer_ref})
-        return pointer
+        reply = pair.command(self.operation.homes / "s",
+                             ["db", "put-blob", "--schema", SCHEMA, "--hash", key, "--file", str(path)])
+        marker = reply.get("file") if isinstance(reply, dict) and reply.get("ok") is True else None
+        require(isinstance(marker, dict) and marker.get("size_bytes") == specification["bytes"]
+                and marker.get("sha256") == specification["sha256"], "product_record_file_marker")
+        self.files.append({"bytes": specification["bytes"], "sha256": specification["sha256"], "key": key})
 
     def mutations(self, node, values):
         changes = [{"type": "mutation", "schema": SCHEMA, "key_value": {"hash": key, "range": None},
@@ -58,26 +60,27 @@ class Data:
 
     def populate(self, node):
         self.operation.catalog_load = load(node, self.operation)
-        pointer = self.file(1, self.operation.baseline)
-        values = {item["id"]: {ID_FIELD: item["id"], NOTE_FIELD: item["note"], FILE_FIELD: pointer}
-                  for item in self.records}
+        values = {item["id"]: {ID_FIELD: item["id"], NOTE_FIELD: item["note"]} for item in self.records}
         save(self.operation.output / "initial-expected.json", values)
         self.mutations(node, values)
+        self.file(1, self.operation.baseline, self.records[0]["id"])
         self.initial, self.initial_files = copy.deepcopy(self.expected), copy.deepcopy(self.files)
 
     def update(self, node):
-        pointer = self.file(2, self.operation.candidate)
-        values = {item["id"]: {ID_FIELD: item["id"], NOTE_FIELD: item["final_note"], FILE_FIELD: pointer}
+        values = {item["id"]: {ID_FIELD: item["id"], NOTE_FIELD: item["final_note"]}
                   for item in self.records[:14]}
         values.update({item["id"]: None for item in self.records[14:]})
         save(self.operation.output / "final-expected.json", values)
         self.mutations(node, values)
+        # A second record gets the second file; the first record keeps its file.
+        self.file(2, self.operation.candidate, self.records[1]["id"])
 
     def reads(self, node, label, expected=None, files=None, accepted=None):
         expected = self.expected if expected is None else expected
         files = self.files if files is None else files
         node.health()
         owner = node.owner
+        markers = {item["key"]: item for item in files}
         queries = [{"schema_name": SCHEMA, "fields": list(FIELD_MAP.values()),
             "filter": {"HashKey": key}, "limit": 2, "offset": 0} for key in expected]
         reply = node.call("/api/queries/batch", {"queries": queries})
@@ -92,12 +95,13 @@ class Data:
                 require(result["returned_count"] == 1 and len(result["results"]) == 1
                         and result["results"][0]["key"] == {"hash": key, "range": None}
                         and result["results"][0]["fields"] == fields, "predeclared_exact_values")
-        def verify(item):
-            pointer = read(item["pointer"]["path"])
-            require(reference(item["pointer"]["path"]) == item["pointer"], "original_file_pointer")
-            node.verify_file(pointer, {"file_bytes": item["bytes"], "file_sha256": item["sha256"]})
+                marker, file = (result["results"][0].get("metadata") or {}).get("file"), markers.get(key)
+                require(marker is None if file is None else isinstance(marker, dict)
+                        and (marker.get("size_bytes"), marker.get("sha256")) == (file["bytes"], file["sha256"]),
+                        "record_file_marker")
+        require(all(expected.get(key) is not None for key in markers), "record_file_owner_exists")
         with ThreadPoolExecutor(max_workers=2) as pool:
-            list(pool.map(verify, files))
+            list(pool.map(lambda item: fetch(node, item), files))
         result = {"source": owner["source"], "programs": owner["programs"], "home": owner["home"],
             "session": {key: owner[key] for key in ("pid", "start_ts")}, "stage": label,
             "operation_sha256": self.operation.operation_sha256,
@@ -109,6 +113,24 @@ class Data:
         original = save(self.operation.output / (label + "-reads.json"), result)
         self.operation.reads[label] = original
         return original
+
+
+def fetch(node, item):
+    """Read the whole file of record `item["key"]` and check its size and hash."""
+    response, connection = node.call("/api/db/fetch-blob", {"schema": SCHEMA, "key": {"hash": item["key"]}},
+                                     binary=True)
+    try:
+        total, digest = 0, hashlib.sha256()
+        while True:
+            block = response.read(min(1048576, item["bytes"] + 1 - total))
+            if not block:
+                break
+            total += len(block)
+            require(total <= item["bytes"], "record_file_overflow")
+            digest.update(block)
+    finally:
+        connection.close()
+    require(total == item["bytes"] and digest.hexdigest() == item["sha256"], "record_file_hash")
 
 
 def memory(operation, node):

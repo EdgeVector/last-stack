@@ -77,9 +77,7 @@ def originals(request, report, before):
             and stable_identity(accepted) == stable_identity(request.accepted), "exact_restore_selection")
     require(report["commit_sha256"] == accepted["commit_sha256"]
             and report["destination"] == str(request.destination)
-            and report["file_dependencies_verified"] is True
-            and report["native_files"] > 0 and report["native_bytes"] > 0
-            and report["verified_external_files"] == 0, "complete_native_restore_report")
+            and report["native_files"] > 0 and report["native_bytes"] > 0, "complete_native_restore_report")
     receipt = read(request.destination / "byte-cloud-restore-receipt.json", 65536)
     require(receipt == {"version": 2, "session_id": identifier, "report": report}
             and read(session / "result.json") == report, "original_completed_restore_receipts")

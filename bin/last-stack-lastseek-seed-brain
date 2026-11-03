@@ -27,8 +27,6 @@ import urllib.parse
 import uuid
 
 CLIENT = "lastseek-seed-brain"
-FILE_KEY = "$lastdb_file"
-FILE_FIELDS = ("name", "media_type")
 EXCLUDED = ("secret", "no_index", "no-index")
 
 
@@ -84,21 +82,6 @@ def searchable_fields(schema):
         return None
     return sorted(f for f, c in classes.items()
                   if not any(x.lower() in EXCLUDED for x in c) and any(x.lower() == "word" for x in c))
-
-
-def strip_file_access(value):
-    """The rule of LastDB inbox_value: a file pointer keeps only its name and media type."""
-    if isinstance(value, dict):
-        out = {}
-        for key, child in value.items():
-            if key == FILE_KEY and isinstance(child, dict):
-                out[key] = {f: child[f] for f in FILE_FIELDS if f in child}
-            else:
-                out[key] = strip_file_access(child)
-        return out
-    if isinstance(value, list):
-        return [strip_file_access(v) for v in value]
-    return value
 
 
 def list_keys(node, name, page_size, has_range):
@@ -199,7 +182,7 @@ def main():
         missing = len(set(keys) - set(rows))
         changes = [{"mutation_id": f"seed-{uuid.uuid4().hex}", "kind": "upsert",
                     "key_value": {"hash": h, "range": r},
-                    "fields_and_values": {f: strip_file_access(v) for f, v in values.items()}}
+                    "fields_and_values": values}
                    for (h, r), values in sorted(rows.items(), key=lambda kv: (kv[0][0], kv[0][1] or ""))
                    if values]
         before = inbox.files

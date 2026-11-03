@@ -108,11 +108,15 @@ Read routes (the helper permits only these on the source):
 Write routes (target only, with `--apply`):
 
 - `POST /api/mutations/batch` with `create`, `update`, or `delete`, `durability: durable`, `convergence: sync`.
-- `POST /api/db/put-blob-local {bytes_b64, name, media_type}`. It returns a new pointer for the target.
+- `POST /api/db/put-blob {schema, key, bytes_b64, name?, media_type?}` (API 23). It stores one record's file with the record and returns the record's file marker.
 - `POST /api/db/flush {}` at the end.
 
-File bytes: the helper fetches each file from the source and checks its sha256. It stores the bytes on the target with the same name and media type, checks the returned `file_hash`, and writes the new pointer.
-The target encrypts the file with its own keys (`sharing/file_blob_seal.rs:99-113`). The `blob_ref` and the `dek` change. The bytes stay the same.
+Target read routes besides the queries: `POST /api/db/fetch-blob {schema, key}` (verify only).
+
+File bytes (design `design-lastdb-no-shared-file-blobs-20261102`, decision B5): a record on the target has at most one file, kept with the record; no field value names a file. A source field in `RECORD_FILE_FIELDS` (Brain's `native_file_reference`) holds a `$lastdb_file` pointer. The helper does not copy that field. It writes the record's other fields, fetches the bytes from the source (the old program decrypts and inflates them), checks their sha256, and stores them as the target record's file with `put-blob`, with the same name and media type. It checks the returned marker hash.
+A pointer in any other field, a non-pointer value in a file field, or two file fields with values in one record is an issue, and the helper does not write that record. A target older than API 23 is a refusal for a route with a file field.
+Digests compare the file by its sha256, name, and media type. Verify fetches each target file by schema and key and checks its sha256.
+The target encrypts the file under its own account key at a path made from the record key. The bytes stay the same. A file shared by several source records becomes one copy per target record.
 
 The copy keeps:
 

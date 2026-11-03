@@ -127,7 +127,7 @@ def check(candidate, evidence, memory_limit_mb):
             and after.get("same_cut_automatic_resume") is True, "The interrupted native range or transfer identities changed")
     restore = reference(proof["restore"])
     require(restore["commit_sha256"] == summary["accepted_backup"]["commit_sha256"]
-            and restore.get("destination") == str(homes / "r") and restore.get("file_dependencies_verified") is True
+            and restore.get("destination") == str(homes / "r")
             and uint(restore.get("verified_records")) >= 0, "The selected immutable log chain did not restore completely")
     provider = reference(proof["provider_accounting"])
     require(provider.get("source") == evidence["source_git_oid"] and provider.get("environment") == "dev"

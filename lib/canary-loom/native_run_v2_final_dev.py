@@ -50,7 +50,6 @@ def check(candidate, evidence, limit):
     restore = reference(final["restore"])
     require(restore.get("commit_sha256") == accepted["commit_sha256"]
             and restore.get("destination") == str(homes / "t")
-            and restore.get("file_dependencies_verified") is True
             and uint(restore.get("verified_records")) >= 0,
             "The accepted stopped DEV snapshot did not restore into its absent home")
     native = reference(final["native_files"])

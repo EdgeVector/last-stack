@@ -173,7 +173,6 @@ def development(candidate, evidence):
             restored["native_bytes"] == status["native_bytes"] > 0
             and restored["native_files"] == state["restored_native_files_exact"] == state["frozen_native_files"]
             and restored["native_bytes"] == state["restored_native_bytes_exact"] == state["frozen_native_bytes"]
-            and restored["file_dependencies_verified"] is True
             and type(restored["verified_records"]) is int and restored["verified_records"] >= 0
             and status["objects_verified"] == state["frozen_transport_objects"] > 0
             and status["metadata_pack_objects"] > 0 and status["multi_file_pack_objects"] > 0,
