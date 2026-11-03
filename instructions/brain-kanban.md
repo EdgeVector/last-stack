@@ -17,7 +17,7 @@ git homes. Full map: `instructions/run-dev-state-board.md`.
 
 | | |
 |--|--|
-| **RUN** | host-track current + `~/.local/bin` + daemons — use, don't commit |
+| **RUN** | registry current + `~/.local/bin` + daemons — use, don't commit |
 | **DEV** | portal `./bin/wt start` → `~/.fkanban/worktrees/…` — **only** edit/commit path |
 | **STATE** | `~/.lastdb`, `~/.local/state/last-stack/*`, `~/.routines/*` — data/logs/proofs |
 | **BOARD** | brain + fkanban over the socket |
@@ -26,13 +26,13 @@ git homes. Full map: `instructions/run-dev-state-board.md`.
 `~/.local/state/last-stack`). Never develop there. Sandbox allowlists must
 include **realpaths** under `~/.local/state/last-stack`, not only `~/.last-stack`.
 
-### Host-track CLI hygiene
+### Registry CLI hygiene
 
 For long-running agent work, prefer installed global CLIs over binaries from a
 random WIP checkout. Source `last-stack-shell-prelude` or otherwise ensure
-`~/.local/bin` is ahead of ad-hoc repo paths; host-track-managed installs live
+`~/.local/bin` is ahead of ad-hoc repo paths; registry-managed installs live
 there. When `brain`, `kanban`, `situations`, or another shared CLI
-misbehaves, first run `host-track status` when available and `command -v <cmd>`.
+misbehaves, first run `lastdb app status --check` when available and `command -v <cmd>`.
 Use `<cmd> which` only when that CLI documents the subcommand.
 Routines and Loom do not implement `which`. Check the installed path before
 you change PATH or use a checkout-local binary.

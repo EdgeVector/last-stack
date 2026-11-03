@@ -155,12 +155,12 @@ if [ "${reopened_same_signal:-0}" = "1" ]; then
 fi
 deploy_pipeline_ok=0
 
-# host_track_gate <repo-name>: is the PR's merge commit installed?
+# registry_gate <repo-name>: is the PR's merge commit installed?
 # Prints `installed host_head=<sha> app=<app>` or a pending reason.
 # Reads: the PR merge commit (`gh api`; Forgejo API for a Forgejo PR URL), `host-track status --json` for
 # the app whose gate_main is this repo, and the repo's bare mirror for the
 # ancestry check. Any read that fails is a pending reason, never a pass.
-host_track_gate() {
+registry_gate() {
   local repo="$1" pr card_pr number merge_sha status_json app host_head mirror
   card_pr="$(printf '%s' "$card_json" | jq -r '(.card // .).pr_url // ""' 2>/dev/null || true)"
   pr="${pr_url:-$card_pr}"
@@ -183,16 +183,16 @@ host_track_gate() {
     echo "merge-commit-unknown pr=$number"
     return 0
   fi
-  status_json="$(with_timeout host-track status --json 2>/dev/null || true)"
+  status_json="$(with_timeout lastdb app status --check --json 2>/dev/null || true)"
   read -r app host_head <<EOF_HT
 $(printf '%s' "$status_json" | jq -r --arg repo "$repo" '
     (if type == "array" then . elif type == "object" and has("apps") then .apps else [.] end)
-    | map(select((.gate_main // "") | contains("/EdgeVector/" + $repo + ".git")))
+    | map(select((.receipt.listing.source // "") | contains("/EdgeVector/" + $repo + ".git")))
     | first // empty
-    | "\(.app // "") \(.host_head // "")"' 2>/dev/null || true)
+    | "\(.app // "") \(.installed_release // "")"' 2>/dev/null || true)
 EOF_HT
   if [ -z "${app:-}" ] || [ -z "${host_head:-}" ]; then
-    echo "no-host-track-app-for-repo"
+    echo "no-registry-app-for-repo"
     return 0
   fi
   mirror="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/$repo.git"
@@ -247,12 +247,12 @@ elif [ -n "$deploy_reqs" ]; then
   fi
   while IFS= read -r deploy_req; do
     [ -n "$deploy_req" ] || continue
-    if [ "$deploy_req" = "host-track" ]; then
+    if { [ "$deploy_req" = "app-registry" ] || [ "$deploy_req" = "host-track" ]; }; then
       # The merged commit must be inside what host-track installed for the
       # app built from this repo. Before 2026-09-22 this gate had no reader
       # and every such card failed unsupported-deploy-gate=host-track
       # (papercut-card-closeout-helper-blocks-merged-deferred-cards-20260922).
-      host_track_verdict="$(host_track_gate "$deploy_repo")"
+      host_track_verdict="$(registry_gate "$deploy_repo")"
       case "$host_track_verdict" in
         installed*)
           echo "last-stack-card-closeout: deploy gate host-track $host_track_verdict slug=$slug repo=$deploy_repo" >&2
