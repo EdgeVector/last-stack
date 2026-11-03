@@ -131,7 +131,7 @@ def snapshot_entries(session, files):
 
 def before_boot(request, session, accepted, originals_ref):
     home = request.destination
-    forbidden = ("current-session.json", "boot-error.json", "data/folddb.sock", "data/folddb-full.sock",
+    forbidden = ("current-session.json", "boot-error.json", "data/folddb.sock",
                  "sessions.jsonl", ".shutdown_flush_ready")
     require(all(not os.path.lexists(home / name) for name in forbidden), "restore_precedes_first_boot")
     files = native_files(home)

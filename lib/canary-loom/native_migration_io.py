@@ -66,7 +66,7 @@ class PrivateTarget:
         self.stream = os.fdopen(os.open(self.output / "target.log",
             os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "ab")
         self.process = subprocess.Popen([candidate["lastdbd"]["path"], "--data-dir", str(self.home),
-            "--socket-path", str(self.socket), "--full-socket-path", str(self.socket_root / "f.sock")],
+            "--socket-path", str(self.socket)],
             stdin=subprocess.DEVNULL, stdout=self.stream, stderr=self.stream, env=environment)
         save(self.output / "process.json", {"pid": self.process.pid, "home": str(self.home),
              "binary_sha256": candidate["lastdbd"]["sha256"]})

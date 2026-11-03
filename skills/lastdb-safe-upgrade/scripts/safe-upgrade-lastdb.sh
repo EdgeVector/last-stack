@@ -1739,7 +1739,6 @@ verify_old_primary_stopped() {
   ! kill -0 "$OLD_PRIMARY_PID" 2>/dev/null \
     && ! lastdb_launchd_job_loaded launchctl "$service" \
     && ! live_unix_socket_has_listener "$PRIMARY_SOCK" \
-    && ! live_unix_socket_has_listener "$PRIMARY_HOME/data/folddb-full.sock" \
     || die "old primary still runs or serves after the strict stop"
   [ -f "$receipt" ] && [ ! -L "$receipt" ] \
     || die "old primary did not write a safe shutdown flush receipt"
@@ -2217,7 +2216,7 @@ fi
 # "data dir ... is too deep to host a Unix control socket"), so the
 # TMPDIR-derived WORK base gets the same off-HOME fallback as ROLLBACK_ROOT.
 # Darwin TMPDIR under /var/folders/... is also too long (observed 2026-08-26:
-# grok-goal scratch 56-byte prefix → folddb-full.sock 133 bytes). Mini refuses
+# grok-goal scratch 56-byte prefix → a 133-byte socket path). Mini refuses
 # a data dir over 82 bytes. Fall back to /tmp when the prefix cannot fit
 # /lastdb-safe-upgrade.XXXXXX/probes/mp-deployment-<pid>/data.
 _work_tmp="${TMPDIR:-/tmp}"

@@ -334,9 +334,8 @@ def _strict_stop(approval, state, path, *, baseline_history=False):
     proof = stopped(home, identity)
     require(run(["/bin/launchctl", "print", target], check=False).returncode != 0,
             "The old LaunchAgent remains loaded")
-    for sock in (home / "data/folddb.sock", home / "data/folddb-full.sock"):
-        result = run(["/usr/sbin/lsof", "-nP", "-t", str(sock)], check=False)
-        require(not result.stdout.strip(), "The stopped socket still has an owner")
+    result = run(["/usr/sbin/lsof", "-nP", "-t", str(home / "data/folddb.sock")], check=False)
+    require(not result.stdout.strip(), "The stopped socket still has an owner")
     record(path, state, "stopped", stop_proof=proof)
 
 

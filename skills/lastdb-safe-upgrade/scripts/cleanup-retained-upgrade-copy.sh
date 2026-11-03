@@ -147,8 +147,7 @@ check_primary_and_copy() {
         || die copy-logical-alias-unverified
       ;;
   esac
-  if live_unix_socket_has_listener "$copy_real/data/folddb.sock" \
-      || live_unix_socket_has_listener "$copy_real/data/folddb-full.sock"; then
+  if live_unix_socket_has_listener "$copy_real/data/folddb.sock"; then
     die copy-has-live-listener
   fi
   # comm identifies the executable, so a helper's launchd label cannot make

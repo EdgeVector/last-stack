@@ -82,7 +82,7 @@ def prepare(args):
     root, homes = outside_primary(args.output), external(outside_primary(args.homes))
     require(not os.path.lexists(root) and not os.path.lexists(homes), "fresh_qualification_paths")
     for name in ("s", "r", "b", "t"):
-        require(len(os.fsencode(homes / name / "data/folddb-full.sock.tmp")) <= 103, "socket_temporary_path")
+        require(len(os.fsencode(homes / name / "data/folddb.sock.tmp")) <= 103, "socket_temporary_path")
     require(args.memory_limit_mb > 0 and bool(args.baseline_version), "explicit_baseline_and_memory_limit")
     require(re.fullmatch(r"[0-9a-f]{32}", args.account) and args.account != HELD_ACCOUNT,
             "separate_ordinary_dev_account")

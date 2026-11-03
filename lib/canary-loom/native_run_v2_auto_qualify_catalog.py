@@ -85,7 +85,7 @@ def load(node, operation):
     require(expected == binding(expected["catalog_result"]["path"]), "frozen_catalog_plan_binding")
     folder = operation.output / "existing-catalog-load"
     folder.mkdir(mode=0o700)
-    loaded, load_ref = _request(node, node.home / "data/folddb-full.sock", "POST", "/api/schemas/load",
+    loaded, load_ref = _request(node, node.socket, "POST", "/api/schemas/load",
         folder / "load-response", {"schemas": [SCHEMA]})
     require(loaded.get("available_schemas_loaded") == loaded.get("schemas_loaded_to_db") == 1
             and loaded.get("failed_schemas") == [], "one_exact_existing_schema_loaded")
