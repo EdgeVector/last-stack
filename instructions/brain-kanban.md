@@ -39,7 +39,7 @@ you change PATH or use a checkout-local binary.
 
 ### Repository venue: GitHub (Tom, 2026-09-29; supersedes the Forgejo and LastGit defaults)
 
-Tom retired LastGit and moved every EdgeVector repo except `lastgit` to GitHub
+Tom retired LastGit and moved every EdgeVector repo to GitHub
 (brain `decision-2026-09-29-retire-lastgit-all-repos-to-github`, playbook
 `sop-migrate-repo-to-github`). Create new repositories on GitHub under
 `EdgeVector/<slug>`. Commit `.last-stack/pr-venue` with `github` on its first
@@ -49,10 +49,11 @@ merge with `gh pr merge <n> -R EdgeVector/<repo> --auto --squash`. If GraphQL
 returns a 502, use
 `gh api -X PUT repos/EdgeVector/<repo>/pulls/<n>/merge -f merge_method=squash`.
 
-Only `EdgeVector/lastgit` stays on the local Forgejo forge. For that repo,
-use `last-stack-forge-api` (`sop-forge-pr-workflow`). Do not run
-`lastgit cr create` and do not push to any `lastdb:///<slug>` remote: LastGit
-is retired. `last-stack-pr-venue` is the only authority: run
+`EdgeVector/lastgit`, the last repo on the local Forgejo forge, moved to
+GitHub on 2026-10-08 (EdgeVector/lastgit#5). No repo is on Forgejo now; its
+copies are archived. Do not run `lastgit cr create` and do not push to any
+`lastdb:///<slug>` remote: LastGit is retired as a forge. `last-stack-pr-venue`
+is the only authority: run
 `last-stack-pr-venue EdgeVector/<repo> <repo-root>` before any PR, push, or
 merge.
 
