@@ -179,8 +179,8 @@ One record became the unit with the record model (decision D2, Tom, 2026-10-31).
 | local | On this machine. |
 | worktree | The code checkout for one card. |
 | GitHub | The host for the repos. |
-| LastGit | The one repo that stays on Forgejo. |
-| Forgejo | The host for LastGit. |
+| LastGit | The git tool that stores repos in LastDB. Its repo is on GitHub. |
+| Forgejo | The retired local forge. It holds archived copies only. |
 | fold | The LastDB code repo. Do not use fold as a verb. Say: the write updates the record and its alternate entries. |
 
 ## Unapproved words

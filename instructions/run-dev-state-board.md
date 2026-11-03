@@ -53,7 +53,7 @@ gap — not a dead LastDB node. Check Situations notices; do not restart primary
 cd ~/code/edgevector/<portal>   # e.g. routines, last-stack portal if any
 ./bin/wt start kanban/<card-slug>
 # → print path under ~/.fkanban/worktrees/…
-# ONLY edit that path; ship via gh pr (venue github; Forgejo only for the lastgit repo)
+# ONLY edit that path; ship via gh pr (venue github for every repo)
 ```
 
 CLI hygiene: prefer registry / `~/.local/bin` tools (`brain`, `kanban`,
