@@ -23,7 +23,12 @@ Safety:
   * The compact locator schema has no listable key, so the target (never the source)
     walks it with unfiltered /api/query pages and the X-LastDB-Allow-Full-Scan opt-in.
   * Plan, apply and verify print no record value, file pointer, or secret, and
-    write none to a file. Digests use HMAC-SHA256 with a random key per run;
+    write none to a file.
+  * Record files (design-lastdb-no-shared-file-blobs, API 23): a record has at
+    most one file, kept with the record. A source field in RECORD_FILE_FIELDS
+    holds a $lastdb_file pointer; the copy fetches those bytes from the source
+    and stores them as the target record's file with put-blob. The field itself
+    is not copied. A pointer in any other field is a refusal. Digests use HMAC-SHA256 with a random key per run;
     the key is never shown.
   * --export writes non-secret record values only, into a new or empty
     directory (0700, files 0600). It skips every LastSecrets schema and
@@ -63,7 +68,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 CLIENT_NAME = "last-stack-home-copy"
 SOURCE_POST_ROUTES = frozenset({"/api/query", "/api/queries/batch", "/api/db/fetch-file-blob"})
-TARGET_WRITE_ROUTES = frozenset({"/api/mutations/batch", "/api/db/put-blob-local", "/api/db/flush"})
+TARGET_WRITE_ROUTES = frozenset({"/api/mutations/batch", "/api/db/put-blob", "/api/db/flush"})
+TARGET_READ_ROUTES = frozenset({"/api/query", "/api/queries/batch", "/api/db/fetch-blob"})
 
 # brain#484 (head 2b8f126ab): record kinds select members through the type directory.
 BRAIN_RECORD_TYPES = ("design", "task", "concept", "preference", "reference",
@@ -108,6 +114,14 @@ RETRY_LIMIT = 30
 WALK_HEADERS = {"X-LastDB-Allow-Full-Scan": "1"}
 # lastdb#803 (API 13) owns the values of every schema and refuses a shared-value home at startup.
 OWNED_VALUES_API = 13
+# API 23 keeps one file with its record (put-blob, fetch-blob); no field value names a file.
+RECORD_FILE_API = 23
+# Source fields whose pointer becomes the target record's file. Brain declared
+# native_file_reference on BrainBodyFile and BrainAttachmentFile; its new release drops the field.
+RECORD_FILE_FIELDS = frozenset({"native_file_reference"})
+# The mapped-value slot of the record file: a pointer on the source side, the target
+# marker in pointer form on the target side, so both digest alike.
+RECORD_FILE = "$record_file"
 
 
 class Refusal(Exception):
@@ -157,7 +171,7 @@ class Node:
             if method != "POST" or route not in SOURCE_POST_ROUTES:
                 raise Refusal(f"the source node is read-only; {method} {route} is not a read route")
             return
-        if method == "POST" and route in ("/api/query", "/api/queries/batch", "/api/db/fetch-file-blob"):
+        if method == "POST" and route in TARGET_READ_ROUTES:
             return
         if not self.writable or route not in TARGET_WRITE_ROUTES:
             raise Refusal(f"the target node refuses {method} {route} in this mode")
@@ -350,7 +364,8 @@ def is_pointer(value):
 def pointer_identity(value):
     # blob_ref, dek, and the cipher fields are per node. The plaintext hash names the file.
     marker = value["$lastdb_file"]
-    return {"$lastdb_file": {key: marker[key] for key in ("file_hash", "name", "media_type") if key in marker}}
+    return {"$lastdb_file": {key: marker[key] for key in ("file_hash", "name", "media_type")
+                             if marker.get(key) is not None}}
 
 
 def comparable(value):
@@ -362,6 +377,12 @@ def comparable(value):
     if isinstance(value, dict):
         return {k: comparable(v) for k, v in value.items()}
     return value
+
+
+def marker_pointer(marker):
+    """A target file marker in the source pointer form, for digests."""
+    return {"$lastdb_file": {"file_hash": marker.get("sha256"),
+                             **{key: marker[key] for key in ("name", "media_type") if marker.get(key) is not None}}}
 
 
 def collect_pointers(value, out):
@@ -475,6 +496,9 @@ def field_map_for(route, source_fields, target_fields):
         local = old_local.get(stored, stored)
         target = new_alias.get(local, local)
         if target_fields is not None and target not in target_fields:
+            if stored in RECORD_FILE_FIELDS:
+                mapping[stored] = RECORD_FILE
+                continue
             missing.append(stored)
             continue
         mapping[stored] = target
@@ -728,12 +752,13 @@ def walk_keys(node, name, fields, range_schema, page_size):
     return list(dict.fromkeys(keys)), opaque
 
 
-def read_rows(node, name, fields, keys, range_schema, batch, allow_missing=False, key_fields=()):
+def read_rows(node, name, fields, keys, range_schema, batch, allow_missing=False, key_fields=(), files=False):
     """Read exact keys, including stored nulls. Refuse incomplete or foreign rows.
 
     key_fields: primary key field names of the schema. An API 7 node returns the
     hash key field with every row even when the request names other fields. Such a
-    field is dropped only when it is a key field and its value equals the row key."""
+    field is dropped only when it is a key field and its value equals the row key.
+    files: add the record file marker (API 23 row metadata) under RECORD_FILE."""
     rows = {}
     # One request holds the native 10,000-key budget. Reserve half for control
     # and metadata reads; do not retry an oversized request with the same size.
@@ -771,6 +796,9 @@ def read_rows(node, name, fields, keys, range_schema, batch, allow_missing=False
                     raise Refusal(f"{node.role}: /api/query returned a foreign, repeated, or empty row for {short(name)}")
                 found.add(ident)
                 rows[ident] = dict(values)
+                marker = (row.get("metadata") or {}).get("file") if files else None
+                if isinstance(marker, dict):
+                    rows[ident][RECORD_FILE] = marker_pointer(marker)
             pages += 1
             if not data.get("has_more"):
                 break
@@ -845,8 +873,6 @@ class RunContext:
         self.src_cat, self.tgt_cat = src_cat, tgt_cat
         self.membership = membership
         self.hmac_key = secrets.token_bytes(32)
-        self.blob_cache = {}
-        self.blob_lock = threading.Lock()
         self.source_keys = {}
         self.source_key_locks = {}
         self.source_keys_lock = threading.Lock()
@@ -951,7 +977,8 @@ def rename_tags_in(renames, value):
 
 def map_values(ctx, route, values, mapping, types, census):
     """Rename fields, rename app-id tags, repair DateTime text when allowed, and check types.
-    Pointers stay as source pointers."""
+    A record file field moves to RECORD_FILE as its source pointer; a pointer in any other
+    field is an issue, because the target keeps no file pointer in a value."""
     mapped, issues = {}, []
     renames = ctx.args.tag_renames if route["app"] == "brain" else []
     local_fields = {stored: local for local, stored in route["old_aliases"].items()}
@@ -965,6 +992,20 @@ def map_values(ctx, route, values, mapping, types, census):
         if target is None:
             issues.append(f"unmapped:{stored}")
             continue
+        if target == RECORD_FILE:
+            if value is None:
+                continue
+            if not is_pointer(value):
+                issues.append(f"{stored}:record-file-not-a-pointer")
+            elif RECORD_FILE in mapped:
+                issues.append("more-than-one-record-file")
+            else:
+                mapped[RECORD_FILE] = value
+            continue
+        nested = []
+        collect_pointers(value, nested)
+        if nested:
+            issues.append(f"{target}:file-pointer-in-value")
         if renames and tag_field and local_fields.get(stored, stored) == tag_field:
             value, count = rename_tags_in(renames, value)
             if count:
@@ -984,13 +1025,12 @@ def map_values(ctx, route, values, mapping, types, census):
         err = type_error(ftype, value)
         if err:
             issues.append(f"{target}:{err}")
-        if not is_pointer(value):
-            size = len(value.encode()) if isinstance(value, str) else \
-                len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode())
-            if size > ctx.args.value_max_bytes:
-                issues.append(f"{target}:value-over-cap")
+        size = len(value.encode()) if isinstance(value, str) else \
+            len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode())
+        if size > ctx.args.value_max_bytes:
+            issues.append(f"{target}:value-over-cap")
         mapped[target] = value
-    if ctx.args.record_max_bytes and record_bytes(mapped) > ctx.args.record_max_bytes:
+    if ctx.args.record_max_bytes and record_bytes(fields_of(mapped)) > ctx.args.record_max_bytes:
         issues.append("record-over-cap")
     return mapped, issues
 
@@ -1036,39 +1076,29 @@ def alternate_key_issues(alternate_keys, mapped):
     return issues
 
 
-def transfer_pointers(ctx, value):
-    """Fetch each file from the source and store it on the target. Bytes stay in memory."""
-    if is_pointer(value):
-        marker = value["$lastdb_file"]
-        expected = marker.get("file_hash")
-        with ctx.blob_lock:
-            cached = ctx.blob_cache.get((expected, marker.get("name"), marker.get("media_type")))
-        if cached:
-            return cached
-        fetched = ctx.src.post("/api/db/fetch-file-blob", {"pointer": value})
-        blob = (fetched or {}).get("file_blob") or {}
-        data = base64.b64decode(blob.get("bytes_b64") or "")
-        actual = hashlib.sha256(data).hexdigest()
-        if expected and actual != expected:
-            raise Refusal("a source file does not match its pointer hash")
-        request = {"bytes_b64": base64.b64encode(data).decode()}
-        if isinstance(marker.get("name"), str):
-            request["name"] = marker["name"]
-        if isinstance(marker.get("media_type"), str):
-            request["media_type"] = marker["media_type"]
-        stored = ctx.tgt.post("/api/db/put-blob-local", request)
-        out = (stored or {}).get("file_blob") or {}
-        pointer = out.get("pointer")
-        if not is_pointer(pointer) or out.get("file_hash") != actual:
-            raise Refusal("the target returned an invalid file pointer")
-        with ctx.blob_lock:
-            ctx.blob_cache[(expected, marker.get("name"), marker.get("media_type"))] = pointer
-        return pointer
-    if isinstance(value, list):
-        return [transfer_pointers(ctx, v) for v in value]
-    if isinstance(value, dict):
-        return {k: transfer_pointers(ctx, v) for k, v in value.items()}
-    return value
+def fields_of(mapped):
+    """The field values of a mapped record, without its file."""
+    return {k: v for k, v in mapped.items() if k != RECORD_FILE}
+
+
+def put_record_file(ctx, target_name, key, pointer):
+    """Fetch one file from the source and store it as the target record's file.
+    The source program inflates and decrypts it; the bytes stay in memory."""
+    marker = pointer["$lastdb_file"]
+    fetched = ctx.src.post("/api/db/fetch-file-blob", {"pointer": pointer})
+    data = base64.b64decode(((fetched or {}).get("file_blob") or {}).get("bytes_b64") or "")
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != marker.get("file_hash"):
+        raise Refusal("a source file does not match its pointer hash")
+    hash_value, range_value = key
+    request = {"schema": target_name, "key": {"hash": hash_value, "range": range_value},
+               "bytes_b64": base64.b64encode(data).decode()}
+    for name in ("name", "media_type"):
+        if isinstance(marker.get(name), str):
+            request[name] = marker[name]
+    stored = ctx.tgt.post("/api/db/put-blob", request)
+    if ((stored or {}).get("file") or {}).get("sha256") != actual:
+        raise Refusal("the target returned a different record file marker")
 
 
 def write_batches(ctx, route, mutations):
@@ -1164,10 +1194,12 @@ def run_route(ctx, route, mode, pre):
             return result
         if tgt_entry is not None and not ctx.tgt_cat.owns_values(tgt_entry) and not args.allow_shared_value_target:
             result["refusals"].append("the target node is older than API 13 and does not own schema values")
+        if RECORD_FILE in mapping.values() and (ctx.tgt_cat.api_version or 0) < RECORD_FILE_API:
+            result["refusals"].append("the target node is older than API 23 and keeps no record file")
         census, issue_counts, absent = {}, {}, {}
         target_name = tgt_entry["name"] if tgt_entry else None
         tgt_range = is_range_schema(tgt_entry) if tgt_entry else range_schema
-        written = skipped = empty = pointers = 0
+        written = skipped = empty = files = 0
         source_digests, target_digests = {}, {}
         target_keys, target_opaque = set(), False
         if tgt_entry is not None and mode in ("apply", "verify"):
@@ -1185,7 +1217,7 @@ def run_route(ctx, route, mode, pre):
                 present = list(part) if target_opaque else [k for k in part if k in target_keys]
                 if present:
                     have = read_rows(ctx.tgt, target_name, sorted(target_fields or []), present, tgt_range,
-                                     args.read_batch, allow_missing=target_opaque)
+                                     args.read_batch, allow_missing=target_opaque, files=True)
             to_write, recreate = [], []
             for key in part:
                 values = rows.get(key)
@@ -1195,9 +1227,7 @@ def run_route(ctx, route, mode, pre):
                 issues += alternate_key_issues(alternate, mapped)
                 for name in set(mapping.values()) - set(mapped):
                     absent[name] = absent.get(name, 0) + 1
-                found = []
-                collect_pointers(mapped, found)
-                pointers += len(found)
+                files += RECORD_FILE in mapped
                 for issue in issues:
                     issue_counts[issue] = issue_counts.get(issue, 0) + 1
                 source_digests[key] = ctx.digest(key, mapped)
@@ -1215,12 +1245,16 @@ def run_route(ctx, route, mode, pre):
             if mode == "apply" and to_write:
                 if recreate:
                     write_batches(ctx, route, [mutation(target_name, k, "delete", {}) for k in recreate])
-                ops = []
-                for key, mapped, create in to_write:
-                    ops.append(mutation(target_name, key, "create" if create else "update",
-                                        transfer_pointers(ctx, mapped)))
+                ops = [mutation(target_name, key, "create" if create else "update", fields_of(mapped))
+                       for key, mapped, create in to_write]
                 written += write_batches(ctx, route, ops)
-        result.update({"empty_rows": empty, "file_pointers": pointers, "issues": issue_counts,
+                # The record exists now; its file goes with it in one write per record. A
+                # created record (new or recreated) has no file yet.
+                for key, mapped, create in to_write:
+                    if RECORD_FILE in mapped and (
+                            create or (have.get(key) or {}).get(RECORD_FILE) != comparable(mapped[RECORD_FILE])):
+                        put_record_file(ctx, target_name, key, mapped[RECORD_FILE])
+        result.update({"empty_rows": empty, "record_files": files, "issues": issue_counts,
                        "tag_renames": census.pop("tag-rename", 0),
                        "datetime_census": census, "absent_fields": absent})
         if mode == "apply":
@@ -1262,7 +1296,7 @@ def verify_route(ctx, route, selected, source_digests, target_fields, tgt_range)
         # Read the expected keys by key; a surplus count is a row this run cannot name.
         rows = read_rows(ctx.tgt, target_name, sorted(target_fields or []),
                          sorted(expected, key=lambda k: (k[0], k[1] or "")), tgt_range, args.read_batch,
-                         allow_missing=True)
+                         allow_missing=True, files=True)
         found = set(rows)
         surplus = len(target_keys) - len(found)
         if surplus < 0:
@@ -1282,22 +1316,22 @@ def verify_route(ctx, route, selected, source_digests, target_fields, tgt_range)
                 target_keys, _ = target_key_list(ctx, route, target_name, tgt_range, target_fields)
         found = set(target_keys)
         rows = read_rows(ctx.tgt, target_name, sorted(target_fields or []),
-                         [k for k in target_keys if k in expected], tgt_range, args.read_batch)
+                         [k for k in target_keys if k in expected], tgt_range, args.read_batch, files=True)
         extra = sorted(found - expected)
         extra_count = len(extra)
     target_digests = {k: ctx.digest(k, v) for k, v in rows.items()}
     differ = sorted(k for k in expected & set(target_digests) if target_digests[k] != source_digests[k])
     missing = sorted(expected - found)
     file_checks = file_bad = 0
-    for values in rows.values():
-        found_pointers = []
-        collect_pointers(values, found_pointers)
-        for pointer in found_pointers:
-            file_checks += 1
-            fetched = ctx.tgt.post("/api/db/fetch-file-blob", {"pointer": pointer})
-            data = base64.b64decode(((fetched or {}).get("file_blob") or {}).get("bytes_b64") or "")
-            if hashlib.sha256(data).hexdigest() != pointer["$lastdb_file"].get("file_hash"):
-                file_bad += 1
+    for (hash_value, range_value), values in rows.items():
+        if RECORD_FILE not in values:
+            continue
+        file_checks += 1
+        fetched = ctx.tgt.post("/api/db/fetch-blob", {"schema": target_name,
+                                                      "key": {"hash": hash_value, "range": range_value}})
+        data = base64.b64decode(((fetched or {}).get("file") or {}).get("bytes_b64") or "")
+        if hashlib.sha256(data).hexdigest() != values[RECORD_FILE]["$lastdb_file"].get("file_hash"):
+            file_bad += 1
     spot = spot_reads(ctx, route, sorted(expected & found), target_fields, tgt_range)
     digest_equal = (set(target_digests) == expected
                     and digest_of(ctx, source_digests) == digest_of(ctx, target_digests))
@@ -1331,7 +1365,8 @@ def spot_reads(ctx, route, keys, target_fields, tgt_range):
     for key in sample:
         src = read_rows(ctx.src, src_entry["name"], src_entry.get("fields") or [], [key],
                         is_range_schema(src_entry), 1).get(key) or {}
-        tgt = read_rows(ctx.tgt, route["target"]["name"], sorted(target_fields or []), [key], tgt_range, 1).get(key) or {}
+        tgt = read_rows(ctx.tgt, route["target"]["name"], sorted(target_fields or []), [key], tgt_range, 1,
+                        files=True).get(key) or {}
         mapped, _ = map_values(ctx, route, src, mapping, types, {})
         if json.dumps(comparable(mapped), sort_keys=True) == json.dumps(comparable(tgt), sort_keys=True):
             matched += 1
