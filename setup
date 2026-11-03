@@ -529,6 +529,9 @@ ensure_codex_mcp_servers() {
   local added=()
   mkdir -p "$(dirname "$cfg")"
   [ -f "$cfg" ] || : > "$cfg"
+  if [ "${LAST_STACK_APPS_OFF:-0}" = "1" ]; then
+    python3 "$SOURCE_ROOT/lib/codex_mcp_apps_off.py" "$cfg"
+  fi
   local name cmd
   for name in brain kanban; do
     if [ "$name" = "kanban" ] && [ "${LAST_STACK_APPS_OFF:-0}" = "1" ]; then
