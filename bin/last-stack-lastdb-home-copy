@@ -106,8 +106,8 @@ QUERY_KEYS_MAX = 1000
 RETRY_LIMIT = 30
 # An unfiltered /api/query needs the explicit admin/offline bulk opt-in. Only the target walk sends it.
 WALK_HEADERS = {"X-LastDB-Allow-Full-Scan": "1"}
-# lastdb#803 (API 13) owns the values of every schema and refuses a shared-value home at startup.
-OWNED_VALUES_API = 13
+# The oldest target daemon this helper supports: lastdb#803 (API 13), the program of the first run.
+TARGET_API_MIN = 13
 
 
 class Refusal(Exception):
@@ -417,22 +417,13 @@ class Catalog:
         self._lock = threading.Lock()
 
     def find(self, pin):
-        """Exact runtime name first. An alias with mappers shares the identity hash of its target,
-        so an identity match prefers the entry whose runtime name is that identity."""
+        """Exact runtime name first, then the identity hash."""
         if not pin:
             return None
         for entry in self.entries:
             if entry.get("name") == pin:
                 return entry
-        matches = [e for e in self.entries if e.get("identity_hash") == pin]
-        for entry in matches:
-            if not entry.get("field_mappers") and "/" not in entry.get("name", ""):
-                return entry
-        return (matches or [None])[0]
-
-    def owns_values(self, entry):
-        """The target owned check: every schema owns its values on API 13 or later (OWNED_VALUES_API)."""
-        return self.api_version is not None and self.api_version >= OWNED_VALUES_API
+        return next((e for e in self.entries if e.get("identity_hash") == pin), None)
 
     def detail(self, name):
         with self._lock:
@@ -488,11 +479,9 @@ def norm_owner(entry):
 
 
 def owned_by_descriptive(catalog, owner, descriptive):
-    """Schemas that one owner ("" = no owner) declares under one descriptive name. Alias names
-    (owner/Name) do not count."""
+    """Schemas that one owner ("" = no owner) declares under one descriptive name."""
     return [e for e in catalog.entries
-            if (norm_owner(e) or "") == owner and e.get("descriptive_name") == descriptive
-            and "/" not in e.get("name", "")]
+            if (norm_owner(e) or "") == owner and e.get("descriptive_name") == descriptive]
 
 
 def show_owner(owner):
@@ -599,13 +588,6 @@ def build_routes(args, src_cat, tgt_cat, cfg):
             tgt_pin = (new_ls or {}).get(hash_key) or (new_ls or {}).get(name_key)
             add_route("lastsecrets", key, src_pin, tgt_pin, descriptive, secret, None,
                       old_ls, new_ls, ls_vocab, (descriptive,))
-            alias_name = old_ls.get(name_key)
-            alias_entry = src_cat.find(alias_name)
-            if alias_entry and alias_entry["name"] not in used_sources:
-                used_sources.add(alias_entry["name"])
-                not_moved.append({"name": alias_entry["name"], "descriptive": alias_entry.get("descriptive_name"),
-                                  "owner": alias_entry.get("owner_app_id"),
-                                  "reason": f"alias of the {descriptive} schema; lastsecrets#14 retires it (no own values)"})
 
     for entry in src_cat.entries:
         if entry["name"] in used_sources:
@@ -1162,8 +1144,8 @@ def run_route(ctx, route, mode, pre):
                                           "values, not keys")
         if mode == "plan" and not args.census:
             return result
-        if tgt_entry is not None and not ctx.tgt_cat.owns_values(tgt_entry) and not args.allow_shared_value_target:
-            result["refusals"].append("the target node is older than API 13 and does not own schema values")
+        if tgt_entry is not None and (ctx.tgt_cat.api_version or 0) < TARGET_API_MIN:
+            result["refusals"].append(f"the target node is older than API {TARGET_API_MIN}")
         census, issue_counts, absent = {}, {}, {}
         target_name = tgt_entry["name"] if tgt_entry else None
         tgt_range = is_range_schema(tgt_entry) if tgt_entry else range_schema
@@ -1416,8 +1398,6 @@ def parse_args(argv):
                         "Default: the Brain owner map when it names both app ids (fbrain=brain)")
     p.add_argument("--allow-different-identity", action="store_true",
                    help="permit a target node whose user hash differs from the source (synthetic homes only)")
-    p.add_argument("--allow-shared-value-target", action="store_true",
-                   help="permit a target node older than API 13 (synthetic runs on an older daemon only)")
     p.add_argument("--protect-home", action="append", default=[],
                    help="--apply refuses a target socket under this home (repeatable; ~/.lastdb is always protected)")
     p.add_argument("--page-size", type=int, default=LIST_PAGE_MAX)

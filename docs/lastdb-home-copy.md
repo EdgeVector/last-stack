@@ -2,6 +2,7 @@
 
 This document gives the Brain and LastSecrets copy path from an old home format to a new one on the primary LastDB.
 The first run (2026-10-30) moved the primary from the shared-value layout to the schema-owned layout.
+The 2026-11-02 change removed the helper code for the shared-value layout. The helper no longer reads a shared-value home. Use it only between schema-owned homes, for example in the format 6 to format 7 move (section 11). It refuses a target older than API 13.
 On 2026-10-30 the in-place Brain conversion was removed. This home copy is the only Brain migration path.
 The path makes a new home, copies the kept records into it, and then moves the homes.
 
@@ -19,7 +20,7 @@ CAUTION: For the record model move (format 6 to format 7), read section 11 first
 
 - The old home `~/.lastdb` stays as it is. It becomes the rollback home.
 - A new home gets the same identity and cloud credentials, and no data.
-- A second daemon serves the new home on its own socket. It runs the release that ends shared values (#803, API 13).
+- A second daemon serves the new home on its own socket. It runs the new program (API 13 or later; the first run used #803, API 13).
 - The new Brain and LastSecrets releases declare their own schemas on the new home.
 - The helper reads every kept record from the old daemon and writes it to the new daemon in batches.
 - The helper verifies each schema by key set, by a value digest per record, by file bytes, and by spot reads.
@@ -81,17 +82,17 @@ The primary cutover uses the signed pair from `mini-upgrade-artifact.yml` after 
 
 - Brain (brain#484 at 7c0a573e0): `brain init` with a staging config. The app id is `brain`. The variables are `BRAIN_CONFIG` and `BRAIN_FOLDDB_SOCKET`. The socket variable wins over the config (`src/client.ts:186`). brain#484 removed the `FBRAIN_*` variables and the `~/.fbrain` fallback.
   - Init declares 25 owned schemas with the owner `brain` and the canonical field names. The config gets `schemaFieldAliases` and `storageModel: multi-key-v1`.
-  - Init refuses a config with the old shared-value layout (`home_copy_required`, `src/commands/init.ts:301`). Use a new staging config.
+  - Init refuses a config of the old layout (`home_copy_required`, `src/commands/init.ts:301`). Use a new staging config.
   - #803 accepts the keyless `BrainCompactListLocator_v1` since a83d5f06d (one field, no alternate keys). The first proof on head 11280163c stopped there (B10, closed).
   - The soft-delete tag is `__brain_deleted__` and the backlink tag prefix is `__brain_backlink__:`. The old Brain wrote `__fbrain_deleted__` and `__fbrain_backlink__:`. The helper renames these tags (section 3.2).
   - The capability files are `~/.brain/capabilities/brain@<hash>.cap`. The old `fbrain@<hash>.cap` files stay, but the new Brain does not read them.
   - Init writes `appIdentityEnforce: false` for a new config (`src/owned-schema-init.ts:155`, `src/commands/init.ts:501`). The installed config has `true`. The coordinator decided `true` for the new config on 2026-10-30. Step 5 sets it.
   - With `false`, the client sends no capability headers. The writes go in as the node owner (`src/write-context.ts:79-100`).
-- LastSecrets (lastsecrets#14): `lastsecrets init --config <path> --socket <path>`. On a new home the vocabulary mode is `auto`, so init declares the canonical names. The aliases `lastsecrets/LastSecret` and `lastsecrets/LastSecretIndex` go away.
+- LastSecrets (lastsecrets#14): `lastsecrets init --config <path> --socket <path>`. On a new home the vocabulary mode is `auto`, so init declares the canonical names.
 - The NEW node sends each declaration to the Schema Service of the environment in `cloud_sync.json.paused`. For this home that is PROD.
   - The variables `FOLD_SCHEMA_SERVICE_URL`, `ENVIRONMENT`, and `EXEMEM_ENV` override the home file. Step 4 removes them from the daemon environment.
   - In the synthetic proof (a DEV home), each declaration found the DEV definition and reused it. The node registered nothing new.
-- Every new declaration on NEW uses independent fields (`load/owned.rs:12`). NEW refuses to start when a stored schema has the shared-value layout. An empty home passes.
+- Every new declaration on NEW uses independent fields (`load/owned.rs:12`). NEW refuses to start when a stored schema has the old layout. An empty home passes.
 
 CAUTION: The Brain definitions must be in the PROD Schema Service before Step 5. Tom allowed the publish on 2026-10-30. A separate agent does it. See blocker B2.
 
@@ -223,7 +224,7 @@ Exit codes: 0 for success, 2 for a refusal or a copy issue, 3 for a verify diffe
   - An unselected key (override: `--allow-unselected`).
   - A count guard difference. The override names the accepted value: `--accept-directory-count TYPE=N` (for example `design=38`). The report shows the stored count, the accepted count, and the selected records.
   - An accepted value that differs from the selected records. A new Design record before the run changes the number, and the run refuses. There is no plain skip.
-  - A target schema without independent fields (override: `--allow-shared-value-target`, for the synthetic proof only).
+  - A target node older than API 13 (census, copy, and verify). There is no override.
 - A record with an issue is not written: an unmapped field, a type error, a value over `--value-max-bytes`, or an alternate key problem.
 - A keyed read refuses a repeated or foreign record, an incomplete cursor, or a missing listed record.
 - The helper reads field values only. It does not read per-field metadata. An explicit null remains a value. An absent field stays absent.
@@ -383,6 +384,8 @@ An earlier run used program a1c406f5 for the source and the target. It showed th
 - The helper refused a target under a protected home, the same socket, and different user hashes.
 - A second run into the same export folder was refused.
 - A pass with no change took 0.8 s.
+
+The helper now refuses an API 7 target (section 3.2). You cannot do this run again.
 
 ### 5.5 Limits of the proof
 
@@ -875,7 +878,7 @@ Use the Step 8 rollback. The old home has every write. Keep `$NEW` for review.
 
 ### 7.2 After Step 10
 
-CAUTION: Records written on the new home after the cutover are not in the rollback home. The helper copies only from the old layout to the new layout.
+CAUTION: Records written on the new home after the cutover are not in the rollback home. The helper copies only from the old home to the new home.
 
 ```bash
 touch "$OLD/monitoring/lastdbd-revive.hold"
