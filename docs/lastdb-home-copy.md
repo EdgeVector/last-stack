@@ -979,7 +979,10 @@ The home copy keeps every current value, every key, every file byte, the identit
 
 - lastdb#879 (main d897ee85) removed FieldMapper and the `field_mappers` path from the schema types, the Schema Service, the node, the host, and the SDK.
 - lastdb#880 (main b1076736) removed the retired shared-value words from the docs and scripts.
-- These stay on purpose: the boot refusal of a home with the old layout and the refusal of a non-empty `field_mappers` at the declare routes.
+- After #880, two refusals stayed on purpose: the boot refusal of a home with the old layout and the refusal of a non-empty `field_mappers` at the declare routes.
+- lastdb#942 (main 4101141e, API 16, 2026-11-01) removed the per-schema `independent_fields` flag and the owned-layout marker.
+- lastdb#1134 (main f6a941e4, API 22, 2026-11-02) removed the declare refusal. The node now ignores `field_mappers` the same as any other unknown schema key.
+- A current program opens only a format 8 home, so a home with the old layout cannot start on it.
 
 ### 10.2 LastSeek
 
