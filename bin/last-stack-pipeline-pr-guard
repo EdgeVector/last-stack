@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Fail closed before a pipeline-health PR mutation; never cache an allow result.
 
-Venue (2026-09-30): every EdgeVector repo except `lastgit` is on GitHub, read
-through `gh api` (PR row, `ci-required` check runs; a queued or in-progress
-check run is an active task). Only the `lastgit` repo stays on Forgejo (combined
-status + actions/tasks through last-stack-forge-api). `--venue auto` (default)
+Venue: every EdgeVector repo is on GitHub (lastgit moved last, 2026-10-08,
+EdgeVector/lastgit#5), read through `gh api` (PR row, `ci-required` check runs;
+a queued or in-progress check run is an active task). The Forgejo path (combined
+status + actions/tasks through last-stack-forge-api) stays only for an explicit
+`--venue forgejo`; Forgejo holds archived copies only. `--venue auto` (default)
 asks last-stack-pr-venue and falls back to github.
 """
 import argparse
@@ -37,9 +38,8 @@ RECOVERY = {
         "(repo, kanban/<slug> branch, pr_url). This guard protects an active owner and "
         "will always deny an unbound PR: do not retry it. If the PR is an intentionally "
         "unbound green fix (for example a papercut-resolver branch), its producer merges it: "
-        "`gh pr merge <n> -R <owner/repo> --auto --squash` (GitHub), or for the lastgit repo on Forgejo "
-        "last-stack-pipeline-forge-pr-ledger merge-green --repo <owner/repo> --pr <n> --arm --apply "
-        "(it runs its own Situations merge-pr preflight). Otherwise bind the card to the PR, or leave "
+        "`gh pr merge <n> -R <owner/repo> --auto --squash` (every repo is on GitHub). "
+        "Otherwise bind the card to the PR, or leave "
         "the PR and record the deny in the papercut."
     ),
     "owned-pr": "An owner holds the card. Leave the PR to its owner; do not clear the assignee.",

@@ -66,10 +66,10 @@ filing a fix **card** over landing code in this routine.
 - Read this routine through the guarded reader when the scheduler supports it:
   `"$last_stack/bin/last-stack-routine-read" "kanban-validate"`.
 - **Venue:** run `last-stack-pr-venue` for the card's repo. Every EdgeVector repo
-  except `lastgit` is on GitHub (2026-09-30), so the answer is normally `github`:
+  is on GitHub (`lastgit` moved last, 2026-10-08), so the answer is `github`:
   read the PR and its `ci-required` check run with `gh`, and qualify every `gh`
-  command with `-R owner/repo`. Only the `lastgit` repo answers `forgejo` (use the
-  Forgejo SOP for it). LastGit is retired; a `lastgit://…/cr/…` line on an old card
+  command with `-R owner/repo`. Forgejo holds archived copies only; an old
+  Forgejo PR URL on a card is history. LastGit is retired; a `lastgit://…/cr/…` line on an old card
   is a dead reference: find the real PR by the card branch on GitHub.
 
 ## Step 0 — cheap DONE-WHEN sweep (zero LLM work, do first)
@@ -278,7 +278,7 @@ is an old card. Fallbacks:
 gh -R <owner>/<repo> pr list --head kanban/<slug> --state all --json number,state,mergedAt,headRefName,url
 ```
 
-Forgejo (the `lastgit` repo only) and legacy LastGit: use the venue SOP. Pool A
+Legacy LastGit or Forgejo references on an old card: use the venue SOP. Pool A
 requires merged (GitHub `MERGED` / `mergedAt`; LastGit `state=merged` + `merge_oid`
 for an old card).
 

@@ -23,7 +23,7 @@ Exit 0 prints a noop result and skips the full agent.
 Exit 10 asks routinesd to start the full pipeline-health agent.
 
 Does not force a deep pass on a timer. LastGit is retired and is not read.
-Aged-open PRs (GitHub, plus the lastgit repo on Forgejo) and blocked deploys proceed.
+Aged-open PRs (GitHub, every repo) and blocked deploys proceed.
 
 Environment:
   LAST_STACK_PIPELINE_GATE_MIN_AGE_MIN       stuck merge age (default 10)

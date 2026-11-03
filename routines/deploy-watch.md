@@ -23,8 +23,8 @@ export PATH="$last_stack/bin:$HOME/.local/bin:$PATH"
 ```
 
 For each enabled repo in `config/deploy/repos.json` the gate reads the `main`
-tip (GitHub through `gh` by default; Forgejo only for an entry whose venue is
-`forgejo`, which today is only the `lastgit` repo). When the tip moved and its
+tip (GitHub through `gh`; every repo is on GitHub. The Forgejo path stays only for
+an explicit `venue: forgejo` entry, and no entry has one). When the tip moved and its
 required check is `success` (the `ci-required` check run on GitHub), it runs
 `last-stack-deploy-loom --repo <name> --oid <tip>`: the `deploy-main` Loom
 graph stages that exact commit, runs the repo's own deploy script (a checked

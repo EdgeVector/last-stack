@@ -58,10 +58,10 @@ venue="$(printf '%s\n' "$route_json" | jq -r .venue)"
 ```
 
 Use GitHub `gh` (`gh pr create`, `gh pr merge <n> -R <owner>/<repo> --auto
---squash`, required check `ci-required`) when `venue=github`. This is the
-default for every EdgeVector repo except `EdgeVector/lastgit`. Use the local
-Forgejo SOP/API helper only when `venue=forgejo` (the `lastgit` repo). LastGit
-is retired (brain `decision-2026-09-29-retire-lastgit-all-repos-to-github`): if
+--squash`, required check `ci-required`) when `venue=github`. Every EdgeVector
+repo is on GitHub (`EdgeVector/lastgit` moved last, 2026-10-08); Forgejo holds
+archived copies only, so `venue=forgejo` is a stale config: file a brain
+papercut. LastGit is retired (brain `decision-2026-09-29-retire-lastgit-all-repos-to-github`): if
 `venue=lastgit`, do not push to a `lastdb:///` remote; file a brain papercut.
 
 Close-out/backstop hooks that check for local commits ahead of the canonical

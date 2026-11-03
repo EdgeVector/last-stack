@@ -160,7 +160,7 @@ def pr_merged(ctx):
     if ctx.get("merged") is True:
         return True
     url = str(ctx.get("pr_url") or "")
-    # GitHub is the default venue; Forgejo stays for the `lastgit` repo and old URLs.
+    # Every repo is on GitHub; the archived Forgejo copy is read only for old URLs.
     g = GH_PR_RE.search(url)
     if g:
         rc, out, _ = run([GH, "api", f"repos/{g.group(1)}/pulls/{g.group(2)}", "--jq", ".merged"], 60)

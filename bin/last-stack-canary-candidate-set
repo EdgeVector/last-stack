@@ -22,8 +22,8 @@ commit in the window is an error (exit 3): the set never pairs a build with an
 unreleased head. The GitHub reads go through `gh` (override: LAST_STACK_GH_BIN).
 
 The source is the app's gate of record: `github` (the GitHub repo) in
-config/registry/apps.json. Every EdgeVector repo except `lastgit` is on GitHub
-(2026-09-30, decision-2026-09-29-retire-lastgit-all-repos-to-github); LastGit is
+config/registry/apps.json. Every EdgeVector repo is on GitHub (lastgit moved last,
+2026-10-08; 2026-09-30, decision-2026-09-29-retire-lastgit-all-repos-to-github); LastGit is
 retired and this script no longer reads it. Each repo's Forgejo copy (`forge`)
 is frozen read-only and never gets a new commit. A set that names the frozen
 copy pins commits it cannot serve: measured 2026-09-27, routines' artifact head

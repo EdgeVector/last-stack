@@ -4,8 +4,8 @@
 #
 # 2026-09-30: LastGit is retired. The old `--venue lastgit --cr <id>` path (the
 # `lastgit cr view` / `lastgit ci status` / `lastgit ref` reads) is gone. A PR
-# is judged through GitHub (`gh api`) for every EdgeVector repo except `lastgit`,
-# which stays on Forgejo. `--cr` and `--venue lastgit` are now usage errors.
+# is judged through GitHub (`gh api`) for every EdgeVector repo (lastgit moved
+# last, 2026-10-08). `--cr` and `--venue lastgit` are now usage errors.
 #
 # Symptom this exists for (papercut-lastgit-pr-reaper-closes-green-unmerged-cr,
 # p0, three recorded instances on 2026-09-02): routines/pr-reaper.md STEP 2 is a
@@ -104,7 +104,7 @@ Flags:
                    ~/.cache/edgevector-git/<repo>.git)
   --no-fetch       never fetch; an object that is missing stays missing
   --venue V        github, forgejo, or auto. auto (the default) asks last-stack-pr-venue, which answers github for
-                   every EdgeVector repo except lastgit.
+                   every EdgeVector repo.
   --head-check-json PATH / --base-check-json PATH
                    github: the `commits/<sha>/check-runs` object of the head / base
   --compare-json PATH

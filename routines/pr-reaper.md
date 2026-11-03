@@ -36,9 +36,9 @@ heartbeat `noop reasons=busy-node` and exit.
 ## STEP 0 — LastGit is retired: read nothing from it
 
 LastGit is retired for every EdgeVector repo
-(`decision-2026-09-29-retire-lastgit-all-repos-to-github`). Every repo except
-`lastgit` is on GitHub; `lastgit` is on Forgejo. Its
-registry schemas are not on the primary node, so every `lastgit` command fails
+(`decision-2026-09-29-retire-lastgit-all-repos-to-github`). Every repo is on
+GitHub (`lastgit` moved last, 2026-10-08); Forgejo holds archived copies only.
+LastGit's registry schemas are not on the primary node, so every `lastgit` command fails
 with a missing-schema error. Run no `lastgit` command and no stale-open heal.
 Heartbeat `healed_stale_open=disabled`.
 
@@ -95,8 +95,7 @@ only a real `open=0` when `.unreadable` is empty. If a repo query fails, report
 **Age:** use `.age_min` from the helper (the PR `created_at`).
 
 Point-read the PR (`gh -R <owner>/<repo> pr view <n> --json state,mergedAt,headRefOid`
-for a GitHub repo; `repos/<owner>/<repo>/pulls/<n>` on Forgejo for `lastgit`)
-immediately before any merge or close. A PR the point read shows merged or closed, or a 404, is benign
+on GitHub) immediately before any merge or close. A PR the point read shows merged or closed, or a 404, is benign
 inventory drift: count it as already terminal and move on.
 
 ## STEP 2 — Reap every item older than 60 minutes
@@ -120,9 +119,8 @@ command you RUN, not a rule you remember:
 
 ```bash
 close_guard_rc=0
-# GitHub PR (every repo except lastgit) or Forgejo PR (lastgit): the same guard,
-# the same verdicts. --venue auto routes through last-stack-pr-venue; the guard
-# reads the ci-required check run (GitHub) or status (Forgejo).
+# GitHub PR (every repo). --venue auto routes through last-stack-pr-venue; the
+# guard reads the ci-required check run.
 "$last_stack/bin/last-stack-pr-reaper-close-guard" \
   --venue auto --repo <repo> --pr <n> --json >/tmp/pr-reaper-close-guard.json \
   2>/tmp/pr-reaper-close-guard.err || close_guard_rc=$?
@@ -166,14 +164,7 @@ Then decide in this order:
    GitHub: `gh -R <owner>/<repo> pr merge <n> --squash --delete-branch` (or arm
    `--auto` when the check is still running; on a GraphQL 502 read the state,
    then `gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge -f merge_method=squash`).
-   Forgejo (`lastgit` repo): normal merge API.
    NEVER bypass a failing/pending required check to merge.
-   HTTP 409 `pull request is already scheduled to auto merge when checks
-   succeed` means auto-merge is ALREADY armed. It is a success receipt, not an
-   error: do not retry, do not file a papercut. Count it as
-   `flagged=auto-merge-armed:<repo>:<n>` and leave the PR open. If every
-   required context of the base branch protection is green and the PR is still
-   open next round, that is `papercut-forge-merge-405-stuck-status-check`.
 2. **CLOSE** everything the guard cleared — red CI, merge conflict, pending CI
    on a stale head, draft, spike, AND human-gated publish/content PRs (blog
    posts etc.): a lingering publish decision belongs in the morning-sync

@@ -1,7 +1,7 @@
 ---
 name: pipeline-health
 cadence: every 10 min
-description: Keep merge + post-merge deploy pipelines unblocked — aged-open PRs (GitHub for every repo except lastgit, Forgejo for lastgit) and blocked deploys. LastGit is retired and is not demand. Anything blocked is P0 severity — fix this wake or file a Brain papercut so papercut-reconciler can promote clustered board work.
+description: Keep merge + post-merge deploy pipelines unblocked — aged-open PRs (GitHub, every repo) and blocked deploys. LastGit is retired and is not demand. Anything blocked is P0 severity — fix this wake or file a Brain papercut so papercut-reconciler can promote clustered board work.
 ---
 
 No-tests policy: `instructions/no-tests.md`; Situation
@@ -12,9 +12,9 @@ You are the **pipeline-health** routine for `<WORKSPACE>`. Run ONE bounded pass,
 then exit. Your job is to keep **merge and post-merge deploy pipelines** healthy
 so nothing silently rots:
 
-1. **Open PRs** — every repo in `config/merge-demand-github-repos` (all moved
-   repos, read through `gh`) and `config/merge-demand-forge-repos` (only
-   `lastgit`, on Forgejo), read by `last-stack-pipeline-forge-pr-ledger`.
+1. **Open PRs** — every repo in `config/merge-demand-github-repos` (every repo,
+   read through `gh`), read by `last-stack-pipeline-forge-pr-ledger`.
+   `config/merge-demand-forge-repos` is empty: no repo is on Forgejo.
 2. **LastGit CRs** — retired. Read nothing (see the LastGit section).
 3. **Post-merge deploy-pipeline** — every
    `~/.lastgit/deploy-*/deploy.log` (exemem-infra, schema-infra, …). A red or
@@ -63,8 +63,9 @@ Complements:
 - `kanban-pickup` — WORK mode on **reconciler-filed** cards (and program work),
   **not** on pipeline-health-filed board P0s.
 - `drain-open-prs` — once-a-day broad PR drain / close dead weight.
-- GitHub Actions (`ci-required`) — continuous CI for every repo except `lastgit`
-  (Forgejo Actions runner). The LastGit `deploy-run` daemon wrote the
+- GitHub Actions (`ci-required`) — continuous CI for every repo
+  (`lastgit` moved last, 2026-10-08; Forgejo holds archived copies only). The
+  LastGit `deploy-run` daemon wrote the
   `~/.lastgit/deploy-*/deploy.log` files the deploy scan reads, but as each
   repo's deploy moved to GitHub Actions (`sop-migrate-repo-to-github`) its
   watcher job was booted out and its log froze. The scan now checks the
@@ -100,11 +101,9 @@ read/write, fail loudly if the resolved path is empty or starts with
 - **CHEAP (uncapped this wake):** **deploy-pipeline scan** (mandatory — see
   below); the PR ledger sync; check daemon liveness via logs; re-arm auto-merge when
   checks are green (GitHub: `gh -R <owner>/<repo> pr merge <n> --auto --squash
-  --delete-branch`; Forgejo, `lastgit` only: `merge_when_checks_succeed`); nudge BEHIND bases with a
+  --delete-branch`); nudge BEHIND bases with a
   lease force-push only from a fresh worktree after rebase, and never while a
-  CI run on the PR head is pending (probe first with
-  `last-stack-forge-pr-update-branch --repo <r> --pr <n>`; exit 3 = in
-  flight, skip — a push cancels the run); **file/update Brain
+  CI run on the PR head is pending (a push cancels the run); **file/update Brain
   papercuts** for every blocked deploy/merge you are not fixing this wake;
   append heartbeat. **Do not** `kanban add` pipeline P0 cards. **Do not**
   `kanban rank` solely to front-load pipeline work.
@@ -409,23 +408,12 @@ from outside the walk can land before its REVIEW step; on 2026-09-23 a sweep
 merged fold#2173 that way. Report the PR as `loom-owned`.
 
 Point-read the PR (`gh -R <owner>/<repo> pr view <n> --json state,mergedAt` for
-GitHub; `repos/<owner>/<repo>/pulls/<n>` for the `lastgit` Forgejo repo)
-immediately before ANY mutation. The list can be stale: a PR that the point read shows closed, or a
+GitHub) immediately before ANY mutation. The list can be stale: a PR that the point read shows closed, or a
 404, is benign inventory drift, not an error
 (`papercut-pipeline-forge-open-list-stale-20260921`).
 
 1. **Mergeable + every required context green (ledger shape `green-unmerged`)** →
    re-arm. GitHub: `gh -R <owner>/<repo> pr merge <n> --auto --squash --delete-branch`.
-   Forgejo (the `lastgit` repo):
-   ```bash
-   "$last_stack/bin/last-stack-forge-api" --method POST \
-     --data '{"Do":"merge","merge_when_checks_succeed":true,"delete_branch_after_merge":true}' \
-     "repos/<owner>/<repo>/pulls/<n>/merge"
-   ```
-   HTTP 409 `pull request is already scheduled to auto merge when checks
-   succeed` means auto-merge is ALREADY armed. It is a success receipt, not an
-   error: do not retry, do not file. If every required context is green and
-   the PR is still open 10 minutes later, that is the stuck-task shape of step 4.
    **Exit 3 `REFUSED merge on <repo>` is policy, not friction.** The wrapper runs
    `situations preflight --action merge-pr --repo <owner>/<repo>` before every
    merge POST and refuses when an active Situation blocks it. Cite the slug it
@@ -446,54 +434,23 @@ immediately before ANY mutation. The list can be stale: a PR that the point read
    hold's `allowed_actions`.
 2. **BEHIND / conflict** → worktree rebase onto base, push with lease, re-arm.
    BEHIND only (no conflict): GitHub: run `gh -R <r> pr update-branch <n>` only
-   when the `ci-required` run is not pending (the new commit cancels it). Forgejo
-   (the `lastgit` repo): first run
-   `"$last_stack/bin/last-stack-forge-pr-update-branch" --repo <r> --pr <n>`;
-   exit 3 means a CI run is in flight — leave the PR alone this wake.
+   when the `ci-required` run is not pending (the new commit cancels it).
 3. **Red required CI** → read the log first (GitHub: `gh -R <owner>/<repo> pr
-   checks <n>`, then `gh -R <owner>/<repo> run view <run-id> --log-failed`;
-   Forgejo: `"$last_stack/bin/last-stack-forge-ci-log" <owner/repo> --sha <sha>`),
+   checks <n>`, then `gh -R <owner>/<repo> run view <run-id> --log-failed`),
    then split: **retired test or test coverage requirement** → remove it in an
    isolated worktree, keeping non-test gates; do not rerun or repair tests;
    **infra flake** (timeout, lost runner, cancelled without a non-test check
-   failure) → on GitHub, re-run the failed jobs with `gh -R <owner>/<repo> run
-   rerun <run-id> --failed` and make sure auto-merge is armed. On Forgejo there
-   is no compliant automated retry for this case on an unowned PR or on
-   `main`. Forgejo 15.0.3 has no rerun API, workflow_dispatch is a tested
-   no-op (see `last-stack-forge-api --help`), and pushing an empty commit to a
-   branch you do not own is exactly what the hard guardrail above forbids.
-   Write the diagnosis into the ledger's papercut row and leave it — a
-   real retry needs the branch owner (or a human) to push a commit;
+   failure) → re-run the failed jobs with `gh -R <owner>/<repo> run
+   rerun <run-id> --failed` and make sure auto-merge is armed;
    **mechanical** (fmt, lint, typecheck) → fix in a fresh worktree off
    the head branch, push with lease; **real product failure** → leave it to the
    owner. The ledger row already records it; do not file a second one.
 4. **405 merge / stuck status-check** while green → on GitHub a 405 means a
    protection rule blocks the merge (a missing `ci-required` run, or a required
-   review): flag it, never force. On Forgejo, re-read the PR and every
-   current check. A live check or an already merged PR needs no retry. Record
-   a persistent failure in `papercut-forge-merge-405-stuck-status-check`.
-   Historical empty-commit advice in that record does not authorize a new head.
-5. **Dead CI trigger after branch recreate** (Forgejo, the `lastgit` repo only) — `commits/<sha>/status` is the
-   empty envelope (`state:""`, `total_count:0`) **and** `actions/tasks` has
-   zero runs for that head, even though the runner is alive on other heads.
-   This is **not** a stuck status task. Do not retry it with a new empty commit.
-   Detect + supersede with:
-   ```bash
-   "$last_stack/bin/last-stack-forge-dead-trigger" probe \
-     --repo <owner/repo> --pr <n> --min-age-secs 120 --json
-   # verdict=dead-trigger →
-   "$last_stack/bin/last-stack-pipeline-pr-guard" \
-     --repo <owner/repo> --pr <n> --expected-head <full-sha> -- \
-     "$last_stack/bin/last-stack-forge-dead-trigger" supersede \
-       --repo <owner/repo> --pr <n> --checkout <worktree>
-   ```
-   Supersede pushes the same commits to a fresh branch, opens a new PR, closes
-   the dead one, and arms auto-merge on the fresh PR. A recreated branch must
-   get a fresh CI trigger before the new PR can merge.
-6. **Human-gated prod cutover** (title/body say so) → leave + papercut only.
+   review): flag it, never force.
+5. **Human-gated prod cutover** (title/body say so) → leave + papercut only.
 
-Never use `gh` for a Forgejo-hosted PR (the `lastgit` repo). Never push the
-read-only GitHub mirror of a Forgejo-hosted repo.
+Forgejo holds archived copies only: never push to it or open a PR there.
 
 ## Venue resolution
 Before acting on a local checkout, resolve:
@@ -503,9 +460,9 @@ repo="$("$last_stack/bin/last-stack-repo-op-guard" "<checkout>" "<WORKSPACE>")"
 "$last_stack/bin/last-stack-pr-venue" --json <owner/repo> "$repo"
 ```
 
-If `.venue == "github"` (the default for every repo except `lastgit`), drive `gh`
-and the `ci-required` check run. If `forgejo` (only the `lastgit` repo), use the
-forge helper. If `lastgit`, the marker is stale: LastGit is retired, run no
+If `.venue == "github"` (every repo), drive `gh` and the `ci-required` check
+run. If `forgejo`, the marker is stale (Forgejo holds archived copies only): act
+on nothing there and flag it in the heartbeat. If `lastgit`, the marker is stale: LastGit is retired, run no
 `lastgit` command, and flag it in the heartbeat. A repo not on the merge-demand
 lists is not this routine's scope; kanban-watch and drain-open-prs cover it.
 

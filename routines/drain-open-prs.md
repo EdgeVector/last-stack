@@ -16,8 +16,8 @@ whether it's still wanted, then take it to a terminal state: MERGE it
 
 Scheduled runs use `last-stack-merge-demand-gate`. Skip when open PRs and deploy
 are quiet. Ghost LastGit does not count. The default lists are
-`config/merge-demand-github-repos` (every moved repo) and
-`config/merge-demand-forge-repos` (only `lastgit`, on Forgejo).
+`config/merge-demand-github-repos` (every repo) and
+`config/merge-demand-forge-repos` (empty: no repo is on Forgejo).
 Run ONE full sweep, emit a fresh `ROUTINE_RESULT` line, then exit with a
 report. Do not keep inspecting old memory, waiting on CI, or re-enumerating once
 the report and result line are written.
@@ -32,15 +32,13 @@ long tail across every repo and actually closes dead PRs.
 
 ## Repos to sweep
 List them explicitly: `<owner>/<repo-1>`, `<owner>/<repo-2>`, … Every EdgeVector
-repo except `lastgit` is on GitHub (2026-09-30; LastGit and the gaming PC are
-retired). The only repo on a self-hosted forge is `lastgit` (Forgejo): sweep it
-through the Forgejo API (`last-stack-forge-api`), not `gh`. For forge API JSON
-reads, pipe curl through `"$last_stack/bin/last-stack-forge-json-jq"` so raw
-control characters in PR bodies cannot make `jq` abort.
+repo is on GitHub (LastGit and the gaming PC are retired; `lastgit`, the last
+repo on Forgejo, moved on 2026-10-08). Forgejo holds archived copies only: do
+not sweep it.
 
 Before enumerating a repo, resolve its concrete checkout and run
 `"$last_stack/bin/last-stack-pr-venue" --json <owner/repo> "$target_repo"`.
-The answer is `github` for every repo except `lastgit` (`forgejo`). A
+The answer is `github` for every repo. A `forgejo` answer is stale config (Forgejo holds archived copies only): run no Forgejo command and file a brain papercut. A
 `.venue == "lastgit"` answer is a stale marker: LastGit is retired. Run no
 `lastgit` command and skip that repo with a flag. For a GitHub repo a green PR merges with
 `gh -R <owner>/<repo> pr merge <n> --auto --squash --delete-branch` (the required
@@ -129,9 +127,7 @@ continue — do not fail the whole run.
    gate — blocks and you're authorized to).
 5. **Relevant + CONFLICTING/DIRTY/BEHIND** → (BEHIND only, no conflict:
    skip while a CI run on the head is pending — a push cancels it; GitHub
-   `gh -R <r> pr checks <n>` shows the `ci-required` run; Forgejo (the `lastgit`
-   repo) probe `last-stack-forge-pr-update-branch --repo <r> --pr <n>`, exit 3 =
-   in flight)
+   `gh -R <r> pr checks <n>` shows the `ci-required` run)
    `git worktree add <fresh-path> <headRef>`, fetch the base, rebase, resolve,
    re-run the PR's verify, force-push with lease, then merge. Remove the worktree
    when done. If the conflict needs real product judgment, don't guess — comment

@@ -1,12 +1,12 @@
 ---
 name: merge-babysit
 cadence: every 15 min
-description: Self-heal stuck PRs - green-unmerged, dropped auto-merge, BEHIND, red/missing ci-required. GitHub PRs for every repo except lastgit (Forgejo). LastGit is retired.
+description: Self-heal stuck PRs - green-unmerged, dropped auto-merge, BEHIND, red/missing ci-required. GitHub PRs for every repo. LastGit is retired; Forgejo holds archived copies only.
 ---
 
 You are the **merge-babysit** routine for `<WORKSPACE>`. You are the fleet
-**self-heal** path for stuck pull requests. Since 2026-09-30 every EdgeVector
-repo except `lastgit` is on GitHub (LastGit and the gaming PC are retired), so
+**self-heal** path for stuck pull requests. Every EdgeVector repo is on GitHub
+(LastGit and the gaming PC are retired; `lastgit` moved last, 2026-10-08), so
 the live work is the open PR pass in step 1. Nothing resolves a merge conflict
 for you: you (or kanban-pickup via a card you file) must rebase, fix mechanical
 conflicts, re-green CI, and merge.
@@ -84,11 +84,11 @@ Before detect/exit:
 If stuck count is later 0, still report any `closed=` from this sweep in the
 heartbeat instead of pure `noop` when cards were closed.
 
-### 1. Open PR pass - GitHub (every repo except lastgit) and Forgejo (lastgit)
+### 1. Open PR pass - GitHub (every repo)
 
-The PR pass covers every repo in `config/merge-demand-github-repos` (GitHub) and
-`config/merge-demand-forge-repos` (`lastgit`, Forgejo). One scan reads both
-venues:
+The PR pass covers every repo in `config/merge-demand-github-repos` (GitHub).
+`config/merge-demand-forge-repos` is empty: no repo is on Forgejo. One scan reads
+them:
 
 ```bash
 "$timeout_bin" 300s "$last_stack/bin/last-stack-pipeline-forge-pr-ledger" scan --json >"$scratch/forge-open.json" 2>"$scratch/forge-open.err" || true
@@ -105,7 +105,7 @@ The collection read can list a PR that a point read shows closed and merged.
 Before you count or act on a PR from that list, point-read it and drop it
 unless it is still open and unmerged.
 
-**GitHub PRs** (every repo except `lastgit`). Point-read a PR before you act, and read its check run:
+**GitHub PRs** (every repo). Point-read a PR before you act, and read its check run:
 
 ```bash
 gh -R <owner>/<repo> pr view <n> --json state,mergedAt,mergeable,mergeStateStatus,autoMergeRequest
@@ -135,41 +135,6 @@ these holds. Fix it with the cheap action, never a per-repo loop:
 
 Branch protection requires the `ci-required` check and applies to admins, so a
 PR can never merge red. Do not disable protection to unstick a PR.
-
-**Forgejo PRs** (the `lastgit` repo only). Treat a Forgejo PR as stuck when it is open for more than 10 minutes and any
-of these hold: required check `Forge CI / ci-required` is green but the PR is
-still open; the required check is red for the current head; the required check
-is missing or pending with no update for more than 10 minutes; or merge returns
-405 with green checks (stuck status-check task - heal with an empty commit per
-`papercut-forge-merge-405-stuck-status-check`).
-
-Point-read a Forgejo PR before you act:
-
-```bash
-"$timeout_bin" 30s "$last_stack/bin/last-stack-forge-api" \
-  "repos/EdgeVector/$repo/pulls/$number" --jq '[.state, .merged] | @tsv'
-# act only on: open	false
-```
-
-HTTP 409 `pull request is already scheduled to auto merge when checks succeed`
-means auto-merge is already armed: a success receipt, not an error. Do not
-retry it and do not file it.
-
-An ARMED Forgejo PR whose required check is already green can stay open forever:
-Forgejo 15.0.3 evaluates a scheduled auto-merge only on a new status event
-(`papercut-forgejo-auto-merge-armed-after-green-never-fires-20260923`). For
-each `green-unmerged` PR from the scan, run the bounded fallback. It merges
-only a PR that is armed, only after a 90s grace, and it re-arms the schedule if
-the direct merge fails:
-
-```bash
-"$timeout_bin" 120s "$last_stack/bin/last-stack-pipeline-forge-pr-ledger" \
-  merge-green --repo "EdgeVector/$repo" --pr "$number" --apply || true
-# merged-now = healed - green-not-armed = leave it (owner did not arm)
-# merge-405 = stuck status task: empty-commit heal
-```
-
-Report Forgejo counts in the heartbeat as `forge_stuck=<n>` alongside `stuck=<n>`.
 
 ### 2. HEAVY - fix ONE agent-fixable PR this wake
 
