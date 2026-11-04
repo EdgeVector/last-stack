@@ -137,6 +137,7 @@ def worker_ready():
     installed=Path.home()/".last-stack/skills/lastdb-safe-upgrade/scripts/dev-v2-stream-cleanup.py"
     require(installed.is_file() and digest(installed.read_bytes())==digest(Path(__file__).read_bytes()),
         "cleanup helper does not match the installed worker release")
+    require(aws("sts","get-caller-identity",{})["Account"]==AWS_ACCOUNT,"unexpected AWS cleanup account")
 
 
 def request_read(path):
@@ -232,9 +233,14 @@ def aws(service, operation, body, provider=None):
         environment.update(AWS_ACCESS_KEY_ID=provider["id"], AWS_SECRET_ACCESS_KEY=provider["secret"])
         environment.pop("AWS_SESSION_TOKEN",None)
         extra = ["--endpoint-url",provider["endpoint"]]
+    # AWS CLI may consume /dev/stdin more than once while loading a paramfile.
+    # These bounded inputs contain only public control keys, scope fences,
+    # counters and object names. Provider credentials remain in the environment.
+    payload=json.dumps(body,separators=(",",":"))
+    require(len(payload.encode())<=64000,"cleanup operation exceeds bounded CLI input")
     response = subprocess.run(["aws",service,operation,"--region",region,"--output","json","--no-cli-pager",
-        "--no-paginate","--cli-input-json","file:///dev/stdin"]+extra,
-        input=json.dumps(body),text=True,capture_output=True,env=environment,timeout=90)
+        "--no-paginate","--cli-input-json",payload]+extra,
+        stdin=subprocess.DEVNULL,text=True,capture_output=True,env=environment,timeout=90)
     require(response.returncode == 0, "AWS operation refused: "+service+"/"+operation)
     require(len(response.stdout)<50_000_000, "AWS response exceeds cleanup bound")
     return json.loads(response.stdout or "{}")
@@ -686,6 +692,17 @@ def main():
     except (RuntimeError,KeyError,ValueError,OSError,subprocess.SubprocessError) as failure:
         reason=str(failure) if isinstance(failure,RuntimeError) else type(failure).__name__
         print("DEV_PROOF_CLEANUP: RED: "+reason,file=sys.stderr)
+        if args.drain:
+            try:
+                report_errors([{"stream_id":"worker startup","reason":reason}])
+                report="\n\nDEV proof cleanup worker startup blocked before completion: "+reason+". Pending requests and saved phases remain for retry.\n"
+                result=subprocess.run(["brain","append","reference-dev-proof-automatic-cleanup-20261103","--type","reference"],
+                    input=report,text=True,capture_output=True,timeout=60)
+                require(result.returncode==0,"cleanup startup closeout failed")
+                emit("ok","blocked startup; requests retained; Brain papercut filed")
+                return 0
+            except (RuntimeError,KeyError,ValueError,OSError,subprocess.SubprocessError):
+                print("DEV_PROOF_CLEANUP: startup failure could not be recorded in Brain",file=sys.stderr)
         return 1
     return 0
 

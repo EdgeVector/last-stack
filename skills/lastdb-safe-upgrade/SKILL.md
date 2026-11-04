@@ -166,7 +166,8 @@ The installed `lastdb-dev-proof-cleanup` routine runs its mechanical gate every
 only after backup, source-free restore, known-key verification and both strict
 stops succeed. Receipt v6 records `cloud_cleanup=queued`; it does not claim
 that deletion has already finished. A missing or inactive worker, changed
-request, failed enqueue or blocked cleanup makes the gate RED.
+request, failed enqueue or blocked cleanup makes the gate RED. Readiness also
+checks the configured AWS operator identity with the real CLI input path.
 
 After the service's one-hour restore hold expires and existing scope retention
 finishes, the worker freezes only that DEV scope, checks the exact one-snapshot
