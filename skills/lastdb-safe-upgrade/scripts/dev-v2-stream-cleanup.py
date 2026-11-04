@@ -673,41 +673,66 @@ def drain():
         except BlockingIOError:
             emit("noop","cleanup worker already active")
             return
-        paths=[]
-        for count,path in enumerate(root.glob("*.json"),1):
-            require(count<=30000,"active cleanup directory exceeds bound")
-            if re.fullmatch(r"[0-9a-f-]{36}\.json",path.name):
-                paths.append(path)
-            elif re.fullmatch(r"[0-9a-f-]{36}\.(?:state|plan)\.json",path.name):
+        # Snapshot before any move. A live glob can skip entries while
+        # archive_completed relocates manifest, state and plan.
+        entries=list(root.glob("*.json"))
+        for path in entries:
+            if not path.exists():
+                continue
+            if re.fullmatch(r"[0-9a-f-]{36}\.(?:state|plan)\.json",path.name):
                 original=path.with_name(path.name[:36]+".json")
+                # Resume an interrupted move from whichever metadata file
+                # remains. The manifest is already under completed/.
                 if not original.exists() and (root/"completed"/original.name).exists():
                     archive_completed(original)
-        require(len(paths)<=10000,"active cleanup queue exceeds bounded request count")
-        pending=[]
-        for path in sorted(paths):
+        work=[]
+        closeout=[]
+        stray=0
+        for path in entries:
+            if not path.exists():
+                continue
+            if re.fullmatch(r"[0-9a-f-]{36}\.(?:state|plan)\.json",path.name):
+                original=path.with_name(path.name[:36]+".json")
+                if not original.exists() and not (root/"completed"/original.name).exists():
+                    stray+=1
+                continue
+            if not re.fullmatch(r"[0-9a-f-]{36}\.json",path.name):
+                stray+=1
+                continue
             state_path=path.with_suffix(".state.json")
             if not state_path.exists():
                 _,checksum=request_read(path)
                 save(state_path,{"request_sha256":checksum,"phase":"waiting","next_attempt_ms":0})
             state=json.loads(private(state_path))
             if state["phase"]=="complete" and state.get("closeout_reported"):
+                # Archive before either cap. A finished backlog used to fail
+                # this drain permanently, so those requests were never moved.
                 archive_completed(path)
                 continue
-            if ((state["phase"]!="complete" and state.get("next_attempt_ms",0)<=int(time.time()*1000))
-                    or (state["phase"]=="complete" and not state.get("closeout_reported"))): pending.append(path)
-        if not pending:
+            if state["phase"]=="complete":
+                closeout.append(path)
+            else:
+                work.append(path)
+        require(stray<=30000,"active cleanup directory exceeds bound")
+        require(len(work)<=10000,"active cleanup queue exceeds bounded request count")
+        now=int(time.time()*1000)
+        pending=[path for path in work
+            if json.loads(private(path.with_suffix(".state.json"))).get("next_attempt_ms",0)<=now]
+        closeout.sort(key=lambda path:path.name)
+        if not pending and not closeout:
             emit("noop","cleanup requests complete or awaiting their holds")
             return
-        needs_provider=any(json.loads(private(path.with_suffix(".state.json")))["phase"]!="complete" for path in pending)
         clients={}
-        if needs_provider:
+        selected=[]
+        if pending:
             require(aws("sts","get-caller-identity",{})["Account"]==AWS_ACCOUNT,"unexpected AWS account")
+            pending.sort(key=lambda path:(json.loads(private(path.with_suffix(".state.json"))).get("next_attempt_ms",0),path.name))
+            selected=pending[:100]
         complete=[]
         errors=[]
         deadline=time.monotonic()+480
         DELIVERY_DEADLINE=deadline
-        pending.sort(key=lambda path:(json.loads(private(path.with_suffix(".state.json"))).get("next_attempt_ms",0),path.name))
-        for path in pending[:100]:
+        for path in selected:
             if time.monotonic()>deadline: break
             try:
                 clean(path,clients)
@@ -725,6 +750,12 @@ def drain():
                 state=json.loads(private(state_path))
                 state.update(error=reason,next_attempt_ms=int(time.time()*1000)+600000)
                 save(state_path,state)
+        # Already-finished requests still need the same Brain closeout before
+        # archival. Doing that outside the 100-work slice keeps a completed
+        # backlog from starving the next unfinished stream.
+        for path in closeout[:100]:
+            if path.stem not in complete:
+                complete.append(path.stem)
         if complete or errors:
             if errors:
                 report_errors(errors)
