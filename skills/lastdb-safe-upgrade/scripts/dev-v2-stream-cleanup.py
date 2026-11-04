@@ -142,7 +142,7 @@ def worker_ready():
 
 def request_read(path):
     require(path.parent.resolve() == queue_root().resolve() and re.fullmatch(r"[0-9a-f-]{36}\.json", path.name), "request outside cleanup queue")
-    raw = private(path)
+    raw = private(request_artifact(path))
     value = json.loads(raw)
     require(value["schema"] == "lastdb.dev-proof-cleanup.v1" and value["environment"] == "dev" and value["api_url"] == API, "cleanup environment mismatch")
     require(re.fullmatch(r"[0-9a-f]{32}", value["account_id"]) and value["account_id"] != CI_ACCOUNT, "protected cleanup account")
@@ -152,6 +152,45 @@ def request_read(path):
     require(re.fullmatch(r"[0-9a-f]{64}", value["commit_sha256"]) and re.fullmatch(r"[0-9a-f]{64}", value["restore_report_sha256"]), "invalid proof digest")
     require(value["account_generation"].isdigit() and value["source_strict_stop"] and value["restored_strict_stop"], "incomplete proof closure")
     return value, digest(raw)
+
+
+def request_artifact(path, suffix=None):
+    """Point lookup only: original receipts keep their immutable request path."""
+    original=path.with_suffix(suffix) if suffix else path
+    archive=queue_root()/"completed"
+    require(not original.is_symlink() and not archive.is_symlink(),"unsafe cleanup artifact path")
+    archived=archive/original.name
+    return original if original.exists() or not archived.exists() else archived
+
+
+def archive_completed(path):
+    _,checksum=request_read(path)
+    state=json.loads(private(request_artifact(path,".state.json")))
+    require(state["request_sha256"]==checksum and state["phase"]=="complete"
+        and state.get("closeout_reported"),"cleanup is not ready for archival")
+    archive=queue_root()/"completed"
+    require(not archive.is_symlink(),"unsafe completed request directory")
+    archive.mkdir(mode=0o700,exist_ok=True)
+    require(archive.stat().st_uid==os.getuid(),"completed request directory has another owner")
+    os.chmod(archive,0o700)
+    # Move the manifest first. During an interrupted move, point lookup finds
+    # the archived manifest and whichever location still holds its state.
+    for suffix in (None,".state.json",".plan.json"):
+        source=request_artifact(path,suffix)
+        if not source.exists():
+            continue
+        destination=archive/source.name
+        require(not destination.is_symlink(),"unsafe completed request destination")
+        if source==destination:
+            continue
+        raw=private(source,10_000_000)
+        if destination.exists():
+            require(private(destination,10_000_000)==raw,"completed request archive conflict")
+            source.unlink()
+        else:
+            os.replace(source,destination)
+        sync_directory(archive)
+        sync_directory(queue_root())
 
 
 def enqueue(args):
@@ -211,7 +250,7 @@ def check_receipt(path):
     for name in ("execution_id","account_id","account_generation","stream_id","source_home","commit_id","commit_sha256",
                  "source_git_oid","lastdbd_sha256","lastdb_sha256","restore_report_sha256"):
         require(request[name] == values[mapping.get(name,name)], "cleanup binding mismatch")
-    state = json.loads(private(Path(values["cleanup_request"]).with_suffix(".state.json")))
+    state = json.loads(private(request_artifact(Path(values["cleanup_request"]),".state.json")))
     require(state["request_sha256"] == checksum and state["phase"] in
         ("waiting","planned","frozen","entries_deleted","objects_deleted","records_deleted","complete")
         and not state.get("error"), "cleanup state is absent or blocked")
@@ -617,15 +656,26 @@ def drain():
         except BlockingIOError:
             emit("noop","cleanup worker already active")
             return
-        paths=sorted(p for p in root.glob("*.json") if re.fullmatch(r"[0-9a-f-]{36}\.json",p.name))
-        require(len(paths)<=100,"cleanup queue exceeds bounded request count")
+        paths=[]
+        for count,path in enumerate(root.glob("*.json"),1):
+            require(count<=30000,"active cleanup directory exceeds bound")
+            if re.fullmatch(r"[0-9a-f-]{36}\.json",path.name):
+                paths.append(path)
+            elif re.fullmatch(r"[0-9a-f-]{36}\.state\.json",path.name):
+                original=path.with_name(path.name[:-11]+".json")
+                if not original.exists() and (root/"completed"/original.name).exists():
+                    archive_completed(original)
+        require(len(paths)<=10000,"active cleanup queue exceeds bounded request count")
         pending=[]
-        for path in paths:
+        for path in sorted(paths):
             state_path=path.with_suffix(".state.json")
             if not state_path.exists():
                 _,checksum=request_read(path)
                 save(state_path,{"request_sha256":checksum,"phase":"waiting","next_attempt_ms":0})
             state=json.loads(private(state_path))
+            if state["phase"]=="complete" and state.get("closeout_reported"):
+                archive_completed(path)
+                continue
             if ((state["phase"]!="complete" and state.get("next_attempt_ms",0)<=int(time.time()*1000))
                     or (state["phase"]=="complete" and not state.get("closeout_reported"))): pending.append(path)
         if not pending:
@@ -639,7 +689,8 @@ def drain():
         errors=[]
         deadline=time.monotonic()+480
         DELIVERY_DEADLINE=deadline
-        for path in pending:
+        pending.sort(key=lambda path:(json.loads(private(path.with_suffix(".state.json"))).get("next_attempt_ms",0),path.name))
+        for path in pending[:100]:
             if time.monotonic()>deadline: break
             try:
                 clean(path,clients)
@@ -667,6 +718,7 @@ def drain():
                 state_path=root/(stream+".state.json")
                 state=json.loads(private(state_path))
                 save(state_path,dict(state,closeout_reported=True))
+                archive_completed(root/(stream+".json"))
         print(json.dumps({"completed_streams":complete,"errors":errors},sort_keys=True))
         emit("ok",("blocked" if errors else "cleanup pass")+" completed="+str(len(complete))+" errors="+str(len(errors)))
 
