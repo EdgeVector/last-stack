@@ -615,7 +615,7 @@ write_dev_stamp_receipt_v4() {
 # of the trial home to DEV with `backup-v2` and restores that exact commit into
 # a source-free home. Same receipt root and exact path as v4: one Loom execution
 # has one route, so it has one receipt. A v4 receipt never satisfies this gate.
-LASTDB_DEV_V2_RECEIPT_VERSION="5"
+LASTDB_DEV_V2_RECEIPT_VERSION="6"
 LASTDB_DEV_V2_PROOF_KIND="format7-v2-dev-restore"
 _DEV_V2_UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
@@ -658,6 +658,8 @@ seed_cloud_state_absent
 committed_at
 committed_epoch
 cloud_cleanup
+cleanup_request
+cleanup_request_sha256
 EOF
 }
 
@@ -671,7 +673,7 @@ _dev_v2_matches() {
   printf '%s' "$1" | grep -Eq "$2"
 }
 
-# Validate one v5 receipt. Like v4, a failure prints a fixed RED reason and no
+# Validate one v6 receipt. Like v4, a failure prints a fixed RED reason and no
 # receipt value: a path or a cloud identifier must not reach a shared log.
 assert_dev_v2_restore_stamp_ok() {
   local receipt="${1:-$(dev_stamp_receipt_path)}"
@@ -708,7 +710,7 @@ $required_keys
 EOF
 
   [ "$(dev_stamp_receipt_get "$receipt" receipt_version || true)" = "$LASTDB_DEV_V2_RECEIPT_VERSION" ] \
-    || { printf 'RED: V2 DEV restore receipt version is not 5\n'; failed=1; }
+    || { printf 'RED: V2 DEV restore receipt version is not 6\n'; failed=1; }
   [ "$(dev_stamp_receipt_get "$receipt" verdict || true)" = "GREEN" ] \
     || { printf 'RED: V2 DEV restore receipt verdict is not GREEN\n'; failed=1; }
   [ "$(dev_stamp_receipt_get "$receipt" proof_kind || true)" = "$LASTDB_DEV_V2_PROOF_KIND" ] \
@@ -792,9 +794,13 @@ EOF
   done <<EOF
 $(_dev_v2_flag_keys)
 EOF
-  # This release has no V2 delete command. The DEV stream stays.
-  [ "$(dev_stamp_receipt_get "$receipt" cloud_cleanup || true)" = "none" ] \
+  [ "$(dev_stamp_receipt_get "$receipt" cloud_cleanup || true)" = "queued" ] \
     || { printf 'RED: V2 DEV restore cleanup contract is invalid\n'; failed=1; }
+  if ! python3 -I "$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/dev-v2-stream-cleanup.py" \
+      --check-receipt "$receipt" >/dev/null 2>&1; then
+    printf 'RED: V2 DEV restore cleanup request is absent, changed, or blocked\n'
+    failed=1
+  fi
 
   evidence="${receipt}.restore.json"
   evidence_sha256="$(dev_stamp_receipt_get "$receipt" restore_report_sha256 || true)"
@@ -831,7 +837,7 @@ EOF
   [ "$failed" -eq 0 ]
 }
 
-# Write a v5 receipt from an already validated backup, restore and key read.
+# Write a v6 receipt from an already validated backup, restore and key read.
 # The candidate fields come only from the Loom environment. The evidence file
 # must already exist beside the receipt. The rename is same-directory.
 write_dev_v2_restore_receipt() {
@@ -839,6 +845,7 @@ write_dev_v2_restore_receipt() {
   local source_home="$6" stream_id="$7" generation="$8" commit_id="$9" commit_sha256="${10}"
   local native_files="${11}" native_bytes="${12}" known_keys="${13}" evidence_sha256="${14}"
   local committed_at="${15}" committed_epoch="${16}"
+  local cleanup_request="${17}" cleanup_request_sha256="${18}"
   local dir base tmp key
 
   dev_stamp_expected_binding_is_complete >/dev/null || return 1
@@ -892,7 +899,9 @@ write_dev_v2_restore_receipt() {
     _dev_v2_flag_keys | while IFS= read -r key; do printf '%s=true\n' "$key"; done
     printf 'committed_at=%s\n' "$committed_at"
     printf 'committed_epoch=%s\n' "$committed_epoch"
-    printf 'cloud_cleanup=none\n'
+    printf 'cloud_cleanup=queued\n'
+    printf 'cleanup_request=%s\n' "$cleanup_request"
+    printf 'cleanup_request_sha256=%s\n' "$cleanup_request_sha256"
   } >"$tmp"; chmod 600 "$tmp"); then
     rm -f -- "$tmp"
     return 1
