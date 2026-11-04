@@ -2676,7 +2676,7 @@ log "primary route: $PRIMARY_ROUTE"
 # The exact candidate pair clones that static point, connects its copied identity
 # to compiled DEV, and publishes one photograph. A receipt from another
 # execution, source, path, version, or byte pair cannot authorize this change.
-# The format 7 V2 route runs the V2 DEV restore proof (receipt v5) instead.
+# The format 7 V2 route runs the V2 DEV restore proof (receipt v6) instead.
 # LASTDB_PROBE_DEV_STAMP_SKIP=1 is Tom clearance only.
 if [ "${LASTDB_PROBE_DEV_STAMP_SKIP:-0}" = "1" ]; then
   warn "DEV photograph stamp SKIPPED (LASTDB_PROBE_DEV_STAMP_SKIP=1) — Tom-clearance only; live cutover will not prove backup-to-DEV"
@@ -2684,7 +2684,8 @@ elif [ "$PRIMARY_ROUTE" = "format7-v2" ]; then
   # The V1 photograph helper uses retired commands and cannot read a V2 home.
   # The exact pair clones the same trial home, publishes one manual backup-v2
   # snapshot to DEV, restores that commit into a source-free home, and reads
-  # every known seed key there. The v5 receipt binds this Loom execution.
+  # every known seed key there. The v6 receipt binds this Loom execution and
+  # the durable automatic cleanup request.
   [ -x "$DEV_V2_RESTORE_PROOF_SH" ] \
     || die "exact-candidate V2 DEV restore proof helper is absent or not executable"
   BINDING_OUT=""
