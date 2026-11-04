@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Seed the mechanical cleanup gate. Preserve every existing live registry entry.
+set -euo pipefail
+ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
+# shellcheck source=last-stack-routines-registry-env
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/last-stack-routines-registry-env"
+last_stack_registry_paths_init
+REGISTRY_DIR="${ROUTINES_HOME:-$HOME/.routines}/registry"
+PROMPT_PATH="$(last_stack_registry_prompt_path dev-proof-cleanup.md "$ROOT/routines/dev-proof-cleanup.md")"
+GATE_PATH="$REG_STABLE_ROOT/bin/last-stack-dev-proof-cleanup"
+DRY_RUN=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1; shift ;;
+    --registry-dir) REGISTRY_DIR="$2"; shift 2 ;;
+    -h|--help) echo 'last-stack-dev-proof-cleanup-routine [--dry-run] [--registry-dir DIR]'; exit 0 ;;
+    *) echo 'unknown cleanup routine argument' >&2; exit 2 ;;
+  esac
+done
+path="$REGISTRY_DIR/lastdb-dev-proof-cleanup.toml"
+last_stack_registry_skip_if_exists "$path" 0 && exit 0
+if [ "$DRY_RUN" -eq 0 ]; then
+  last_stack_registry_assert_safe_write "$REGISTRY_DIR" "$PROMPT_PATH" "$GATE_PATH" "$REG_CWD" || exit 3
+fi
+body=$(cat <<EOF
+id = "lastdb-dev-proof-cleanup"
+status = "active"
+rrule = "FREQ=MINUTELY;INTERVAL=10;BYSECOND=0"
+timeout_min = 15
+difficulty = "fast"
+effort = "low"
+group = "ops"
+cwd = "$REG_CWD"
+prompt_path = "$PROMPT_PATH"
+gate_command = "$GATE_PATH"
+EOF
+)
+if [ "$DRY_RUN" -eq 1 ]; then
+  printf '%s\n' "$body"
+  exit 0
+fi
+mkdir -p "$REGISTRY_DIR"
+temporary="$(mktemp "$REGISTRY_DIR/.dev-proof-cleanup.XXXXXX")"
+printf '%s\n' "$body" >"$temporary"
+chmod 600 "$temporary"
+mv "$temporary" "$path"
+printf 'wrote %s\n' "$path"

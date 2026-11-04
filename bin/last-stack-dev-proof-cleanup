@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Mechanical routine gate: never starts an agent, opens a primary home, or
+# selects a stream outside the exact verified-proof request queue.
+set -euo pipefail
+ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
+exec python3 -I "$ROOT/skills/lastdb-safe-upgrade/scripts/dev-v2-stream-cleanup.py" --drain

@@ -17,6 +17,14 @@
     "prepare": [],
     "links": [
       {
+        "source": "bin/last-stack-dev-proof-cleanup",
+        "command": "last-stack-dev-proof-cleanup"
+      },
+      {
+        "source": "bin/last-stack-dev-proof-cleanup-routine",
+        "command": "last-stack-dev-proof-cleanup-routine"
+      },
+      {
         "source": "bin/last-stack-post-merge-safe-upgrade",
         "command": "last-stack-post-merge-safe-upgrade"
       },
@@ -402,6 +410,12 @@
           "bin/last-stack-registry-setup"
         ],
         "timeout_s": 600
+      },
+      {
+        "argv": [
+          "bin/last-stack-dev-proof-cleanup-routine"
+        ],
+        "timeout_s": 30
       }
     ]
   }

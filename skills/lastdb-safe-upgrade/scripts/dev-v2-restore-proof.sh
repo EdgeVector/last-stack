@@ -20,7 +20,8 @@
 #      only (`backup-v2 restore`), into a new home, with no source home;
 #   5. require the restored home to be Cloud Off, boot it, read every known
 #      seed key in one batch, and stop it strictly;
-#   6. write receipt v5, bound to the Loom execution and the exact pair.
+#   6. enqueue exact-stream cleanup after the restore hold, then write receipt
+#      v6 bound to that durable request, the Loom execution and the exact pair.
 set -euo pipefail
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -32,6 +33,7 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PHRASE_HELPER="$SCRIPT_DIR/dev-v2-recovery-phrase.py"
 BATCH_HELPER="$SCRIPT_DIR/synthetic-record-batch.py"
 EVIDENCE_SANITIZER="$SCRIPT_DIR/dev-photograph-sanitize-tail.py"
+CLEANUP_HELPER="$SCRIPT_DIR/dev-v2-stream-cleanup.py"
 CANDIDATE_DAEMON=""
 CANDIDATE_CLI=""
 PRIMARY_HOME_ARG=""
@@ -113,9 +115,11 @@ done
 for tool in jq python3 perl curl base64 uuidgen cmp; do
   command -v "$tool" >/dev/null 2>&1 || proof_die "$tool is unavailable"
 done
-for helper in "$PHRASE_HELPER" "$BATCH_HELPER"; do
+for helper in "$PHRASE_HELPER" "$BATCH_HELPER" "$CLEANUP_HELPER"; do
   [ -f "$helper" ] && [ ! -L "$helper" ] || proof_die "a V2 DEV proof helper file is absent or unsafe"
 done
+python3 -I "$CLEANUP_HELPER" --ready \
+  || proof_die "the automatic DEV proof cleanup worker is not installed and active"
 
 while IFS= read -r env_pair; do
   [ -n "$env_pair" ] && LIVE_LASTDB_ENV_ARGS+=("$env_pair")
@@ -550,6 +554,19 @@ if ! jq -cn --arg c "$commit_sha256" --argjson f "$native_files" --argjson b "$n
 fi
 evidence_sha256="$(dev_stamp_sha256_file "$evidence")" \
   || proof_die "the V2 DEV restore evidence digest is unavailable"
+
+# Cleanup is independent of the upgrade process: the service's one-hour read
+# hold must expire before deletion. Only this verified, stopped proof's exact
+# stream is queued. A failed enqueue cannot produce a GREEN receipt.
+FAILURE_PHASE="cloud_cleanup_enqueue"
+python3 -I "$CLEANUP_HELPER" --enqueue --proof-root "$PROOF_ROOT_REAL" \
+    --execution-id "$LOOM_EXEC_ID" --restore-report-sha256 "$evidence_sha256" \
+    >"$PROOF_ROOT_REAL/cleanup.json" 2>"$PROOF_ROOT_REAL/cleanup.err" \
+  || proof_die "the verified temporary DEV stream could not be queued for automatic cleanup"
+cleanup_request="$(jq -er '.request' "$PROOF_ROOT_REAL/cleanup.json")"
+cleanup_request_sha256="$(jq -er '.sha256' "$PROOF_ROOT_REAL/cleanup.json")"
+
+FAILURE_PHASE="receipt_write"
 committed_epoch="$(date +%s)"
 committed_at="$(date -u -r "$committed_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
   || date -u -d "@$committed_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
@@ -557,7 +574,7 @@ write_dev_v2_restore_receipt \
   "$RECEIPT" "$PRIMARY_HOME_ARG" "$PROOF_HOME" "$CLONE_SOURCE" "$user_hash" \
   "$source_home" "$stream_id" "$generation" "$request_id" "$commit_sha256" \
   "$native_files" "$native_bytes" "$known_keys" "$evidence_sha256" \
-  "$committed_at" "$committed_epoch" \
+  "$committed_at" "$committed_epoch" "$cleanup_request" "$cleanup_request_sha256" \
   || proof_die "the exact-candidate V2 DEV restore receipt could not be written"
 assert_dev_v2_restore_stamp_ok "$RECEIPT" "$PRIMARY_HOME_ARG" "$CLONE_SOURCE" >/dev/null \
   || proof_die "the exact-candidate V2 DEV restore receipt failed its own gate"

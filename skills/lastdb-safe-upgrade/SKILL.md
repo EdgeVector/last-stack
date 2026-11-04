@@ -153,13 +153,36 @@ It uses the exact candidate pair for every step:
    The restore home holds only the paused DEV config. There is no source home.
    `scripts/dev-v2-recovery-phrase.py` pipes the recovery phrase (the BIP39 form of the seed identity).
 5. Require Cloud Off on the restored home. Boot it, read every known seed key in one batch, and stop it strictly.
-6. Write receipt v5 (`proof_kind=format7-v2-dev-restore`) at the same exact receipt path as v4.
-   The receipt binds the Loom execution, the exact pair, the trial home, the DEV commit and the restore evidence.
+6. Queue automatic cleanup of this exact stopped proof stream, then write receipt v6
+   (`proof_kind=format7-v2-dev-restore`) at the same exact receipt path as v4.
+   The receipt binds the Loom execution, exact pair, trial home, DEV commit,
+   restore evidence and immutable cleanup request. An old v5 receipt does not pass.
 
 A v4 photograph receipt never passes the V2 gate. `--check-dev-stamp` reads the
 primary status and checks the receipt kind of that route.
 
-CAUTION: Each proof run adds one DEV backup stream. This release has no V2 delete command.
+The installed `lastdb-dev-proof-cleanup` routine runs its mechanical gate every
+10 minutes. `dev-v2-stream-cleanup.py` saves an owner-only request outside Git
+only after backup, source-free restore, known-key verification and both strict
+stops succeed. Receipt v6 records `cloud_cleanup=queued`; it does not claim
+that deletion has already finished. A missing or inactive worker, changed
+request, failed enqueue or blocked cleanup makes the gate RED.
+
+After the service's one-hour restore hold expires and existing scope retention
+finishes, the worker freezes only that DEV scope, checks the exact one-snapshot
+stream and every allocation against the quota ledger, removes its canonical
+entries and exact R2/B2 objects, and deletes its records. Stream deletion and
+quota release share an atomic transaction with a durable completion receipt.
+Retries resume the saved phase and cannot release quota twice. The worker
+verifies the remaining ledger and protected objects, appends its outcome to
+Brain, and records `phase=complete` in the request's private state file.
+
+Shared objects, active authority holders, changed heads, unknown ownership or
+unsettled uploads are retained with a visible cleanup error for review. There
+is no broad sweep, PROD path, primary operation or automatic-backup toggle.
+The queue is `~/.local/state/last-stack/lastdb-safe-upgrade/dev-stream-cleanup`.
+Runtime prerequisites are Python 3.11+, AWS CLI with DEV operator permissions,
+the active routines scheduler, and the existing LastSecrets DEV R2/B2 locators.
 
 The seed holds a copy of the primary `identity.key`. The DEV account is that identity in DEV.
 Registration needs no invite while that DEV account exists.
@@ -1021,7 +1044,7 @@ The script:
 | **0b. Candidate data** | Build or reuse the synthetic seed (baseline writes it); candidate copies come from the trial home. |
 | **2. Candidate check** | Boot the exact candidate on a copy of the synthetic seed. Require schemas, the keyed brain point record, the brain range, a LastSecrets locator, stable primary PID, and memory size below the guard. The driver checks read latency and record counts on synthetic seed copies. |
 | Detect venue | programs (format 7 V2), sidebin or brew |
-| **2c. DEV photograph proof** | The exact pair clones the trial copy, scrubs production state, connects the copied identity to DEV, and publishes a snapshot. The exact CLI restores that manifest from DEV into a source-free home. The fresh v3 receipt must match this Loom execution, this run's trial copy, and the retained restore report. On the format 7 V2 route the exact pair instead publishes a `backup-v2` snapshot of a trial clone to DEV, restores that commit into a source-free home, and reads every known seed key there (receipt v5). |
+| **2c. DEV photograph proof** | The exact pair clones the trial copy, scrubs production state, connects the copied identity to DEV, and publishes a snapshot. The exact CLI restores that manifest from DEV into a source-free home. The fresh v3 receipt must match this Loom execution, this run's trial copy, and the retained restore report. On the format 7 V2 route the exact pair instead publishes a `backup-v2` snapshot of a trial clone to DEV, restores that commit into a source-free home, reads every known seed key there, and durably queues its exact temporary stream for cleanup (receipt v6). |
 | **2d. Pre-live status bar** | Read live status before restart. On the format 7 V2 route, refuse an automatic backup that is off, unobserved, degraded, or has no accepted backup. On other routes, refuse a status that is not ok or a home that is not writable. |
 | **3. Live** | Refuse brew. For sidebin, write the boot-ledger restart intent. Stage and check both candidate files. Require a current cloud backup. Stop the old daemon without a forced kill. Require its exact flush receipt and clean session. No copy of the primary is made. Then replace the saved binary pair and reload the LaunchAgent job. |
 | **4. Post-check** | Exact installed pair hashes, live `/health`, schemas > 0, the live read mode classified before install (Board title, or one brain record plus one LastSecrets locator), **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **live peak RSS** vs guard, **live point-read latency** vs the candidate's probe numbers (the live range read has no known key and stays unmeasured) (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency in notice |
