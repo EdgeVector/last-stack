@@ -142,7 +142,7 @@ def worker_ready():
 
 def request_read(path):
     require(path.parent.resolve() == queue_root().resolve() and re.fullmatch(r"[0-9a-f-]{36}\.json", path.name), "request outside cleanup queue")
-    raw = private(request_artifact(path))
+    raw = request_bytes(path)
     value = json.loads(raw)
     require(value["schema"] == "lastdb.dev-proof-cleanup.v1" and value["environment"] == "dev" and value["api_url"] == API, "cleanup environment mismatch")
     require(re.fullmatch(r"[0-9a-f]{32}", value["account_id"]) and value["account_id"] != CI_ACCOUNT, "protected cleanup account")
@@ -163,9 +163,26 @@ def request_artifact(path, suffix=None):
     return original if original.exists() or not archived.exists() else archived
 
 
+def request_bytes(path, suffix=None, limit=2_000_000):
+    """Retry an exact file read if the worker archived it after lookup.
+
+    The worker moves immutable completed artifacts once under its exclusive
+    lock. A reader need not block cleanup, but must handle a move between
+    exists/lstat/read. Both attempts keep the same private-file validation.
+    """
+    selected=request_artifact(path,suffix)
+    try:
+        return private(selected,limit)
+    except FileNotFoundError:
+        relocated=request_artifact(path,suffix)
+        if relocated==selected:
+            raise
+        return private(relocated,limit)
+
+
 def archive_completed(path):
     _,checksum=request_read(path)
-    state=json.loads(private(request_artifact(path,".state.json")))
+    state=json.loads(request_bytes(path,".state.json"))
     require(state["request_sha256"]==checksum and state["phase"]=="complete"
         and state.get("closeout_reported"),"cleanup is not ready for archival")
     archive=queue_root()/"completed"
@@ -250,7 +267,7 @@ def check_receipt(path):
     for name in ("execution_id","account_id","account_generation","stream_id","source_home","commit_id","commit_sha256",
                  "source_git_oid","lastdbd_sha256","lastdb_sha256","restore_report_sha256"):
         require(request[name] == values[mapping.get(name,name)], "cleanup binding mismatch")
-    state = json.loads(private(request_artifact(Path(values["cleanup_request"]),".state.json")))
+    state = json.loads(request_bytes(Path(values["cleanup_request"]),".state.json"))
     require(state["request_sha256"] == checksum and state["phase"] in
         ("waiting","planned","frozen","entries_deleted","objects_deleted","records_deleted","complete")
         and not state.get("error"), "cleanup state is absent or blocked")
