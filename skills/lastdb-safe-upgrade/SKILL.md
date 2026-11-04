@@ -177,9 +177,12 @@ quota release share an atomic transaction with a durable completion receipt.
 Retries resume the saved phase and cannot release quota twice. The worker
 verifies the remaining ledger and protected objects, appends its outcome to
 Brain, and records `phase=complete` in the request's private state file.
-Completed, reported requests move into the queue's `completed` directory.
-Receipt checks resolve that exact archived filename without a directory walk.
-Completed history therefore cannot consume the active queue's processing limit.
+Completed, reported requests move into the queue's `completed` directory before
+the active-queue cap is applied. Receipt checks resolve that exact archived
+filename without a directory walk. The cap counts only requests that are not
+yet complete, and the 100-request pass counts only due unfinished work.
+Finished history cannot fill either limit or wedge a later drain. Brain
+closeout still has to succeed before an unreported completion is archived.
 
 Shared objects, active authority holders, changed heads, unknown ownership or
 unsettled uploads are retained with a visible cleanup error for review. There
