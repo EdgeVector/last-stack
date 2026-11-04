@@ -35,6 +35,7 @@ python3 -m py_compile lib/canary-loom/native_upgrade.py \
   lib/canary-loom/native_migration.py lib/canary-loom/native_migration_io.py \
   lib/canary-loom/native_migration_effects.py
 python3 -m py_compile skills/lastdb-safe-upgrade/scripts/dev-v2-stream-cleanup.py
+python3 -I skills/lastdb-safe-upgrade/scripts/dev-v2-stream-cleanup.py --help >/dev/null
 
 bin/last-stack-lint-machine-leaks --ci
 # No unbounded workspace walk in a helper, no new bash->python heredoc

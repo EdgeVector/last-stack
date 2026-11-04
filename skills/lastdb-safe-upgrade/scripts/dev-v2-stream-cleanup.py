@@ -19,7 +19,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import tomllib
 import uuid
 from datetime import datetime, timezone
 
@@ -98,17 +97,46 @@ def sync_directory(path):
         os.close(descriptor)
 
 
+def flat_routine(path):
+    """Read the seed generator's flat literal subset, failing on other TOML.
+
+    macOS provides Python 3.9. The native scheduler owns general TOML parsing;
+    this readiness check accepts only single-line JSON-compatible string,
+    integer and Boolean literals, with no tables, duplicate keys or trailing
+    expressions. It never approximates an unsupported registry document.
+    """
+    require(path.stat().st_size<=8192,"cleanup routine entry exceeds bound")
+    entry={}
+    decoder=json.JSONDecoder()
+    for line in path.read_text().splitlines():
+        line=line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match=re.fullmatch(r"([a-z][a-z0-9_]*)\s*=\s*(.+)",line)
+        require(match is not None,"unsupported cleanup routine entry")
+        name,raw=match.groups()
+        value,end=decoder.raw_decode(raw)
+        tail=raw[end:].strip()
+        require(name not in entry and (not tail or tail.startswith("#"))
+            and type(value) in (str,int,bool),"unsupported or duplicate cleanup routine field")
+        entry[name]=value
+    return entry
+
+
 def worker_ready():
     require(shutil.which("aws") and shutil.which("lastsecrets"), "AWS CLI or LastSecrets unavailable")
     registry = Path(os.environ.get("ROUTINES_HOME", str(Path.home()/".routines"))) / "registry" / (ROUTINE+".toml")
     require(registry.is_file() and not registry.is_symlink(), "cleanup routine is not installed")
     info = registry.lstat()
     require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid(), "unsafe cleanup routine")
-    entry = tomllib.loads(registry.read_text())
+    entry = flat_routine(registry)
     gate = str(Path.home()/".last-stack/bin/last-stack-dev-proof-cleanup")
     require(entry.get("status") == "active" and entry.get("gate_command") == gate
             and entry.get("id") == ROUTINE and entry.get("rrule") == "FREQ=MINUTELY;INTERVAL=10;BYSECOND=0"
             and os.access(gate, os.X_OK), "cleanup routine is not active with the installed gate")
+    installed=Path.home()/".last-stack/skills/lastdb-safe-upgrade/scripts/dev-v2-stream-cleanup.py"
+    require(installed.is_file() and digest(installed.read_bytes())==digest(Path(__file__).read_bytes()),
+        "cleanup helper does not match the installed worker release")
 
 
 def request_read(path):
@@ -549,8 +577,21 @@ def report_errors(errors):
         search=subprocess.run(["brain","ask",slug,"--json"],capture_output=True,text=True,timeout=60)
         require(search.returncode==0,"cleanup error search failed")
         body="Automatic DEV proof cleanup retained its request for review: "+json.dumps(error,sort_keys=True)+". Repo EdgeVector/last-stack. Inspect the exact request and saved phase; do not clear a fence or widen deletion targets."
-        result=subprocess.run(["brain","papercut","file",slug,"--component","dev-proof-cleanup","--severity","p2",
-            "--title","DEV proof cleanup blocked: "+reason,"--symptom",reason,"--body",body],capture_output=True,text=True,timeout=60)
+        existing=subprocess.run(["brain","get",slug,"--type","reference","--json"],capture_output=True,text=True,timeout=60)
+        if existing.returncode==0:
+            record=json.loads(existing.stdout)
+            if record.get("status")!="active":
+                reopened=subprocess.run(["brain","status",slug,"active","--type","reference"],capture_output=True,text=True,timeout=60)
+                require(reopened.returncode==0,"cleanup papercut reopen failed")
+            command=["brain","append",slug,"--type","reference"]
+            document="\n\nStatus: open. "+body+"\n"
+        else:
+            # The installed Brain exposes put/append/status, not papercut file.
+            fields={"type":"reference","slug":slug,"title":"DEV proof cleanup blocked: "+reason,
+                "status":"active","tags":["papercut","last-stack","severity-p2"]}
+            document="---\n"+"\n".join(k+": "+json.dumps(v) for k,v in fields.items())+"\n---\n\nStatus: open. Severity: p2. Component: dev-proof-cleanup.\n\n"+body+"\n"
+            command=["brain","put"]
+        result=subprocess.run(command,input=document,capture_output=True,text=True,timeout=60)
         require(result.returncode==0,"cleanup papercut filing failed")
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         list(pool.map(file_error,errors))

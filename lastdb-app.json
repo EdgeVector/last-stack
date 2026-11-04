@@ -389,6 +389,15 @@
     "probe": [
       {
         "argv": [
+          "python3",
+          "-I",
+          "skills/lastdb-safe-upgrade/scripts/dev-v2-stream-cleanup.py",
+          "--help"
+        ],
+        "timeout_s": 15
+      },
+      {
+        "argv": [
           "bash",
           "-n",
           "setup"

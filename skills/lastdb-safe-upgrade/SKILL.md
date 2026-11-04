@@ -181,7 +181,7 @@ Shared objects, active authority holders, changed heads, unknown ownership or
 unsettled uploads are retained with a visible cleanup error for review. There
 is no broad sweep, PROD path, primary operation or automatic-backup toggle.
 The queue is `~/.local/state/last-stack/lastdb-safe-upgrade/dev-stream-cleanup`.
-Runtime prerequisites are Python 3.11+, AWS CLI with DEV operator permissions,
+Runtime prerequisites are Python 3.9+, AWS CLI with DEV operator permissions,
 the active routines scheduler, and the existing LastSecrets DEV R2/B2 locators.
 
 The seed holds a copy of the primary `identity.key`. The DEV account is that identity in DEV.
