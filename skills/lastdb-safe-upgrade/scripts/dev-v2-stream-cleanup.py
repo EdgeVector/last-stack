@@ -678,8 +678,8 @@ def drain():
             require(count<=30000,"active cleanup directory exceeds bound")
             if re.fullmatch(r"[0-9a-f-]{36}\.json",path.name):
                 paths.append(path)
-            elif re.fullmatch(r"[0-9a-f-]{36}\.state\.json",path.name):
-                original=path.with_name(path.name[:-11]+".json")
+            elif re.fullmatch(r"[0-9a-f-]{36}\.(?:state|plan)\.json",path.name):
+                original=path.with_name(path.name[:36]+".json")
                 if not original.exists() and (root/"completed"/original.name).exists():
                     archive_completed(original)
         require(len(paths)<=10000,"active cleanup queue exceeds bounded request count")
