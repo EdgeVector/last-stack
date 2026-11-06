@@ -71,8 +71,11 @@ if [ -x "$lastdbd_bin" ]; then
 else
   bad "lastdbd next to the lastdb under test is missing: $lastdbd_bin"
 fi
-if [ -n "$LASTDB_BIN" ] && ! "$LASTDB_BIN" app resolve --help >/dev/null 2>&1; then
-  bad "this lastdb has no \`app resolve\`: brew stable predates install-by-proof; run last-stack-release-publish first"
+if [ -n "$LASTDB_BIN" ]; then
+  list_help="$("$LASTDB_BIN" app list --help 2>/dev/null || true)"
+  if [[ "$list_help" != *'[APP]'* ]] && ! "$LASTDB_BIN" app resolve --help >/dev/null 2>&1; then
+    bad "this lastdb has no signed app resolver"
+  fi
 fi
 
 index_args=()

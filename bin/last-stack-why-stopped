@@ -547,7 +547,12 @@ pin_running_version=""
 if [ -n "$pin_frozen_apps" ] && have_cmd "$LASTDB_BIN" && command -v jq >/dev/null 2>&1; then
   pin_running_version="$("$LASTDB_BIN" --version 2>/dev/null | awk 'NR==1{print $NF}')"
   if [ -n "$pin_frozen_first" ] && [ "$pin_frozen_channel" != "-" ]; then
-    pin_info="$("$LASTDB_BIN" app info "$pin_frozen_first" --channel "$pin_frozen_channel" 2>/dev/null || true)"
+    pin_help="$("$LASTDB_BIN" app list --help 2>/dev/null || true)"
+    if [[ "$pin_help" == *'--catalog-entry'* ]]; then
+      pin_info="$("$LASTDB_BIN" app list "$pin_frozen_first" --catalog-entry --channel "$pin_frozen_channel" 2>/dev/null || true)"
+    else
+      pin_info="$("$LASTDB_BIN" app info "$pin_frozen_first" --channel "$pin_frozen_channel" 2>/dev/null || true)"
+    fi
     if [ -n "$pin_info" ]; then
       pin_newest_row="$(
         printf '%s\n' "$pin_info" | jq -r '
