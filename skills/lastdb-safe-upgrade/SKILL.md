@@ -93,7 +93,7 @@ A format 7 home has `status.durability` and no `status.sync`.
 The driver then selects `PRIMARY_ROUTE=format7-v2`. Other homes keep the legacy route.
 
 CAUTION: Automatic V2 backup stays on through the whole upgrade.
-Do not run `lastdb cloud backup-v2 disable-automatic`. This route has no Cloud Off step.
+Keep the current automatic backup policy throughout this route.
 
 The route has these steps:
 
@@ -106,7 +106,8 @@ The route has these steps:
    not degraded, and an accepted backup. A legacy waiver is refused.
 4. Stage. The exact pair goes to `~/.lastdb/native-run-v2-programs/<full source oid>/`.
    The driver checks both hashes and the code signatures before the folder name changes.
-5. Recovery point. The old CLI reads `lastdb cloud backup-v2 status --json`.
+5. Recovery point. The driver checks the exact source CLI for `lastdb backup status --json`.
+   On older binaries it reads `lastdb cloud backup-v2 status --json`.
    `cloud-recovery-status.py --v2-status` requires the log head to equal the backed frontiers.
    It also requires an accepted backup, the same user hash, and no pause, block, log gap or retained bytes.
    The driver retries for `LASTDB_V2_RECOVERY_WAIT_SECS` (default 300) seconds.
@@ -141,15 +142,17 @@ Use `--retry 2` to start a new execution of that pair.
 ### V2 DEV restore proof
 
 `scripts/dev-v2-restore-proof.sh` is the DEV gate (2c) of the format 7 V2 route.
-It uses the exact candidate pair for every step:
+It uses the exact candidate pair for every step. The command names below apply
+when the candidate advertises `lastdb backup`. The driver selects the original
+spellings for older binaries before it runs a backup operation.
 
 1. Clone this run's trial home. The clone must have no cloud state.
    Boot the candidate on the clone with V2 backup enabled.
 2. Register a credentials-only DEV device for the seed identity:
-   `lastdb cloud recover-credentials-home --env dev --identity-seed-stdin`.
-3. Connect the clone with `backup-v2 connect --existing --env dev --api-key-stdin`.
-   Publish one manual snapshot with `backup-v2 start`. Stop the clone strictly.
-4. Restore that exact stream, generation and commit with `backup-v2 restore`.
+   `lastdb admin backup recover-credentials-home --env dev --identity-seed-stdin`.
+3. Connect the clone with `lastdb backup connect --existing --env dev --api-key-stdin`.
+   Publish one manual snapshot with `lastdb backup start`. Stop the clone strictly.
+4. Restore that exact stream, generation and commit with `lastdb backup restore`.
    The restore home holds only the paused DEV config. There is no source home.
    `scripts/dev-v2-recovery-phrase.py` pipes the recovery phrase (the BIP39 form of the seed identity).
 5. Require Cloud Off on the restored home. Boot it, read every known seed key in one batch, and stop it strictly.
