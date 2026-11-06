@@ -11,7 +11,7 @@ JSON line to $LOAD_MON_DIR/load-YYYYMMDD.jsonl:
 
   host   load avg, swap, top processes by CPU (any process, e.g. fseventsd),
          primary lastdbd pid/cpu/rss     -- from ps/sysctl only, never the node
-  node   one direct UDS GET /api/status and one `lastdb ops --by-app`, each
+  node   one direct UDS GET /api/status and one `lastdb admin ops --by-app`, each
          under a hard deadline. A timeout is a VALUE, not an error:
          state = ok | busy | shedding | down | error
 
@@ -473,8 +473,10 @@ def tap_status():
 
 
 def tap_ops():
+    help_rc, _ = run([LASTDB, "admin", "ops", "--help"], DEADLINE)
+    args = ["admin", "ops"] if help_rc == 0 else ["ops"]
     t0 = time.monotonic()
-    rc, out = run([LASTDB, "ops", "--by-app"], DEADLINE)
+    rc, out = run([LASTDB, *args, "--by-app"], DEADLINE)
     ms = int((time.monotonic() - t0) * 1000)
     if rc is None:
         return {"state": "busy", "ms": ms, "rows": []}

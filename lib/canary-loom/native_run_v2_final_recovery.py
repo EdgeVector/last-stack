@@ -76,7 +76,9 @@ def complete(approval, state, path):
         env = {k: v for k, v in os.environ.items() if not k.startswith(
             ("LASTDB_", "FOLD", "AWS_", "B2_", "CF_", "CLOUDFLARE_", "DYLD_", "LD_"))
             and k not in ("EXEMEM_API_URL", "EXEMEM_ENV", "ENVIRONMENT")}
-        result = run([program, "--data-dir", home, "cloud", "backup-v2", "start-stopped",
+        grouped = run([program, "backup", "--help"], check=False, env=env).returncode == 0
+        backup = ["admin", "backup"] if grouped else ["cloud", "backup-v2"]
+        result = run([program, "--data-dir", home, *backup, "start-stopped",
                       "--request-id", request, "--expected-user-hash", approval["recovery"]["account_id"],
                       "--stopped-pid", str(identity["pid"]), "--stopped-start-ts", str(identity["start_ts"]),
                       "--json"], timeout=3600, env=env)
