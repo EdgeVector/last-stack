@@ -505,6 +505,7 @@ pin_newest_version=""
 pin_newest_at=""
 pin_newest_oid=""
 pin_running_version=""
+pin_inspect="${LASTDB_BIN} app list --help"
 # Artifact-frontier holds no longer exist in source registry installs.
 # Which of the two causes is this? Both render an identical stale frontier, and
 # they have OPPOSITE remedies, so the class is useless without the discriminator.
@@ -549,8 +550,10 @@ if [ -n "$pin_frozen_apps" ] && have_cmd "$LASTDB_BIN" && command -v jq >/dev/nu
   if [ -n "$pin_frozen_first" ] && [ "$pin_frozen_channel" != "-" ]; then
     pin_help="$("$LASTDB_BIN" app list --help 2>/dev/null || true)"
     if [[ "$pin_help" == *'--catalog-entry'* ]]; then
+      pin_inspect="${LASTDB_BIN} app list ${pin_frozen_first} --catalog-entry --channel ${pin_frozen_channel}"
       pin_info="$("$LASTDB_BIN" app list "$pin_frozen_first" --catalog-entry --channel "$pin_frozen_channel" 2>/dev/null || true)"
     else
+      pin_inspect="${LASTDB_BIN} app info ${pin_frozen_first} --channel ${pin_frozen_channel}"
       pin_info="$("$LASTDB_BIN" app info "$pin_frozen_first" --channel "$pin_frozen_channel" 2>/dev/null || true)"
     fi
     if [ -n "$pin_info" ]; then
@@ -583,7 +586,7 @@ if [ -n "$pin_frozen_apps" ]; then
     if [ "$pin_newest_oid" = "$pin_frozen_behind" ] && [ "$pin_newest_oid" != "-" ]; then
       h_detail="${h_detail} (that row IS the oid ${pin_frozen_first} is behind on, so the commit is already proved -- only the build differs)"
     fi
-    actions+=("cause is a BUILD MISMATCH, not a paused prover: the index's newest row for ${pin_frozen_first} is ${pin_newest_version} (proved ${pin_newest_at}) and this host runs ${pin_running_version}, and proof rows are keyed on (app, lastdb_version) - resuming a prover cannot clear it. Read it yourself: ${LASTDB_BIN} app info ${pin_frozen_first} --channel ${pin_frozen_channel} | jq 'max_by(.proved_at)'. Remedies, all operator calls: prove the RUNNING build (registry-proof workflow_dispatch with an explicit lastdb_release ${pin_running_version}), or finish the pending move of this host to ${pin_newest_version}, or accept the posture")
+    actions+=("cause is a BUILD MISMATCH, not a paused prover: the index's newest row for ${pin_frozen_first} is ${pin_newest_version} (proved ${pin_newest_at}) and this host runs ${pin_running_version}, and proof rows are keyed on (app, lastdb_version) - resuming a prover cannot clear it. Read the registry entry with ${pin_inspect}. Remedies, all operator calls: prove the RUNNING build (registry-proof workflow_dispatch with an explicit lastdb_release ${pin_running_version}), or finish the pending move of this host to ${pin_newest_version}, or accept the posture")
   elif [ -n "$pin_newest_version" ]; then
     # The index holds nothing newer on ANY build, so the prover itself is stopped.
     h_detail="${h_detail}; cause=prover-stalled: the index's newest row for ${pin_frozen_first} on ANY build is ${pin_newest_version} proved ${pin_newest_at}, which is this host's build"
@@ -591,7 +594,7 @@ if [ -n "$pin_frozen_apps" ]; then
   else
     # "I did not look" must never render as a measured cause.
     h_detail="${h_detail}; cause=unknown (index newest row not read)"
-    actions+=("cause UNKNOWN - read the index's newest row across ALL builds before resuming anything, because a frontier can be stale only for the build this host runs: ${LASTDB_BIN} app info ${pin_frozen_first} --channel ${pin_frozen_channel} | jq 'max_by(.proved_at)' and compare its lastdb_version against '${LASTDB_BIN} --version'. If they differ no prover cadence can clear it; if they match, resume routine llms-txt-install-smoke")
+    actions+=("cause UNKNOWN - inspect the signed registry entry with ${pin_inspect}. The grouped CLI reports entries for this interface. Compare the full proof frontier with the running build before resuming anything.")
   fi
   detail+=("$h_detail")
 fi
