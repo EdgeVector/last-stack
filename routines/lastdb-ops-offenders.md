@@ -51,7 +51,11 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 . "$last_stack/bin/last-stack-shell-prelude"
 "$last_stack/bin/last-stack-lastdb-ops-offenders" --json | tee /tmp/lastdb-ops-offenders.json
 lastdb status || true
-lastdb ops || true
+if lastdb admin ops --help >/dev/null 2>&1; then
+  lastdb admin ops || true
+else
+  lastdb ops || true
+fi
 ```
 
 If the collector exits 2 (UNKNOWN): heartbeat `noop` with the reason and EXIT.

@@ -371,7 +371,13 @@ wait_ready "$SOURCE_PID" "$PROOF_HOME" \
 SOURCE_START_TS="$READY_START_TS"
 
 FAILURE_PHASE="source_status"
-cand_cli status0 --data-dir "$PROOF_HOME" cloud backup-v2 status --json \
+backup_command=(cloud backup-v2)
+register_command=(cloud recover-credentials-home)
+if with_alarm "$CLI_TIMEOUT" "${CAND_ENV[@]}" "$CANDIDATE_CLI" backup --help >/dev/null 2>&1; then
+  backup_command=(backup)
+  register_command=(admin backup recover-credentials-home)
+fi
+cand_cli status0 --data-dir "$PROOF_HOME" "${backup_command[@]}" status --json \
   || proof_die "the exact candidate did not report V2 status on the trial clone"
 user_hash="$(jq -er '.user_hash | select(type == "string" and test("^[0-9a-f]{32}$"))' \
   "$PROOF_ROOT_REAL/status0.json" 2>/dev/null)" \
@@ -383,7 +389,7 @@ FAILURE_PHASE="dev_register"
 mkdir -m 700 "$PROOF_ROOT_REAL/registration"
 REG_HOME="$PROOF_ROOT_REAL/registration/home"
 base64 <"$PROOF_HOME/identity.key" \
-  | with_alarm "$CLI_TIMEOUT" "${CAND_ENV[@]}" "$CANDIDATE_CLI" cloud recover-credentials-home \
+  | with_alarm "$CLI_TIMEOUT" "${CAND_ENV[@]}" "$CANDIDATE_CLI" "${register_command[@]}" \
       --into "$REG_HOME" --env dev --expected-user-hash "$user_hash" --identity-seed-stdin --json \
       >"$PROOF_ROOT_REAL/register.json" 2>"$PROOF_ROOT_REAL/register.err" \
   || proof_die "the exact candidate could not register a DEV device for the seed identity; the DEV account must exist (SKILL.md: V2 DEV restore proof)"
@@ -406,7 +412,7 @@ PAUSED_CONFIG="$REG_HOME/cloud_sync.json.paused"
 FAILURE_PHASE="dev_connect"
 jq -r '.api_key' "$PAUSED_CONFIG" \
   | with_alarm "$CLI_TIMEOUT" "${CAND_ENV[@]}" "$CANDIDATE_CLI" --data-dir "$PROOF_HOME" \
-      cloud backup-v2 connect --existing --env dev --api-key-stdin \
+      "${backup_command[@]}" connect --existing --env dev --api-key-stdin \
       --expected-user-hash "$user_hash" --json \
       >"$PROOF_ROOT_REAL/connect.json" 2>"$PROOF_ROOT_REAL/connect.err" \
   || proof_die "the exact candidate could not connect the trial clone to DEV V2 backup"
@@ -420,14 +426,14 @@ source_home="$(jq -r '.source_home' "$PROOF_ROOT_REAL/connect.json")"
 
 FAILURE_PHASE="dev_backup"
 request_id="$(uuidgen | tr 'A-Z' 'a-z')"
-cand_cli start --data-dir "$PROOF_HOME" cloud backup-v2 start --request-id "$request_id" --json \
+cand_cli start --data-dir "$PROOF_HOME" "${backup_command[@]}" start --request-id "$request_id" --json \
   || proof_die "the exact candidate could not start a manual DEV V2 backup"
 jq -e --arg r "$request_id" '.ok == true and .request_id == $r' \
   "$PROOF_ROOT_REAL/start.json" >/dev/null 2>&1 \
   || proof_die "the manual DEV V2 backup did not accept this request"
 backup_deadline=$(($(date +%s) + BACKUP_TIMEOUT))
 while :; do
-  cand_cli status --data-dir "$PROOF_HOME" cloud backup-v2 status --json \
+  cand_cli status --data-dir "$PROOF_HOME" "${backup_command[@]}" status --json \
     || proof_die "the exact candidate did not report V2 status during the DEV backup"
   jq -e --arg r "$request_id" '.request_id == $r and .running == false' \
     "$PROOF_ROOT_REAL/status.json" >/dev/null 2>&1 && break
@@ -469,7 +475,7 @@ cp -p "$PAUSED_CONFIG" "$CREDS_HOME/cloud_sync.json.paused" \
   || proof_die "the restore credential home holds more than the paused DEV config"
 python3 -I "$PHRASE_HELPER" --seed-file "$PROOF_HOME/identity.key" \
   | with_alarm "$RESTORE_TIMEOUT" "${CAND_ENV[@]}" "$CANDIDATE_CLI" --data-dir "$CREDS_HOME" \
-      cloud backup-v2 restore --recovery-phrase-stdin --stream "$stream_id" \
+      "${backup_command[@]}" restore --recovery-phrase-stdin --stream "$stream_id" \
       --generation "$generation" --commit "$request_id" --commit-sha256 "$commit_sha256" \
       --into "$RESTORED_HOME" --json \
       >"$PROOF_ROOT_REAL/restore.json" 2>"$PROOF_ROOT_REAL/restore.err" \

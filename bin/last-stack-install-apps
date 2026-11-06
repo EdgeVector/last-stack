@@ -45,7 +45,7 @@ Options:
 
 Install by proof uses the signed registry release for the running node.
 New CLIs use `lastdb app list <app> --channel <c>`, and older CLIs use
-`lastdb app resolve <app> --channel <c>`. LASTDB_APPS_PROOF=require
+`lastdb app list <app> --channel <c>` on current LastDB. LASTDB_APPS_PROOF=require
 requires a resolver and a proved release.
 
 LastGit is intentionally not installed by this bundle yet (review venue for

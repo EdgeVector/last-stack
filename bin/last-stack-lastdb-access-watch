@@ -15,12 +15,12 @@
 # repo, or session produced it.
 #
 # NO FALSE GREEN
-# If the expected `lastdb ops` tables cannot be parsed — format drift, busy
+# If the expected `lastdb admin ops` tables cannot be parsed — format drift, busy
 # node, missing binary — this exits non-zero and says so. A parser that matches
 # nothing must never print "clean"; that is how a broken detector reads as a
 # healthy system.
 #
-# Read-only. Touches only the control plane (`lastdb ops`). Never restarts,
+# Read-only. Touches only the control plane (`lastdb admin ops`). Never restarts,
 # reindexes, or mutates anything.
 set -euo pipefail
 
@@ -38,7 +38,7 @@ usage: last-stack-lastdb-access-watch [--threshold N] [--window W] [--json] [--o
   --window W      ring | lifetime | both   (default: ring)
                   Only the selected window drives the exit code.
   --json          machine-readable output
-  --ops-file PATH parse a captured `lastdb ops` dump instead of calling the node
+  --ops-file PATH parse a captured `lastdb admin ops` dump instead of calling the node
                   (used by the tests; also handy for offline triage)
 
 exit: 0 clean · 1 findings · 2 could not parse / no telemetry
@@ -104,11 +104,15 @@ else
     echo "last-stack-lastdb-access-watch: lastdb not on PATH — cannot read telemetry" >&2
     exit 2
   fi
-  # `lastdb ops` is a control-plane read over the socket. A busy node is a
+  # `lastdb admin ops` is a control-plane read over the socket. A busy node is a
   # load signal, not an outage: report it as unparseable rather than clean, and
   # never escalate or restart from here.
-  if ! lastdb ops >"$raw" 2>"$tmp/err.txt"; then
-    echo "last-stack-lastdb-access-watch: \`lastdb ops\` failed — treating as UNKNOWN, not clean" >&2
+  ops_command=(ops)
+  if lastdb admin ops --help >/dev/null 2>&1; then
+    ops_command=(admin ops)
+  fi
+  if ! lastdb "${ops_command[@]}" >"$raw" 2>"$tmp/err.txt"; then
+    echo "last-stack-lastdb-access-watch: \`lastdb admin ops\` failed — treating as UNKNOWN, not clean" >&2
     head -5 "$tmp/err.txt" >&2 || true
     exit 2
   fi
@@ -117,7 +121,7 @@ fi
 # Guard against silent format drift: the tables we parse must be present.
 # Without this, a renamed heading would make every run report "clean".
 if ! grep -q 'Top by cold shard loads' "$raw"; then
-  echo "last-stack-lastdb-access-watch: no 'Top by cold shard loads' table in \`lastdb ops\` output." >&2
+  echo "last-stack-lastdb-access-watch: no 'Top by cold shard loads' table in \`lastdb admin ops\` output." >&2
   echo "  The output format changed, or telemetry is empty (daemon just restarted)." >&2
   echo "  Refusing to report clean from an unparsed dump." >&2
   exit 2
@@ -218,7 +222,7 @@ print_notes() {
   judge these rows by AVG_MS, not by LOADS/CALL.
 
   re-check: last-stack-lastdb-access-watch --window lifetime
-  cross-check by cost, not per-call:  lastdb ops   (Top by total time)
+  cross-check by cost, not per-call:  lastdb admin ops   (Top by total time)
 NOTEHINT
 }
 

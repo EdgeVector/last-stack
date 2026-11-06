@@ -54,12 +54,16 @@ programs_old_dir_from_plist() {
 # printf -v must reach the caller's variables. Safe in a $(...) subshell.
 v2_capture_pair() {
   local _v2cap_cli="$1" _v2cap_status _v2cap_v2
+  local _v2cap_backup=(cloud backup-v2)
+  if "$_v2cap_cli" backup --help >/dev/null 2>&1; then
+    _v2cap_backup=(backup)
+  fi
   _v2cap_status="$(umask 077; mktemp "$WORK/v2-status.XXXXXX")" || return 1
   _v2cap_v2="$(umask 077; mktemp "$WORK/v2-backup.XXXXXX")" || return 1
   curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
     -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
     http://x/api/status >"$_v2cap_status" 2>/dev/null || return 1
-  "$_v2cap_cli" --data-dir "$PRIMARY_HOME" cloud backup-v2 status --json \
+  "$_v2cap_cli" --data-dir "$PRIMARY_HOME" "${_v2cap_backup[@]}" status --json \
     >"$_v2cap_v2" 2>/dev/null || return 1
   printf -v "$2" '%s' "$_v2cap_status"
   printf -v "$3" '%s' "$_v2cap_v2"

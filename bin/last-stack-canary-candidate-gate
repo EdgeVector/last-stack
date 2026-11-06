@@ -48,7 +48,7 @@
 # a RED set is not smoked again until a head moves.
 #
 # `--primary-rows-only` runs step 0 alone. It costs one identity read, one
-# channel read per app and one `lastdb app resolve` per app when nothing moved. `--detach` adds: when rows are
+# channel read per app and one signed app lookup per app when nothing moved. `--detach` adds: when rows are
 # missing, start the worker in its own session and return at once. The
 # hourly reconcile gate calls it that way.
 set -euo pipefail
@@ -156,6 +156,21 @@ result() {
 # lastdbd, proves it with the same isolated smoke, and publishes the same rows.
 # It never cuts the primary over: there is nothing to cut over to.
 
+resolve_primary_app() {
+  local app="$1" help
+  local command=(resolve) selection=()
+  help="$("$resolve_bin" app list --help)" || return 1
+  if [[ "$help" == *'[APP]'* ]]; then
+    command=(list)
+  else
+    help="$("$resolve_bin" app resolve --help)" || return 1
+    if [[ "$help" == *'--lastdb-version'* ]]; then
+      selection=(--lastdb-version "$primary")
+    fi
+  fi
+  "$resolve_bin" app "${command[@]}" "$app" --channel next "${selection[@]}" --json
+}
+
 apps_moved_past_registry() {
   # Print a comma list of app ids whose set pin differs from the row `next`
   # already proves for the build the primary runs. A resolve that cannot answer
@@ -166,8 +181,8 @@ apps_moved_past_registry() {
     [ -n "$app" ] || continue
     set_sha="$(jq -r --arg a "$app" '.apps[$a].sha // empty' "$set_file" 2>/dev/null || true)"
     [ -n "$set_sha" ] || continue
-    proved="$("$resolve_bin" app resolve "$app" --channel next --lastdb-version "$primary" --json 2>/dev/null \
-      | jq -r '.sha // empty' 2>/dev/null || true)"
+    proved="$(resolve_primary_app "$app" 2>/dev/null \
+      | jq -r --arg build "$primary" 'select((.lastdb_build // .lastdb_version) == $build) | .sha // empty' 2>/dev/null || true)"
     [ "$proved" = "$set_sha" ] || moved="${moved:+$moved,}$app"
   done < <(jq -r '.apps | keys[]' "$set_file" 2>/dev/null || true)
   printf '%s' "$moved"
@@ -253,7 +268,7 @@ apps_only_run() {
   # runs the apps-only pass now picks up, so without a cooldown one busy evening
   # buys four consecutive real smokes for the same app pins -- and the natural
   # gate does not close in time, because a published row only becomes visible to
-  # `lastdb app resolve` after the tap PR merges and the mirror syncs.
+  # signed app lookup after the tap PR merges and the mirror syncs.
   #
   # So: one apps-only smoke per <primary build, app-pin fingerprint> per
   # cooldown, recorded whatever the verdict. A RED set must not be re-smoked
@@ -410,7 +425,7 @@ read_primary_build() {
 # for whatever path moved the primary. It never builds and never cuts over.
 #
 # Cheap when rows exist: one identity read, one `lastdb --version`, one
-# `lastdb app resolve`. publish-next writes a row for every app in one PR, so
+# signed app lookup. publish-next writes a row for every app in one PR, so
 # one app's row stands for the build's whole set; a new app with no row is the
 # apps-only pass's job (it compares every app's pin).
 #
@@ -473,13 +488,13 @@ primary_rows_probe() {
   local app="$1" out rc=0 err_file sha
   err_file="$(mktemp "${TMPDIR:-/tmp}/primary-rows-probe.XXXXXX")"
   set +e
-  out="$("$resolve_bin" app resolve "$app" --channel next --lastdb-version "$primary" --json 2>"$err_file")"
+  out="$(resolve_primary_app "$app" 2>"$err_file")"
   rc=$?
   set -e
-  sha="$(printf '%s' "$out" | jq -r '.sha // empty' 2>/dev/null || true)"
+  sha="$(printf '%s' "$out" | jq -r --arg build "$primary" 'select((.lastdb_build // .lastdb_version) == $build) | .sha // empty' 2>/dev/null || true)"
   if [ "$rc" -eq 0 ] && [ -n "$sha" ]; then
     printf '%s' present
-  elif grep -q 'no next row' "$err_file" 2>/dev/null \
+  elif grep -Eq 'no next row|no next app .* was proved with lastdb API' "$err_file" 2>/dev/null \
     || { [ "$rc" -eq 0 ] && printf '%s' "$out" | jq -e 'has("sha")' >/dev/null 2>&1; }; then
     printf '%s' missing
   else

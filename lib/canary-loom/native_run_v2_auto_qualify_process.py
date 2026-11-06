@@ -74,6 +74,9 @@ class Pair:
         self.source, self.expected, self.output, self.calls = source, expected, output, 0
         require({k: v["sha256"] for k, v in self.base.identities.items()} == expected, "exact_program_hashes")
         self.helpers = helpers
+        self.backup_group = subprocess.run([self.directory / "lastdb", "backup", "--help"],
+            env=self.environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=20).returncode == 0
 
     def verify(self):
         self.base.verify()
@@ -83,6 +86,12 @@ class Pair:
         self.verify()
         self.calls += 1
         require(self.calls <= 16384, "bounded_owner_cli_calls")
+        if self.backup_group:
+            if arguments[:2] == ["cloud", "backup-v2"]:
+                verb, *rest = arguments[2:]
+                arguments = ["backup", "list" if verb == "discover" else verb, *rest]
+            elif arguments[:2] == ["cloud", "prepare-recovery-home"]:
+                arguments = ["admin", "backup", *arguments[1:]]
         command = [str(self.directory / "lastdb"), "--data-dir", str(home), *arguments]
         environment = dict(self.environment, LASTDB_BYTE_BACKUP_V2_ENABLED="true")
         output = self.output / ("cli-" + str(self.calls).zfill(5))
