@@ -43,10 +43,10 @@ Options:
   --source-only     check out sources only; skip dependency installs and links
   -h, --help        show this help
 
-Install by proof: when the installed `lastdb` knows `app resolve`, each app
-is checked out at the newest commit the signed registry index proves with the
-running LastDB build (`lastdb app resolve <app> --channel <c>`). An older
-`lastdb` without that verb falls back to cloning main and says so.
+Install by proof uses the signed registry release for the running node.
+New CLIs use `lastdb app list <app> --channel <c>`, and older CLIs use
+`lastdb app resolve <app> --channel <c>`. LASTDB_APPS_PROOF=require
+requires a resolver and a proved release.
 
 LastGit is intentionally not installed by this bundle yet (review venue for
 EdgeVector contributors). Public app source is GitHub so a cold first install
@@ -249,17 +249,20 @@ write_receipt() {
   printf '%s\n' "$json" >"$RECEIPTS_DIR/$name.json"
 }
 
-# Does the installed `lastdb` know `app resolve`? Cached after the first call.
-LASTDB_RESOLVE_AVAILABLE=""
+# Choose the signed resolver for this CLI before running an install.
+LASTDB_RESOLVER=""
 lastdb_can_resolve() {
-  if [ -z "$LASTDB_RESOLVE_AVAILABLE" ]; then
-    if command -v lastdb >/dev/null 2>&1 && lastdb app resolve --help >/dev/null 2>&1; then
-      LASTDB_RESOLVE_AVAILABLE=1
+  if [ -z "$LASTDB_RESOLVER" ]; then
+    local list_help
+    if list_help="$(lastdb app list --help 2>/dev/null)" && [[ "$list_help" == *'[APP]'* ]]; then
+      LASTDB_RESOLVER=list
+    elif lastdb app resolve --help >/dev/null 2>&1; then
+      LASTDB_RESOLVER=resolve
     else
-      LASTDB_RESOLVE_AVAILABLE=0
+      LASTDB_RESOLVER=unavailable
     fi
   fi
-  [ "$LASTDB_RESOLVE_AVAILABLE" = 1 ]
+  [ "$LASTDB_RESOLVER" != unavailable ]
 }
 
 # Install `name` (registry app id == install name for this bundle) from the
@@ -290,7 +293,7 @@ install_app_source() {
   fi
   if [ "$PROOF_MODE" != off ] && lastdb_can_resolve; then
     set +e
-    resolved="$(lastdb app resolve "$name" --channel "$CHANNEL" --json 2>"$TARGET_DIR/.resolve.err")"
+    resolved="$(lastdb app "$LASTDB_RESOLVER" "$name" --channel "$CHANNEL" --json 2>"$TARGET_DIR/.resolve.err")"
     err=$?
     set -e
     if [ "$err" -eq 0 ]; then
@@ -305,13 +308,17 @@ install_app_source() {
     fi
     echo "    registry: $(tr '\n' ' ' <"$TARGET_DIR/.resolve.err")" >&2
     rm -f "$TARGET_DIR/.resolve.err"
-    if [ "$ALLOW_UNPROVED" -ne 1 ]; then
+    if [ "$PROOF_MODE" = require ] || [ "$ALLOW_UNPROVED" -ne 1 ]; then
       echo "no $CHANNEL row for $name is proved with this LastDB build; pass --allow-unproved to clone main anyway" >&2
       return 1
     fi
     echo "    warning: installing $name from main WITHOUT a proved row (--allow-unproved)" >&2
   elif [ "$PROOF_MODE" != off ]; then
-    echo "    note: this lastdb has no \`app resolve\`; installing $name from main (unproved). \`brew upgrade lastdb\` enables install-by-proof." >&2
+    if [ "$PROOF_MODE" = require ]; then
+      echo "    this lastdb has no signed app resolver; refusing to install $name without proof" >&2
+      return 1
+    fi
+    echo "    note: this lastdb has no signed app resolver; installing $name from main (unproved)" >&2
   fi
   clone_or_update "$name" "$url" "$optional" || return 1
   write_receipt "$name" "$(jq -cn --arg n "$name" --arg src "$url" --arg sha "$(git -C "$TARGET_DIR/$name" rev-parse HEAD 2>/dev/null || echo unknown)" \
