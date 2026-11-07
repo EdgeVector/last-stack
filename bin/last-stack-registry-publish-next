@@ -126,7 +126,10 @@ case "$RUN_ID" in *[!A-Za-z0-9._-]*) die "--run-id must be [A-Za-z0-9._-]: $RUN_
 [ -n "$CANDIDATE_SET" ] && [ -f "$CANDIDATE_SET" ] || die "--candidate-set FILE is required"
 [ -n "$PROOF_JSON" ] && [ -f "$PROOF_JSON" ] || die "--proof FILE is required"
 command -v jq >/dev/null 2>&1 || die "jq is required"
-jq -e --arg required "$KNOWN_APPS" '(.apps | keys) == ($required | split(" ") | sort)' \
+# A jq stream can have more than one document. Check the entire input, so a
+# valid final object cannot mask earlier unproved rows in the publish loop.
+jq -es --arg required "$KNOWN_APPS" \
+  'length == 1 and ((.[0].apps | keys) == ($required | split(" ") | sort))' \
   "$CANDIDATE_SET" >/dev/null || die "candidate set must name exactly these apps: $KNOWN_APPS"
 SIGNING_KEY_SLUG="${SIGNING_KEY_LOCATOR#lastsecrets://}"
 [[ "$SIGNING_KEY_SLUG" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "an existing signing-key LastSecrets locator is required"

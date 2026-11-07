@@ -361,8 +361,8 @@ fi
 if [ -n "$SMOKE_CANDIDATE_SET" ]; then
   if [ ! -f "$SMOKE_CANDIDATE_SET" ]; then
     note_fail "prereq:candidate-set missing $SMOKE_CANDIDATE_SET"
-  elif jq -e --arg required "$REQUIRED_APPS" \
-      '(.apps | keys) == ($required | split(" ") | sort)' \
+  elif jq -es --arg required "$REQUIRED_APPS" \
+      'length == 1 and ((.[0].apps | keys) == ($required | split(" ") | sort))' \
       "$SMOKE_CANDIDATE_SET" >/dev/null 2>&1; then
     live "candidate set: $SMOKE_CANDIDATE_SET"
   else
