@@ -32,6 +32,9 @@ done
 # Real user home for brew/lastdbd binaries only — never for data.
 REAL_HOME="${REAL_HOME:-$(eval echo "~$(id -un)")}"
 SMOKE_CARGO_BIN="$(command -v cargo || true)"
+if [[ "$SMOKE_CARGO_BIN" != /* ]] || [ ! -x "$SMOKE_CARGO_BIN" ]; then
+  SMOKE_CARGO_BIN=""
+fi
 SMOKE_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SMOKE_CANDIDATE_SET="${SMOKE_CANDIDATE_SET:-}"
 SMOKE_LAST_STACK_OID="${SMOKE_LAST_STACK_OID:-}"
@@ -51,7 +54,7 @@ fi
 export CARGO_HOME="${CARGO_HOME:-$REAL_HOME/.cargo}"
 export RUSTUP_HOME="${RUSTUP_HOME:-$REAL_HOME/.rustup}"
 export PATH="${REAL_HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${REAL_HOME}/.bun/bin:${CARGO_HOME}/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-if [ -n "$SMOKE_CARGO_BIN" ] && [ -x "$SMOKE_CARGO_BIN" ]; then
+if [ -n "$SMOKE_CARGO_BIN" ]; then
   export PATH="$(dirname "$SMOKE_CARGO_BIN"):$PATH"
 fi
 # A candidate binary pair comes first on PATH: the canary lane names its
@@ -315,6 +318,7 @@ echo "=========================================="
 echo "llms-txt install smoke (isolated)"
 echo "sandbox: $FRESH_ROOT"
 echo "HOME=$HOME LASTDB_HOME=$LASTDB_HOME"
+live "cargo executable before isolation: ${SMOKE_CARGO_BIN:-unavailable}"
 echo "=========================================="
 
 require_cmd brew
