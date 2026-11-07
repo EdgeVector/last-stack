@@ -1383,10 +1383,9 @@ def run_route(ctx, route, mode, pre):
 
 
 def target_key_list(ctx, route, target_name, tgt_range, target_fields):
-    """The stored target keys of a route. A derived route has no listable key, so it walks
-    the target records; a target row that the source no longer derives is then an extra key.
+    """List target primary keys. Only the legacy keyless target needs a record walk.
     Returns (keys, opaque) as walk_keys does."""
-    if route.get("derive_from"):
+    if route.get("derive_from") and ctx.tgt.api_version < COMPLETE_RECORD_API:
         return walk_keys(ctx.tgt, target_name, sorted(target_fields or []), tgt_range, ctx.args.page_size)
     return list_keys(ctx.tgt, target_name, ctx.args.page_size, tgt_range), False
 
