@@ -1091,6 +1091,16 @@ def fields_of(mapped):
     return {k: v for k, v in mapped.items() if k not in (RECORD_FILE, RECORD_META, RECORD_ALTERNATES)}
 
 
+def source_record_alternates(ctx, route, values):
+    definition = ctx.src_cat.detail(route["source"]["name"])
+    if definition.get("record_keys"):
+        coordinates = values.get(RECORD_ALTERNATES)
+        if not isinstance(coordinates, dict):
+            raise Refusal("the source did not return its stored alternate coordinates")
+        return coordinates
+    return explicit_alternates(definition.get("alternate_keys") or {}, values)
+
+
 def explicit_alternates(definitions, values):
     """Apply the app's old alternate-key recipe to produce explicit coordinates."""
     result = {}
@@ -1270,8 +1280,12 @@ def run_route(ctx, route, mode, pre):
         complete = bool(tgt_entry and ctx.tgt.api_version >= COMPLETE_RECORD_API)
         if complete:
             keys = ctx.tgt_cat.detail(target_name).get("record_keys") or {}
-            if not keys.get("primary") or set(keys.get("alternates") or {}) != set(alternate):
-                raise Refusal("the target record-key declarations differ from the copy recipe")
+            source_definition = ctx.src_cat.detail(src_entry["name"])
+            source_alternates = (source_definition.get("record_keys") or {}).get("alternates")
+            if source_alternates is None:
+                source_alternates = source_definition.get("alternate_keys") or {}
+            if not keys.get("primary") or set(keys.get("alternates") or {}) != set(source_alternates):
+                raise Refusal("the source and target declare different alternate names")
         written = skipped = empty = files = 0
         source_digests, target_digests = {}, {}
         target_keys, target_opaque = set(), False
@@ -1301,7 +1315,7 @@ def run_route(ctx, route, mode, pre):
                 mapped, issues = map_values(ctx, route, values, mapping, types, census)
                 issues += alternate_key_issues(alternate, mapped)
                 if complete and not issues:
-                    mapped[RECORD_ALTERNATES] = explicit_alternates(alternate, mapped)
+                    mapped[RECORD_ALTERNATES] = source_record_alternates(ctx, route, values)
                 for name in set(mapping.values()) - set(mapped):
                     absent[name] = absent.get(name, 0) + 1
                 files += RECORD_FILE in mapped
@@ -1456,7 +1470,7 @@ def spot_reads(ctx, route, keys, target_fields, tgt_range):
     sample = random.Random(secrets.randbits(64)).sample(keys, min(ctx.args.spot_reads, len(keys)))
     src_entry = route["source"]
     mapping, _ = field_map_for(route, src_entry.get("fields") or [], target_fields)
-    _, types, alternate = target_fields_and_types(ctx, route)
+    _, types, _ = target_fields_and_types(ctx, route)
     complete = ctx.tgt.api_version >= COMPLETE_RECORD_API
     matched = mismatch = 0
     for key in sample:
@@ -1466,7 +1480,7 @@ def spot_reads(ctx, route, keys, target_fields, tgt_range):
                         files=True, record_attrs=complete).get(key) or {}
         mapped, _ = map_values(ctx, route, src, mapping, types, {})
         if complete and src:
-            mapped[RECORD_ALTERNATES] = explicit_alternates(alternate, mapped)
+            mapped[RECORD_ALTERNATES] = source_record_alternates(ctx, route, src)
         if json.dumps(comparable(mapped), sort_keys=True) == json.dumps(comparable(tgt), sort_keys=True):
             matched += 1
         else:
