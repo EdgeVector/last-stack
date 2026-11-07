@@ -87,7 +87,7 @@ self_path="$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")"
 usage() {
   printf '%s\n' 'last-stack-canary-candidate-gate'
   printf '%s\n' 'Build → candidate set → isolated smoke → primary cutover → registry next rows.'
-  printf '%s\n' 'Env for tests: LAST_STACK_CANARY_V2_BUILD_MAIN, LAST_STACK_CANARY_V2_DOGFOOD,'
+  printf '%s\n' 'Environment overrides: LAST_STACK_CANARY_V2_BUILD_MAIN, LAST_STACK_CANARY_V2_DOGFOOD,'
   printf '%s\n' '  LAST_STACK_CANARY_V2_PIPELINE, LAST_STACK_CANARY_CANDIDATE_SET_BIN,'
   printf '%s\n' '  LAST_STACK_CANARY_SMOKE_RUN, LAST_STACK_CANARY_PUBLISH_NEXT_BIN,'
   printf '%s\n' '  LAST_STACK_CANARY_SKIP_BUILD=1, LAST_STACK_CANARY_SKIP_SMOKE=1, LAST_STACK_CANARY_SKIP_ROWS=1'
@@ -659,9 +659,9 @@ primary_rows_step() {
   fi
   app="$primary_rows_probe_app"
   if [ -z "$app" ]; then
-    app="$(jq -r '.apps | keys[0] // empty' "$apps_config" 2>/dev/null || true)"
+    app="$(jq -r '.apps | to_entries | map(select(.value.bundle != false)) | sort_by(.key) | .[0].key // empty' "$apps_config" 2>/dev/null || true)"
   fi
-  [ -n "$app" ] || app=kanban
+  [ -n "$app" ] || app=brain
   probe="$(primary_rows_probe "$app")"
   case "$probe" in
     present)
