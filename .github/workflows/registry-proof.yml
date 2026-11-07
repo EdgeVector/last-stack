@@ -6,7 +6,7 @@
 #   plan    ubuntu, seconds. Reads the `next` index, picks the target lastdb
 #           build (public lastdb main when that build has no row yet, else the
 #           newest row, unless proof-builds.json names an override), reads the
-#           app heads (green ci-required + published artifact), and decides
+#           app heads (green CI + published source identity), and decides
 #           whether any head moved past the pin that `next` holds for that
 #           build. Nothing moved, or this exact head set was already proved:
 #           stop here (the cheap no-op path).
@@ -199,7 +199,7 @@ jobs:
             echo "PLAN_FOLD_OID=$(jq -r .fold_oid "$RUNNER_TEMP/target.json")"
           } >> "$GITHUB_ENV"
 
-      - name: App heads (green ci-required and a published artifact)
+      - name: App heads (green CI and published source identity)
         if: ${{ env.PLAN_MODE == 'auto' }}
         env:
           GH_TOKEN: ${{ github.token }}

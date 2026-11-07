@@ -14,22 +14,17 @@ Per app the commit comes from, in order:
 
 `--sha-source github-ci` replaces steps 2 and 3 for a host with no artifact CAS
 (a GitHub Actions runner): per app, the newest of the last 20 commits on GitHub
-`main` whose `ci-required` check run is `success` AND, for an app that publishes
-an artifact (`artifact_app` set), whose Actions artifact `ht-artifact-<sha>`
-exists and has not expired. That is the same "released head" the Mac reads from
-the CAS. An app with no `artifact_app` needs only the green check. No such
+`main` whose `ci-required` check run is `success`. Published apps additionally
+need their successful `Registry commit identity` check. A legacy commit without
+that check still needs its unexpired `ht-artifact-<sha>`. An app with no
+`artifact_app` needs only the green check. No such
 commit in the window is an error (exit 3): the set never pairs a build with an
 unreleased head. The GitHub reads go through `gh` (override: LAST_STACK_GH_BIN).
 
-The source is the app's gate of record: `github` (the GitHub repo) in
-config/registry/apps.json. Every EdgeVector repo is on GitHub (lastgit moved last,
-2026-10-08; 2026-09-30, decision-2026-09-29-retire-lastgit-all-repos-to-github); LastGit is
-retired and this script no longer reads it. Each repo's Forgejo copy (`forge`)
-is frozen read-only and never gets a new commit. A set that names the frozen
-copy pins commits it cannot serve: measured 2026-09-27, routines' artifact head
-3bf55c676a14 was not on the frozen copy, and every primary-rows smoke went RED
-on it. `--source-venue` picks the venues: `auto` tries `github` (when the app
-has one), then `forge`; `github` or `forge` tries only that one.
+The source is the app's gate of record, configured as `github` in
+config/registry/apps.json. Historical `forge` sources stay frozen.
+`--source-venue auto` tries GitHub then a configured Forge source;
+`github` or `forge` selects only that source.
 
 Each pin is probed on each candidate source in order (one depth-1 fetch into
 a throwaway repo), and the first source that serves it wins. A fallback is
@@ -204,9 +199,12 @@ def gh_bin() -> str:
     return os.environ.get("LAST_STACK_GH_BIN", "gh")
 
 
-def gh_json(path: str, jq: str) -> object:
+def gh_json(path: str, jq: str, *, paginate: bool = False) -> object:
     """`gh api <path> --jq <jq>` parsed as JSON, or None on any failure."""
-    proc = subprocess.run([gh_bin(), "api", path, "--jq", jq], capture_output=True, text=True,
+    command = [gh_bin(), "api", path, "--jq", jq]
+    if paginate:
+        command.extend(["--paginate", "--slurp"])
+    proc = subprocess.run(command, capture_output=True, text=True,
                           timeout=60, check=False)
     if proc.returncode != 0:
         return None
@@ -226,7 +224,7 @@ def repo_slug(url: str) -> str:
 
 
 def github_ci_head(cfg: dict) -> tuple[str, str]:
-    """(sha, why) of the newest green, published `main` commit; ("", why) when none.
+    """(sha, evidence) of a green published main commit; ("", why) when none.
 
     See the module docstring, `--sha-source github-ci`."""
     slug = repo_slug(str(cfg.get("github") or ""))
@@ -238,16 +236,25 @@ def github_ci_head(cfg: dict) -> tuple[str, str]:
         return "", f"could not list main commits of {slug}"
     for sha in commits[:GH_CI_WINDOW]:
         runs = gh_json(f"repos/{slug}/commits/{sha}/check-runs?per_page=100",
-                       '[.check_runs[] | select(.name == "ci-required" or (.name | endswith("/ ci-required"))) | .conclusion]')
-        if not isinstance(runs, list) or "success" not in runs:
+                       '[.[] | .check_runs[] | {name, conclusion}]', paginate=True)
+        if not isinstance(runs, list) or not any(
+                (r["name"] == "ci-required" or r["name"].endswith("/ ci-required"))
+                and r["conclusion"] == "success" for r in runs):
             continue
+        evidence = "ci-required"
         if needs_artifact:
-            arts = gh_json(f"repos/{slug}/actions/artifacts?name=ht-artifact-{sha}&per_page=10",
-                           "[.artifacts[] | select(.expired == false)] | length")
-            if not isinstance(arts, int) or arts < 1:
-                continue
-        return str(sha), "ok"
-    need = "a green ci-required and an ht-artifact" if needs_artifact else "a green ci-required"
+            identity = [r["conclusion"] for r in runs if r["name"] == "Registry commit identity"]
+            evidence = "registry-commit" if identity else "ht-artifact"
+            if identity:
+                if "success" not in identity:
+                    continue
+            else:
+                arts = gh_json(f"repos/{slug}/actions/artifacts?name=ht-artifact-{sha}&per_page=10",
+                               "[.artifacts[] | select(.expired == false)] | length")
+                if not isinstance(arts, int) or arts < 1:
+                    continue
+        return str(sha), evidence
+    need = "green CI and published source identity" if needs_artifact else "a green ci-required"
     return "", f"none of the last {GH_CI_WINDOW} main commits of {slug} has {need}"
 
 
@@ -369,7 +376,7 @@ def main(argv: list[str]) -> int:
                         "(a release tarball; default: manifest.json next to the binary)")
     parser.add_argument("--sha-source", choices=("auto", "github-ci"), default="auto",
                         help="auto: artifact channel, then main. github-ci: newest main commit with a "
-                        "green ci-required and (for an app with an artifact) an ht-artifact-<sha>")
+                        "green ci-required and published source identity")
     parser.add_argument("--cache-root", type=Path, default=DEFAULT_CACHE_ROOT)
     parser.add_argument("--no-version-lookup", action="store_true", help="skip the package.json fetch; versions read 0.0.0")
     parser.add_argument("--no-source-probe", action="store_true",
@@ -421,7 +428,7 @@ def main(argv: list[str]) -> int:
             sha, sha_source = pins[app], "pin"
         elif args.sha_source == "github-ci":
             sha, why = github_ci_head(cfg)
-            sha_source = "github-ci-main"
+            sha_source = f"github-ci-main:{why}" if sha else "github-ci-main"
             if not sha:
                 print(f"last-stack-canary-candidate-set: {app}: {why}", file=sys.stderr)
         else:

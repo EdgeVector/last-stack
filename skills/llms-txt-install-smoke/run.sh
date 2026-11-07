@@ -46,7 +46,10 @@ fi
 # PR 1993, key-layout declare guard) never ran here and `kanban init` stayed
 # RED for five days after the fix landed. Measured 2026-09-13 on fresh homes:
 # lastdbd 0.23.3-1908 → kanban init PASS; canary 0801 and brew 0.23.2 → FAIL.
-export PATH="${REAL_HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${REAL_HOME}/.bun/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# Keep the runner's Rust installation available after HOME becomes disposable.
+export CARGO_HOME="${CARGO_HOME:-$REAL_HOME/.cargo}"
+export RUSTUP_HOME="${RUSTUP_HOME:-$REAL_HOME/.rustup}"
+export PATH="${REAL_HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${REAL_HOME}/.bun/bin:${CARGO_HOME}/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 # A candidate binary pair comes first on PATH: the canary lane names its
 # `lastdbd` with SMOKE_LASTDBD_BIN, and the sibling `lastdb` (same bottle) is
 # the CLI that resolves apps by proof. Without this the sandbox would install
