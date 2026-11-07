@@ -199,11 +199,13 @@ def gh_bin() -> str:
     return os.environ.get("LAST_STACK_GH_BIN", "gh")
 
 
-def gh_json(path: str, jq: str, *, paginate: bool = False) -> object:
-    """`gh api <path> --jq <jq>` parsed as JSON, or None on any failure."""
-    command = [gh_bin(), "api", path, "--jq", jq]
-    if paginate:
+def gh_json(path: str, jq: str | None) -> object:
+    """Parse one projected response or, with no projection, every JSON page."""
+    command = [gh_bin(), "api", path]
+    if jq is None:
         command.extend(["--paginate", "--slurp"])
+    else:
+        command.extend(["--jq", jq])
     proc = subprocess.run(command, capture_output=True, text=True,
                           timeout=60, check=False)
     if proc.returncode != 0:
@@ -235,9 +237,13 @@ def github_ci_head(cfg: dict) -> tuple[str, str]:
     if not isinstance(commits, list) or not commits:
         return "", f"could not list main commits of {slug}"
     for sha in commits[:GH_CI_WINDOW]:
-        runs = gh_json(f"repos/{slug}/commits/{sha}/check-runs?per_page=100",
-                       '[.[] | .check_runs[] | {name, conclusion}]', paginate=True)
-        if not isinstance(runs, list) or not any(
+        pages = gh_json(f"repos/{slug}/commits/{sha}/check-runs?per_page=100", None)
+        if not isinstance(pages, list) or any(
+                not isinstance(page, dict) or not isinstance(page.get("check_runs"), list)
+                for page in pages):
+            continue
+        runs = [run for page in pages for run in page["check_runs"]]
+        if not any(
                 (r["name"] == "ci-required" or r["name"].endswith("/ ci-required"))
                 and r["conclusion"] == "success" for r in runs):
             continue
