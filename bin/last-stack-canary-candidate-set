@@ -23,6 +23,8 @@ unreleased head. The GitHub reads go through `gh` (override: LAST_STACK_GH_BIN).
 
 The source is the app's gate of record, configured as `github` in
 config/registry/apps.json. Historical `forge` sources stay frozen.
+Apps marked `bundle: false` stay available for explicit `--only` selection
+but are excluded from the default required candidate set.
 `--source-venue auto` tries GitHub then a configured Forge source;
 `github` or `forge` selects only that source.
 
@@ -407,7 +409,8 @@ def main(argv: list[str]) -> int:
     for pinned in pins:
         if pinned not in apps_cfg:
             die(f"--pin names unknown app {pinned!r}", 2)
-    selected = [a for a in apps_cfg if not args.only or a in args.only]
+    selected = [a for a, cfg in apps_cfg.items()
+                if (a in args.only if args.only else cfg.get("bundle", True))]
     for wanted in args.only:
         if wanted not in apps_cfg:
             die(f"--only names unknown app {wanted!r}", 2)

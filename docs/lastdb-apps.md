@@ -10,8 +10,6 @@ Included (all **public** on GitHub):
   tap.
 - **Brain (`brain`)**: durable notes, decisions, references, and retrieval over
   LastDB.
-- **Kanban (`kanban`)**: board and work-state tracking over LastDB (repo
-  `EdgeVector/fkanban`).
 - **Situations (`situations`)**: active operational posture and preflight
   checks for agents.
 - **Routines (`routines`)**: scheduler and dispatcher for the Last Stack routine
@@ -30,6 +28,8 @@ Included (all **public** on GitHub):
 
 Not included in this bundle:
 
+- **Kanban (`kanban`)**: outside the required install and CI proof set (Tom,
+  2026-11-06). Its repo, registry metadata, installed code and data remain.
 - **LastGit**: retired (2026-09-30). Contributors use GitHub pull requests.
 
 ## One Command
@@ -96,7 +96,6 @@ Initialize the apps:
 ```bash
 # first-run setup (not a health check — run once after brew services start lastdb)
 brain init --grant-consent   # bootstrap Brain
-kanban init                  # bootstrap Kanban
 situations init              # bootstrap Situations
 lastsecrets init             # bootstrap LastSecrets (needed for org keys)
 org init                     # bootstrap Org (invite/join)
@@ -170,7 +169,6 @@ Download the app repos:
 mkdir -p ~/lastdb-apps
 cd ~/lastdb-apps
 git clone https://github.com/EdgeVector/brain.git
-git clone https://github.com/EdgeVector/fkanban.git kanban
 git clone https://github.com/EdgeVector/situations.git
 git clone https://github.com/EdgeVector/routines.git
 git clone https://github.com/EdgeVector/dogfood-graph.git
@@ -181,7 +179,7 @@ git clone https://github.com/EdgeVector/lastsecrets.git
 Install dependencies:
 
 ```bash
-for app in brain kanban situations routines dogfood-graph org lastsecrets; do
+for app in brain situations routines dogfood-graph org lastsecrets; do
   bun install --cwd "$HOME/lastdb-apps/$app"
 done
 ```
@@ -190,7 +188,6 @@ Link commands:
 
 ```bash
 cd ~/lastdb-apps/brain && bun link
-cd ~/lastdb-apps/kanban && bun run install-cli
 ln -snf ~/lastdb-apps/situations/bin/situations ~/.local/bin/situations
 ln -snf ~/lastdb-apps/routines/bin/routines ~/.local/bin/routines
 cd ~/lastdb-apps/org && bun link
