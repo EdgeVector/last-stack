@@ -626,18 +626,18 @@ if command -v situations >/dev/null 2>&1; then
   fi
 fi
 
-# --- resolver outcome per schema ---
-# Every app init above declares its schemas through the live Schema Service
-# resolve. When that endpoint does not answer, the node logs one WARN per
-# schema and falls to a quota-counted register; the 10/hour node quota then
-# runs out mid-install and the later inits 409 (2026-09-13). Name the service
-# here so the RED verdict does not blame kanban or situations.
+# Current app declarations are node-local. Keep the legacy warning check for
+# older candidates without inferring that an external lookup occurred.
 step "resolver outcome"
-RESOLVER_SUMMARY="$(resolver_outcome_summary "$FRESH_ROOT/lastdbd.err")"
-case "$RESOLVER_SUMMARY" in
-  "unavailable=0 "*) note_pass "resolver:live $RESOLVER_SUMMARY" ;;
-  *) note_fail "resolver:unavailable $RESOLVER_SUMMARY (Schema Service resolve did not answer; registers were quota-counted)" ;;
-esac
+if [ -f "$FRESH_ROOT/lastdbd.err" ]; then
+  RESOLVER_SUMMARY="$(resolver_outcome_summary "$FRESH_ROOT/lastdbd.err")"
+  case "$RESOLVER_SUMMARY" in
+    "unavailable=0 "*) note_pass "resolver:no-unavailable-warnings $RESOLVER_SUMMARY" ;;
+    *) note_fail "resolver:unavailable-warnings $RESOLVER_SUMMARY" ;;
+  esac
+else
+  note_fail "resolver:daemon-log-missing"
+fi
 
 if command -v search >/dev/null 2>&1; then
   set +e
