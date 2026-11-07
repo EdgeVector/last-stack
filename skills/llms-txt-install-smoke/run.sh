@@ -55,7 +55,7 @@ export CARGO_HOME="${CARGO_HOME:-$REAL_HOME/.cargo}"
 export RUSTUP_HOME="${RUSTUP_HOME:-$REAL_HOME/.rustup}"
 export PATH="${REAL_HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${REAL_HOME}/.bun/bin:${CARGO_HOME}/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 if [ -n "$SMOKE_CARGO_BIN" ]; then
-  export PATH="$(dirname "$SMOKE_CARGO_BIN"):$PATH"
+  export PATH="$PATH:$(dirname "$SMOKE_CARGO_BIN")"
 fi
 # A candidate binary pair comes first on PATH: the canary lane names its
 # `lastdbd` with SMOKE_LASTDBD_BIN, and the sibling `lastdb` (same bottle) is
