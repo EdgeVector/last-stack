@@ -37,6 +37,7 @@ if [[ "$SMOKE_CARGO_BIN" != /* ]] || [ ! -x "$SMOKE_CARGO_BIN" ]; then
 fi
 SMOKE_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SMOKE_CANDIDATE_SET="${SMOKE_CANDIDATE_SET:-}"
+REQUIRED_APPS="brain situations routines dogfood-graph org lastsecrets search lastdb-browser lastseek"
 SMOKE_LAST_STACK_OID="${SMOKE_LAST_STACK_OID:-}"
 if [ -n "$SMOKE_LAST_STACK_OID" ] && [[ ! "$SMOKE_LAST_STACK_OID" =~ ^[0-9a-f]{40}$ ]]; then
   echo "the Last Stack source must be a full lowercase 40-hex OID" >&2
@@ -324,6 +325,7 @@ echo "=========================================="
 require_cmd brew
 require_cmd git
 require_cmd curl
+require_cmd jq
 require_cmd lastdbd
 # Name the daemon the smoke boots. Two runs read as the same binary until the
 # log says which file and which build answered `lastdbd`. The canary lane names
@@ -357,10 +359,14 @@ fi
 # A candidate set (last-stack-canary-candidate-set) pins every app commit so
 # the pair that is proved is the pair the registry row records.
 if [ -n "$SMOKE_CANDIDATE_SET" ]; then
-  if [ -f "$SMOKE_CANDIDATE_SET" ]; then
+  if [ ! -f "$SMOKE_CANDIDATE_SET" ]; then
+    note_fail "prereq:candidate-set missing $SMOKE_CANDIDATE_SET"
+  elif jq -es --arg required "$REQUIRED_APPS" \
+      'length == 1 and ((.[0].apps | keys) == ($required | split(" ") | sort))' \
+      "$SMOKE_CANDIDATE_SET" >/dev/null 2>&1; then
     live "candidate set: $SMOKE_CANDIDATE_SET"
   else
-    note_fail "prereq:candidate-set missing $SMOKE_CANDIDATE_SET"
+    note_fail "prereq:candidate-set must name exactly these apps: $REQUIRED_APPS"
   fi
 fi
 
@@ -429,7 +435,7 @@ if [ -x "$HOME/.last-stack/bin/last-stack-install-apps" ]; then
     want_mode=proved
     [ -z "$SMOKE_CANDIDATE_SET" ] || want_mode=pinned
     receipts="$HOME/lastdb-apps/.lastdb-app-receipts"
-    for app in brain situations routines dogfood-graph org lastsecrets search lastdb-browser lastseek; do
+    for app in $REQUIRED_APPS; do
       mode="$(jq -r '.mode // "missing"' "$receipts/$app.json" 2>/dev/null || echo missing)"
       if [ "$mode" = "$want_mode" ]; then
         receipt_sha="$(jq -r '.sha // empty' "$receipts/$app.json" 2>/dev/null || true)"

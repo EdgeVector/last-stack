@@ -15,6 +15,7 @@ Do not add example records, tests, fixtures, or a fixture harness.
 - Keep the primary LastDB and its service unchanged.
 - Use the selected CLI and daemon from the same Mini build.
 - Install the exact app sources in the candidate set.
+- Require exactly the bundled app IDs in a pinned proof. Refuse stale or extra candidates.
 - Require each source receipt to match the actual app checkout.
 - Require each installed command to resolve inside the owned home.
 - Refuse an unproved source fallback.
