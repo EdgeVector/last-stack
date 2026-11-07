@@ -51,8 +51,8 @@ fi
 # RED for five days after the fix landed. Measured 2026-09-13 on fresh homes:
 # lastdbd 0.23.3-1908 → kanban init PASS; canary 0801 and brew 0.23.2 → FAIL.
 # Keep the runner's Rust installation available after HOME becomes disposable.
-export CARGO_HOME="${CARGO_HOME:-$REAL_HOME/.cargo}"
-export RUSTUP_HOME="${RUSTUP_HOME:-$REAL_HOME/.rustup}"
+export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
 export PATH="${REAL_HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${REAL_HOME}/.bun/bin:${CARGO_HOME}/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 if [ -n "$SMOKE_CARGO_BIN" ]; then
   export PATH="$PATH:$(dirname "$SMOKE_CARGO_BIN")"
