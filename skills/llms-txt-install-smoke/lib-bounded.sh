@@ -207,11 +207,8 @@ preserve_failure_log() {
 }
 
 # resolver_outcome_summary <lastdbd.err>
-# Tally the isolated daemon's per-schema Schema Service resolver outcomes so
-# a RED run names the service, not the app. The node logs one WARN line per
-# schema whose live resolve did not answer ("schema resolver unavailable;
-# registering through Schema Service ..."), and every such schema then goes
-# through a quota-counted register. Prints
+# Tally legacy "schema resolver unavailable" warnings from the isolated node.
+# This counts log observations, without proving a remote service call. Prints
 # `unavailable=<n> schemas=<name,name,...>`; a missing or empty log prints
 # `unavailable=0 schemas=`.
 resolver_outcome_summary() {
