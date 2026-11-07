@@ -473,12 +473,18 @@ def short(pin):
 
 
 def layout(entry):
+    primary = (entry.get("record_keys") or {}).get("primary")
+    if primary is not None:
+        return primary["kind"]
     key = entry.get("key") or {}
     hash_field, range_field = key.get("hash_field"), key.get("range_field")
     return f"{entry.get('schema_type', '?')}({hash_field or '-'}{', ' + range_field if range_field else ''})"
 
 
 def is_range_schema(entry):
+    primary = (entry.get("record_keys") or {}).get("primary")
+    if primary is not None:
+        return primary["kind"] == "hash_range"
     key = entry.get("key") or {}
     return bool(key.get("range_field"))
 
@@ -780,6 +786,8 @@ def read_rows(node, name, fields, keys, range_schema, batch, allow_missing=False
                     raise Refusal(f"{node.role}: /api/query returned an invalid primary key for {short(name)}")
                 ident = (key.get("hash"), key.get("range") if range_schema else None)
                 values = row.get("fields")
+                if isinstance(values, dict) and node.api_version >= COMPLETE_RECORD_API and not record_attrs:
+                    values = {name: value for name, value in values.items() if name in fields}
                 if isinstance(values, dict):
                     unasked = set(values) - set(fields)
                     if unasked and all(f in key_fields and values[f] in (key.get("hash"), key.get("range"))
@@ -992,6 +1000,8 @@ def map_values(ctx, route, values, mapping, types, census):
                  "tag" if route["key"] == "__tagindex__" else
                  "tmb_tag" if route["key"] == "__tagmember__" else None)
     for stored, value in values.items():
+        if stored == RECORD_ALTERNATES:
+            continue
         if stored in (RECORD_FILE, RECORD_META):
             if stored in mapped:
                 issues.append(f"duplicate:{stored}")
@@ -1298,7 +1308,8 @@ def run_route(ctx, route, mode, pre):
         for start in range(0, len(selected), args.read_batch):
             part = selected[start:start + args.read_batch]
             rows = read_rows(ctx.src, src_entry["name"], source_fields, part, range_schema, args.read_batch,
-                             files=complete, record_attrs=complete)
+                             files=complete or (mode == "plan" and ctx.src.api_version >= RECORD_FILE_API),
+                             record_attrs=complete)
             have, wire = {}, {}
             if tgt_entry is not None and mode == "apply":
                 # An opaque walk names no key, so read the whole part by key.
