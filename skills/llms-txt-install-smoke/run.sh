@@ -31,6 +31,10 @@ done
 
 # Real user home for brew/lastdbd binaries only — never for data.
 REAL_HOME="${REAL_HOME:-$(eval echo "~$(id -un)")}"
+SMOKE_CARGO_BIN="$(command -v cargo || true)"
+if [[ "$SMOKE_CARGO_BIN" != /* ]] || [ ! -x "$SMOKE_CARGO_BIN" ]; then
+  SMOKE_CARGO_BIN=""
+fi
 SMOKE_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SMOKE_CANDIDATE_SET="${SMOKE_CANDIDATE_SET:-}"
 SMOKE_LAST_STACK_OID="${SMOKE_LAST_STACK_OID:-}"
@@ -47,9 +51,12 @@ fi
 # RED for five days after the fix landed. Measured 2026-09-13 on fresh homes:
 # lastdbd 0.23.3-1908 → kanban init PASS; canary 0801 and brew 0.23.2 → FAIL.
 # Keep the runner's Rust installation available after HOME becomes disposable.
-export CARGO_HOME="${CARGO_HOME:-$REAL_HOME/.cargo}"
-export RUSTUP_HOME="${RUSTUP_HOME:-$REAL_HOME/.rustup}"
+export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
 export PATH="${REAL_HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${REAL_HOME}/.bun/bin:${CARGO_HOME}/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+if [ -n "$SMOKE_CARGO_BIN" ]; then
+  export PATH="$PATH:$(dirname "$SMOKE_CARGO_BIN")"
+fi
 # A candidate binary pair comes first on PATH: the canary lane names its
 # `lastdbd` with SMOKE_LASTDBD_BIN, and the sibling `lastdb` (same bottle) is
 # the CLI that resolves apps by proof. Without this the sandbox would install
@@ -311,6 +318,7 @@ echo "=========================================="
 echo "llms-txt install smoke (isolated)"
 echo "sandbox: $FRESH_ROOT"
 echo "HOME=$HOME LASTDB_HOME=$LASTDB_HOME"
+live "cargo executable before isolation: ${SMOKE_CARGO_BIN:-unavailable}"
 echo "=========================================="
 
 require_cmd brew
