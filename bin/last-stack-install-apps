@@ -18,7 +18,7 @@ usage() {
 last-stack-install-apps [options]
 
 Downloads the stable LastDB app stack from public GitHub:
-  LastDB daemon, loom and lastseek (Homebrew binaries), brain, kanban (fkanban), situations, routines,
+  LastDB daemon, loom and lastseek (Homebrew binaries), brain, situations, routines,
   dogfood-graph, org, lastsecrets, search, LastDB Browser, and the optional
   Kanban Factory theater UI.
 
@@ -620,7 +620,8 @@ if [ -n "$PINS_FILE" ]; then
   echo "==> candidate set: $PINS_FILE (lastdb $(jq -r '.lastdb.build // "?"' "$PINS_FILE"))"
 fi
 
-BUNDLE_APPS="brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser lastseek"
+# Kanban is retained in the registry for deliberate selection, outside this bundle.
+BUNDLE_APPS="brain situations routines dogfood-graph org lastsecrets search lastdb-browser lastseek"
 FAILED_APPS=""      # "<app>:<stage>" words, in install order
 app_failed() {
   case " $FAILED_APPS " in
@@ -737,7 +738,6 @@ printf '  %s\n\n' "$TARGET_DIR"
 printf 'Next steps:\n'
 printf '  brew services start lastdb\n'
 printf '  brain init --grant-consent\n'
-printf '  kanban init\n'
 printf '  situations init\n'
 printf '  lastsecrets init\n'
 printf '  org init\n'

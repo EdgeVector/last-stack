@@ -3,10 +3,8 @@
 # one names, or to "shared" when the check says something about the isolated
 # node or its install pipeline as a whole rather than about one app.
 #
-# Extracted out of last-stack-registry-publish-next so the attribution rules
-# have their own fixture test (tests/last-stack-registry-red-attribution.sh)
-# that needs no lastdb signing key, no forge, and no git clone — just proof
-# JSON in, a verdict out.
+# Shared with last-stack-registry-publish-next so reporting and publishing
+# attribute the same actual install/startup failures.
 #
 # Check-name shapes the smoke (skills/llms-txt-install-smoke/run.sh) emits:
 #   install-apps:<app>:<mode> ...   -> <app>
@@ -35,7 +33,7 @@
 set -euo pipefail
 
 PROOF_JSON=""
-KNOWN_APPS="${LAST_STACK_REGISTRY_KNOWN_APPS:-brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser lastseek}"
+KNOWN_APPS="${LAST_STACK_REGISTRY_KNOWN_APPS:-brain situations routines dogfood-graph org lastsecrets search lastdb-browser lastseek}"
 
 usage() {
   cat <<'USAGE'
