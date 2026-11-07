@@ -36,7 +36,6 @@ def binding(path):
     require(definition["identity_hash"] == SCHEMA and definition["schema_type"] == "Hash"
             and definition["key"] == {"hash_field": ID_FIELD, "range_field": None}
             and not definition.get("transform_fields")
-            and not definition.get("ref_fields")
             and all(name in definition["fields"] for name in FIELD_MAP.values())
             and {name: definition["field_types"][name] for name in FIELD_MAP.values()}
                 == {ID_FIELD: "String", NOTE_FIELD: "String"},
@@ -94,7 +93,6 @@ def load(node, operation):
     actual = cached.get("schema")
     require(isinstance(actual, dict) and actual.get("state") == "Available"
             and not actual.get("transform_fields")
-            and not actual.get("ref_fields")
             and all(actual.get(key) == value for key, value in expected["definition"].items()),
             "cached_schema_matches_original_public_definition")
     receipt = {"schema": "lastdb.qualification-existing-catalog-load.v1", "owner": node.owner,

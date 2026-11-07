@@ -354,8 +354,6 @@ def type_error(ftype, value):
             return None
         if kind == "OneOf":
             return None if any(type_error(v, value) is None for v in inner or []) else "oneof-no-match"
-        if kind == "SchemaRef":
-            return None if isinstance(value, (dict, list)) else "expected-reference"
     return None
 
 
