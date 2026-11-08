@@ -72,9 +72,10 @@ FEATURES = {'exact_card_selector': '--only-card', 'canonical_resume_fence': True
                 'claim_authority': 'supplied-raw23-snapshot-sha-before-decision-read',
                 'policy_file': 'release/factory-reviewed-decision.json'}}
 COUNT_PREDECESSOR_SOURCE = '1c4f6af5a296c6b4ff78bcec2cd5f85dc416f8c5'
-COUNT_PREDECESSOR_CONTRACT_SHA = 'bef392a30569c1db2925ae36e1aaf36281128cfa4384db5c87a2377dda716877'
-COUNT_DISPATCH_CONTRACT_SHA = 'bef392a30569c1db2925ae36e1aaf36281128cfa4384db5c87a2377dda716877'
-# The Count predecessor is the exact accepted no-tests dispatch release.
+COUNT_PREDECESSOR_CONTRACT_SHA = '73d3f0fbfe0f182500b83746f72494c1e2f79efd20ad0a72edf008db2eed3472'
+COUNT_DISPATCH_CONTRACT_SHA = '73d3f0fbfe0f182500b83746f72494c1e2f79efd20ad0a72edf008db2eed3472'
+# sha256 of the contract blob below. The retry-script entry matches the loom
+# script that no longer starts lastdb-canary-release.
 COUNT_PREDECESSOR_CONTRACT_JSON = '''{
   "budget_recovery_source_sha256": "0f1840ca33218a0f50974c568464ea11c99a4727fa09d103b2ddda7bbf99126f",
   "cli_source_sha256": "e59d186806bed160f7ff47d84a4f6ad44e0b8a3622f252b0ea18d122951268f4",
@@ -116,7 +117,7 @@ COUNT_PREDECESSOR_CONTRACT_JSON = '''{
     "scripts/loom-canary-collect.sh": "7eb1bd286e96011a8dbdf3fd59d13de54485b9d0c0aa6ea1b082c3c5703cee9d",
     "scripts/loom-canary-heal.sh": "86447f0699c7d093f99fb44b61a8d6d5bddb6d6fba2718048a66a52c30c55e83",
     "scripts/loom-canary-report.sh": "26979031bc3da373a1c8d10fa7a4cbc4c2277eb9e21d204c7a6a6adf761b348d",
-    "scripts/loom-canary-retry-upgrade.sh": "1193feafc7877b9e2cf18bbea9fcb43375fb13a5349f3e589f9d94f0d65d3b32",
+    "scripts/loom-canary-retry-upgrade.sh": "d634da55949b66c3e38a28fb7cb8f3d39e8925df35168c7f8bed97cecc8f09f8",
     "scripts/loom-canary-step.sh": "6082ea969314e11164c7ec113b57001e79bd647c3c8c33165f4bf7c2a5f4f93f",
     "scripts/loom-card-brief.sh": "1736a913b84b519bd2bdae3cea4c465f872e894a70d3ab9810517ade664a66cf",
     "scripts/loom-card-check-push.sh": "f831b857e3b2b533e576b697ea75f380602998b877de55c1f1139b39a423bc56",
