@@ -76,5 +76,3 @@ Sentinel: `SENTINEL_SWAP_ALERT_MB` (20480), `SENTINEL_FREE_PCT_ALERT` (8),
 `SENTINEL_DRY_RUN`.
 
 Set `*_DRY_RUN=1` to log an over-limit or alert without a kill or a page.
-
-Fixtures: `tests/last-stack-host-memory-guards.sh` (required CI gate).

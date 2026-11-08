@@ -21,7 +21,7 @@ An audit agent read the call sites. A second reader checked the key claims.
 |---|---|---|---|
 | lastdbd | - | - | fold: the daemon calls no other app. It writes the search inbox that search and lastseek read. |
 | lastdb | lastdbd | - | fold: the CLI talks to the daemon socket. |
-| brain | lastdbd | lastseek, search, lastdb | brain `src/client.ts:89` socket. `src/search-plane.ts:1-20`: LastSeek first, then search, then the node search. `lastdb` only for `brain init` consent. |
+| brain | lastdbd | lastseek, search, lastdb | brain `src/client.ts:89` socket. `src/search-plane.ts:1-20`: LastSeek first, then search, then the node search. |
 | kanban | lastdbd, situations, loom | brain, lastseek, last-stack | fkanban `src/client.ts:49` socket. `src/situations.ts:141,205-216`: `fsituations preflight` fails closed and blocks a move to doing. loom: an owner decision, not a code edge (see below). brain checkpoint, `--semantic` search and the forge-api fallback degrade. |
 | situations | lastdbd | - | situations `src/client.ts:3`. |
 | routines | - | situations, kanban, lastsecrets, configurations, lastdbd, brain | routines: each call has a fallback (`src/route-engine.ts:164`, `src/capacity-runtime.ts:42`, `src/claude-auth.ts:138`, `src/project-config.ts:106`). |

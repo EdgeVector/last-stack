@@ -106,8 +106,7 @@ shell-visible CLI and daemon binary agree. The helper never restarts/kills
 - Give the slug ONCE. `brain put closeout-x --type reference < f.md` with a
   frontmatter `slug: closeout-x` is fine, but a positional `reference/closeout-x`
   next to `slug: closeout-x` exits 2 (`positional slug ... conflicts with
-  frontmatter`). The `brain` CLI does not strip a `<type>/` prefix; that form
-  belongs to `gbrain put <type>/<slug>`. Put the slug in the frontmatter and
+  frontmatter`). The `brain` CLI does not strip a `<type>/` prefix. Put the slug in the frontmatter and
   drop the positional, or pass the identical bare slug in both places.
 - `brain append <slug> --type <t>` — grow a big record's body (also stdin);
   never get→edit→put a large record (get windows at ~40K chars, a re-put
@@ -188,7 +187,7 @@ Kind:pr cards in default/todo need a substantive brief (prefer `## GOAL` +
 brain decision, design, or preference. File Kind:pr with
 `last-stack-kanban-file-pr` (it runs `last-stack-kanban-decision-check` and
 stamps `## DECISION-CHECK`). If the stamp lists slugs, run its `read:` lines
-(the store the check used, e.g. `gbrain get decision/<slug>`) and honor them
+(the store the check used, `brain get <slug>`) and honor them
 in the brief, or do not file. Do not pass `--skip-decision-check`.
 Raw `kanban add` for Kind:pr skips this gate.
 

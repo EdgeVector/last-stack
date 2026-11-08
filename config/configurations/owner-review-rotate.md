@@ -138,10 +138,10 @@ cadence: 1d
 recipe: owner-review
 isolation: read current code only; never mutate primary LastDB data or a live worktree
 
-### owner-fbrain
+### owner-brain
 track: domain owner review
-area: fbrain
-charter: owner-fbrain
+area: brain
+charter: owner-brain
 repos: EdgeVector/brain, EdgeVector/lastdb
 owned_paths: brain CLI/MCP, schema registry, socket transport
 cadence: 1d
@@ -170,6 +170,6 @@ isolation: read current code only; never mutate primary LastDB data or a live wo
 | owner-dogfood-infra | never | -- | -- |
 | owner-agent-harness | never | -- | -- |
 | owner-fold-ci | never | -- | -- |
-| owner-fbrain | never | -- | -- |
+| owner-brain | never | -- | -- |
 | owner-unassigned | never | -- | -- |
 <!-- rotation-log:end -->

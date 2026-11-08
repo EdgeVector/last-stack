@@ -95,7 +95,7 @@ Initialize the apps:
 
 ```bash
 # first-run setup (not a health check — run once after brew services start lastdb)
-brain init --grant-consent   # bootstrap Brain
+brain init                   # bootstrap Brain
 situations init              # bootstrap Situations
 lastsecrets init             # bootstrap LastSecrets (needed for org keys)
 org init                     # bootstrap Org (invite/join)

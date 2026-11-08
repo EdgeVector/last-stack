@@ -387,7 +387,7 @@ with stderr_path.open("a", encoding="utf-8") as stderr_file:
         # macOS answers killpg with EPERM (PermissionError) for a group whose
         # remaining members cannot be signalled, e.g. only zombies are left.
         # That crashed the timeout path with a traceback and exit 3 instead of
-        # 124 (Forge CI 2026-09-23, tests/last-stack-why-stopped-loom.sh).
+        # 124. EPERM means nothing left to signal.
         # Treat EPERM as "nothing left we can signal": stop the direct child
         # and return.
         def group_exists():

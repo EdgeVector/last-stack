@@ -53,15 +53,7 @@ while [ -h "$_self" ]; do
 done
 ROOT="$(CDPATH= cd -- "$(dirname -- "$_self")/.." && pwd -P)"
 unset _self _dir
-# Fixture tests set SHIP_PIPELINE_GAP_SNAPSHOT_FIXTURE=1 and provide a stub
-# board CLI first on PATH — do not force ~/.local/bin or ROOT/bin ahead of
-# that. Appending ROOT/bin would always surface real why-stopped /
-# factory-health and break missing-helper embed assertions.
-if [ "${SHIP_PIPELINE_GAP_SNAPSHOT_FIXTURE:-0}" != "1" ]; then
-  export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
-else
-  export PATH="${PATH:-/usr/bin:/bin}"
-fi
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 
 BOARD=kanban
 command -v kanban >/dev/null 2>&1 || BOARD=fkanban

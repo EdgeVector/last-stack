@@ -12,9 +12,7 @@ while [ -L "$_self_src" ]; do
   case "$_self_link" in /*) _self_src="$_self_link" ;; *) _self_src="$(dirname "$_self_src")/$_self_link" ;; esac
 done
 ROOT="$(CDPATH= cd -- "$(dirname -- "$_self_src")/.." && pwd -P)"
-if [ "${JOB_GATE_FIXTURE:-0}" != "1" ]; then
-  export PATH="${HOME}/.local/bin:${ROOT}/bin:${HOME}/.last-stack/bin:${PATH:-/usr/bin:/bin}"
-fi
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${HOME}/.last-stack/bin:${PATH:-/usr/bin:/bin}"
 id="${1:-${ROUTINE_ID:-}}"
 
 emit() {
@@ -41,7 +39,7 @@ case "$id" in
       exit 1
     fi
     # Fold portal has no target/release/lastdbd. Prefer a staged canary
-    # binary; never cargo. LASTDB_MINI_SMOKE_BIN wins for tests/overrides.
+    # binary; never cargo. LASTDB_MINI_SMOKE_BIN wins when set.
     bin="${LASTDB_MINI_SMOKE_BIN:-}"
     if [ -z "$bin" ]; then
       resolve="${LAST_STACK_CANARY_RESOLVE_BIN:-$ROOT/bin/last-stack-canary-resolve-lastdbd}"

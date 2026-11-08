@@ -47,11 +47,9 @@ Zero-LLM gate for last-stack-milestone-driver. Exit 0 = skip; 10 = proceed.
 Reads `kanban milestone gap-report --json`. Decompose-only queues also run
 `last-stack-feature-portfolio-admission --work-class feature --json`.
 
-Env (optional, for tests):
+Env (optional):
   LAST_STACK_MILESTONE_DRIVER_GATE_KANBAN   kanban CLI (default kanban)
   LAST_STACK_MILESTONE_DRIVER_GATE_ADMISSION admission CLI
-  LAST_STACK_ADMISSION_FIXTURE              offline admission fixture dir
-  LAST_STACK_MILESTONE_DRIVER_GATE_PASS_RECORD pass-record CLI ("" disables)
   LAST_STACK_MILESTONE_DRIVER_GATE_PROOF_SCAN_MAX  max proof_pending
                                             milestones point-read (default 25)
   MILESTONE_DRIVER_CADENCE_SECONDS          FAIL staleness window (default 3600)
@@ -155,8 +153,7 @@ case "$close_ready" in ''|*[!0-9]*) close_ready=0 ;; esac
 repair_flagged=$((repair_flagged + close_ready))
 
 # The verdict of one proof card: its LAST PROOF:/RESULT: verdict line. The
-# rule matches _proof_verdict() in last-stack-milestone-driver-snapshot
-# (tests/last-stack-milestone-driver-gate.sh checks the two agree). Prints
+# rule matches _proof_verdict() in last-stack-milestone-driver-snapshot. Prints
 # `stale-fail` only for a FAIL older than one driver cadence on a card that
 # is not in doing (being re-run now).
 proof_card_filter='

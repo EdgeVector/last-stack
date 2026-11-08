@@ -115,7 +115,6 @@ HTTP 404 only, it reads pid and build from `GET /api/status` and prints
 `identity_source=status_fallback`. A down socket, a timeout, or an empty
 status body still fails. The guard does not restart the primary for identity.
 
-Fixtures: `tests/last-stack-lastdb-memory-guard.sh` (in the required CI gate).
 
 ## Companion host guards
 

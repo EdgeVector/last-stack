@@ -91,19 +91,13 @@ def parse_search_candidates(text: str) -> list[str]:
 
 
 class Brain:
-    def __init__(self, bin_name: str, fixture_dir: Path | None) -> None:
+    def __init__(self, bin_name: str) -> None:
         self.bin_name = bin_name
-        self.fixture_dir = fixture_dir
         self.gets: list[str] = []
         self.searches: list[str] = []
 
     def get(self, slug: str) -> str | None:
         self.gets.append(slug)
-        if self.fixture_dir is not None:
-            path = self.fixture_dir / "get" / f"{slug}.txt"
-            if not path.is_file():
-                return None
-            return path.read_text()
         cp = subprocess.run(
             [self.bin_name, "get", slug],
             text=True,
@@ -116,11 +110,6 @@ class Brain:
 
     def search(self, topic: str) -> str:
         self.searches.append(topic)
-        if self.fixture_dir is not None:
-            path = self.fixture_dir / "search.txt"
-            if path.is_file():
-                return path.read_text()
-            return ""
         cp = subprocess.run(
             [self.bin_name, "search", topic, "--limit", "10"],
             text=True,
@@ -226,18 +215,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", help="Write markdown pack here")
     ap.add_argument("--json", action="store_true")
     ap.add_argument(
-        "--fixture-dir",
-        help="Offline brain: get/<slug>.txt and search.txt (no live node)",
-    )
-    ap.add_argument(
         "--brain",
         default=os.environ.get("BRAIN_BIN", "brain"),
-        help="brain CLI (ignored when --fixture-dir is set)",
+        help="brain CLI. Defaults to $BRAIN_BIN, else brain.",
     )
     args = ap.parse_args(argv)
 
-    fixture = Path(args.fixture_dir) if args.fixture_dir else None
-    brain = Brain(args.brain, fixture)
+    brain = Brain(args.brain)
     pack = assemble_pack(args.topic, brain)
     text = render_pack(pack)
     if args.out:

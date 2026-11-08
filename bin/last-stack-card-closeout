@@ -310,9 +310,8 @@ EOF
     #               one of them.
     #               Brain: papercut-card-closeout-deploy-gate-refuses-the-retired-status-the-scanner-now-emits-20261001
     #
-    # tests/last-stack-card-closeout-deploy-gate-vocabulary.sh asserts this case
-    # covers every declared status, so a third addition breaks CI instead of
-    # jamming a card.
+    # The case must cover every declared status. An unclassified addition
+    # jams a card.
     #
     # Do NOT replace this with a test on `blocked` alone. `blocked=false` does
     # not mean proven: `pending`-within-grace means a deploy is IN FLIGHT

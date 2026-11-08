@@ -737,7 +737,7 @@ printf 'Installed LastDB apps under:\n'
 printf '  %s\n\n' "$TARGET_DIR"
 printf 'Next steps:\n'
 printf '  brew services start lastdb\n'
-printf '  brain init --grant-consent\n'
+printf '  brain init\n'
 printf '  situations init\n'
 printf '  lastsecrets init\n'
 printf '  org init\n'
