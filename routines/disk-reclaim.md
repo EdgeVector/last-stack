@@ -159,18 +159,6 @@ continue — do not fail the whole run.
    data socket, a live clone pid), the default `~/.lastdb-dev`, symlinks, and
    anything that resolves to the primary `~/.lastdb`. Report the `df` delta it
    prints as reclaimed space.
-3a. **Migrate legacy repo-local `.worktrees/` after the live audit.** Disk
-   reclaim must not delete non-removable worktrees just because they live under
-   a checkout. After the board/lsof audit above, run the bounded migration
-   helper so clean idle survivors move to the canonical kanban worktree pool:
-   ```bash
-   "$HOME/.last-stack/bin/last-stack-migrate-repo-local-worktrees" \
-     --workspace "$workspace" \
-     --dest "${WORKTREES_DIR:-$HOME/.kanban/worktrees}" || true
-   ```
-   Report every `FLAG ... kept ...` line. The helper skips dirty paths, live or
-   open paths, protected names, non-owned directories, and destination
-   collisions.
 3b. **Reap stale dev-server port orphans (port-scoped, brain-safe).** A preview /
    dev server (Vite, a per-app dev node) whose launching session died can outlive
    it and keep holding its port, blocking the next run. For each known
@@ -247,23 +235,6 @@ continue — do not fail the whole run.
    `scratch_board_unavailable` / `scratch_lsof_unavailable` into the
    heartbeat unchanged when present — a block is an `error`, not
    `ok reclaimed_gb=0`.
-4c. **VM sparse-disk overhang (helper — the host cannot see it).** Space
-   deleted inside the colima/Docker VM does not return to the host volume
-   until something trims it. On 2026-08-23 one `fstrim -a` inside the VM
-   returned **79.6 GiB** to the host, and no counter in this routine could see
-   it: step 3c sizes `~/.cache`, not the VM disk image. Run:
-   ```bash
-   "$last_stack/bin/last-stack-vm-disk-trim" --free-below-gib 100
-   ```
-   The helper owns every guard rail: a weekly throttle stamp, the free-space
-   ceiling above, docker-absent and daemon-unreachable clean noops, and an
-   image-must-already-be-local gate so no run ever pulls unattended. Carry its
-   `vm_trimmed_gb=<n>` into the heartbeat. A `vm_trim_skipped=docker-unreachable`
-   token is the EXPECTED result inside the routine sandbox, not an error: the
-   weekly `com.edgevector.vm-disk-trim` LaunchAgent runs the same helper from
-   the host session, where the docker socket is reachable. Report
-   `vm_trim_skipped=<reason>` unchanged when present.
-
 5. **Disk floor (helper — never raw `rm`).** If free space < `<your floor, e.g. ~30 GB>`, proactively purge
    the largest reclaimable build-cache dir with an **atomic swap** so an active
    build doesn't see a half-deleted tree: `mv target target.PURGE` → recreate an
@@ -393,7 +364,7 @@ the sweep.
 > `<last-stack>/bin/last-stack-brain-append-heartbeat --line "disk-reclaim
 > <ISO-ts> <ok|noop|error> <outcome>"`, e.g. `ok reclaimed_gb=<n>
 > worktrees_pruned=<n> backups_pruned=<n> lastdb_copies_pruned=<n>
-> vm_trimmed_gb=<n> final_free=<free>` (plus `low_disk=<free>` whenever step 6 tripped) on a real
+> final_free=<free>` (plus `low_disk=<free>` whenever step 6 tripped) on a real
 > reclaim, or `noop reclaimed_gb=0 worktrees_pruned=0` when the run found
 > nothing to remove. Without this call,
 > routinesd's outcome classifier has no ok/noop/error token to key on and

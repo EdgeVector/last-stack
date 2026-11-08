@@ -130,19 +130,6 @@ continue — do not fail the whole run.
 3. **Fallback remove** (only if the helper is missing): same as before —
    `git worktree remove --force` for clean non-`doing` trees; always strip
    `target`/`node_modules` even when keeping. `worktree prune` per repo after.
-3a. **Migrate legacy repo-local `.worktrees/` after the live audit.** Once the
-   board/lsof checks above have identified what is safe to touch, move remaining
-   clean, idle repo-local worktrees into the canonical kanban pool instead of
-   letting every checkout grow its own hidden worktree nest:
-   ```bash
-   "$HOME/.last-stack/bin/last-stack-migrate-repo-local-worktrees" \
-     --workspace "$workspace" \
-     --dest "${WORKTREES_DIR:-$HOME/.kanban/worktrees}" || true
-   ```
-   Treat `FLAG ... kept ...` lines as protected residuals for the report. The
-   helper refuses dirty entries, live/open paths, protected names
-   (`salvage-*`, `tombstone-*`, `locked*`), non-owned directories, and
-   destination collisions.
 3b. **Reap stale dev-server port orphans (port-scoped, brain-safe).** Local
    preview / dev servers (e.g. Vite, a per-app dev node) bind well-known ports;
    when their launching session dies the process can outlive it and keep holding
