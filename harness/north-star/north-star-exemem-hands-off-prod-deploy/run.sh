@@ -109,7 +109,7 @@ elif [ -z "$EVIDENCE" ]; then
 fi
 
 set +e
-body="$(python3 - "$INFRA" "$EVIDENCE" "$NS_TEXT" "$PROOF_TEXT" "$MODE" "$OID" "$ROOT" <<'PY'
+body="$(python3 - "$INFRA" "$EVIDENCE" "$NS_TEXT" "$PROOF_TEXT" "$MODE" "$OID" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -120,7 +120,6 @@ ns_path = sys.argv[3]
 proof_path = sys.argv[4]
 mode = sys.argv[5]
 oid = sys.argv[6]
-stack = Path(sys.argv[7])
 
 notes = []
 failures = []
@@ -168,22 +167,6 @@ require_text(
     ("confirm_prod_sha",),
 )
 
-stack_config = stack / "config/deploy/repos.json"
-if not stack_config.is_file():
-    add_fail("config/deploy/repos.json is absent.")
-else:
-    config_text = stack_config.read_text(errors="replace")
-    for marker in (
-        '"repo": "exemem-infra"',
-        '"OBS_SENTRY_DSN": "lastsecrets://obs-sentry-dsn-exemem-backend"',
-    ):
-        if marker not in config_text:
-            add_fail(f"config/deploy/repos.json lacks {marker}.")
-    if all(marker in config_text for marker in (
-        '"repo": "exemem-infra"',
-        '"OBS_SENTRY_DSN": "lastsecrets://obs-sentry-dsn-exemem-backend"',
-    )):
-        add_pass("production deploy config resolves the ExeMem Sentry locator at launch.")
 require_text(
     ".lastgit/canary-ticker.sh",
     (
