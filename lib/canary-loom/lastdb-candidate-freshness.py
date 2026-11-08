@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 OID_RE = re.compile(r"^[0-9a-f]{7,40}$", re.IGNORECASE)
-VERSION_OID_RE = re.compile(r"-g([0-9a-f]{7,40})(?:\b|-dirty\b)", re.IGNORECASE)
+VERSION_OID_RE = re.compile(r"[.-]g([0-9a-f]{7,40})(?:\b|-dirty\b)", re.IGNORECASE)
 
 
 def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
