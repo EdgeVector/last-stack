@@ -20,7 +20,7 @@ def main():
         if not match:
             continue
         name = next(value for value in match.groups() if value is not None)
-        if name not in ('kanban', 'situations'):
+        if name not in ('kanban', 'fkanban', 'situations', 'fsituations'):
             continue
         end = matches[index + 1].start() if index + 1 < len(matches) else len(original)
         body = original[header.end():end]
