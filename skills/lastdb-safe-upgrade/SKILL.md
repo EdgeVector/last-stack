@@ -963,6 +963,13 @@ An equal candidate finishes as a no-op. An older, divergent, or unknown source
 commit fails closed. A byte change needs a new execution key. Do not reuse an
 execution for another pair.
 
+When the installed LastStack driver predates the owner's LastDB API, use the
+launcher from a clean, accepted LastStack worktree. It binds the driver from
+that same source, while preserving the local recovery journal and every cutover
+gate. API 29 and later use whole-record queries and conditional creates for
+the synthetic seed. The live LastSecrets check counts one exact locator key
+without fetching the record value.
+
 The launcher does not write to LastDB before or during the run. The local
 journal path defaults to
 `~/.local/state/last-stack/loom/recovery/executions.jsonl`; set

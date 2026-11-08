@@ -9,6 +9,7 @@ lastsecrets/LastSecret records whose envelopes are fixed public test text.
 
 import argparse
 import collections
+import datetime
 import http.client
 import hashlib
 import json
@@ -102,13 +103,14 @@ class OwnerConnection(http.client.HTTPConnection):
         self.sock.connect(str(self.path))
 
 
-def call(path, route, body):
-    raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
-    require(len(raw) <= CAP)
+def call(path, route, body=None):
+    raw = None if body is None else json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+    require(raw is None or len(raw) <= CAP)
     conn = OwnerConnection(path)
     try:
-        conn.request("POST", route, raw, {"Content-Type": "application/json",
-                     "X-LastDB-Client": "lastdb-safe-upgrade-synthetic", "Connection": "close"})
+        conn.request("GET" if raw is None else "POST", route, raw,
+                     {"Content-Type": "application/json", "X-LastDB-Client": "lastdb-safe-upgrade-synthetic",
+                      "Connection": "close"})
         reply = conn.getresponse()
         payload = reply.read(CAP + 1)
         require(reply.status == 200, "%s returned HTTP %d: %s" % (route, reply.status, excerpt(payload)))
@@ -139,25 +141,35 @@ def text(number):
                      % (number, i, (number * 7919 + i * 104729) % 100003) for i in range(8))
 
 
-def collect(brain, secrets, cards, records):
+def collect(brain, secrets, cards, records, whole_record):
     operations = []
     expected = collections.OrderedDict()
+    stamp_ms = int(datetime.datetime.fromisoformat(STAMP.replace("Z", "+00:00")).timestamp() * 1000)
 
-    def add(schema, key, fields):
+    def add(schema, key, fields, alternates=None):
         address = (schema, key[0], key[1] or "")
         require(address not in expected)
         expected[address] = fields
-        operations.append({"type": "mutation", "schema": schema,
-                           "fields_and_values": fields, "key_value": {"hash": key[0], "range": key[1]},
-                           "mutation_type": "update", "durability": "durable"})
+        request = {"type": "mutation", "schema": schema,
+                   "key_value": {"hash": key[0], "range": key[1]}, "durability": "durable"}
+        if whole_record:
+            request.update(record=fields, alternates=alternates or {}, mutation_type="create",
+                           expected={"type": "absent"})
+        else:
+            request.update(fields_and_values=fields, mutation_type="update")
+        operations.append(request)
 
     def record(kind, slug, number):
         schema = canonical(brain, kind)
+        status = "draft" if kind == "design" else "active"
         fields = record_fields(brain, schema, {
             "slug": slug, "title": "Synthetic %s %d" % (kind, number), "body": text(number),
-            "status": "draft" if kind == "design" else "active", "tags": [],
+            "status": status, "tags": [],
             "created_at": STAMP, "updated_at": STAMP})
-        add(schema, (slug, None), fields)
+        # The app declares two named keys ordered by reverse update time and slug.
+        ordered = f"{(1 << 63) - 1 - stamp_ms:020d}#{slug}"
+        add(schema, (slug, None), fields,
+            {"recent": {"hash": "all", "range": ordered}, "by_status": {"hash": status, "range": ordered}})
 
     # The keyed point read of every probe bar.
     record("reference", POINT_SLUG, 0)
@@ -226,15 +238,16 @@ def commit(args, expected):
         os.close(fd)
 
 
-def verify(path, expected):
+def verify(path, expected, whole_record):
     grouped = collections.OrderedDict()
     for (schema, hash_key, range_key), fields in expected.items():
         group = grouped.setdefault(schema, {"keys": [], "fields": set(), "expected": {}})
         group["keys"].append([hash_key, range_key])
         group["expected"][(hash_key, range_key)] = fields
         group["fields"].update(fields)
-    queries = [{"schema_name": schema, "fields": sorted(group["fields"]),
-                "filter": {"HashRangeKeys": group["keys"]}, "limit": len(group["keys"])}
+    queries = [{"schema_name": schema, "filter": {"HashRangeKeys": group["keys"]},
+                "limit": len(group["keys"]),
+                **({"response_format": "values"} if whole_record else {"fields": sorted(group["fields"])})}
                for schema, group in grouped.items()]
     require(0 < len(queries) <= 64)
     reply = call(path, "/api/queries/batch", {"queries": queries})
@@ -284,14 +297,18 @@ def main():
     require(secrets["userHash"] == brain["userHash"])
     require(all(not cfg.get("nodeSocketPath") or Path(cfg["nodeSocketPath"]).resolve() == path
                 for cfg in (secrets, brain)))
-    operations, expected = collect(brain, secrets, args.cards, args.records)
     if args.mode == "commit":
         require(not path.exists())
+        _, expected = collect(brain, secrets, args.cards, args.records, whole_record=False)
         commit(args, expected)
         print(json.dumps({"ok": True, "mode": "commit", "native_batch_calls": 0}))
         return
     require(stat.S_ISSOCK(path.lstat().st_mode) and path.lstat().st_uid == os.getuid())
     before = metadata(path.lstat())
+    api = call(path, "/api/version").get("api_version")
+    require(type(api) is int and api > 0, "owner API version unavailable")
+    whole_record = api >= 29
+    operations, expected = collect(brain, secrets, args.cards, args.records, whole_record)
     if args.mode == "write":
         reply = call(path, "/api/mutations/batch", {"mutations": operations, "convergence": "sync"})
         shape = {k: reply.get(k) for k in ("count", "durability", "background_tasks_drained",
@@ -304,7 +321,7 @@ def main():
         require(type(reply.get("operations")) is dict and reply["operations"].get("total") == len(operations), what)
         require(reply.get("background_tasks_drained") is True and reply.get("convergence_pending") is False, what)
     else:
-        verify(path, expected)
+        verify(path, expected, whole_record)
     require(metadata(path.lstat()) == before)
     print(json.dumps({"ok": True, "mode": args.mode, "cards": args.cards, "records": args.records,
                       "known_keys": len(expected), "native_batch_calls": 1}))
