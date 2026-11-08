@@ -699,7 +699,9 @@ if not live:
         sys.exit(2)
     raise SystemExit(0)
 
-skill = os.path.expanduser(
+# Prefer the driver bound by the launcher. The installed driver may predate
+# the backup CLI that the reviewed LastStack source supports.
+skill = os.environ.get("LAST_STACK_LOOM_SAFE_UPGRADE_DRIVER") or os.path.expanduser(
     "~/.last-stack/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh"
 )
 

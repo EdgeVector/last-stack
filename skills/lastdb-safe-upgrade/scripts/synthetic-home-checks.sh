@@ -15,7 +15,7 @@
 
 # Bump when build-synthetic-home.sh writes different data.
 # Version 4 (2026-11-01): Brain and LastSecrets records; kanban is off.
-SYNTH_GENERATOR_VERSION="4"
+SYNTH_GENERATOR_VERSION="5"
 # The "cards" count is the number of brain/TagMembership rows under one hash
 # (the range read); 10 rows and 8 brain records are enough for the keyed-read,
 # row-count and latency bars. One complete batch
