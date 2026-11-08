@@ -63,7 +63,7 @@ track: repository owner review
 area: fkanban
 charter: owner-fkanban
 repos: EdgeVector/fkanban
-owned_paths: bin/, src/, vendor/, fkanban.app.json
+owned_paths: bin/, src/, vendor/
 cadence: 1d
 recipe: owner-review
 isolation: read current code only; never mutate primary LastDB data or a live worktree
