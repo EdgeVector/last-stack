@@ -43,8 +43,7 @@ log() { [ "$QUIET" -eq 1 ] || printf 'ship-pipeline-snapshot: %s\n' "$*" >&2; }
 # artifact install landed — a blind audit that reported cleanly.
 #
 # `readlink -f` is not available on macOS, so walk the chain by hand.
-# `${BASH_SOURCE[0]}` rather than `$0`, matching the wrapper this repo already
-# generates in last-stack-safe-upgrade-cli: it is the real file even when the
+# `${BASH_SOURCE[0]}` rather than `$0`. It is the real file even when the
 # script is sourced or invoked under another name.
 _self="${BASH_SOURCE[0]}"
 while [ -h "$_self" ]; do

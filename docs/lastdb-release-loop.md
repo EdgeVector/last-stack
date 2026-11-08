@@ -30,9 +30,7 @@ pauses their live registry entries.
    Stage reuse keeps the source manifest check. The build keeps equal versions
    and refuses dirty binaries. The normal real-copy safe upgrade checks the
    exact source, pair hashes, versions, restore receipt, and primary protection.
-   The resolver keeps its existing source and SHA drift fields. Legacy JSON
-   fields `lastdb_restore_probe` and `restore_probe_script` always return null.
-   The legacy `--allow-no-restore-script` flag is a deprecated no-op.
+   The resolver keeps its existing source and SHA drift fields.
    `--allow-daemon-only` stays explicit; backup restore still requires the pair.
 2. **resolve** — `last-stack-lastdb-canary-dogfood --dry-run --json` names the
    candidate build and binary; the pipeline `channels` command applies the

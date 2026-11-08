@@ -49,11 +49,6 @@ def main(name=None):
         print(json.dumps(report) if '--json' in args else
               f"LAST_STACK_CLASS_A_HEAL result={report['result']} detail=registry-health")
         return 0 if ok else 1
-    if name == 'last-stack-safe-activate-cli':
-        if len(args) != 3 or args[0] not in ('status', 'rollback') or args[1] != '--app':
-            sys.stderr.write('Activation requires a signed registry listing; use lastdb app install.\n')
-            return 2
-        return command([args[0], args[2], *(['--check'] if args[0] == 'status' else [])]).returncode
     if name in ('last-stack-self-upgrade', 'last-stack-install-routines'):
         app = 'routines' if name.endswith('install-routines') else 'last-stack'
         if set(args) <= {'--check', '--check-only', '--json', '--quiet'} and args:
@@ -62,15 +57,10 @@ def main(name=None):
             sys.stderr.write('Unexpected arguments; use lastdb app upgrade for explicit options.\n')
             return 2
         return command(['upgrade', app]).returncode
-    if name in ('last-stack-safe-upgrade-all-local', 'last-stack-post-merge-safe-upgrade'):
-        if any(arg not in ('--all', '--once') for arg in args):
-            sys.stderr.write('Use lastdb app upgrade --all. The native updater owns polling.\n')
-            return 2
-        return command(['upgrade', '--all']).returncode
     if len(args) != 1 or args[0].startswith('-'):
         sys.stderr.write('Pass one registry app id; source-directory installs are retired.\n')
         return 2
-    app = 'kanban' if args[0] == 'fkanban' else args[0]
+    app = args[0]
     if os.environ.get('LAST_STACK_APPS_OFF') == '1' and app in ('kanban', 'situations'):
         sys.stderr.write('skipped: kanban and situations off (Tom, 2026-10-31)\n')
         return 2

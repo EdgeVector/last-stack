@@ -1,6 +1,0 @@
-#!/usr/bin/env python3
-from pathlib import Path
-import runpy
-entry = Path(__file__).resolve()
-bridge = runpy.run_path(str(entry.with_name('last-stack-registry-app')))
-raise SystemExit(bridge['main'](entry.name))

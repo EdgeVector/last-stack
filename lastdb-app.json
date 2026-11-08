@@ -25,10 +25,6 @@
         "command": "last-stack-dev-proof-cleanup-routine"
       },
       {
-        "source": "bin/last-stack-post-merge-safe-upgrade",
-        "command": "last-stack-post-merge-safe-upgrade"
-      },
-      {
         "source": "bin/last-stack-kanban-reopen-deferred",
         "command": "last-stack-kanban-reopen-deferred"
       },
@@ -273,10 +269,6 @@
         "command": "last-stack-portal-wt"
       },
       {
-        "source": "bin/last-stack-refresh-local-safe",
-        "command": "last-stack-refresh-local-safe"
-      },
-      {
         "source": "bin/last-stack-routine-job-shrink-gate",
         "command": "last-stack-routine-job-shrink-gate"
       },
@@ -287,18 +279,6 @@
       {
         "source": "bin/last-stack-routine-outcome-classify",
         "command": "last-stack-routine-outcome-classify"
-      },
-      {
-        "source": "bin/last-stack-safe-activate-cli",
-        "command": "last-stack-safe-activate-cli"
-      },
-      {
-        "source": "bin/last-stack-safe-upgrade-all-local",
-        "command": "last-stack-safe-upgrade-all-local"
-      },
-      {
-        "source": "bin/last-stack-safe-upgrade-cli",
-        "command": "last-stack-safe-upgrade-cli"
       },
       {
         "source": "bin/last-stack-shared-checkout-guard",
