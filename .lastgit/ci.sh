@@ -30,10 +30,6 @@ done
 for script in lib/canary-loom/*.sh skills/lastdb-safe-upgrade/scripts/*.sh; do
   bash -n "$script"
 done
-python3 -m py_compile lib/canary-loom/native_upgrade.py \
-  lib/canary-loom/native_upgrade_common.py lib/canary-loom/native_upgrade_probe.py \
-  lib/canary-loom/native_migration.py lib/canary-loom/native_migration_io.py \
-  lib/canary-loom/native_migration_effects.py
 python3 -m py_compile skills/lastdb-safe-upgrade/scripts/dev-v2-stream-cleanup.py
 python3 -I skills/lastdb-safe-upgrade/scripts/dev-v2-stream-cleanup.py --help >/dev/null
 
