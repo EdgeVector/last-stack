@@ -779,7 +779,6 @@ On a format 7 primary with automatic V2 backup, the gate also requires the
 format 7 V2 route and the V2 DEV restore proof in the installed driver. An older
 install stops with `driver-format7-v2-dev-proof-missing` and does not mark the source red.
 Do not call the cutover driver except through that Loom launcher.
-`lastdb-canary-candidate-set` stays paused. It compiles LastDB on this machine.
 
 Before the live install, the driver classifies the live read. When Board
 answers, the proof stays the Board title. When Board does not answer, the
@@ -793,11 +792,6 @@ or from mode `600` file `live-read.env` under
 The driver does not log the query body.
 The Loom VERIFY step runs `safe-upgrade-lastdb.sh --live-read-check`. That flag
 does one classified live read, takes no lock and writes nothing.
-
-`last-stack-canary-loom --recover` accepts only a complete protocol-v7 child
-receipt. Recovery rechecks both canonical paths, versions, hashes, the tuple
-digest, the successful nodes, and the installed live pair. A legacy receipt
-cannot record the dogfood ledger.
 
 ### B. Use the driver only for probe-only work
 

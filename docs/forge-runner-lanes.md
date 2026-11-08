@@ -17,9 +17,8 @@ Standing rule for the local Forgejo forge (`http://localhost:3300`):
 | **merge-gate** | `macos-arm64` | PR `ci-required` only (fmt/clippy / host smoke) | **Yes** — `ci-required` |
 | **heavy** | `heavy`, `macos` | Long release/deploy (fold tags, exemem-infra deploys, post-merge heavy clippy) | **No** — never widen merge gates |
 
-This implements the north-star decision on
-`north-star-forge-build-release-parity`: release/deploy must **not** share the
-capacity-3 merge-gate runner so PR throughput never starves.
+Release and deploy work stayed off the capacity-3 merge-gate runner so a PR
+did not wait on a long release.
 
 ## Local homes (this workstation)
 

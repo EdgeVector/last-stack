@@ -36,7 +36,6 @@ file is the whole procedure.
    ```
 
    If the status is `need_build`, stamp `noop reason=no-staged-lastdbd` and stop.
-   `lastdb-canary-candidate-set` is the builder.
 2. Run the driver in probe-only mode. It builds or reuses the synthetic seed,
    boots the candidate on a copy of the seed, and checks keyed reads, row
    counts, memory size and read latency. It changes nothing live.
