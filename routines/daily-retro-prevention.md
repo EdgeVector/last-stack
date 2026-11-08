@@ -16,7 +16,7 @@ You are the daily-retro-prevention routine for the EdgeVector workspace (~/code/
 
 ## Discipline
 Guardrails: per the shared contract, plus:
-- Never run brain-doctor writes — this routine is read + file only (brain records and kanban cards; never ship code, open PRs, or edit repos).
+- This routine is read + file only (brain records and kanban cards; never ship code, open PRs, or edit repos).
 
 ## Step 1 — Gather the last 24h of pain (each source = separate turn)
 - brain: `brain ask "incident outage wedge failure <today's date>"` and list recently modified `reference`/`concept` records tagged incident/papercut. Read anything new.

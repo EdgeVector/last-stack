@@ -58,7 +58,7 @@ it as the fix.
 | Request | Owner |
 |---|---|
 | Factory pickup/merge stall class A–E | `why-shipping-stopped` |
-| LastDB node wedged/slow | `brain-doctor` |
+| LastDB node wedged/slow | `lastdb status` and `lastdb admin ops` |
 | Explain current state | `eli5` |
 | Drive a card to merged | `kanban-agent` |
 | Cluster papercuts into cards | `papercut-reconciler` (never file a papercut kanban card here) |
