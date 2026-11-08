@@ -249,10 +249,6 @@
         "command": "last-stack-aws-cost-hygiene"
       },
       {
-        "source": "bin/last-stack-canary-loom",
-        "command": "last-stack-canary-loom"
-      },
-      {
         "source": "bin/last-stack-card-reaper-run",
         "command": "last-stack-card-reaper-run"
       },
@@ -305,10 +301,6 @@
         "command": "last-stack-feature-prove-routine"
       },
       {
-        "source": "bin/last-stack-canary-pipeline",
-        "command": "last-stack-canary-pipeline"
-      },
-      {
         "source": "bin/last-stack-north-star-ledger-sync",
         "command": "last-stack-north-star-ledger-sync"
       },
@@ -339,10 +331,6 @@
       {
         "source": "bin/last-stack-board-closeout-install",
         "command": "last-stack-board-closeout-install"
-      },
-      {
-        "source": "bin/last-stack-lastdb-canary-dogfood",
-        "command": "last-stack-lastdb-canary-dogfood"
       },
       {
         "source": "bin/last-stack-repark-shared-checkouts",

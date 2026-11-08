@@ -9,14 +9,9 @@ report `lastOutcome: noop`. `routines status --json` does carry
 should end, or WHICH card owns the resume. So a pause that gates a delivery
 line is silent.
 
-Measured 2026-09-07: `lastdb-canary-promote-prepare` and
-`lastdb-canary-soak-watch` were both paused with the reason
-`canary-v2-migration`. That migration finished on 2026-09-05 (North Star
-`north-star-lastdb-canary-pipeline-v2` is done, its terminal proof reads PASS).
-The pause outlived its reason by two days, and the fleet view reported `noop`
-for both. `lastdb-canary-soak-watch` was worse: the SHIPPED registry source
-says `status = "active"`, so the pause existed only in the live registry and
-no reviewed file recorded it.
+Measured 2026-09-07: two paused routines outlived a finished migration.
+The fleet view reported `noop` for both, and one pause existed only in the
+live registry.
 
 Where the metadata lives
 ------------------------

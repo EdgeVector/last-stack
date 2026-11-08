@@ -171,7 +171,6 @@ ls ~/.routines/registry/last-stack-fkanban-validate*.toml
 |---|---|---|
 | [`llms-txt-install-smoke`](llms-txt-install-smoke.md) | daily | Isolated dogfood of https://thelastdb.com/llms.txt first-run install; file cards on RED (never touches primary LastDB). |
 | [`lastdb-install-docs-weekly`](lastdb-install-docs-weekly.md) | weekly | Refresh thelastdb.com install/use docs, ephemeral fresh-install prove, heal-loop until GREEN (budgeted; never primary LastDB). |
-| [`lastdb-canary-candidate-set`](lastdb-canary-candidate-set.md) | nightly | Build Forge fold main, fix one commit per app, smoke the set in isolation on the candidate lastdbd, cut the primary over on GREEN, write the proved pairs to registry `next`. Replaces build-main + dogfood. |
 | [`self-improvement-loop`](self-improvement-loop.md) | daily | Mine recent agent sessions for recurring friction; upgrade the agent's OWN skills / routines / permission allowlist / docs. The flagship self-fixing loop. |
 | [`revenant-watch`](revenant-watch.md) | daily | **Revenant Watch** (session-miner profile): flag agents reanimating settled-dead product truth; Brain-only `revenant-*` + ledger; open-work exemption. Not a new peer engine. |
 | [`revenant-watch-weekly-review`](revenant-watch-weekly-review.md) | weekly (Thu) | Steward Revenant Watch: run health, signal/noise, product source checks, small fixes, report Tom. |
@@ -184,7 +183,6 @@ ls ~/.routines/registry/last-stack-fkanban-validate*.toml
 | [`merge-babysit`](merge-babysit.md) | every ~15 min | Self-heal stuck PRs (GitHub, every repo), re-arming auto-merge, updating BEHIND branches or filing P0 merge cards without turning transient backend outages into fleet-red runs. |
 | [`drain-open-prs`](drain-open-prs.md) | daily | Drive every open PR across all repos toward zero (merge or close). |
 | [`deploy-watch`](deploy-watch.md) | every 5 min | Deploy each enabled repo whose forge main moved to a green commit through the durable `deploy-main` Loom graph. Replaces the launchd `lastgit-deploy-*` watchers. |
-| [`lastdb-canary-soak-watch`](lastdb-canary-soak-watch.md) | hourly | Recompute a v2 verdict from bounded boot and observation evidence. On green it writes `PROMOTE.md` (node build + proved `next` rows + the one publish command) and notifies. Stable stays human. |
 | [`lastdb-ops-offenders`](lastdb-ops-offenders.md) | daily | Rank live `lastdb ops` worst offenders, skip long-poll/cheap-count noise, investigate the rest, file ≤2 pickup-ready improvement cards. |
 | [`lastdb-batch-apps`](lastdb-batch-apps.md) | hourly | Pick one app, find serial LastDB call patterns, file one pickup-ready card to change the app to batch calls. |
 | [`whats-wrong`](whats-wrong.md) | hourly (:23) | EV OPS What's wrong panel (`http://127.0.0.1:7733` `coverage.exceptions`): one loom heal agent per row, Brain papercuts, full closeout. |

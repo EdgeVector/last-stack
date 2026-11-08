@@ -4,11 +4,10 @@
 #
 # lastdb-safe-upgrade CUTOVER clones a multi-GiB home (~25 min) plus probe.
 # The loom run drive default (300s) kills that step with no recorded result.
-# lastdb-canary-release CALL_A's that child, so it uses the same budget.
 
 loom_run_deadline_secs() {
   case "${1:-}" in
-    lastdb-safe-upgrade|lastdb-canary-release)
+    lastdb-safe-upgrade)
       printf '%s\n' "${LAST_STACK_SAFE_UPGRADE_LOOM_DEADLINE_SECS:-5400}"
       ;;
     *)

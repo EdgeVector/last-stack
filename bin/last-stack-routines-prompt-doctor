@@ -85,14 +85,10 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-# Default normalize set: active product canaries + milestone-driver (card END STATE).
+# Default normalize set: milestone-driver (card END STATE).
 if [ "$want_normalize" -eq 1 ] && [ "$want_from_findings" -eq 0 ] \
   && [ "${#normalize_basenames[@]}" -eq 0 ]; then
   normalize_basenames=(
-    lastdb-canary-dogfood.md
-    lastdb-canary-soak-watch.md
-    lastdb-canary-promote-prepare.md
-    lastdb-canary-build-main.md
     milestone-driver.md
   )
 fi
