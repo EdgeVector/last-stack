@@ -796,7 +796,7 @@ $(_dev_v2_flag_keys)
 EOF
   [ "$(dev_stamp_receipt_get "$receipt" cloud_cleanup || true)" = "queued" ] \
     || { printf 'RED: V2 DEV restore cleanup contract is invalid\n'; failed=1; }
-  if ! python3 -I "$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/dev-v2-stream-cleanup.py" \
+  if ! python3 -I "$(dev_v2_installed_cleanup_helper)" \
       --check-receipt "$receipt" >/dev/null 2>&1; then
     printf 'RED: V2 DEV restore cleanup request is absent, changed, or blocked\n'
     failed=1
@@ -835,6 +835,12 @@ EOF
     "$(dev_stamp_receipt_get "$receipt" committed_epoch || true)" \
     || { printf 'RED: V2 DEV restore receipt time is invalid, stale, or in the future\n'; failed=1; }
   [ "$failed" -eq 0 ]
+}
+
+# Enqueue and verify with the helper owned by the installed cleanup worker.
+# A reviewed upgrade checkout can carry a newer worker than the one on duty.
+dev_v2_installed_cleanup_helper() {
+  printf '%s\n' "$HOME/.last-stack/skills/lastdb-safe-upgrade/scripts/dev-v2-stream-cleanup.py"
 }
 
 # Write a v6 receipt from an already validated backup, restore and key read.
