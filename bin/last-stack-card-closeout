@@ -157,9 +157,10 @@ deploy_pipeline_ok=0
 
 # registry_gate <repo-name>: is the PR's merge commit installed?
 # Prints `installed host_head=<sha> app=<app>` or a pending reason.
-# Reads: the PR merge commit (`gh api`; Forgejo API for a Forgejo PR URL), `host-track status --json` for
-# the app whose gate_main is this repo, and the repo's bare mirror for the
-# ancestry check. Any read that fails is a pending reason, never a pass.
+# Reads: the PR merge commit (`gh api`; Forgejo API for a Forgejo PR URL),
+# `lastdb app status --check --json` for the installed app built from this
+# repo, and the repo's bare mirror for the ancestry check. Any read that
+# fails is a pending reason, never a pass.
 registry_gate() {
   local repo="$1" pr card_pr number merge_sha status_json app host_head mirror
   card_pr="$(printf '%s' "$card_json" | jq -r '(.card // .).pr_url // ""' 2>/dev/null || true)"
@@ -215,7 +216,7 @@ EOF_HT
 refuse_helper_cutover() {
   local reason="$1"
   echo "last-stack-card-closeout: FAILED helper-cutover-unmet slug=$slug reason=$reason" >&2
-  echo "  Merge is not done. Add a positive PROOF line, or wait for helper cutover / host-track / deploy success." >&2
+  echo "  Merge is not done. Add a positive PROOF line, or wait for helper cutover / app-registry / deploy success." >&2
   run "$board_cli" mark "$slug" \
     "CLOSEOUT-DEFERRED: helper-cutover/deploy gate unmet (reason=$reason); merge is not done" \
     </dev/null >/dev/null 2>&1 || true
@@ -247,26 +248,24 @@ elif [ -n "$deploy_reqs" ]; then
   fi
   while IFS= read -r deploy_req; do
     [ -n "$deploy_req" ] || continue
-    if { [ "$deploy_req" = "app-registry" ] || [ "$deploy_req" = "host-track" ]; }; then
-      # The merged commit must be inside what host-track installed for the
-      # app built from this repo. Before 2026-09-22 this gate had no reader
-      # and every such card failed unsupported-deploy-gate=host-track
-      # (papercut-card-closeout-helper-blocks-merged-deferred-cards-20260922).
-      host_track_verdict="$(registry_gate "$deploy_repo")"
-      case "$host_track_verdict" in
+    if [ "$deploy_req" = "app-registry" ]; then
+      # The merged commit must be inside the release the app registry
+      # installed for this repo.
+      registry_verdict="$(registry_gate "$deploy_repo")"
+      case "$registry_verdict" in
         installed*)
-          echo "last-stack-card-closeout: deploy gate host-track $host_track_verdict slug=$slug repo=$deploy_repo" >&2
+          echo "last-stack-card-closeout: deploy gate app-registry $registry_verdict slug=$slug repo=$deploy_repo" >&2
           deploy_pipeline_ok=1
           continue
           ;;
         *)
-          echo "last-stack-card-closeout: deploy gate pending slug=$slug repo=$deploy_repo requires=host-track status=$host_track_verdict" >&2
+          echo "last-stack-card-closeout: deploy gate pending slug=$slug repo=$deploy_repo requires=app-registry status=$registry_verdict" >&2
           exit 1
           ;;
       esac
     fi
     if [ "$deploy_req" != "deploy-pipeline" ]; then
-      echo "last-stack-card-closeout: FAILED unsupported-deploy-gate=$deploy_req slug=$slug (supported: deploy-pipeline, host-track)" >&2
+      echo "last-stack-card-closeout: FAILED unsupported-deploy-gate=$deploy_req slug=$slug (supported: deploy-pipeline, app-registry)" >&2
       exit 1
     fi
     gate_status="$(DEPLOY_SCAN_JSON="$deploy_scan_json" DEPLOY_REPO="$deploy_repo" python3 - <<'PY'
@@ -681,17 +680,12 @@ verify_linkage() {
 claim_doing_if_needed
 restamp_fields
 
-# Never pass --force past a deploy/lifecycle gate
-# (papercut-card-closeout-force-bypasses-host-track-deploy-gate-20260923).
-# On 2026-09-23 kanban refused done with `lifecycle_status_blocked
-# deploy:host-track=missing`; this helper then retried with --force, which
-# kanban treats as an operator override, and the card landed in done before
-# host-track had installed the merge. The board's lifecycle gate is the
-# authority: the first move to done is ALWAYS unforced (even under --force),
-# and a gate refusal keeps the card where it is, marks the reason, and fails.
-# --force is kept only for a dependency block (card_blocked), and never for a
-# card that declares Requires-Deploy, because a forced move skips every check
-# kanban would have run after the dependency check.
+# Never pass --force past a deploy/lifecycle gate. The board's lifecycle gate
+# is the authority: the first move to done is ALWAYS unforced (even under
+# --force), and a gate refusal keeps the card where it is, marks the reason,
+# and fails. --force is kept only for a dependency block (card_blocked), and
+# never for a card that declares Requires-Deploy, because a forced move skips
+# every check kanban would have run after the dependency check.
 gate_refusal_re='lifecycle_status_blocked|required pipeline contexts|deploy:[A-Za-z0-9_.-]+=|Requires-Deploy'
 dep_block_re='card_blocked|unfinished dependenc|blocked by'
 
@@ -712,7 +706,7 @@ refuse_gate() {
   echo "last-stack-card-closeout: FAILED lifecycle-gate-refused slug=$slug column=$col" >&2
   echo "  kanban refused done: $detail" >&2
   echo "  No --force past a deploy/lifecycle gate. The card stays in $col." >&2
-  echo "  Close it after the gate reports success (e.g. host-track installs the merge)." >&2
+  echo "  Close it after the gate reports success (e.g. the app registry installs the merge)." >&2
   marker="CLOSEOUT-DEFERRED: lifecycle gate refused done"
   run "$board_cli" mark "$slug" \
     "$marker $(date -u +%Y-%m-%dT%H:%M:%SZ); $detail; merge is not done, no --force past the gate (last-stack-card-closeout)" \

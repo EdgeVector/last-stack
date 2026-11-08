@@ -292,7 +292,7 @@ def _deploy_values(card, result):
     if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
         raise ValueError("card-tags-not-string-array")
     parked = {"awaiting-deploy", "live-proof", "deploy-gate", "needs-safe-upgrade", "awaiting-validation"}
-    cutover = re.compile(r"\b(helper[ -]?cutover|host-track|live\s+scheduled[- ]fire|installed\s+(?:helper|binary|cli)|safe-upgrade|awaiting-deploy)\b", re.I)
+    cutover = re.compile(r"\b(helper[ -]?cutover|app-registry|live\s+scheduled[- ]fire|installed\s+(?:helper|binary|cli)|safe-upgrade|awaiting-deploy)\b", re.I)
     return {
         "deploy_repo": repo.rsplit("/", 1)[-1], "deploy_reqs": "\n".join(requires),
         "parked_tag": int(any(tag.strip().lower() in parked for tag in tags)),

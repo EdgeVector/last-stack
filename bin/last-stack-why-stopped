@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# last-stack-why-stopped — zero-LLM Class A–H factory freeze classifier.
+# last-stack-why-stopped — zero-LLM Class A–G factory freeze classifier.
 #
 # Answers "why did shipping stop?" in one line. Optionally runs Class A heal
 # and Class F unattached-outcome heal.
 #
 # Classes (factory graph):
-#   A  host-track / last-stack install freeze
+#   A  registry install freeze
 #   B  board claim path dead (empty ready + locks / pickup poison)
 #   C  fold CI / forge runner SPOF
 #   D  merge≠live / terminal proof gap (informational when doing has old PR)
@@ -14,9 +14,6 @@
 #      or ready queue with no in-flight work (factory looks healthy, ships nothing)
 #   G  scheduler freeze — routinesd has dispatched nothing for hours, so no other
 #      class is even measurable (every downstream signal reads "idle but healthy")
-#   H  delivery frozen — the registry proof frontier has not advanced and at
-#      least one pinned app has merged past it, so a green published artifact
-#      cannot reach this host
 #
 # Usage:
 #   last-stack-why-stopped [--json] [--heal] [--quiet]
@@ -54,7 +51,6 @@ export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 # Test seams (product defaults keep live CLI names).
 CLASS_A_HEAL_BIN="${LASTSTACK_CLASS_A_HEAL_BIN:-last-stack-class-a-heal}"
 KANBAN_BIN="${LASTSTACK_WHY_STOPPED_KANBAN_BIN:-kanban}"
-LASTDB_BIN="${LASTSTACK_WHY_STOPPED_LASTDB_BIN:-lastdb}"
 CLASS_A_TIMEOUT_S="${LASTSTACK_WHY_STOPPED_CLASS_A_TIMEOUT_S:-8}"
 # Class G threshold, in seconds. Derived from the real gap distribution over
 # 18085 routinesd dispatches / 79 days on this host (2026-07-14 to 2026-10-01):
@@ -86,17 +82,6 @@ ROUTINESD_LOG="${LASTSTACK_WHY_STOPPED_ROUTINESD_LOG:-$HOME/.routines/daemon/rou
 # source is stale too and Class G still fires.
 ROUTINESD_TAIL_BYTES="${LASTSTACK_WHY_STOPPED_ROUTINESD_TAIL_BYTES:-16777216}"
 
-# Class H threshold, in seconds: how old the registry `next`-channel proof
-# frontier may be before a pinned app waiting behind it counts as frozen.
-# Derived from the prover's own declared cadence, not chosen: the routine that
-# writes these proof rows is `llms-txt-install-smoke`
-# (`rrule = FREQ=DAILY;BYHOUR=13;BYMINUTE=15`, `timeout_min = 45`), so the
-# largest age a punctual prover can produce is one day plus one run, 24h45m
-# (89100s). 30h leaves ~5h of margin over that and therefore cannot fire while
-# the prover is running on time; it fires once a full daily cycle has been
-# missed. The 2026-10-01T22:10Z frontier was 31.4h old when this class was
-# written, with brain and routines both merged past it.
-CLASS_H_MAX_PROOF_AGE_S="${LASTSTACK_WHY_STOPPED_PIN_PROOF_MAX_AGE_S:-108000}"
 
 classes=()
 detail=()
@@ -131,7 +116,7 @@ parse_heal_result() {
 # --- Class A: install ---
 # Wrapper timeout (timeout -k 2s 8s) is NOT Class A by itself. Heal exit 0
 # (already-healthy, prompt-root-still-red, healed) is not Class A. Class A
-# fires on heal result=error / exit 1, or host-track hard-broken / hard-stale.
+# fires on heal result=error / exit 1, or a hard-broken / hard-stale registry install.
 class_a=0
 CLASS_A_HEAL_RC=0
 CLASS_A_HEAL_OUT=""
@@ -459,146 +444,6 @@ if [ -n "$dispatch_age_s" ] && [ "$dispatch_age_s" -ge "$CLASS_G_MAX_AGE_S" ] 2>
   actions+=("launchctl list com.edgevector.routinesd; routines status; check Situation fences (skip-fence in routinesd.err.log)")
 fi
 
-# --- Class H: delivery frozen (registry proof frontier stale, apps waiting) ---
-# `host-track` has computed `pin_behind_oid` since 2026-09-26 and the proof-row
-# fields since 2026-10-03, and until now its own renderer was the only reader
-# (papercut-host-track-pin-lag-fields-are-rendered-to-nobody-no-classifier-or-notice-reads-them-20261003).
-# From 2026-10-01T22:10Z the six `next`-pinned apps sat on one 31h-old proof
-# frontier, and brain and routines had merged past it -- EdgeVector/routines
-# PR 9 and PR 11, both fixes to the only out-of-fleet fleet-freeze watchdog,
-# could not reach this host. Two separate papercut-resolver passes found that
-# by hand because no program said it.
-#
-# Class A deliberately cannot reach this: it gates on hard_broken/hard_stale and
-# a frozen frontier renders `soft_stale`, which it excludes on purpose (see
-# design-last-stack-class-a-atomic-install-soft-stale). That exclusion is right
-# for its own reason -- the install IS current with the newest pair anyone
-# proved -- and it left this condition in nobody's hands.
-#
-# Both conditions are required. A pinned app with a stale frontier and nothing
-# merged past it is genuinely current and not a stoppage; an app that merged
-# minutes ago is waiting for an ordinary prover run. The two cannot mask each
-# other: a merge sets `pin_behind_oid` without touching the age, and a prover
-# run clears both.
-#
-# Only `registry_pin_state=pinned` counts. `unreadable` means host-track could
-# not read the index at all, which is "I did not look", never "nothing to see";
-# `no-proved-row` and `not-on-index` leave the age empty and so stay silent here
-# too. This classifier must never invent a freeze.
-#
-# Cost: `host-track status --json` with no app resolves the registry index for
-# every pinned app over the network and measured 9.9-10.6s on this host, which is
-# inside the existing run-to-run spread of this helper (14-27s unpatched). It is
-# affordable here, on a two-hourly classifier, and it is NOT affordable on the
-# load collector's per-sample path -- which is why the notice half of
-# papercut-host-track-pin-lag-fields-are-rendered-to-nobody-no-classifier-or-notice-reads-them-20261003
-# needs a cached frontier first and is deliberately not done here. The host-track
-# stamps under ~/.host-track/stamps/ carry no pin or proof fields, so there is no
-# cheap local source today.
-pin_frozen_apps=""
-pin_frozen_age=""
-pin_frozen_run=""
-pin_frozen_first=""
-pin_frozen_channel=""
-pin_frozen_behind=""
-pin_newest_version=""
-pin_newest_at=""
-pin_newest_oid=""
-pin_running_version=""
-pin_inspect="${LASTDB_BIN} app list --help"
-# Artifact-frontier holds no longer exist in source registry installs.
-# Which of the two causes is this? Both render an identical stale frontier, and
-# they have OPPOSITE remedies, so the class is useless without the discriminator.
-#
-# Proof rows are keyed on (app, lastdb_version). `lastdb app resolve` — the call
-# host-track makes — returns the newest row whose `lastdb_version` names the
-# RUNNING socket build, so the frontier can be 32h old while the index is being
-# filled briskly on another build. Measured 2026-10-03T06:1xZ: the newest row on
-# the index for `routines` was proved at 04:42Z, 1.5h old, for commit
-# 82f14a1ff2a5 — the exact oid `pin_behind_oid` reported — and keyed to
-# 0.23.3-2518-ge1177d41a, while the primary ran 0.23.3-2378-gbe41e547e. The fix
-# the fleet had waited nine hours for was already proved; only the build differed.
-#
-# The field that discriminates is therefore the index's newest row across ALL
-# builds, which `lastdb app resolve` can never return and `lastdb app info` does.
-# Three earlier passes read the frontier, concluded "the prover is paused, resume
-# it", and were wrong about the remedy for exactly this reason.
-#
-# Measurements carried forward from #203, which named this mechanism correctly:
-# the GitHub `registry-proof` workflow runs on cron 7,37, its Mac signer
-# LaunchAgent sits OUTSIDE the routines fleet with 65 runs at exit 0, and the tap
-# PR it opened merged 6/6 green -- so an operator told only to resume a prover
-# finds one already running every half hour and concludes this class is broken.
-# The held set also only GROWS in this state: an app that merges past the frontier
-# converts to held and never converts back, measured 1 -> 3 apps in seven hours.
-#
-# Do NOT discriminate on the proof run id. It carries the build it proved, and
-# resolve only ever returns rows for the running build, so that comparison is
-# equal whenever this class fires at all. A 2026-10-03 draft shipped nowhere
-# because it keyed on that field.
-#
-# Cost: one extra `lastdb app info` per run, for the FIRST blocked app only, and
-# only when the class already fired. Zero in the healthy case.
-#
-# `lastdb app info` takes the registry app id. No entry in config/host-track/apps.json
-# sets `registry_app` today, so the host-track app name is the registry id for all
-# six pinned apps (checked 2026-10-03), and `status --json` does not expose the
-# mapping. A future rename makes the read fail, which falls to the `unknown` arm
-# below and prints the command rather than a wrong cause -- never a wrong verdict.
-if [ -n "$pin_frozen_apps" ] && have_cmd "$LASTDB_BIN" && command -v jq >/dev/null 2>&1; then
-  pin_running_version="$("$LASTDB_BIN" --version 2>/dev/null | awk 'NR==1{print $NF}')"
-  if [ -n "$pin_frozen_first" ] && [ "$pin_frozen_channel" != "-" ]; then
-    pin_help="$("$LASTDB_BIN" app list --help 2>/dev/null || true)"
-    if [[ "$pin_help" == *'--catalog-entry'* ]]; then
-      pin_inspect="${LASTDB_BIN} app list ${pin_frozen_first} --catalog-entry --channel ${pin_frozen_channel}"
-      pin_info="$("$LASTDB_BIN" app list "$pin_frozen_first" --catalog-entry --channel "$pin_frozen_channel" 2>/dev/null || true)"
-    else
-      pin_inspect="${LASTDB_BIN} app info ${pin_frozen_first} --channel ${pin_frozen_channel}"
-      pin_info="$("$LASTDB_BIN" app info "$pin_frozen_first" --channel "$pin_frozen_channel" 2>/dev/null || true)"
-    fi
-    if [ -n "$pin_info" ]; then
-      pin_newest_row="$(
-        printf '%s\n' "$pin_info" | jq -r '
-          (.compat // []) | map(select((.proved_at // "") != ""))
-          | if length == 0 then empty
-            else (max_by(.proved_at)
-                  | [(.lastdb_version // "-"), (.proved_at // "-"), (.sha // "-")] | @tsv)
-            end
-        ' 2>/dev/null || true
-      )"
-      if [ -n "$pin_newest_row" ]; then
-        pin_newest_version="$(printf '%s\n' "$pin_newest_row" | awk -F'\t' 'NR==1{print $1}')"
-        pin_newest_at="$(printf '%s\n' "$pin_newest_row" | awk -F'\t' 'NR==1{print $2}')"
-        pin_newest_oid="$(printf '%s\n' "$pin_newest_row" | awk -F'\t' 'NR==1{print $3}')"
-      fi
-    fi
-  fi
-fi
-
-if [ -n "$pin_frozen_apps" ]; then
-  classes+=("H")
-  h_detail="delivery frozen: registry next-channel proof frontier ${pin_frozen_age}s old (bound ${CLASS_H_MAX_PROOF_AGE_S}s, newest proof ${pin_frozen_run}); merged past it and undeliverable: ${pin_frozen_apps}"
-  if [ -n "$pin_newest_version" ] && [ -n "$pin_running_version" ] \
-    && [ "$pin_newest_version" != "$pin_running_version" ]; then
-    # Build mismatch. The prover is working; it is proving a build this host does
-    # not run, so no cadence and no resume can clear the frontier.
-    h_detail="${h_detail}; cause=build-mismatch: newest index row for ${pin_frozen_first} is ${pin_newest_version} proved ${pin_newest_at}, this host runs ${pin_running_version}"
-    if [ "$pin_newest_oid" = "$pin_frozen_behind" ] && [ "$pin_newest_oid" != "-" ]; then
-      h_detail="${h_detail} (that row IS the oid ${pin_frozen_first} is behind on, so the commit is already proved -- only the build differs)"
-    fi
-    actions+=("cause is a BUILD MISMATCH, not a paused prover: the index's newest row for ${pin_frozen_first} is ${pin_newest_version} (proved ${pin_newest_at}) and this host runs ${pin_running_version}, and proof rows are keyed on (app, lastdb_version) - resuming a prover cannot clear it. Read the registry entry with ${pin_inspect}. Remedies, all operator calls: prove the RUNNING build (registry-proof workflow_dispatch with an explicit lastdb_release ${pin_running_version}), or finish the pending move of this host to ${pin_newest_version}, or accept the posture")
-  elif [ -n "$pin_newest_version" ]; then
-    # The index holds nothing newer on ANY build, so the prover itself is stopped.
-    h_detail="${h_detail}; cause=prover-stalled: the index's newest row for ${pin_frozen_first} on ANY build is ${pin_newest_version} proved ${pin_newest_at}, which is this host's build"
-    actions+=("cause is a STALLED PROVER: the index holds no newer row for ${pin_frozen_first} on any build, so nothing is being proved - resume routine llms-txt-install-smoke (it proves whatever the socket reports) or accept the posture; then: host-track status --json | jq -r '.[]|select(.pin_behind_oid)|[.app,.registry_pin_proof_age_secs,.registry_pin_proof_run]|@tsv'")
-  else
-    # "I did not look" must never render as a measured cause.
-    h_detail="${h_detail}; cause=unknown (index newest row not read)"
-    actions+=("cause UNKNOWN - inspect the signed registry entry with ${pin_inspect}. The grouped CLI reports entries for this interface. Compare the full proof frontier with the running build before resuming anything.")
-  fi
-  detail+=("$h_detail")
-fi
-
 # Deduplicate classes while preserving order
 seen=""
 uniq=()
@@ -615,7 +460,7 @@ classes=("${uniq[@]+"${uniq[@]}"}")
 if [ "${#classes[@]}" -eq 0 ]; then
   classes=("none")
   if [ "${#detail[@]}" -eq 0 ]; then
-    detail+=("no Class A–H freeze detected; factory may be idle or healthy")
+    detail+=("no Class A–G freeze detected; factory may be idle or healthy")
   fi
   if [ "${#actions[@]}" -eq 0 ]; then
     actions+=("kanban pickup lanes; factory-health")

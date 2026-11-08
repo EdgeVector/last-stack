@@ -75,18 +75,6 @@ real_home_matches() {
   [ -n "$real_home" ] && [ "$HOME" = "$real_home" ]
 }
 
-remove_host_track_refresh_agent() {
-  local label="com.edgevector.host-track-refresh"
-  local plist="${LAST_STACK_HOST_TRACK_PLIST:-$HOME/.last-stack/launchd/$label.plist}"
-  if [ "$(uname -s)" = "Darwin" ] && real_home_matches && command -v launchctl >/dev/null 2>&1; then
-    launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
-  fi
-  if [ -e "$plist" ] || [ -L "$plist" ]; then
-    rm -f "$plist"
-    echo "  host-track: removed refresh LaunchAgent plist"
-  fi
-}
-
 remove_vm_disk_trim_agent() {
   local label="com.edgevector.vm-disk-trim"
   local plist="${VM_DISK_TRIM_PLIST:-$HOME/Library/LaunchAgents/$label.plist}"
@@ -113,7 +101,6 @@ remove_harness_instruction_blocks "$HOME/.grok/AGENTS.md"            "grok"
 remove_from "$HOME/.gemini/config/skills"   "agy"
 remove_harness_instruction_blocks "$HOME/.gemini/GEMINI.md"          "agy"
 remove_harness_instruction_blocks "$HOME/.gemini/config/GEMINI.md"   "agy (config)"
-remove_host_track_refresh_agent
 remove_vm_disk_trim_agent
 echo "Done. (This repo at $ROOT is left in place — delete it to fully remove."
 echo "       MCP server entries in ~/.codex/config.toml and"
