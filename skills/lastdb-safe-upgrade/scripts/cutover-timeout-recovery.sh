@@ -185,11 +185,12 @@ if [ "$venue" = programs ]; then
     || recovery_die "launchd-plist-program-unreadable"
   case "$stage" in
     programs-stop-started|programs-stopped|programs-rollback-ready)
-      [ "$current_program" = "$backup_daemon" ] || recovery_die "plist-changed-before-switch" ;;
+      [ "$(lastdb_programs_daemon_path "$primary_home" "$current_program")" = "$backup_daemon" ] \
+        || recovery_die "plist-changed-before-switch" ;;
     programs-switch-started|programs-reload-started|programs-supervisor-loaded) ;;
     *) recovery_die "unsupported-programs-stage" ;;
   esac
-  if [ "$current_program" != "$backup_daemon" ]; then
+  if [ "$current_program" != "$backup_daemon" ] && [ "$current_program" != "$primary_home/current/lastdbd" ]; then
     plist_tmp="$(dirname -- "$launchd_plist")/.$(basename -- "$launchd_plist").recovery.$$"
     rm -f -- "$plist_tmp"
     cp -p "$launchd_plist" "$plist_tmp" \
@@ -203,7 +204,9 @@ if [ "$venue" = programs ]; then
     || recovery_die "current-link-tool-absent"
   "$current_tool" set --lastdb-home "$primary_home" --bin-dir "$sidebin_dir" >/dev/null 2>&1 \
     || recovery_die "current-link-restore-failed"
-  [ "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$launchd_plist" 2>/dev/null)" = "$backup_daemon" ] \
+  current_program="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$launchd_plist" 2>/dev/null)" \
+    || recovery_die "launchd-plist-program-unreadable"
+  [ "$(lastdb_programs_daemon_path "$primary_home" "$current_program")" = "$backup_daemon" ] \
     || recovery_die "plist-restore-unverified"
 fi
 
