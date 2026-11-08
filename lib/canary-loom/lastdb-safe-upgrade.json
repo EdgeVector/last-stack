@@ -17,11 +17,7 @@
       "source_git_oid": { "type": "string" },
       "candidate_artifact_digest": { "type": "string" },
       "safe_upgrade_protocol_version": { "type": "string" },
-      "upgrade_mode": { "type": "string", "enum": ["legacy-cloud", "native-inplace-cloud-off", "native-logical-migration-cloud-off", "native-v2-ci", "native-run-v2-ci"] },
-      "native_approval": { "type": "string" },
-      "native_approval_sha256": { "type": "string" },
-      "native_reopen": { "type": "boolean" },
-      "native_probe_only": { "type": "boolean" },
+      "upgrade_mode": { "type": "string", "enum": ["legacy-cloud"] },
       "zero_live_soak": { "type": "boolean" },
       "accept_stale_recovery_point": { "type": "string" },
       "attempt": { "type": "integer", "minimum": 1 },
@@ -54,7 +50,6 @@
       "path": "verdict",
       "map": {
         "green": "CUTOVER",
-        "probed": "DONE",
         "current": "DONE",
         "red": "FAILED",
         "blocked": "FAILED"
@@ -72,7 +67,7 @@
       ],
       "timeout_sec": 10800,
       "next": "VERIFY",
-      "on_error": "RECOVERY_ROUTE"
+      "on_error": "FAILED"
     },
     "VERIFY": {
       "type": "agent",
@@ -80,21 +75,6 @@
       "effects": "none",
       "timeout_sec": 180,
       "next": "DONE",
-      "on_error": "RECOVERY_ROUTE"
-    },
-    "RECOVERY_ROUTE": {
-      "type": "choice",
-      "path": "upgrade_mode",
-      "map": { "native-inplace-cloud-off": "RECOVER", "native-logical-migration-cloud-off": "RECOVER", "native-v2-ci": "RECOVER", "native-run-v2-ci": "RECOVER" },
-      "default": "FAILED"
-    },
-    "RECOVER": {
-      "type": "agent",
-      "command": ["/bin/bash", "-c", "exec \"${LOOM_SCRIPTS:-$HOME/.last-stack/lib/canary-loom}/loom-safe-upgrade-step.sh\" RECOVER"],
-      "effects": "checked",
-      "check": ["/bin/bash", "-c", "exec \"${LOOM_SCRIPTS:-$HOME/.last-stack/lib/canary-loom}/loom-safe-upgrade-step.sh\" RECOVERY_CHECK"],
-      "timeout_sec": 1200,
-      "next": "FAILED",
       "on_error": "FAILED"
     },
     "DONE": { "type": "succeed" },
