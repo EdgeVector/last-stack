@@ -515,13 +515,6 @@ link_cli() {
   [ -d "$dest" ] || return 0
 
   case "$name" in
-    kanban)
-      echo "==> linking kanban CLI"
-      # Ensure a user bin dir exists for first-run machines (install-cli creates
-      # ~/.local/bin when needed, but put it on PATH for this process too).
-      ensure_user_bin
-      (cd "$dest" && bun run install-cli "$HOME/.local/bin")
-      ;;
     situations)
       if [ -x "$dest/bin/situations" ]; then
         echo "==> linking situations CLI"

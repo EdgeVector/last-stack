@@ -31,12 +31,7 @@ Three things, in order:
    ```bash
    curl -fsSL https://bun.sh/install | bash
    ```
-2. **The kanban repo** — clone it and install dependencies:
-   ```bash
-   git clone <kanban-repo-url> kanban
-   cd kanban
-   bun install
-   ```
+2. **The kanban commands** — install them from the registry (next section).
 3. **A running LastDB node** — kanban is a thin client; it needs a node to talk
    to. `init` defaults to the local LastDB node — the Unix socket at
    `$HOME/.lastdb/data/folddb.sock` (the current LastDB data dir) — so a locally
@@ -47,31 +42,23 @@ Three things, in order:
    first run, so you can skip any interactive identity wizard — handy for
    headless/SSH/CI.
 
-## Put `kanban` on PATH (one-time, reversible)
+## Install `kanban`
 
 ```bash
-cd kanban
-bun run install-cli   # symlinks the kanban + kanban-mcp shims onto PATH
-kanban doctor        # confirms the shim is on PATH
+lastdb app install kanban
+kanban doctor        # confirms the command is on PATH
 ```
 
-`install-cli` auto-picks a writable PATH directory (`/usr/local/bin`,
-`~/.local/bin`, or `~/bin`); pass an explicit one if you prefer
-(`bun run install-cli ~/bin`). It just symlinks the bundled `bin/kanban`
-wrapper (a tiny `bun run src/cli.ts "$@"` script) — fully local and reversible,
-nothing is published to a registry. Without the shim, run `bun run src/cli.ts
-<cmd>` from the repo directory; the two are equivalent.
+The registry links `kanban`, `kanban-mcp`, and the other kanban commands.
 
 ## Happy path (node already running with kanban schemas)
 
 This is the normal case — a node that already has `kanban/*` published.
 
 ```bash
-cd kanban
-bun install
-bun run install-cli                # put kanban on PATH (see above)
+lastdb app install kanban
 kanban init        # bootstrap + LOAD/RESOLVE published schemas + seed default board
-kanban doctor      # verify: shim on PATH, config, node reachable, schemas loaded, round-trip
+kanban doctor      # verify: command on PATH, config, node reachable, schemas loaded, round-trip
 ```
 
 `init` is **idempotent** — safe to re-run. Defaults: the local LastDB node at
