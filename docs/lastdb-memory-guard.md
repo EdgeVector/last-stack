@@ -118,6 +118,6 @@ status body still fails. The guard does not restart the primary for identity.
 
 ## Companion host guards
 
-GUI apps, cargo test binaries, and host pressure alerts live in
+GUI apps and host pressure alerts live in
 `docs/host-memory-guards.md`. Those jobs do not restart `lastdbd` and do
 not change the 16 GiB footprint policy on this page.

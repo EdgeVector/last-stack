@@ -2,8 +2,7 @@
 # last-stack-gui-app-memory-guard
 #
 # Kills an allowlisted runaway GUI app before it jetsam-storms the machine.
-# Companion to last-stack-lastdb-memory-guard (primary lastdbd only),
-# last-stack-testbin-memory-guard (cargo deps binaries only), and
+# Companion to last-stack-lastdb-memory-guard (primary lastdbd only) and
 # last-stack-host-memory-sentinel (alerts, never kills).
 #
 # Born from the 2026-08-24 incident: Activity Monitor held 70.5 GiB and drove
