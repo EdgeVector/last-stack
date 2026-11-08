@@ -353,7 +353,8 @@ chmod 700 "$PROOF_HOME"
   || proof_die "the trial clone lacks a required durable file"
 # The synthetic seed never had cloud state. Refuse a clone that carries some,
 # so no copied credential or stream can reach DEV.
-for rel in cloud_sync.json cloud_sync.json.paused .cloud_resume_required native_cloud_backup \
+for rel in cloud_sync.json cloud_sync.json.paused cloud-credentials.json .native_backup_registration.json \
+    .cloud_resume_required native_cloud_backup \
     cloud-byte-backup-v2-manual.json data/cloud-byte-backup-v2 \
     data/disk-run/cloud-byte-backup-v2 data/disk-run/cloud-byte-source-v2; do
   [ ! -e "$PROOF_HOME/$rel" ] && [ ! -L "$PROOF_HOME/$rel" ] \
@@ -373,9 +374,11 @@ SOURCE_START_TS="$READY_START_TS"
 FAILURE_PHASE="source_status"
 backup_command=(cloud backup-v2)
 register_command=(cloud recover-credentials-home)
+credential_file=cloud_sync.json.paused
 if with_alarm "$CLI_TIMEOUT" "${CAND_ENV[@]}" "$CANDIDATE_CLI" backup --help >/dev/null 2>&1; then
   backup_command=(backup)
   register_command=(admin backup recover-credentials-home)
+  credential_file=cloud-credentials.json
 fi
 cand_cli status0 --data-dir "$PROOF_HOME" "${backup_command[@]}" status --json \
   || proof_die "the exact candidate did not report V2 status on the trial clone"
@@ -400,7 +403,7 @@ jq -e --arg h "$user_hash" '
     and .api_key_output == false and .identity_seed_output == false
   ' "$PROOF_ROOT_REAL/register.json" >/dev/null 2>&1 \
   || proof_die "the DEV registration report is not a credentials-only DEV device for this identity"
-PAUSED_CONFIG="$REG_HOME/cloud_sync.json.paused"
+PAUSED_CONFIG="$REG_HOME/$credential_file"
 [ -f "$PAUSED_CONFIG" ] && [ ! -L "$PAUSED_CONFIG" ] \
   && [ "$(_dev_stamp_file_mode "$PAUSED_CONFIG" || true)" = "600" ] \
   && jq -e --arg url "$LASTDB_DEV_BACKUP_API_URL_DEFAULT" '
@@ -469,9 +472,9 @@ SOURCE_PID=""
 FAILURE_PHASE="source_free_restore"
 CREDS_HOME="$PROOF_ROOT_REAL/restore-credentials"
 mkdir -m 700 "$CREDS_HOME"
-cp -p "$PAUSED_CONFIG" "$CREDS_HOME/cloud_sync.json.paused" \
+cp -p "$PAUSED_CONFIG" "$CREDS_HOME/$credential_file" \
   || proof_die "the DEV config cannot be copied for the restore"
-[ "$(ls -A "$CREDS_HOME")" = "cloud_sync.json.paused" ] \
+[ "$(ls -A "$CREDS_HOME")" = "$credential_file" ] \
   || proof_die "the restore credential home holds more than the paused DEV config"
 python3 -I "$PHRASE_HELPER" --seed-file "$PROOF_HOME/identity.key" \
   | with_alarm "$RESTORE_TIMEOUT" "${CAND_ENV[@]}" "$CANDIDATE_CLI" --data-dir "$CREDS_HOME" \
@@ -493,7 +496,8 @@ jq -e --slurpfile report "$PROOF_ROOT_REAL/restore.json" \
 native_files="$(jq -r '.native_files' "$PROOF_ROOT_REAL/restore.json")"
 native_bytes="$(jq -r '.native_bytes' "$PROOF_ROOT_REAL/restore.json")"
 # Cloud Off: no connection, intent, store, or source state in the new home.
-for rel in cloud_sync.json cloud_sync.json.paused native_cloud_backup \
+for rel in cloud_sync.json cloud_sync.json.paused cloud-credentials.json .native_backup_registration.json \
+    native_cloud_backup \
     cloud-byte-backup-v2-manual.json data/cloud-byte-backup-v2/active.json \
     data/disk-run/cloud-byte-backup-v2 data/disk-run/cloud-byte-source-v2; do
   [ ! -e "$RESTORED_HOME/$rel" ] && [ ! -L "$RESTORED_HOME/$rel" ] \
