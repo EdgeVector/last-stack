@@ -991,7 +991,7 @@ bash ~/.last-stack/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh --l
 
 ## Related skills / harnesses
 
-- **`brain-doctor`** — if primary is already wedged **before** upgrade; fix health first.
+- **`lastdb status` and `lastdb admin ops`** — if the primary is already wedged before upgrade, read health first. `lastdb admin ops --by-app` names the caller.
 - Design: **`lastdb-minimal-downtime-cutover`** (venue + optional proxy phase).
 
 ## Never
