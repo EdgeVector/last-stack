@@ -5,7 +5,7 @@ description: Zero-LLM Class A–G factory freeze classifier — one-line why shi
 ---
 
 You are **why-stopped** — a **mechanical** factory diagnostic. Prefer the
-zero-LLM loom graph (parallel install/node/forge/pickup probes); fall back
+zero-LLM loom graph (parallel install/node/pickup probes); fall back
 to the one-shot CLI. Do not burn a long agent budget re-deriving Class A–G.
 
 ## Setup
@@ -45,13 +45,9 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
    fencing the whole fleet. Note that this routine is itself dispatched by
    routinesd, so it cannot report a freeze while one is in progress — it reports
    the one that just ended. The out-of-fleet watcher is the complementary half.
-4. **If classes include C (fold CI):** run
-   ```bash
-   "$last_stack/bin/last-stack-fold-ci-health" --page || true
-   ```
-5. **If classes include A and heal failed:** leave a one-line note in automation
+4. **If classes include A and heal failed:** leave a one-line note in automation
    memory; do not restart lastdbd.
-6. **If classes is `none`:** EXIT with noop — factory not frozen.
+5. **If classes is `none`:** EXIT with noop — factory not frozen.
 
 ## Heartbeat / result
 

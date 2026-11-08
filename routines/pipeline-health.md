@@ -367,9 +367,8 @@ candidates in `.error`; read them, and report `papercut_file_failed=<slug>`.
 
 Current-head verdicts come from `commits/<sha>/status` (the ledger already read
 them). Do not parse `actions/tasks`: it returns a `workflow_runs` envelope or a
-large historical list, and ignores `head_sha`. For a red job's log use the
-helper with the repo first: `last-stack-forge-ci-log <owner/repo> --sha <sha>`
-(`--repo <owner/repo>` is also accepted).
+large historical list, and ignores `head_sha`. For a red job's log use
+`gh -R <owner>/<repo> run view <run-id> --log-failed`.
 
 ### Forgejo actions
 Before a branch change, CI retry, or PR supersede, resolve its exact

@@ -314,21 +314,12 @@ bin/
                             (only EdgeVector/lastgit) before PR ops
   last-stack-gh-pr-queue-state
                             GraphQL PR queue-state helper without gh -R drift
-  last-stack-forge-ci-log   print a failing forge (Forgejo) CI job's log tail —
-                            resolves the run + attempt-scoped web log endpoint
-                            (run with dangerouslyDisableSandbox: TCP to :3300 is
-                            sandbox-blocked)
   last-stack-forge-api      call the local Forgejo API with keychain/ env token
                             auth and optional control-char-safe jq projection
   last-stack-forge-git      run git against local Forgejo remotes with the token
                             injected as an HTTP extraHeader when needed
   last-stack-forge-json-jq   control-char-safe jq wrapper for Forgejo API JSON
                             status polls
-  last-stack-forge-runner-lanes
-                            discover/verify merge-gate vs dedicated `heavy`
-                            release/deploy runner capacity (see
-                            docs/forge-runner-lanes.md); proof:
-                            `bin/last-stack-forge-runner-lanes --check`
   last-stack-routine-read   freshness/missing-file guarded routine prompt reader
   last-stack-dogfood-target-checkout
                             select a current dogfood checkout without mutating

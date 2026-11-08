@@ -181,24 +181,12 @@
         "command": "last-stack-forge-api"
       },
       {
-        "source": "bin/last-stack-forge-pr-update-branch",
-        "command": "last-stack-forge-pr-update-branch"
-      },
-      {
         "source": "bin/last-stack-kanban-mark-once",
         "command": "last-stack-kanban-mark-once"
       },
       {
         "source": "bin/last-stack-forge-git",
         "command": "last-stack-forge-git"
-      },
-      {
-        "source": "bin/last-stack-forge-dead-trigger",
-        "command": "last-stack-forge-dead-trigger"
-      },
-      {
-        "source": "bin/last-stack-forge-ci-log",
-        "command": "last-stack-forge-ci-log"
       },
       {
         "source": "bin/last-stack-forge-json-jq",
@@ -293,10 +281,6 @@
         "command": "last-stack-registry-app"
       },
       {
-        "source": "bin/last-stack-forge-runner-watchdog",
-        "command": "last-stack-forge-runner-watchdog"
-      },
-      {
         "source": "bin/last-stack-feature-prove-routine",
         "command": "last-stack-feature-prove-routine"
       },
@@ -313,20 +297,12 @@
         "command": "last-stack-brain-append-heartbeat"
       },
       {
-        "source": "bin/last-stack-forge-runner-lanes",
-        "command": "last-stack-forge-runner-lanes"
-      },
-      {
         "source": "bin/last-stack-north-star-proof",
         "command": "last-stack-north-star-proof"
       },
       {
         "source": "bin/last-stack-ship-preflight",
         "command": "last-stack-ship-preflight"
-      },
-      {
-        "source": "bin/last-stack-fold-ci-health",
-        "command": "last-stack-fold-ci-health"
       },
       {
         "source": "bin/last-stack-board-closeout-install",
