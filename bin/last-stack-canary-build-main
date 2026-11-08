@@ -181,8 +181,6 @@ doc = {
     "source_git_oid": oid,
     "lastdb_version": lv,
     "lastdbd_version": dv,
-    # Retained JSON field for older readers. The synthetic harness is retired.
-    "restore_probe_script": None,
     "staged_by": "last-stack-canary-build-main",
 }
 with open(path, "w", encoding="utf-8") as f:

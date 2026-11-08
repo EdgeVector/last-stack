@@ -31,7 +31,7 @@
 # has no row proved with the build the primary runs RIGHT NOW, prove the app
 # set against that build (set + isolated smoke on the primary's own lastdbd +
 # publish-next) and never cut over. Any path can move the primary --
-# lastdb-safe-upgrade, post-merge-safe-upgrade, a hand rollback -- and only this
+# lastdb-safe-upgrade or a hand rollback -- and only this
 # gate wrote rows, so a primary moved outside it froze every host-track refresh
 # until the next nightly pass (2026-09-26: 2375 went live at 12:53Z with no
 # rows, and kanban, routines, brain and situations all held).

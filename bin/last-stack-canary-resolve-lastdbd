@@ -3,8 +3,6 @@
 # the lastdbd and lastdb pair from one directory. Explicit daemon-only callers
 # retain their existing opt-in. Never compiles.
 #
-# The synthetic restore probe and harness are retired. Legacy JSON fields stay
-# null, and --allow-no-restore-script remains a deprecated compatibility no-op.
 # The real-copy safe-upgrade driver keeps its independent source, hash, version,
 # restore, and primary protection checks.
 #
@@ -33,9 +31,6 @@ Options:
   --allow-daemon-only
                    Accept a candidate with only lastdbd. Use only for the
                    local daemon check. Backup restore requires the pair.
-  --allow-no-restore-script
-                   Deprecated compatibility no-op. The synthetic restore
-                   harness is retired; the default requires the CLI/daemon pair.
   -h, --help       Show help
 
 Env:
@@ -64,7 +59,6 @@ while [ "$#" -gt 0 ]; do
     --allow-newest) allow_newest=1; shift ;;
     --allow-current) allow_current=1; shift ;;
     --allow-daemon-only) allow_daemon_only=1; shift ;;
-    --allow-no-restore-script) shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -132,9 +126,6 @@ print(json.dumps({
     "status": status,
     "lastdbd": lastdbd or None,
     "lastdb": lastdb or None,
-    # Compatibility fields cannot authorize a retired synthetic harness.
-    "lastdb_restore_probe": None,
-    "restore_probe_script": None,
     "source": source or None,
     "wanted_oid": wanted,
     "resolved_oid": resolved or None,
