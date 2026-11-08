@@ -187,7 +187,34 @@ if [ "$venue" = programs ]; then
     programs-stop-started|programs-stopped|programs-rollback-ready)
       [ "$(lastdb_programs_daemon_path "$primary_home" "$current_program")" = "$backup_daemon" ] \
         || recovery_die "plist-changed-before-switch" ;;
-    programs-switch-started|programs-reload-started|programs-supervisor-loaded) ;;
+    programs-switch-started|programs-reload-started|programs-supervisor-loaded)
+      # A loaded job can respawn through current without reloading its plist.
+      # Finish unloading it before moving that alias back to the old pair.
+      if [ "$current_program" = "$primary_home/current/lastdbd" ] \
+          && lastdb_launchd_job_loaded "$launchctl_bin" "$service"; then
+        linked_daemon="$(lastdb_programs_daemon_path "$primary_home" "$current_program")" \
+          || recovery_die "current-program-unverified-before-unload"
+        if [ "$linked_daemon" != "$backup_daemon" ]; then
+          candidate_pid="$(lastdb_launchd_job_pid "$launchctl_bin" "$service")"
+          if [ -n "$candidate_pid" ]; then
+            if live_unix_socket_has_listener "$primary_socket"; then
+              [ "$(live_unix_socket_listener_pid "$primary_socket")" = "$candidate_pid" ] \
+                || recovery_die "unexpected-listener-before-candidate-stop"
+            fi
+            lastdb_launchd_graceful_prestop "$launchctl_bin" "$service" "$linked_daemon" 300 150 1 \
+              || recovery_die "candidate-graceful-stop-failed"
+          else
+            "$launchctl_bin" bootout "$service" \
+              || ! lastdb_launchd_job_loaded "$launchctl_bin" "$service" \
+              || recovery_die "candidate-unload-failed"
+          fi
+          lastdb_launchd_wait_unloaded "$launchctl_bin" "$service" \
+            || recovery_die "candidate-still-loaded"
+          ! live_unix_socket_has_listener "$primary_socket" \
+            || recovery_die "listener-remains-after-candidate-unload"
+        fi
+      fi
+      ;;
     *) recovery_die "unsupported-programs-stage" ;;
   esac
   if [ "$current_program" != "$backup_daemon" ] && [ "$current_program" != "$primary_home/current/lastdbd" ]; then
