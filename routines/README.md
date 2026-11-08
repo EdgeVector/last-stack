@@ -182,7 +182,6 @@ ls ~/.routines/registry/last-stack-fkanban-validate*.toml
 | [`pipeline-health`](pipeline-health.md) | every ~10 min | Keep open PRs (GitHub, every repo) unblocked; fix mechanical issues or file Brain papercuts (`papercut-pipeline-*`) — never board P0 monopoly. |
 | [`merge-babysit`](merge-babysit.md) | every ~15 min | Self-heal stuck PRs (GitHub, every repo), re-arming auto-merge, updating BEHIND branches or filing P0 merge cards without turning transient backend outages into fleet-red runs. |
 | [`drain-open-prs`](drain-open-prs.md) | daily | Drive every open PR across all repos toward zero (merge or close). |
-| [`deploy-watch`](deploy-watch.md) | every 5 min | Deploy each enabled repo whose forge main moved to a green commit through the durable `deploy-main` Loom graph. Replaces the launchd `lastgit-deploy-*` watchers. |
 | [`lastdb-ops-offenders`](lastdb-ops-offenders.md) | daily | Rank live `lastdb ops` worst offenders, skip long-poll/cheap-count noise, investigate the rest, file ≤2 pickup-ready improvement cards. |
 | [`lastdb-batch-apps`](lastdb-batch-apps.md) | hourly | Pick one app, find serial LastDB call patterns, file one pickup-ready card to change the app to batch calls. |
 | [`whats-wrong`](whats-wrong.md) | hourly (:23) | EV OPS What's wrong panel (`http://127.0.0.1:7733` `coverage.exceptions`): one loom heal agent per row, Brain papercuts, full closeout. |
