@@ -187,7 +187,7 @@ WIKI_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # A 50% dangling rate on the unscanned surface, next to 0% on the scanned one,
 # is what an unchecked set looks like after the checked set gets attention.
 # `setup` is prose too, and it is the only GENERATOR in the set: it writes the
-# managed brain-kanban and ASD-STE100 blocks into six harness root files
+# managed brain-kanban blocks into six harness root files
 # (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, ~/.factory/AGENTS.md,
 # ~/.config/opencode/AGENTS.md, ~/.grok/AGENTS.md, ~/.gemini/GEMINI.md), and
 # registers the PreToolUse hooks with their deny text. Its citations therefore

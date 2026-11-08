@@ -2,7 +2,7 @@
 name: review-doc
 description: |
   Review an HTML or markdown technical document in three sequential passes:
-  logic (poke holes), prose (STE / one meaning per word), then diagrams
+  logic (poke holes), prose (plain English, one meaning per word), then diagrams
   (render and look). Use when the user says "review the page 3 times",
   "review this doc", "logic then prose then diagrams", "review-doc",
   or asks to review a LastDB/Last Stack write-up before calling it done.
@@ -45,9 +45,8 @@ lost concurrent edit under last-write-wins), state it as accepted cost.
 
 ## Pass 2 — prose
 
-- Apply `instructions/asd-ste100.md` (injected into every harness). One meaning
-  per word, active voice, short sentences, no `-ing` as verb or noun, no
-  perfect tense, no idiom. Permit one comparison only when Tom asked for ELI5.
+- Write the page in plain English. Use the active voice. Keep one meaning
+  per word.
 - Same word for the same thing for the whole page (stamp, overlay, cloud
   list, photograph, history key).
 - Org case: Alice and Bob, one shared head. Personal multi-device is the
