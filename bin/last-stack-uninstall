@@ -42,7 +42,7 @@ remove_from() {
 }
 
 remove_managed_instruction_block() {
-  # Strip one setup-managed block (brain-kanban, asd-ste100, user-vocabulary, or tom-vocabulary).
+  # Strip one setup-managed instruction block by its marker name.
   local file="$1" label="$2" name="$3"
   [ -f "$file" ] || return 0
   grep -q "last-stack:${name}:start" "$file" || return 0

@@ -44,7 +44,6 @@ bin/last-stack-lint-prompts \
   routines/pipeline-health.md \
   skills/kanban-agent/SKILL.md \
   instructions/brain-kanban.md \
-  instructions/asd-ste100.md \
   instructions/no-home-root-scan.md \
   instructions/bin-authoring.md
 

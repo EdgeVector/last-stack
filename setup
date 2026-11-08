@@ -368,7 +368,7 @@ install_claude_hooks() {
   echo "  claude permissions: brain MCP get/search/list/ask/put"
 }
 
-# ── Harness instruction blocks (brain-kanban + ASD-STE100) ────────────────────
+# ── Harness instruction blocks ────────────────────────────────────────────────
 # Managed block targets:
 #   Claude Code → ~/.claude/CLAUDE.md
 #   Codex       → ~/.codex/AGENTS.md
@@ -461,8 +461,6 @@ upsert_harness_instruction_blocks() {
   local label="$2"
   mkdir -p "$(dirname "$file")"
   [ -f "$file" ] || : > "$file"
-  # Read an older word list before the strip removes it.
-  "$SOURCE_ROOT/bin/last-stack-vocab" migrate --from "$file"
   strip_managed_md_block "$file" "$BK_START" "$BK_END"
   strip_managed_md_block "$file" "$STE_START" "$STE_END"
   strip_managed_md_block "$file" "$TV_START" "$TV_END"
@@ -478,12 +476,6 @@ upsert_harness_instruction_blocks() {
   strip_managed_md_block "$file" "$LB_START" "$LB_END"
   strip_managed_md_block "$file" "$GE_START" "$GE_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/brain-kanban.md" "$BK_START" "$BK_END"
-  append_managed_md_block "$file" "$SOURCE_ROOT/instructions/asd-ste100.md" "$STE_START" "$STE_END"
-  local vocab_src
-  vocab_src="$(mktemp)"
-  "$SOURCE_ROOT/bin/last-stack-vocab" render > "$vocab_src"
-  append_managed_md_block "$file" "$vocab_src" "$UV_START" "$UV_END"
-  rm -f "$vocab_src"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/no-home-root-scan.md" "$HS_START" "$HS_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/bin-authoring.md" "$BA_START" "$BA_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/safe-json-capture.md" "$JC_START" "$JC_END"
@@ -491,7 +483,7 @@ upsert_harness_instruction_blocks() {
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/lastdb-batching.md" "$LB_START" "$LB_END"
   prepend_managed_md_block "$file" "$SOURCE_ROOT/instructions/no-tests.md" "$NT_START" "$NT_END"
   prepend_managed_md_block "$file" "$SOURCE_ROOT/instructions/generated-evidence.md" "$GE_START" "$GE_END"
-  echo "  ${label} instructions: generated-evidence + no-tests + brain-kanban + asd-ste100 + user-vocabulary + no-home-root-scan + bin-authoring + safe-json-capture + routine-shell + lastdb-batching -> $file"
+  echo "  ${label} instructions: generated-evidence + no-tests + brain-kanban + no-home-root-scan + bin-authoring + safe-json-capture + routine-shell + lastdb-batching -> $file"
 }
 
 # ── Codex routine shell: zsh -lc -> bash ─────────────────────────────────────
@@ -740,12 +732,71 @@ install_routines_cli() {
   "$installer"
 }
 
+
+resolve_symlink() {
+  # Follow a symlink chain without readlink -f (macOS readlink has no -f).
+  local path="$1" seen=0 dest dir
+  while [ -L "$path" ] && [ "$seen" -lt 8 ]; do
+    dir="$(cd "$(dirname "$path")" && pwd -P)"
+    dest="$(readlink "$path" 2>/dev/null || true)"
+    case "$dest" in
+      /*) path="$dest" ;;
+      *) path="$dir/$dest" ;;
+    esac
+    seen=$((seen + 1))
+  done
+  if [ -e "$path" ]; then
+    dir="$(cd "$(dirname "$path")" && pwd -P)"
+    printf '%s\n' "$dir/$(basename "$path")"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+
+link_is_last_stack_tree() {
+  local resolved="$1" raw="$2"
+  case "$resolved" in
+    "$HOME/.local/share/lastdb-apps/last-stack/"*|"$SOURCE_ROOT"/*) return 0 ;;
+  esac
+  case "$raw" in
+    *lastdb-apps/last-stack/*) return 0 ;;
+  esac
+  return 1
+}
+
+remove_retired_user_vocabulary_skill() {
+  # Drop an installed user-vocabulary skill whose SKILL.md is a symlink into
+  # a Last Stack tree. register_into no longer ships that skill.
+  local skills_dir="$1"
+  local skill="$skills_dir/user-vocabulary/SKILL.md"
+  [ -L "$skill" ] || return 0
+  local raw resolved
+  raw="$(readlink "$skill" 2>/dev/null || true)"
+  resolved="$(resolve_symlink "$skill")"
+  link_is_last_stack_tree "$resolved" "$raw" || return 0
+  rm -f "$skill"
+  rmdir "$skills_dir/user-vocabulary" 2>/dev/null || true
+  echo "  removed user-vocabulary skill link in $skills_dir"
+}
+
+remove_retired_vocab_command() {
+  local link="$HOME/.local/bin/last-stack-vocab"
+  [ -L "$link" ] || return 0
+  local raw resolved
+  raw="$(readlink "$link" 2>/dev/null || true)"
+  resolved="$(resolve_symlink "$link")"
+  link_is_last_stack_tree "$resolved" "$raw" || return 0
+  rm -f "$link"
+  echo "  removed last-stack-vocab command link"
+}
+
 # ── Register every skills/<name>/SKILL.md into a target skills dir ────────────
 register_into() {
   local skills_dir="$1"
   local label="$2"
   local linked=()
   mkdir -p "$skills_dir"
+  remove_retired_user_vocabulary_skill "$skills_dir"
   for skill_dir in "$SKILLS_SRC"/*/; do
     [ -f "$skill_dir/SKILL.md" ] || continue
     local dir_name skill_name target
@@ -781,6 +832,8 @@ register_into() {
 }
 
 # ── --local: vendor into the current project's .claude/skills ─────────────────
+remove_retired_vocab_command
+
 if [ "$LOCAL_INSTALL" -eq 1 ]; then
   echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) into ./.claude/skills ..."
   register_into "$(pwd)/.claude/skills" "claude (project)"
