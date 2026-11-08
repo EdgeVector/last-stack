@@ -4,13 +4,6 @@
 # The gui-app, testbin, and sentinel agents stay with
 # last-stack-host-memory-guards-install.
 #
-# com.edgevector.forge-runner-watchdog (revives Forgejo runner lanes) was a
-# second label here until 2026-10-08. It is NOT installed or revived any more:
-# no repo is gated on Forgejo (EdgeVector/lastgit moved to GitHub), and the
-# watchdog would page about a Forgejo that is being shut down. Its plist stays in
-# launchd/ for a later cleanup; an agent already loaded on a host is left alone
-# (this installer boots nothing out) and is retired by hand.
-#
 # The loops run as KeepAlive loops (bin/last-stack-launchd-loop) since
 # 2026-09-23. `status` prints the heartbeat age of every loop.
 #

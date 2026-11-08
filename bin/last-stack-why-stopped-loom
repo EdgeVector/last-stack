@@ -203,7 +203,7 @@ else
 fi
 
 key="${LOOM_WHY_KEY:-why-stopped-$(date -u +%Y%m%dT%H)}"
-input='{"probes":["install","node","forge","pickup"]}'
+input='{"probes":["install","node","pickup"]}'
 
 # Derive the Loom allowance from the routine gate. The fallback matches the
 # 45-minute routine default. Reserve five minutes for fallback classification,

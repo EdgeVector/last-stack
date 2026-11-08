@@ -46,7 +46,7 @@ PATTERNS: list[tuple[str, str, str, str]] = [
     ("A", "claim-starved", r"no_card_claimed.*todo_count=[1-9]|queue-blocked|surface-overlap|false empty|pickup.*claimed nothing", "ready queue exists but pickup is not claiming"),
     ("B", "timebox", r"rolled-back-todo|command-timebox|push-timebox|lastgit-push-timeout|result=in-flight-budget-handoff.*pr=(none|$)", "claimed work did not land"),
     ("B", "dirty-worktree", r"dirty-worktree|dirty worktree|worktree dirty|shared checkout pollution|shared-checkout pollution|uncommitted changes", "worktree state blocks publish"),
-    ("C", "missing-ci", r"missing-ci|ci-required.*missing|in-flight-ci-(pending|red)|Waiting to run|forge_ci=.*pending", "CI status is absent, pending, or red"),
+    ("C", "missing-ci", r"missing-ci|ci-required.*missing|in-flight-ci-(pending|red)|Waiting to run", "CI status is absent, pending, or red"),
     ("C", "merge-blocked", r"merge 405|merge-405|merge_when_checks_succeed|lastgit.*pipeline|merge path", "merge mechanism is stuck"),
     ("D", "deploy-pending", r"in-flight-deploy-pending|Requires-Deploy|awaiting[-_ ]deploy|deploy gap", "merged work still needs deploy/live proof"),
     ("D", "live-proof", r"awaiting_safe_upgrade|safe-upgrade.*live|pending live recheck|DONE-WHEN.*pending|host-track stale", "live symptom proof is missing"),

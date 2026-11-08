@@ -1138,8 +1138,7 @@ restart_primary() {
 #                           removes the only way this can fight an upgrade.
 #   hold file present    -> an operator or an upgrade declared a maintenance
 #                           window (LASTDBD_GUARD_REVIVE_HOLD_FILE)
-#   .paused-* marker     -> deliberately parked; same convention as
-#                           last-stack-forge-runner-watchdog
+#   .paused-* marker     -> deliberately parked
 #   no unique plist for
 #     THIS primary home  -> we do not guess which daemon to start. This machine
 #                           also carries a lastdbd-bob agent and many .bak-*

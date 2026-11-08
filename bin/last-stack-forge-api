@@ -29,10 +29,6 @@ Response shapes worth knowing:
     {"state":"success|failure|pending", "total_count":N, "statuses":[{context,status,target_url,...}]}
   last-stack-forge-api repos/EdgeVector/fold/commits/<sha>/status --jq '.state'
   last-stack-forge-api repos/EdgeVector/fold/commits/<sha>/status --jq '.statuses[] | [.context,.status] | @tsv'
-  A status target_url names a RUN NUMBER (.../actions/runs/<n>/jobs/<i>); the API has
-  no jobs or logs route for it. Read the job log with:
-    last-stack-forge-ci-log EdgeVector/fold --pr <number>   (or --sha <sha>, or <run-number>)
-
 Quote a path that has ? or &: zsh expands them before this helper runs
 ("no matches found: repos/...pulls?state=all&limit=20").
 
