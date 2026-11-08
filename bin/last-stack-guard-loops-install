@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install / status the guard LaunchAgent that had no installer:
 #   com.edgevector.lastdb-memory-guard   (acts on the primary lastdbd)
-# The gui-app, testbin, and sentinel agents stay with
+# The gui-app and sentinel agents stay with
 # last-stack-host-memory-guards-install.
 #
 # The loops run as KeepAlive loops (bin/last-stack-launchd-loop) since

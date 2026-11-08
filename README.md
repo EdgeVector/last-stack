@@ -345,12 +345,10 @@ bin/
   last-stack-gui-app-memory-guard
                             8 GiB fail-closed kill for Activity Monitor
                             (not the deprecated LastDB desktop app; keep)
-  last-stack-testbin-memory-guard
-                            8 GiB fail-closed kill for cargo deps test binaries
   last-stack-host-memory-sentinel
                             alert-only jetsam/swap/free-pct sentinel
   last-stack-host-memory-guards-install
-                            install the three host-side LaunchAgents; never
+                            install the two host-side LaunchAgents; never
                             touches the primary lastdbd process
   last-stack-uninstall      remove the registered skills
 skills/<name>/SKILL.md  one directory per skill

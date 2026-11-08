@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install / uninstall / status the host-side memory guards (gui-app, testbin)
+# Install / uninstall / status the host-side memory guard (gui-app)
 # and the alert-only host-memory sentinel.
 #
 # Writes a stable public path (~/.last-stack or artifacts/current) into each
@@ -23,7 +23,7 @@ self_root="$(cd -P "$(dirname "$self")/.." && pwd)"
 # shellcheck source=../lib/last-stack-launchd-agent.sh
 . "$self_root/lib/last-stack-launchd-agent.sh"
 
-# Any of the three programs proves the public root is usable.
+# The gui-app program proves the public root is usable.
 program="last-stack-gui-app-memory-guard"
 last_stack="$(last_stack_agent_stable_root "$self" "$program")"
 cmd="${1:-status}"
@@ -31,7 +31,6 @@ plist_dir="${HOST_MEMORY_GUARDS_PLIST_DIR:-$HOME/Library/LaunchAgents}"
 
 agents() {
   printf '%s %s\n' last-stack-gui-app-memory-guard com.edgevector.gui-app-memory-guard
-  printf '%s %s\n' last-stack-testbin-memory-guard com.edgevector.testbin-memory-guard
   printf '%s %s\n' last-stack-host-memory-sentinel com.edgevector.host-memory-sentinel
   printf '%s %s\n' last-stack-load-collector com.edgevector.load-collector
 }
@@ -43,7 +42,6 @@ legacy_plists() {
   local dest base
   for dest in \
     "${plist_dir}/"*gui-app-memory-guard.plist \
-    "${plist_dir}/"*testbin-memory-guard.plist \
     "${plist_dir}/"*host-memory-sentinel.plist; do
     [ -f "$dest" ] || continue
     base="$(basename "$dest" .plist)"

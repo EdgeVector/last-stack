@@ -922,7 +922,7 @@ if [ -x "$SOURCE_ROOT/bin/last-stack-factory-ready-buffer-install" ]; then
     echo "  factory-ready-buffer LaunchAgent: install failed (non-fatal)" >&2
 fi
 
-# Host-side memory guards (GUI Activity Monitor, cargo test binaries, sentinel).
+# Host-side memory guards (GUI Activity Monitor and the sentinel).
 # Does not touch the primary lastdbd process or its 16 GiB footprint guard.
 if [ -x "$SOURCE_ROOT/bin/last-stack-host-memory-guards-install" ]; then
   LAST_STACK_PUBLIC_ROOT="${LAST_STACK_PUBLIC_ROOT:-$HOME/.last-stack}" \

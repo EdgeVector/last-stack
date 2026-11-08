@@ -17,8 +17,8 @@
 #
 # This sentinel only OBSERVES and ALERTS. It never kills anything. The kill
 # guards are separate: last-stack-lastdb-memory-guard (primary lastdbd,
-# phys_footprint@16GiB), last-stack-testbin-memory-guard (cargo test
-# binaries, 8 GiB), and last-stack-gui-app-memory-guard (Activity Monitor, 8 GiB).
+# phys_footprint@16GiB) and last-stack-gui-app-memory-guard (Activity Monitor,
+# 8 GiB).
 #
 # Checks, each with an independent 2h alert cooldown:
 #   jetsam  — a JetsamEvent diagnostic report newer than the last one seen
