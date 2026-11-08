@@ -33,7 +33,6 @@ import os
 import re
 import subprocess
 import sys
-from pathlib import Path
 
 ADMISSION_SLUG = "preference-feature-delivery-portfolio-admission"
 # Policy-Version is a monotonically increasing change counter, not a schema
@@ -68,14 +67,9 @@ BRAIN_RETRY_TIMEOUT_S = float(
 )
 
 
-def point_get(slug: str, brain_bin: str, fixture_dir: Path | None) -> tuple[str, list[str]]:
+def point_get(slug: str, brain_bin: str) -> tuple[str, list[str]]:
     """Return (record text, list of point gets performed). Never list/search."""
     gets = [slug]
-    if fixture_dir is not None:
-        path = fixture_dir / "get" / f"{slug}.txt"
-        if not path.is_file():
-            raise BrainUnavailable(f"fixture has no record for {slug}")
-        return path.read_text(), gets
     # 60 s was the original budget and it is not enough. On 2026-09-05 the
     # primary node thrashed its warm cache for hours and a single `brain get`
     # ran past 60 s, so this admission read failed and blocked Kind:pr filing
@@ -209,7 +203,7 @@ def read_policy(text: str) -> dict:
     }
 
 
-def evaluate(north_star: str, work_class: str, brain_bin: str, fixture_dir: Path | None) -> dict:
+def evaluate(north_star: str, work_class: str, brain_bin: str) -> dict:
     result = {
         "slug": ADMISSION_SLUG,
         "north_star": north_star,
@@ -238,7 +232,7 @@ def evaluate(north_star: str, work_class: str, brain_bin: str, fixture_dir: Path
         return result
 
     try:
-        text, gets = point_get(ADMISSION_SLUG, brain_bin, fixture_dir)
+        text, gets = point_get(ADMISSION_SLUG, brain_bin)
     except BrainUnavailable as exc:
         result["point_gets"] = [ADMISSION_SLUG]
         result["verdict"] = "missing"
@@ -309,23 +303,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--json", action="store_true")
     ap.add_argument(
-        "--fixture-dir",
-        help="Offline brain: get/<slug>.txt (no live node)",
-    )
-    ap.add_argument(
         "--brain",
         default=os.environ.get("BRAIN_BIN", "brain"),
-        help="brain CLI (ignored when --fixture-dir is set)",
+        help="brain CLI. Defaults to $BRAIN_BIN, else brain.",
     )
     args = ap.parse_args(argv)
 
-    fixture = Path(args.fixture_dir) if args.fixture_dir else None
-    if fixture is None:
-        env_fix = os.environ.get("LAST_STACK_ADMISSION_FIXTURE", "")
-        if env_fix:
-            fixture = Path(env_fix)
-
-    result = evaluate(args.north_star, args.work_class, args.brain, fixture)
+    result = evaluate(args.north_star, args.work_class, args.brain)
 
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))

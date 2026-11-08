@@ -608,25 +608,13 @@ if command -v brain >/dev/null 2>&1; then
   # This is where the 2026-08-29 run died: `brain init` declares 25 node-owned
   # schemas and had no bound at all, so a slow or wedged bootstrap consumed the
   # whole foreground cap and the run produced no verdict.
-  bounded_step "brain:init" "$APP_INIT_TIMEOUT" brain init --grant-consent || true
-  if [ -f "$HOME/.brain/config.json" ]; then
-    if grep -q ':9001' "$HOME/.brain/config.json"; then
-      note_fail "brain:config still contains :9001 (retired TCP)"
-    else
-      note_pass "brain:config has no :9001"
-    fi
-  fi
+  bounded_step "brain:init" "$APP_INIT_TIMEOUT" brain init || true
 fi
 
 if command -v situations >/dev/null 2>&1; then
   bounded_step "situations:init" "$APP_INIT_TIMEOUT" situations init || true
   bounded_step "situations:list" "$APP_INIT_TIMEOUT" \
     sh -c 'situations list >/tmp/sit-list.out 2>&1' || true
-  if [ -f "$HOME/.situations/config.json" ] && grep -q ':9001' "$HOME/.situations/config.json"; then
-    note_fail "situations:config still contains :9001"
-  elif [ -f "$HOME/.situations/config.json" ]; then
-    note_pass "situations:config has no :9001"
-  fi
 fi
 
 # Current app declarations are node-local. Keep the legacy warning check for

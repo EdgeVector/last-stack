@@ -22,7 +22,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-SEARCH_SLUG_RE = re.compile(r"(?im)^(?:\s*\d+\.\s+)?([a-z][a-z0-9-]{2,})\b")
 RECORD_TYPE_RE = re.compile(
     r"(?im)^(?:\s*\[(decision|design|preference)\]|\s*type:\s*(decision|design|preference)\s*)"
 )
@@ -146,86 +145,18 @@ def run_brain(argv: list[str]) -> subprocess.CompletedProcess | None:
     return None
 
 
-# ── gbrain backend (RETIRED 2026-09-25) ─────────────────────────────────────
-# gbrain was the primary knowledge store from 2026-09-06 to 2026-09-25, and
-# this check once needed its own addressing (`<dir>/<slug>`, `wiki/concepts`
-# for concepts) and search shape (`--types a,b`, not repeated `--type`) to
-# read the corpus that actually held the settled records.
-#
-# The cutover reverted (won't-undo, Tom, 2026-09-25: "the brain is LastDB
-# only ... Re-enabling gbrain needs Tom"), so none of that can be reached
-# today: `main()` refuses any `--brain`/`$BRAIN_BIN`/`.primary` value naming
-# a `gbrain*` binary before this module runs a single subprocess or fixture
-# read. The addressing/search-shape code below is kept only because the
-# `Brain` class is still exercised by its unit tests; it is not reachable
-# from the CLI entrypoint.
-BRAIN_CONFIG_PATH = Path(
-    os.environ.get("LAST_STACK_BRAIN_CONFIG", str(Path.home() / ".claude" / "brain-config.json"))
-)
-KNOWN_BRAIN_BINS = ("brain", "gbrain")
-
-
 def default_brain_bin() -> str:
-    """Which store holds the settled records TODAY.
+    """The brain CLI.
 
-    Follows `~/.claude/brain-config.json` `.primary`, the switch the rest of
-    the workspace already uses to say which brain is primary (it also drives
-    the recall hook). Returns the raw config value rather than hard-coding
-    "brain" so a caller/test can see exactly what a stale config says — but
-    see `main()`: a `gbrain*` result is refused there before it can run
-    anything, since gbrain is retired and re-enabling it needs Tom.
-
-    Order: explicit `--brain` (argparse default below) > `$BRAIN_BIN` >
-    `.primary` > `brain`. An unreadable or unrecognised config falls back to
-    `brain`, the historical behaviour.
+    Order: `$BRAIN_BIN`, else `brain`.
+    lib/factory_reconcile.py sets BRAIN_BIN for the factory path.
     """
-    env = os.environ.get("BRAIN_BIN")
-    if env:
-        return env
-    try:
-        cfg = json.loads(BRAIN_CONFIG_PATH.read_text())
-    except (OSError, json.JSONDecodeError):
-        return "brain"
-    primary = str(cfg.get("primary") or "").strip()
-    return primary if primary in KNOWN_BRAIN_BINS else "brain"
-
-
-GBRAIN_TYPE_DIRS = {
-    "design": "design",
-    "decision": "decision",
-    "preference": "preference",
-    "reference": "reference",
-    "sop": "sop",
-    "task": "task",
-    "project": "project",
-    "spike": "spike",
-    "agent": "agent",
-    "papercut": "papercut",
-    "concept": "wiki/concepts",
-    "concepts": "wiki/concepts",
-}
-
-
-def gbrain_candidate_paths(slug: str) -> list[str]:
-    """Addresses to try for a bare LastDB-brain slug, best guess first."""
-    if "/" in slug:
-        return [slug]
-    head = slug.split("-", 1)[0].lower()
-    seen: list[str] = []
-    for key in (head, head.rstrip("s"), head + "s"):
-        d = GBRAIN_TYPE_DIRS.get(key)
-        if d and f"{d}/{slug}" not in seen:
-            seen.append(f"{d}/{slug}")
-    return seen
+    return os.environ.get("BRAIN_BIN") or "brain"
 
 
 class Brain:
-    def __init__(self, bin_name: str, fixture_dir: Path | None) -> None:
+    def __init__(self, bin_name: str) -> None:
         self.bin_name = bin_name
-        self.fixture_dir = fixture_dir
-        # Flavour is read off the binary NAME, so `--brain gbrain` or
-        # `BRAIN_BIN=/some/path/gbrain` both work with no extra flag.
-        self.gbrain = Path(bin_name).name.startswith("gbrain")
         self.gets: list[str] = []
         self.searches: list[str] = []
         self.degraded_types: list[str] = []
@@ -233,33 +164,18 @@ class Brain:
         self.failed = False
         self.timed_out = False
         self.fail_detail = ""
-        # slug -> the exact address that resolved it, so the stamp can say how
-        # to read it back from the SAME store.
-        self.addresses: dict[str, str] = {}
 
     @property
     def store(self) -> str:
-        return "gbrain" if self.gbrain else "brain"
+        return "brain"
 
     def read_command(self, slug: str) -> str:
         """The command a card reader runs to see this record."""
-        if self.gbrain:
-            guess = (gbrain_candidate_paths(slug) or [slug])[0]
-            return f"gbrain get {self.addresses.get(slug, guess)}"
         return f"brain get {slug}"
 
     def get(self, slug: str) -> str | None:
         self.gets.append(slug)
-        if self.fixture_dir is not None:
-            path = self.fixture_dir / "get" / f"{slug}.txt"
-            if not path.is_file():
-                return None
-            return path.read_text()
-        if self.gbrain:
-            return self._gbrain_get(slug)
         cp = run_brain([self.bin_name, "get", slug])
-        if cp is not None and cp.returncode == 0:
-            self.addresses[slug] = slug
         if cp is None:
             self.timed_out = True
             self.fail_detail = (
@@ -271,63 +187,8 @@ class Brain:
             return None
         return cp.stdout
 
-    def _gbrain_get(self, slug: str) -> str | None:
-        for path in gbrain_candidate_paths(slug):
-            cp = run_brain([self.bin_name, "get", path])
-            if cp is None:
-                self.timed_out = True
-                self.fail_detail = (
-                    f"gbrain get {path} timed out twice "
-                    f"({BRAIN_CALL_TIMEOUT_S:.0f}s then {BRAIN_RETRY_TIMEOUT_S:.0f}s)"
-                )
-                return None
-            if cp.returncode == 0:
-                self.addresses[slug] = path
-                return cp.stdout
-        # Prefix guessing failed. One exact-slug search resolves the real
-        # address rather than letting an unaddressable record read as absent —
-        # the invariants only fire on slugs that were GOT, so a false absence
-        # silently disarms them.
-        for hit in self.search(slug):
-            full = str(hit.get("slug") or "")
-            if full.rsplit("/", 1)[-1] != slug:
-                continue
-            cp = run_brain([self.bin_name, "get", full])
-            if cp is not None and cp.returncode == 0:
-                self.addresses[slug] = full
-                return cp.stdout
-            break
-        return None
-
     def search(self, query: str) -> list[dict]:
         self.searches.append(query)
-        if self.fixture_dir is not None:
-            json_path = self.fixture_dir / "search.json"
-            if json_path.is_file():
-                try:
-                    data = json.loads(json_path.read_text())
-                except json.JSONDecodeError:
-                    self.failed = True
-                    self.fail_detail = "fixture search.json is not JSON"
-                    return []
-                if isinstance(data, list):
-                    return [x for x in data if isinstance(x, dict)]
-                self.failed = True
-                self.fail_detail = "fixture search.json is not a list"
-                return []
-            text_path = self.fixture_dir / "search.txt"
-            if text_path.is_file():
-                return [
-                    {"slug": m.group(1), "type": "", "title": "", "snippet": ""}
-                    for m in (
-                        SEARCH_SLUG_RE.match(line.strip())
-                        for line in text_path.read_text().splitlines()
-                    )
-                    if m
-                ]
-            return []
-        if self.gbrain:
-            return self._gbrain_search(query)
         # Prefer the untyped hybrid path. It does not enumerate a type list,
         # so an incomplete list index cannot block candidate discovery.
         ask = run_brain(
@@ -411,75 +272,6 @@ class Brain:
             ) or "all typed brain searches failed"
         return hits
 
-    def _gbrain_search(self, query: str) -> list[dict]:
-        """One `--types` search on gbrain. gbrain has no per-type list index,
-        so there is no partial-degradation path: a failure fails closed."""
-        cp = run_brain(
-            [
-                self.bin_name,
-                "search",
-                query,
-                "--types",
-                ",".join(TYPES),
-                "--limit",
-                str(SEARCH_LIMIT),
-                "--json",
-            ]
-        )
-        if cp is None:
-            self.failed = True
-            self.timed_out = True
-            self.fail_detail = (
-                f"gbrain search timed out twice "
-                f"({BRAIN_CALL_TIMEOUT_S:.0f}s then {BRAIN_RETRY_TIMEOUT_S:.0f}s) — "
-                "the store is too slow to run the decision check right now"
-            )
-            return []
-        if cp.returncode != 0:
-            self.failed = True
-            self.fail_detail = (cp.stderr or cp.stdout or "gbrain search failed").strip()
-            return []
-        try:
-            data = json.loads(cp.stdout or "[]")
-        except json.JSONDecodeError:
-            self.failed = True
-            self.fail_detail = "gbrain search --json is not JSON"
-            return []
-        if isinstance(data, dict) and data.get("error"):
-            self.failed = True
-            self.fail_detail = str(data.get("error"))
-            return []
-        if not isinstance(data, list):
-            self.failed = True
-            self.fail_detail = "gbrain search --json is not a list"
-            return []
-        return [self._normalize_gbrain_hit(x) for x in data if isinstance(x, dict)]
-
-    @staticmethod
-    def _normalize_gbrain_hit(hit: dict) -> dict:
-        """Present a gbrain row in LastDB-brain terms.
-
-        Two differences are normalised here rather than at each call site, so
-        the invariants, the point-get cap, the dedup and the printed stamp all
-        keep working on ONE slug vocabulary whichever store answered:
-
-        * `slug` arrives addressed (`preference/preference-foo`,
-          `wiki/concepts/concepts-bar`); the bare tail is the slug every
-          INVARIANT and every stamp is written in.
-        * `chunk_text` is gbrain's name for what this check calls `snippet`.
-
-        gbrain returns one row per CHUNK, so a page can appear several times.
-        The caller's `seen` set dedups, and it dedups correctly only once the
-        slugs are bare — two chunks of one page share a tail but not an id.
-        """
-        out = dict(hit)
-        slug = str(out.get("slug") or "").strip()
-        if slug:
-            out["slug"] = slug.rsplit("/", 1)[-1]
-        if "snippet" not in out and out.get("chunk_text"):
-            out["snippet"] = out["chunk_text"]
-        return out
-
 
 def goal_excerpt(body: str) -> str:
     m = GOAL_RE.search(body)
@@ -543,10 +335,7 @@ def stamp_block(
     store: str = "",
 ) -> str:
     """The stamp. `slugs:` keeps its one-line shape for parsers; each slug
-    also gets a `read:` line with the exact command, from the store the check
-    read. The bare slugs alone sent readers to `brain get` (LastDB), which
-    does not hold most settled records while gbrain is primary, so every
-    point read said "No record" (papercut-kanban-decision-check-missing-brain-slugs-20260921).
+    also gets a `read:` line (`brain get <slug>`).
     """
     slug_line = ", ".join(slugs) if slugs else "none"
     lines = [
@@ -655,9 +444,7 @@ def factory_reviewed_assemble(title, body, kind, column, args):
     from factory_repair import (DECISION_POLICY_PATH, DECISION_POLICY_SHA, Refusal,
                                 require, read_bytes, strict_json, sha, bounded_call)
     installed = str(Path.home() / '.local/bin/brain')
-    require(args.fixture_dir is None and 'LAST_STACK_DECISION_FIXTURE' not in os.environ,
-            'factory-decision-fixture-refused')
-    require(args.brain is None and 'LAST_STACK_BRAIN_CONFIG' not in os.environ and
+    require(args.brain is None and
             ('BRAIN_BIN' not in os.environ or os.environ['BRAIN_BIN'] == installed),
             'factory-decision-brain-override-refused')
     require(title == 'Count canonical active Loom executions once' and kind == 'pr' and column == 'backlog',
@@ -726,50 +513,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--factory-reviewed-decision", action="store_true", help="Exact reviewed Count decision; no search or caller authority")
     ap.add_argument(
-        "--fixture-dir",
-        help="Offline brain: get/<slug>.txt and search.json (no live node)",
-    )
-    ap.add_argument(
         "--brain",
         default=None,
-        help=(
-            "brain CLI (ignored when --fixture-dir is set). Defaults to $BRAIN_BIN, "
-            "else `.primary` from ~/.claude/brain-config.json, else `brain`."
-        ),
+        help="brain CLI. Defaults to $BRAIN_BIN, else brain.",
     )
     args = ap.parse_args(argv)
 
-    # Keep the raw option for the finite override fence. Resolve the backend
-    # once so retirement admission and the Brain client use the same value.
+    # Keep the raw option for the finite override fence. Resolve the CLI
+    # once so the reviewed path and the Brain client use the same value.
     effective_brain = args.brain
     if effective_brain is None:
         effective_brain = (str(Path.home() / ".local/bin/brain")
                            if args.factory_reviewed_decision else default_brain_bin())
 
-    # gbrain is retired (won't-undo, Tom 2026-09-25: "the brain is LastDB
-    # only ... Re-enabling gbrain needs Tom"). Refuse here, before any brain
-    # subprocess runs and before any fixture addressing happens, so an
-    # inherited $BRAIN_BIN, a stale `.primary: gbrain` in
-    # ~/.claude/brain-config.json, or an explicit `--brain .../gbrain` can
-    # never select it (papercut-last-stack-decision-check-old-config-
-    # selects-retired-brain-20261009).
-    if Path(effective_brain).name.startswith("gbrain"):
-        print(
-            "last-stack-kanban-decision-check: refusing --brain "
-            f"{effective_brain!r} -- gbrain is retired "
-            "(decision-2026-09-25-revert-primary-brain-to-lastdb); "
-            "re-enabling it needs Tom.",
-            file=sys.stderr,
-        )
-        return 1
-
     body = read_body_or_fail()
-    fixture = Path(args.fixture_dir) if args.fixture_dir else None
-    if fixture is None:
-        env_fix = os.environ.get("LAST_STACK_DECISION_FIXTURE", "")
-        if env_fix:
-            fixture = Path(env_fix)
-    brain = Brain(effective_brain, fixture)
+    brain = Brain(effective_brain)
     try:
         if args.factory_reviewed_decision:
             try:

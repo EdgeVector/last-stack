@@ -43,10 +43,9 @@ set -eu
 # a consumer that gates on status has something to be checked against. Every
 # literal `pipe_status="…"` assignment and every synthesized `--repo` row below
 # must appear here, and a consumer must have an explicit verdict for each one.
-# Both directions are asserted by
-# tests/last-stack-card-closeout-deploy-gate-vocabulary.sh, so adding a status
-# without classifying it in bin/last-stack-card-closeout breaks CI instead of
-# jamming a merged card in `doing`
+# Both directions must stay in agreement. Every declared status needs an
+# explicit verdict in bin/last-stack-card-closeout. An unclassified addition
+# jams a merged card in `doing`
 # (papercut-card-closeout-deploy-gate-refuses-the-retired-status-the-scanner-now-emits-20261001:
 # `retired` was added by PR #172 and silently took the refusal arm, which made
 # the gate unsatisfiable for all four repos it covers).

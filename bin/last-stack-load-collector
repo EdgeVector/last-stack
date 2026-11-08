@@ -914,8 +914,8 @@ ALERT_SCOPE = {
     "host_process_hog":                (("host",),      "other",   "info"),
 }
 # An unknown name keeps the pre-table behaviour instead of raising: an alert path
-# must never cost the sample. tests/last-stack-load-collector-notice-scope.py is
-# what refuses a rule that ships without a row here.
+# must never cost the sample. A rule without a row falls through to
+# ALERT_SCOPE_DEFAULT.
 ALERT_SCOPE_DEFAULT = (("lastdbd",), "other", "info")
 
 

@@ -288,8 +288,8 @@ boot_baseline first
 cli_env() {
   env HOME="$CLI_HOME" LASTDB_HOME="$HOME_DIR" \
     LASTSECRETS_CONFIG="$CLI_HOME/.lastsecrets/config.json" \
-    BRAIN_CONFIG="$CLI_HOME/.brain/config.json" FBRAIN_CONFIG="$CLI_HOME/.brain/config.json" \
-    FOLDDB_SOCKET_PATH="$SOCK" FBRAIN_FOLDDB_SOCKET="$SOCK" "$@"
+    BRAIN_CONFIG="$CLI_HOME/.brain/config.json" \
+    FOLDDB_SOCKET_PATH="$SOCK" "$@"
 }
 
 # --- register the app schemas through the apps' own init ---------------------
@@ -306,7 +306,7 @@ phase brain-init
 log "brain init"
 rc=0
 run_op_with_deadline "$INIT_DEADLINE_SECS" cli_env brain init \
-  --node-url http://127.0.0.1 --name synthetic --yes >"$BUILD/brain-init.out" 2>"$BUILD/brain-init.err" || rc=$?
+  --node-url http://127.0.0.1 --name synthetic >"$BUILD/brain-init.out" 2>"$BUILD/brain-init.err" || rc=$?
 [ "$rc" -eq 0 ] || fail "brain init failed (rc=$rc); private evidence retained"
 
 # Collect the complete seed before one native durable mutation batch.

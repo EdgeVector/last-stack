@@ -204,7 +204,7 @@ esac
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 log() { echo "$(ts) $*" | tee -a "$LOG" >/dev/null; echo "$(ts) $*"; }
 
-# >>> log field contract (extracted by tests/last-stack-lastdb-memory-guard-log-contract.sh)
+# >>> log field contract
 # --------------------------------------------------------------------------
 # Log field contract.
 #

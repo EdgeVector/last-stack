@@ -37,7 +37,7 @@ This file is the canonical runbook for commands. The older team-facing
 context and run log only until a separate docs PR refreshes it to point here.
 When the two disagree, follow this skill.
 
-Memory: `project_app_identity`, `project_fbrain`.
+Memory: `project_app_identity`.
 
 ## Hard Safety Rules
 
