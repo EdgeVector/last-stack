@@ -1,9 +1,7 @@
 # App dependencies
 
 This file records which EdgeVector app needs which other app. The registry
-fields `requires` and `recommends` in `config/host-track/apps.json` and
-`config/registry/apps.json` encode it. `docs/host-track.md` explains how
-Host Track uses the fields.
+fields `requires` and `recommends` in `config/registry/apps.json` encode it.
 
 Audit date: 2026-09-23. Source: `origin/main` of each app repo on Forgejo.
 An audit agent read the call sites. A second reader checked the key claims.
@@ -11,9 +9,9 @@ An audit agent read the call sites. A second reader checked the key claims.
 ## Classes
 
 - **requires**: the app fails on a core path without the other app.
-  Host Track installs it first and `host-track check` fails without it.
+  The registry install brings that app in first.
 - **recommends**: the app runs without the other app. One feature degrades or
-  falls back, or one command or graph fails. Host Track only reports it.
+  falls back, or one command or graph fails. The registry only reports it.
 - **build**: the other app is needed to build, publish or install, not to run.
   The registry does not encode build edges.
 
@@ -34,10 +32,10 @@ An audit agent read the call sites. A second reader checked the key claims.
 | remote | lastdbd | lastsecrets, brain, situations, kanban | remote `src/lastdb.ts:71`. Bot tokens come from env, then a file, then lastsecrets (`src/serve.ts:24,42`). |
 | state-machine | lastdbd | situations, brain, kanban, last-stack | state-machine-app `src/lastdb.ts:66`. `sm cutover` needs brain (`src/cutover.ts:132`). The step scripts need last-stack and kanban. |
 | reconciler | lastdbd, lastsecrets | - | reconciler `src/capability-store.ts:50,60`: the default mode reads its capability from lastsecrets. |
-| loom | lastdbd, routines | kanban, last-stack, state-machine, brain, lastseek, lastgit | loom `src/lastdb.rs:31` socket. `src/runner.rs:4583` runs `routines agent-exec` for every agent node and fails closed. Card graphs need kanban. Deploy and canary graphs need host-track and sm. |
+| loom | lastdbd, routines | kanban, last-stack, state-machine, brain, lastseek, lastgit | loom `src/lastdb.rs:31` socket. `src/runner.rs:4583` runs `routines agent-exec` for every agent node and fails closed. Card graphs need kanban. Deploy and canary graphs need the app registry and sm. |
 | lastgit | lastdbd | - | lastgit `src/client.ts:33`. |
 | lastdb-browser | lastdbd | - | lastdb-browser `bin/lastdb-browser:22` socket bridge. |
-| last-stack | - | lastgit, kanban, brain, routines, situations, loom | last-stack is a tool pack. Each bin calls the app it serves. `host-track` needs lastgit for artifact installs. |
+| last-stack | - | lastgit, kanban, brain, routines, situations, loom | last-stack is a tool pack. Each bin calls the app it serves. |
 | dogfood-graph (public) | lastdbd | - | dogfood-graph `src/data/lastdbNodeClient.ts:13`. |
 | org (public) | lastdbd, lastsecrets | - | org `src/cli.ts:339,359,481`: create, invite and join store secrets. |
 
@@ -51,9 +49,7 @@ In the public registry, kanban requires loom and brain recommends lastseek.
 
 ## Build edges (not in the registry)
 
-- Every artifact app needs **lastgit** and **last-stack** to install:
-  `host-track` runs `lastgit artifact resolve`. Each repo's Forge CI runs
-  `lastgit artifact publish`.
+- Apps install through `lastdb app install` from the signed registry.
 - last-stack and lastgit need each other to build (lastgit installs through
   its own checkout script).
 
@@ -67,8 +63,8 @@ In the public registry, kanban requires loom and brain recommends lastseek.
   routine setting on this host, not an app edge.
   **Tom, 2026-09-23: declare it anyway.** The pickup path runs Kanban cards
   through Loom, so a Kanban install without Loom is not a working factory.
-  `kanban` now `requires` `loom` in the Host Track registry and in the public
-  registry. The public bundle installs Loom as a Homebrew binary
+  `kanban` now `requires` `loom` in `config/registry/apps.json` and in the
+  public registry. The public bundle installs Loom as a Homebrew binary
   (`brew_apps` in `config/registry/apps.json`).
 - **"brain requires lastseek."** brain prefers LastSeek and falls back to
   search and then to the node search. brain's own CI replaces lastseek with a
@@ -78,7 +74,7 @@ In the public registry, kanban requires loom and brain recommends lastseek.
 
 No cycle exists among `requires` edges. `validate-registry` fails on a cycle.
 Feature-level loops exist (last-stack runs loom; loom's deploy graph runs
-host-track). They stay in `recommends`.
+a registry install). They stay in `recommends`.
 
 ## Not checked
 

@@ -2,7 +2,7 @@
 # Doctor: make "which routine prompt is live" unambiguous.
 #
 # Two prompt roots historically coexist:
-#   1) $LAST_STACK_ROOT/routines/          (product / host-track artifact)
+#   1) $LAST_STACK_ROOT/routines/          (product install)
 #   2) $ROUTINES_HOME/prompts/             (local overrides + legacy copies)
 #
 # Agents often edit the dead twin; runtime loads the other. This probe fails
@@ -273,11 +273,10 @@ normalize_one() {
     [ "$want_quiet" -eq 1 ] || echo "normalize skip basename=$base reason=no-product-file" >&2
     return 0
   fi
-  # Fail closed rather than trade a drifted copy for a dangling one: host-track
-  # GCs artifacts/versions/<digest>/, so a symlink into that tree is the
-  # version-pin defect this same doctor reports. A caller running inside a
-  # version dir (host-track invokes <version>/setup with LAST_STACK_ROOT set to
-  # the version being installed) must not be able to write that pin.
+  # Fail closed rather than trade a drifted copy for a dangling one. The app
+  # install GCs artifacts/versions/<digest>/, so a symlink into that tree is
+  # the version-pin defect this doctor reports. A caller running inside a
+  # version dir must not be able to write that pin.
   if is_version_pin "$product"; then
     [ "$want_quiet" -eq 1 ] || echo "normalize refuse basename=$base reason=product-root-is-version-pin product=$product" >&2
     # Surface the refusal as a finding so a heal that declined to run cannot

@@ -607,7 +607,7 @@ function endStateSection(body) {
 }
 
 function endStateRequiresHelperCutover(body) {
-  return /\b(helper[ -]?cutover|host-track|live\s+scheduled[- ]fire|installed\s+(?:helper|binary|cli)|safe-upgrade|awaiting-deploy)\b/i.test(
+  return /\b(helper[ -]?cutover|app-registry|live\s+scheduled[- ]fire|installed\s+(?:helper|binary|cli)|safe-upgrade|awaiting-deploy)\b/i.test(
     endStateSection(body),
   );
 }
@@ -651,7 +651,7 @@ function isDeployParked(card) {
   // explicit wait phrases, not unrelated words spread across the brief.
   const note = latestProgressNote(bodyOf(card));
   if (/\b(?:not|no longer)\s+(?:awaiting|waiting|blocked)\b/i.test(note)) return false;
-  return /\b(?:awaiting|waiting for|blocked on)\s+(?:deploy(?:ment)?|safe-upgrade|live[- ]proof|helper[- ]cutover|host-track)\b/i.test(note) ||
+  return /\b(?:awaiting|waiting for|blocked on)\s+(?:deploy(?:ment)?|safe-upgrade|live[- ]proof|helper[- ]cutover|app-registry)\b/i.test(note) ||
     /\b(?:live[- ]proof|deploy-pipeline proof)\s*[:=-]?\s*(?:pending|blocked|awaiting)\b/i.test(note);
 }
 
@@ -1939,7 +1939,7 @@ def end_state_section(body):
 def end_state_requires_helper_cutover(body):
     return bool(
         re.search(
-            r"(?i)\b(helper[ -]?cutover|host-track|live\s+scheduled[- ]fire|"
+            r"(?i)\b(helper[ -]?cutover|app-registry|live\s+scheduled[- ]fire|"
             r"installed\s+(?:helper|binary|cli)|safe-upgrade|awaiting-deploy)\b",
             end_state_section(body),
         )
@@ -1982,7 +1982,7 @@ def is_deploy_parked(card):
     if re.search(r"\b(?:not|no longer)\s+(?:awaiting|waiting|blocked)\b", note, re.I):
         return False
     return bool(re.search(
-        r"\b(?:awaiting|waiting for|blocked on)\s+(?:deploy(?:ment)?|safe-upgrade|live[- ]proof|helper[- ]cutover|host-track)\b"
+        r"\b(?:awaiting|waiting for|blocked on)\s+(?:deploy(?:ment)?|safe-upgrade|live[- ]proof|helper[- ]cutover|app-registry)\b"
         r"|\b(?:live[- ]proof|deploy-pipeline proof)\s*[:=-]?\s*(?:pending|blocked|awaiting)\b",
         note, re.I,
     ))

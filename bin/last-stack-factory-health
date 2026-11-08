@@ -1508,7 +1508,7 @@ def is_deploy_parked(card: dict[str, Any]) -> bool:
             section_lines.append(line)
     section = "\n".join(section_lines)
     if re.search(
-        r"(?i)\b(helper[ -]?cutover|host-track|live\s+scheduled[- ]fire|"
+        r"(?i)\b(helper[ -]?cutover|app-registry|live\s+scheduled[- ]fire|"
         r"installed\s+(?:helper|binary|cli)|safe-upgrade|awaiting-deploy)\b",
         section,
     ):
