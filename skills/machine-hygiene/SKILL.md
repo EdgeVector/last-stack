@@ -51,7 +51,7 @@ actions noted below.
   schema-infra, brain, edgevector-website, fold_db_website, homebrew-folddb,
   exemem-workspace, edgevector-org-github, demo-repository). The umbrella `edgevector`
   dir is itself a stray git repo wrapper — leave it alone.
-- **Worktrees live in FIVE places** — check all each run. Do not trust a single
+- **Worktrees live in four places** — check all each run. Do not trust a single
   dir listing. Hot repos (fold, last-stack, and any other
   `~/code/edgevector/<repo>` with `.portal/` and no `.git`) are thin portals.
   `git -C ~/code/edgevector/<repo> worktree list` failing with "not a git
@@ -64,21 +64,17 @@ actions noted below.
   worktree, including ones added from paths **outside**
   `~/.fkanban/worktrees/` (for example `/private/tmp/...`). A worktree that
   pins `main` on an arbitrary path is the case that blocks fleet-wide
-  `wt fetch` — put it on the sweep checklist. The five places: (1)
+  `wt fetch` — put it on the sweep checklist. The four places: (1)
   **kanban worktrees** `~/.fkanban/worktrees/<slug>/` (protected if the card is
   in `doing` or `todo`; `~/.cline/worktrees/` is the legacy/empty predecessor); (2) gstack
   agent worktrees `fold/.claude/worktrees/<name>` and `fold_dev_node/.claude/worktrees/<name>`
   (live idle procs → archive the session to free them; two `agent-*` ones are `locked` WIP —
   never touch); (3) **top-level sibling worktrees** `~/code/edgevector/<name>` (e.g.
   `fold-superset-tray`, `fold-aws-runtime-pin`) AND `~/code/edgevector-worktrees/<name>`
-  (`app-sec/*`, `app-run/*`, plus some `exemem-workspace` doc worktrees like `nmsr-correct`);
-  (4) **`~/code/edgevector/.worktrees/<name>`** — a legacy repo-local location
-  that must be migrated to `~/.fkanban/worktrees/` after live/dirty audit (e.g.
-  `schema-naming-ingestion-method`). The siblings are the easiest to miss — find them via
+  (`app-sec/*`, `app-run/*`, plus some `exemem-workspace` doc worktrees like `nmsr-correct`).
+  The siblings are the easiest to miss — find them via
   the bare-mirror `worktree list` above, not via `git -C ~/code/edgevector/<repo>`.
-  `~/code/edgevector/.worktrees` and any
-  repo-local `.worktrees/` directory are legacy/violation locations: enumerate
-  them for cleanup, but do not create new agent work there. The canonical agent
+  The canonical agent
   location is `~/.fkanban/worktrees`. NOTE: a worktree's parent dir does NOT identify its repo — derive the
   repo from `git -C <path> rev-parse --git-common-dir`. Prune any with 0 unique commits
   (`git cherry origin/main <br>` → 0) AND a clean tree; **keep ones with uncommitted WIP**
@@ -194,16 +190,6 @@ line.
 - Prune `.claude/worktrees/*` only if **no live process** (`lsof -d cwd | grep <path>`) and
   the branch is merged/clean. In practice the dogfood ones all have live idle processes, so
   the clean way to remove a worktree + stop its process is to **archive its session**.
-- After the live/dirty audit, migrate clean idle repo-local `.worktrees/*`
-  survivors into the canonical kanban pool instead of leaving hidden nests under
-  shared checkouts:
-  ```bash
-  "$HOME/.last-stack/bin/last-stack-migrate-repo-local-worktrees" \
-    --workspace "$HOME/code/edgevector" \
-    --dest "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}" || true
-  ```
-  Include every `FLAG ... kept ...` line in the report; those are protected
-  residuals, not cleanup failures.
 - **Unsupervised:** you CAN'T archive. Enumerate via `mcp__ccd_session_mgmt__list_sessions`
   (stale = `isRunning:false` + dogfood title / merged branch / removed-worktree cwd) and
   list them for a UI bulk-archive. Titles to sweep: "Dog food", "Fold dev node",
