@@ -1796,6 +1796,10 @@ verify_old_primary_stopped() {
 strict_prestop_old_primary() {
   local service="$1" program="$2" plist_program="" listener_pid="" out=""
   plist_program="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$LAUNCHD_PLIST" 2>/dev/null || true)"
+  if [ "$VENUE" = programs ]; then
+    plist_program="$(lastdb_programs_daemon_path "$PRIMARY_HOME" "$plist_program")" \
+      || die "cannot resolve the primary plist program to its installed pair"
+  fi
   [ "$plist_program" = "$program" ] \
     || die "primary plist program does not match the installed old daemon"
   [ ! -e "$PRIMARY_HOME/.shutdown_flush_ready" ] \

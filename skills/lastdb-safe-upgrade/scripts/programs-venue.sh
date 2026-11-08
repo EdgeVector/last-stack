@@ -37,6 +37,7 @@ v2_status_is_format7() {
 programs_old_dir_from_plist() {
   local prog dir parent name
   prog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$LAUNCHD_PLIST" 2>/dev/null)" || return 1
+  prog="$(lastdb_programs_daemon_path "$PRIMARY_HOME" "$prog")" || return 1
   [ "$(basename -- "$prog")" = lastdbd ] || return 1
   dir="$(dirname -- "$prog")"
   parent="$(dirname -- "$dir")"
@@ -131,8 +132,14 @@ programs_release_revive_hold() {
 
 # Point the plist and $PRIMARY_HOME/current at one program directory.
 programs_point_at() {
-  local dir="$1" tmp current_tool="$_SCRIPT_DIR/../../../bin/last-stack-lastdb-current"
+  local dir="$1" tmp program current_tool="$_SCRIPT_DIR/../../../bin/last-stack-lastdb-current"
   [ -x "$current_tool" ] || current_tool="$(command -v last-stack-lastdb-current)" || return 1
+  program="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$LAUNCHD_PLIST" 2>/dev/null)" || return 1
+  if [ "$program" = "$PRIMARY_HOME/current/lastdbd" ]; then
+    "$current_tool" set --lastdb-home "$PRIMARY_HOME" --bin-dir "$dir" >/dev/null 2>&1 \
+      && [ "$(lastdb_programs_daemon_path "$PRIMARY_HOME" "$program")" = "$dir/lastdbd" ]
+    return $?
+  fi
   tmp="$(dirname -- "$LAUNCHD_PLIST")/.$(basename -- "$LAUNCHD_PLIST").programs.$$"
   rm -f -- "$tmp"
   cp -p "$LAUNCHD_PLIST" "$tmp" || return 1
@@ -271,7 +278,9 @@ v2_record_stopped_cut() {
 }
 
 programs_rollback_text() {
-  echo "  /usr/libexec/PlistBuddy -c 'Set :ProgramArguments:0 $OLD_PROGRAM_DIR/lastdbd' $LAUNCHD_PLIST"
+  if [ "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$LAUNCHD_PLIST" 2>/dev/null)" != "$PRIMARY_HOME/current/lastdbd" ]; then
+    echo "  /usr/libexec/PlistBuddy -c 'Set :ProgramArguments:0 $OLD_PROGRAM_DIR/lastdbd' $LAUNCHD_PLIST"
+  fi
   echo "  last-stack-lastdb-current set --lastdb-home $PRIMARY_HOME --bin-dir $OLD_PROGRAM_DIR"
   echo "  # stop the candidate with the strict stop in SKILL.md, then:"
   echo "  launchctl bootstrap gui/\$(id -u) $LAUNCHD_PLIST"

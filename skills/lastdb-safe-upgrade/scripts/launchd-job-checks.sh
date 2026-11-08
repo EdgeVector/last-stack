@@ -68,6 +68,23 @@ lastdb_launchd_wait_unloaded() {
   fi
 }
 
+# Resolve only the canonical current alias, and only to a physical program pair.
+lastdb_programs_daemon_path() {
+  local home="$1" program="$2" target parent
+  if [ "$program" != "$home/current/lastdbd" ]; then
+    printf '%s\n' "$program"
+    return 0
+  fi
+  [ -L "$home/current" ] || return 1
+  target="$(CDPATH= cd -- "$home/current" && pwd -P)" || return 1
+  parent="$home/native-run-v2-programs"
+  [ "$(dirname -- "$target")" = "$parent" ] && [ ! -L "$parent" ] || return 1
+  [[ "$(basename -- "$target")" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [ -f "$target/lastdbd" ] && [ -x "$target/lastdbd" ] && [ ! -L "$target/lastdbd" ] \
+    && [ -f "$target/lastdb" ] && [ -x "$target/lastdb" ] && [ ! -L "$target/lastdb" ] || return 1
+  printf '%s\n' "$target/lastdbd"
+}
+
 lastdb_launchd_graceful_prestop() {
   # Stop the OLD daemon with the full drain window when the LOADED job still
   # carries a short exit timeout. A bootout uses the loaded value, and only a
