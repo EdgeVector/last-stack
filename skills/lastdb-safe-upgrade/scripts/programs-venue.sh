@@ -266,8 +266,8 @@ v2_record_stopped_cut() {
   while [ "$waited" -le 120 ]; do
     if v2_capture_pair "$NEW_PROGRAM_DIR/lastdb" status v2 \
       && V2_STOPPED_CUT="$(jq -er '.mutation_log.head.frontiers
-          | select((.main | type) == "number" and (.cas | type) == "number")
-          | "\(.main)/\(.cas)"' "$v2")"; then
+          | select((.main | type) == "number" and ((.cas // 0) | type) == "number")
+          | "\(.main)/\(.cas // 0)"' "$v2")"; then
       log "candidate V2 log head after start: $V2_STOPPED_CUT (pre-stop backed head $V2_PRESTOP_HEAD)"
       return 0
     fi
