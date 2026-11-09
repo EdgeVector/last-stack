@@ -66,8 +66,8 @@ post_cutover_status_check_v2() {
         elif .blocked_reason != null then "cloud-blocked"
         elif .mutation_log.gap != null then "cloud-log-gap"
         elif .last_accepted_backup.begin.job.stream.stream_id != $stream then "cloud-stream-changed"
-        elif ($backed.main | type) != "number" or ($backed.cas | type) != "number" then "cloud-backup-pending"
-        elif $backed.main < $cut_main or $backed.cas < $cut_cas then "cloud-backup-pending"
+        elif ($backed.main | type) != "number" or (($backed.cas // 0) | type) != "number" then "cloud-backup-pending"
+        elif $backed.main < $cut_main or ($backed.cas // 0) < $cut_cas then "cloud-backup-pending"
         else "GREEN" end
       ' "$v2" 2>/dev/null)" || verdict="v2-status-invalid"
   fi

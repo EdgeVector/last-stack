@@ -155,8 +155,8 @@ def load_status(path):
 
 
 def frontier_pair(value):
-    require(type(value) is dict and set(value) == {"main", "cas"})
-    return unsigned(value["main"]), unsigned(value["cas"])
+    require(type(value) is dict and set(value) in ({"main", "cas"}, {"main"}))
+    return unsigned(value["main"]), unsigned(value.get("cas", 0))
 
 
 def v2_failed_checks(response, v2, v2_mtime_ns, max_age):
