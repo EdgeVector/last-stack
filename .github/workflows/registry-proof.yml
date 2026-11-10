@@ -158,7 +158,7 @@ jobs:
           # The contents API, not raw.githubusercontent.com: no CDN delay.
           gh api repos/EdgeVector/homebrew-lastdb/contents/registry/next.json \
             -H 'Accept: application/vnd.github.raw' > "$RUNNER_TEMP/next.json"
-          # git describe --tags --long --abbrev=9 of public lastdb main, with
+          # git describe --tags --abbrev=9 of public lastdb main, with
           # one leading v removed. Closest ancestor tag wins. A describe miss
           # falls back to the newest index row; it does not stop the plan.
           main_oid="$(gh api repos/EdgeVector/lastdb/commits/main --jq .sha)"
@@ -184,7 +184,10 @@ jobs:
           done < <(gh api "repos/EdgeVector/lastdb/tags?per_page=100" --jq '.[].name')
           main_args=()
           if [ -n "$best_name" ] && [ "${#main_oid}" -eq 40 ]; then
-            main_build="${best_name}-${best_ahead}-g${main_oid:0:9}"
+            main_build="$best_name"
+            if [ "$best_ahead" -gt 0 ]; then
+              main_build="${best_name}-${best_ahead}-g${main_oid:0:9}"
+            fi
             echo "lastdb main: $main_build $main_oid"
             main_args=(--lastdb-main-build "$main_build" --lastdb-main-oid "$main_oid")
           else
@@ -280,12 +283,18 @@ jobs:
             [ -n "$LEGACY_GH_PAT" ] || { echo "::error::GH_PAT is required only for the declared pre-cutover build $PLAN_BUILD"; exit 1; }
             export GH_TOKEN="$LEGACY_GH_PAT"
           fi
-          abbrev="${PLAN_BUILD##*-g}"
-          oid="$(gh api "repos/$PLAN_SOURCE_REPOSITORY/commits/$abbrev" --jq .sha)"
-          case "$oid" in
-            "$abbrev"*) ;;
-            *) echo "::error::fold commit $abbrev resolved to an unexpected oid"; exit 1 ;;
-          esac
+          if [[ "$PLAN_BUILD" =~ -[0-9]+-g([0-9a-f]+)$ ]]; then
+            abbrev="${BASH_REMATCH[1]}"
+            oid="$(gh api "repos/$PLAN_SOURCE_REPOSITORY/commits/$abbrev" --jq .sha)"
+            case "$oid" in
+              "$abbrev"*) ;;
+              *) echo "::error::fold commit $abbrev resolved to an unexpected oid"; exit 1 ;;
+            esac
+          else
+            # Exact-tag builds have no SHA suffix. Resolve the tag, then the
+            # checkout and binary version gates below verify the identity.
+            oid="$(gh api "repos/$PLAN_SOURCE_REPOSITORY/commits/v$PLAN_BUILD" --jq .sha)"
+          fi
           [ "${#oid}" -eq 40 ] || { echo "::error::fold oid is not 40 hex"; exit 1; }
           echo "PLAN_FOLD_OID=$oid" >> "$GITHUB_ENV"
           echo "fold oid: $oid"
@@ -454,6 +463,7 @@ jobs:
           # Match the release workflow: no rustc wrapper; never stamp from a ref name.
           RUSTC_WRAPPER: ""
           GITHUB_REF_NAME: ""
+          FOLDDB_BUILD_VERSION_OVERRIDE: ""
         run: |
           set -euo pipefail
           t0=$SECONDS; rc=0
@@ -472,7 +482,8 @@ jobs:
             git config core.abbrev 9
             [ -z "$(git status --porcelain)" ] || { echo "fold checkout is dirty" >&2; exit 1; }
             # build.rs stamps `git describe` with the leading v of the tag stripped.
-            want="$(git describe --tags --long --abbrev=9)"
+            # Do not force --long: build.rs emits the bare tag at distance zero.
+            want="$(git describe --tags --always --dirty --abbrev=9)"
             want="${want#v}"
             echo "git describe: $want"
             if [ -n "$EXPECT_BUILD" ] && [ "$want" != "$EXPECT_BUILD" ]; then
