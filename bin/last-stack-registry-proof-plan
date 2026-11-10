@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -73,9 +74,11 @@ def newest_build(index: dict) -> str:
 
 
 def valid_build(build: str) -> bool:
-    """A `git describe --long --abbrev=9` build: <tag>-<n>-g<hex>, hex only."""
-    head, sep, tail = build.rpartition("-g")
-    return bool(sep and head and tail and all(c in "0123456789abcdef" for c in tail))
+    """A numeric release tag, optionally followed by git distance and SHA."""
+    return bool(re.fullmatch(
+        r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z.-]+)?",
+        build,
+    ))
 
 
 def held_pin(index: dict, app: str, build: str) -> str:
@@ -112,11 +115,12 @@ def cmd_select_build(args: argparse.Namespace) -> int:
     main_oid = str(args.lastdb_main_oid or "").strip().lower()
     if not build and main_build:
         if not valid_build(main_build):
-            die(f"lastdb main build {main_build!r} is not a git describe string (<tag>-<n>-g<hex>)", 2)
+            die(f"lastdb main build {main_build!r} is not a release tag or git describe string", 2)
         if main_oid and (len(main_oid) != 40 or any(c not in "0123456789abcdef" for c in main_oid)):
             die(f"lastdb main oid {main_oid!r} is not a 40-hex oid", 2)
-        abbrev = main_build.rpartition("-g")[2]
-        if main_oid and not main_oid.startswith(abbrev):
+        described = re.search(r"-[0-9]+-g([0-9a-f]+)$", main_build)
+        abbrev = described.group(1) if described else ""
+        if main_oid and abbrev and not main_oid.startswith(abbrev):
             die(f"lastdb main oid does not start with the build abbrev {abbrev}", 2)
         if not known_build(index, main_build):
             build, fold_oid, source = main_build, main_oid, "lastdb-main"
@@ -126,7 +130,7 @@ def cmd_select_build(args: argparse.Namespace) -> int:
     if not build:
         die("the index holds no row and no override names a build", 3)
     if not valid_build(build):
-        die(f"build {build!r} is not a git describe string (<tag>-<n>-g<hex>)", 2)
+        die(f"build {build!r} is not a release tag or git describe string", 2)
     if fold_oid and (len(fold_oid) != 40 or any(c not in "0123456789abcdef" for c in fold_oid)):
         die(f"fold oid {fold_oid!r} is not a 40-hex oid", 2)
     print(json.dumps({"build": build, "source": source, "fold_oid": fold_oid}))
