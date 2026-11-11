@@ -159,13 +159,22 @@ jobs:
           gh api repos/EdgeVector/homebrew-lastdb/contents/registry/next.json \
             -H 'Accept: application/vnd.github.raw' > "$RUNNER_TEMP/next.json"
           # git describe --tags --abbrev=9 of public lastdb main, with
-          # one leading v removed. Closest ancestor tag wins. A describe miss
-          # falls back to the newest index row; it does not stop the plan.
+          # one leading v removed. Closest ancestor *release* tag wins.
+          # The shape is valid_build in bin/last-stack-registry-proof-plan:
+          # a numeric release, optional prerelease, optional +metadata.
+          # Nightly tags (nightly-YYYYMMDD-<sha>) and other non-release
+          # names can be the closest ancestor; select-build rejects them
+          # and would stop the plan. Skip them. If no release ancestor is
+          # in this page, the newest index row stays the target.
           main_oid="$(gh api repos/EdgeVector/lastdb/commits/main --jq .sha)"
           best_ahead=""
           best_name=""
+          # Same expression as valid_build. Bash ERE has no (?:).
+          release_re='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?(\+[0-9A-Za-z.-]+)?$'
           while IFS= read -r tag; do
             [ -n "$tag" ] || continue
+            name="${tag#v}"
+            [[ "$name" =~ $release_re ]] || continue
             meta="$(gh api "repos/EdgeVector/lastdb/compare/${tag}...${main_oid}" --jq '[.status, .ahead_by, .behind_by] | @tsv')"
             behind="${meta##*$'\t'}"
             rest="${meta%$'\t'*}"
@@ -179,7 +188,7 @@ jobs:
             esac
             if [ -z "$best_ahead" ] || [ "$ahead" -lt "$best_ahead" ]; then
               best_ahead="$ahead"
-              best_name="${tag#v}"
+              best_name="$name"
             fi
           done < <(gh api "repos/EdgeVector/lastdb/tags?per_page=100" --jq '.[].name')
           main_args=()
