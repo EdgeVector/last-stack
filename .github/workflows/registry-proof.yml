@@ -158,50 +158,29 @@ jobs:
           # The contents API, not raw.githubusercontent.com: no CDN delay.
           gh api repos/EdgeVector/homebrew-lastdb/contents/registry/next.json \
             -H 'Accept: application/vnd.github.raw' > "$RUNNER_TEMP/next.json"
-          # git describe --tags --abbrev=9 of public lastdb main, with
-          # one leading v removed. Closest ancestor *release* tag wins.
-          # The shape is valid_build in bin/last-stack-registry-proof-plan:
-          # a numeric release, optional prerelease, optional +metadata.
-          # Nightly tags (nightly-YYYYMMDD-<sha>) and other non-release
-          # names can be the closest ancestor; select-build rejects them
-          # and would stop the plan. Skip them. If no release ancestor is
-          # in this page, the newest index row stays the target.
-          main_oid="$(gh api repos/EdgeVector/lastdb/commits/main --jq .sha)"
-          best_ahead=""
-          best_name=""
-          # Same expression as valid_build. Bash ERE has no (?:).
-          release_re='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?(\+[0-9A-Za-z.-]+)?$'
-          while IFS= read -r tag; do
-            [ -n "$tag" ] || continue
-            name="${tag#v}"
-            [[ "$name" =~ $release_re ]] || continue
-            meta="$(gh api "repos/EdgeVector/lastdb/compare/${tag}...${main_oid}" --jq '[.status, .ahead_by, .behind_by] | @tsv')"
-            behind="${meta##*$'\t'}"
-            rest="${meta%$'\t'*}"
-            ahead="${rest##*$'\t'}"
-            case "$behind" in
-              0) ;;
-              *) continue ;;
-            esac
-            case "$ahead" in
-              ''|*[!0-9]*) continue ;;
-            esac
-            if [ -z "$best_ahead" ] || [ "$ahead" -lt "$best_ahead" ]; then
-              best_ahead="$ahead"
-              best_name="$name"
-            fi
-          done < <(gh api "repos/EdgeVector/lastdb/tags?per_page=100" --jq '.[].name')
-          main_args=()
-          if [ -n "$best_name" ] && [ "${#main_oid}" -eq 40 ]; then
-            main_build="$best_name"
-            if [ "$best_ahead" -gt 0 ]; then
-              main_build="${best_name}-${best_ahead}-g${main_oid:0:9}"
-            fi
-            echo "lastdb main: $main_build $main_oid"
-            main_args=(--lastdb-main-build "$main_build" --lastdb-main-oid "$main_oid")
-          else
-            echo "lastdb main describe unavailable; the newest index row stays the target"
+          # The expected build is the string lastdb_node/build.rs stamps:
+          # `git describe --tags --always --abbrev=9`, then one leading v
+          # removed only when the next character is a digit. A closer nightly
+          # tag (nightly-YYYYMMDD-<sha>) is part of that stamp. An annotated
+          # release tag still wins when it points at the same commit as a
+          # lightweight nightly tag, which is git describe's rule, so a
+          # release commit keeps its release string. A bare blobless clone is
+          # enough: describe reads commits and tags, not blobs. The proof
+          # checkout is refused when dirty, so build.rs's --dirty flag would
+          # not change this string. select-build accepts this release or
+          # nightly describe and rejects any other shape.
+          src="$RUNNER_TEMP/lastdb-describe.git"
+          rm -rf "$src"
+          GIT_TERMINAL_PROMPT=0 git clone --bare --filter=blob:none --branch main \
+            https://github.com/EdgeVector/lastdb.git "$src"
+          main_oid="$(git -C "$src" rev-parse HEAD)"
+          described="$(git -C "$src" describe --tags --always --abbrev=9 HEAD)"
+          echo "git describe: $described"
+          if [[ "$described" == v[0-9]* ]]; then
+            described="${described#v}"
           fi
+          echo "lastdb main: $described $main_oid"
+          main_args=(--lastdb-main-build "$described" --lastdb-main-oid "$main_oid")
           bin/last-stack-registry-proof-plan select-build --index "$RUNNER_TEMP/next.json" \
             --override config/registry/proof-builds.json \
             "${main_args[@]}" > "$RUNNER_TEMP/target.json"
@@ -300,9 +279,18 @@ jobs:
               *) echo "::error::fold commit $abbrev resolved to an unexpected oid"; exit 1 ;;
             esac
           else
-            # Exact-tag builds have no SHA suffix. Resolve the tag, then the
-            # checkout and binary version gates below verify the identity.
-            oid="$(gh api "repos/$PLAN_SOURCE_REPOSITORY/commits/v$PLAN_BUILD" --jq .sha)"
+            # Exact-tag builds have no distance suffix. Release tags are stored
+            # as v<build>: describe strips one leading v when the next character
+            # is a digit. A nightly tag is stored under its own name.
+            case "$PLAN_BUILD" in
+              nightly-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-*)
+                tag="$PLAN_BUILD"
+                ;;
+              *)
+                tag="v$PLAN_BUILD"
+                ;;
+            esac
+            oid="$(gh api "repos/$PLAN_SOURCE_REPOSITORY/commits/${tag}" --jq .sha)"
           fi
           [ "${#oid}" -eq 40 ] || { echo "::error::fold oid is not 40 hex"; exit 1; }
           echo "PLAN_FOLD_OID=$oid" >> "$GITHUB_ENV"
@@ -490,10 +478,16 @@ jobs:
             # stamp is the same string for the same commit.
             git config core.abbrev 9
             [ -z "$(git status --porcelain)" ] || { echo "fold checkout is dirty" >&2; exit 1; }
-            # build.rs stamps `git describe` with the leading v of the tag stripped.
-            # Do not force --long: build.rs emits the bare tag at distance zero.
+            # Same stamp as lastdb_node/build.rs: git describe --tags --always
+            # --dirty --abbrev=9, then a leading v removed only when the next
+            # character is a digit. A closer nightly tag stays in the string.
+            # Do not exclude nightly tags and do not force --long: at distance
+            # zero build.rs emits the bare tag, and the plan's expected build
+            # is this same string.
             want="$(git describe --tags --always --dirty --abbrev=9)"
-            want="${want#v}"
+            if [[ "$want" == v[0-9]* ]]; then
+              want="${want#v}"
+            fi
             echo "git describe: $want"
             if [ -n "$EXPECT_BUILD" ] && [ "$want" != "$EXPECT_BUILD" ]; then
               echo "git describe $want does not equal the expected build $EXPECT_BUILD" >&2
@@ -508,7 +502,7 @@ jobs:
             chmod +x "$SCRATCH/bin/lastdb" "$SCRATCH/bin/lastdbd"
             got="$("$SCRATCH/bin/lastdbd" --version | sed -n 's/^lastdbd //p' | head -1)"
             echo "lastdbd --version build: $got"
-            # The stamp is git describe with the leading v stripped.
+            # The stamp is the describe above: leading v removed only when the next character is a digit.
             [ "$got" = "$want" ] || { echo "lastdbd reports '$got', expected '$want'" >&2; exit 1; }
             "$SCRATCH/bin/lastdb" --version
             {
