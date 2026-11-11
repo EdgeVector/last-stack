@@ -73,12 +73,20 @@ def newest_build(index: dict) -> str:
     return best[1]
 
 
+# A numeric release, optional prerelease, optional +metadata. Distance and the
+# abbreviated sha are part of the prerelease (`0.23.20-canary.20261110-43-g07516a81a`).
+_RELEASE_BUILD = (
+    r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z.-]+)?"
+)
+# lastdb nightly tags are `nightly-YYYYMMDD-<sha>`. build.rs stamps
+# `git describe --tags --abbrev=9` and does not strip that name, so a commit
+# ahead of the tag is `nightly-YYYYMMDD-<sha>-<distance>-g<abbrev>`.
+_NIGHTLY_BUILD = r"nightly-[0-9]{8}-[0-9a-f]+(?:-[0-9]+-g[0-9a-f]+)?"
+
+
 def valid_build(build: str) -> bool:
-    """A numeric release tag, optionally followed by git distance and SHA."""
-    return bool(re.fullmatch(
-        r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z.-]+)?",
-        build,
-    ))
+    """A release describe, or a lastdb nightly describe, as build.rs stamps it."""
+    return bool(re.fullmatch(rf"(?:{_RELEASE_BUILD}|{_NIGHTLY_BUILD})", build))
 
 
 def held_pin(index: dict, app: str, build: str) -> str:
@@ -115,7 +123,7 @@ def cmd_select_build(args: argparse.Namespace) -> int:
     main_oid = str(args.lastdb_main_oid or "").strip().lower()
     if not build and main_build:
         if not valid_build(main_build):
-            die(f"lastdb main build {main_build!r} is not a release tag or git describe string", 2)
+            die(f"lastdb main build {main_build!r} is not a release or nightly describe string", 2)
         if main_oid and (len(main_oid) != 40 or any(c not in "0123456789abcdef" for c in main_oid)):
             die(f"lastdb main oid {main_oid!r} is not a 40-hex oid", 2)
         described = re.search(r"-[0-9]+-g([0-9a-f]+)$", main_build)
@@ -130,7 +138,7 @@ def cmd_select_build(args: argparse.Namespace) -> int:
     if not build:
         die("the index holds no row and no override names a build", 3)
     if not valid_build(build):
-        die(f"build {build!r} is not a release tag or git describe string", 2)
+        die(f"build {build!r} is not a release or nightly describe string", 2)
     if fold_oid and (len(fold_oid) != 40 or any(c not in "0123456789abcdef" for c in fold_oid)):
         die(f"fold oid {fold_oid!r} is not a 40-hex oid", 2)
     print(json.dumps({"build": build, "source": source, "fold_oid": fold_oid}))
@@ -239,7 +247,7 @@ def main(argv: list[str]) -> int:
     p = sub.add_parser("select-build", help="the lastdb build the proof targets")
     p.add_argument("--index", type=Path, required=True, help="registry/next.json")
     p.add_argument("--override", type=Path, default=None, help="config/registry/proof-builds.json")
-    p.add_argument("--lastdb-main-build", default="", help="git describe of public lastdb main, leading v removed")
+    p.add_argument("--lastdb-main-build", default="", help="git describe of public lastdb main; a leading v is removed only when the next character is a digit")
     p.add_argument("--lastdb-main-oid", default="", help="full 40-hex oid of public lastdb main")
     p.set_defaults(fn=cmd_select_build)
 
