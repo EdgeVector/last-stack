@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Decide, with no lastdb binary and no secret, what the registry proof should do.
 
-The scheduled `registry-proof` workflow runs this on a cheap ubuntu runner. It
-answers these questions from explicit files:
+Answers these questions from explicit files:
 
   select-build   Which lastdb build does the proof target?
                  The override target in config/registry/proof-builds.json when
@@ -16,11 +15,10 @@ answers these questions from explicit files:
   fingerprint    The fingerprint of a candidate set (build + every app sha).
                  A RED or GREEN-pending set is not proved again until the
                  fingerprint changes.
-  manifest       Write apply.json into the proof bundle: everything the Mac
-                 apply command (bin/last-stack-registry-apply-proof) needs and
-                 checks. The verdict, the attribution, the candidate shas, the
-                 lastdb build and oid, the run id and URL, the proof record
-                 name, and the sha256 of each bundle file. No binary, no secret.
+  manifest       Write apply.json into a proof bundle: the verdict, the
+                 attribution, the candidate shas, the lastdb build and oid,
+                 the run id and URL, the proof record name, and the sha256 of
+                 each bundle file. No binary, no secret.
 
 One row of `next` is a proved pair <app sha, lastdb build>. The pin an app holds
 for a build is its newest row (by proved_at) whose lastdb_version is that build,
@@ -266,7 +264,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--run-id", required=True)
     p.add_argument("--run-attempt", default="1")
     p.add_argument("--repository", required=True)
-    p.add_argument("--workflow-path", default=".github/workflows/registry-proof.yml")
+    p.add_argument("--workflow-path", default="")
     p.add_argument("--sha", default="")
     p.add_argument("--ref", default="")
     p.add_argument("--event", default="")
