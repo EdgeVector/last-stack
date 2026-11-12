@@ -37,7 +37,7 @@ if [[ "$SMOKE_CARGO_BIN" != /* ]] || [ ! -x "$SMOKE_CARGO_BIN" ]; then
 fi
 SMOKE_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SMOKE_CANDIDATE_SET="${SMOKE_CANDIDATE_SET:-}"
-REQUIRED_APPS="brain situations routines dogfood-graph org lastsecrets search lastdb-browser lastseek"
+REQUIRED_APPS="brain routines dogfood-graph org lastsecrets search lastdb-browser lastseek"
 SMOKE_LAST_STACK_OID="${SMOKE_LAST_STACK_OID:-}"
 if [ -n "$SMOKE_LAST_STACK_OID" ] && [[ ! "$SMOKE_LAST_STACK_OID" =~ ^[0-9a-f]{40}$ ]]; then
   echo "the Last Stack source must be a full lowercase 40-hex OID" >&2
@@ -468,7 +468,7 @@ if [ -x "$HOME/lastdb-apps/brain/bin/brain" ]; then
   export PATH="$HOME/lastdb-apps/brain/bin:$PATH"
 fi
 
-for cli in brain situations routines org lastsecrets search lastdb-browser lastseek; do
+for cli in brain routines org lastsecrets search lastdb-browser lastseek; do
   if command -v "$cli" >/dev/null 2>&1; then
     cli_path="$(command -v "$cli")"
     case "$cli_path" in
@@ -609,12 +609,6 @@ if command -v brain >/dev/null 2>&1; then
   # schemas and had no bound at all, so a slow or wedged bootstrap consumed the
   # whole foreground cap and the run produced no verdict.
   bounded_step "brain:init" "$APP_INIT_TIMEOUT" brain init || true
-fi
-
-if command -v situations >/dev/null 2>&1; then
-  bounded_step "situations:init" "$APP_INIT_TIMEOUT" situations init || true
-  bounded_step "situations:list" "$APP_INIT_TIMEOUT" \
-    sh -c 'situations list >/tmp/sit-list.out 2>&1' || true
 fi
 
 # Current app declarations are node-local. Keep the legacy warning check for

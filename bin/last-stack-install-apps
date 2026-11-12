@@ -18,9 +18,11 @@ usage() {
 last-stack-install-apps [options]
 
 Downloads the stable LastDB app stack from public GitHub:
-  LastDB daemon, loom and lastseek (Homebrew binaries), brain, situations, routines,
+  LastDB daemon, loom and lastseek (Homebrew binaries), brain, routines,
   dogfood-graph, org, lastsecrets, search, LastDB Browser, and the optional
   Kanban Factory theater UI.
+
+  situations is deprecated and is not installed by this bundle (Tom, 2026-11-12).
 
   org + lastsecrets are required for invite/join ("join my org") onboarding.
   search owns the local semantic MiniLM plane brain/kanban prefer for ask/search.
@@ -515,13 +517,6 @@ link_cli() {
   [ -d "$dest" ] || return 0
 
   case "$name" in
-    situations)
-      if [ -x "$dest/bin/situations" ]; then
-        echo "==> linking situations CLI"
-        ensure_user_bin
-        ln -snf "$dest/bin/situations" "$HOME/.local/bin/situations"
-      fi
-      ;;
     routines)
       echo "==> linking routines CLI"
       link_existing_cli "$dest/bin/routines" routines
@@ -613,8 +608,9 @@ if [ -n "$PINS_FILE" ]; then
   echo "==> candidate set: $PINS_FILE (lastdb $(jq -r '.lastdb.build // "?"' "$PINS_FILE"))"
 fi
 
-# Kanban is retained in the registry for deliberate selection, outside this bundle.
-BUNDLE_APPS="brain situations routines dogfood-graph org lastsecrets search lastdb-browser lastseek"
+# Kanban and situations are retained in the registry for deliberate selection, outside this bundle.
+# Situations is deprecated (Tom, 2026-11-12).
+BUNDLE_APPS="brain routines dogfood-graph org lastsecrets search lastdb-browser lastseek"
 FAILED_APPS=""      # "<app>:<stage>" words, in install order
 app_failed() {
   case " $FAILED_APPS " in
@@ -731,7 +727,6 @@ printf '  %s\n\n' "$TARGET_DIR"
 printf 'Next steps:\n'
 printf '  brew services start lastdb\n'
 printf '  brain init\n'
-printf '  situations init\n'
 printf '  lastsecrets init\n'
 printf '  org init\n'
 printf '  search init   # online semantic index bootstrap (daemon may stay up)\n'

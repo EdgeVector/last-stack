@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Terminal proof for north-star-lastdb-app-registry-release-loop.
 #
-# DONE means: a fresh isolated install via `lastdb app install brain situations`
+# DONE means: a fresh isolated install via `lastdb app install brain`
 # against brew stable resolves every required app from the signed index by
 # proved pair, the rows it installed name proof runs that exist, and the
 # public llms-txt install smoke is GREEN on that proved set.
@@ -18,7 +18,7 @@ OUT="${LAST_STACK_NS_PROOF_OUT:-$HOME/.last-stack/north-star-proofs/$NS.md}"
 LASTDB_BIN=""
 INDEX="${LASTDB_REGISTRY_INDEX:-}"
 CHANNEL=stable
-APPS="brain situations"
+APPS="brain"
 SKIP_SMOKE=0
 TRUST_KEY=""
 

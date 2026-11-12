@@ -6,7 +6,8 @@ description: Daily isolated dogfood of the public thelastdb.com/llms.txt first-r
 
 You are running an unattended daily routine. Objective: prove that a **brand-new
 user** can still install LastDB from the public install map at
-https://thelastdb.com/llms.txt (Brain + Kanban + Situations first-run).
+https://thelastdb.com/llms.txt (the required public app bundle; Kanban and
+Situations are outside that bundle).
 
 **Shared contract:** fetch `brain get sop-routine-shared-contract --type sop` at
 run start and honor it — heartbeat LAST always, primary-brain guardrail,

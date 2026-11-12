@@ -10,8 +10,6 @@ Included (all **public** on GitHub):
   tap.
 - **Brain (`brain`)**: durable notes, decisions, references, and retrieval over
   LastDB.
-- **Situations (`situations`)**: active operational posture and preflight
-  checks for agents.
 - **Routines (`routines`)**: scheduler and dispatcher for the Last Stack routine
   fleet. The bundle installs the CLI; starting its daemon remains an explicit
   operator action because that begins scheduled agent work.
@@ -30,6 +28,9 @@ Not included in this bundle:
 
 - **Kanban (`kanban`)**: outside the required install and CI proof set (Tom,
   2026-11-06). Its repo, registry metadata, installed code and data remain.
+- **Situations (`situations`)**: deprecated (Tom, 2026-11-12). Outside the
+  required install and CI proof set. Its repo, registry metadata, installed
+  code and data remain.
 - **LastGit**: retired (2026-09-30). Contributors use GitHub pull requests.
 
 ## One Command
@@ -96,7 +97,6 @@ Initialize the apps:
 ```bash
 # first-run setup (not a health check — run once after brew services start lastdb)
 brain init                   # bootstrap Brain
-situations init              # bootstrap Situations
 lastsecrets init             # bootstrap LastSecrets (needed for org keys)
 org init                     # bootstrap Org (invite/join)
 routines install-daemon      # optional: start scheduled agent routines
@@ -169,7 +169,6 @@ Download the app repos:
 mkdir -p ~/lastdb-apps
 cd ~/lastdb-apps
 git clone https://github.com/EdgeVector/brain.git
-git clone https://github.com/EdgeVector/situations.git
 git clone https://github.com/EdgeVector/routines.git
 git clone https://github.com/EdgeVector/dogfood-graph.git
 git clone https://github.com/EdgeVector/org.git
@@ -179,7 +178,7 @@ git clone https://github.com/EdgeVector/lastsecrets.git
 Install dependencies:
 
 ```bash
-for app in brain situations routines dogfood-graph org lastsecrets; do
+for app in brain routines dogfood-graph org lastsecrets; do
   bun install --cwd "$HOME/lastdb-apps/$app"
 done
 ```
@@ -188,7 +187,6 @@ Link commands:
 
 ```bash
 cd ~/lastdb-apps/brain && bun link
-ln -snf ~/lastdb-apps/situations/bin/situations ~/.local/bin/situations
 ln -snf ~/lastdb-apps/routines/bin/routines ~/.local/bin/routines
 cd ~/lastdb-apps/org && bun link
 cd ~/lastdb-apps/lastsecrets && bun link

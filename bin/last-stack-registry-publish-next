@@ -62,7 +62,7 @@ RUN_ID=""
 LASTDB_BIN_OVERRIDE=""
 STRICT_GREEN=0
 # The real roster shared by the candidate set and install producer.
-KNOWN_APPS="brain situations routines dogfood-graph org lastsecrets search lastdb-browser lastseek"
+KNOWN_APPS="brain routines dogfood-graph org lastsecrets search lastdb-browser lastseek"
 
 usage() {
   cat <<'USAGE'

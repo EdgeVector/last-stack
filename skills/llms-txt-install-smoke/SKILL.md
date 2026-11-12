@@ -19,7 +19,7 @@ Do not add example records, tests, fixtures, or a fixture harness.
 - Require each source receipt to match the actual app checkout.
 - Require each installed command to resolve inside the owned home.
 - Refuse an unproved source fallback.
-- Kanban is outside the required bundle and is not initialized. Situations remains required.
+- Kanban is outside the required bundle and is not initialized. Situations is deprecated and outside the required bundle and is not initialized (Tom, 2026-11-12).
 - Do not remove another run's files from their age alone.
 
 ## Command

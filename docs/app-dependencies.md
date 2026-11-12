@@ -6,6 +6,9 @@ fields `requires` and `recommends` in `config/registry/apps.json` encode it.
 Audit date: 2026-09-23. Source: `origin/main` of each app repo on Forgejo.
 An audit agent read the call sites. A second reader checked the key claims.
 
+Situations is deprecated from the public bundle and registry proof (Tom,
+2026-11-12). The rows below still record the code edges.
+
 ## Classes
 
 - **requires**: the app fails on a core path without the other app.

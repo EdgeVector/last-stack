@@ -28,11 +28,12 @@
       ]
     },
     "situations": {
+      "bundle": false,
       "github": "https://github.com/EdgeVector/situations.git",
       "public": "https://github.com/EdgeVector/situations.git",
       "artifact_app": "situations",
       "install_name": "situations",
-      "description": "Shared operational posture and preflight."
+      "description": "Deprecated (Tom, 2026-11-12). Outside the required install and CI proof set. Shared operational posture and preflight."
     },
     "routines": {
       "github": "https://github.com/EdgeVector/routines.git",

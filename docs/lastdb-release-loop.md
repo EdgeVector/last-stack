@@ -24,14 +24,15 @@ from the same proved rows.
 
 `last-stack-north-star-app-registry-release-loop-proof` writes
 `~/.last-stack/north-star-proofs/north-star-lastdb-app-registry-release-loop.md`.
-PASS means: `lastdb app install brain situations` from brew stable
+PASS means: `lastdb app install brain` from brew stable
 resolved every app by proved pair, each installed row names a proof record on
 the index host, and the llms-txt install smoke is GREEN with install-by-proof
 enforced. Rehearse against a local index with `--lastdb-bin … --index <dir>`.
 
 Kanban is outside the required bundle and proof set (Tom, 2026-11-06).
-Its registry metadata remains available for deliberate selection; this does
-not uninstall it or remove app source or data. Situations remains required.
+Situations is deprecated and outside the required bundle and proof set (Tom,
+2026-11-12). Registry metadata for both remains available for deliberate
+selection; this does not uninstall them or remove app source or data.
 
 ## Keys and files
 
