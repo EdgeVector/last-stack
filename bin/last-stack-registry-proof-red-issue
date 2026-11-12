@@ -6,11 +6,9 @@
 #         dedupe key: one open issue per build, never two.
 #   GREEN close that issue with a comment, when one is open.
 #
-# The workflow calls this from a job with `issues: write` and the built-in job
-# token. Nothing here reads a secret, and the body holds only what the proof
+# Nothing here reads a secret, and the body holds only what the proof
 # bundle already holds (fails, attribution, run URL). A closed issue also
-# releases the "do not smoke a RED set again" hold on its fingerprint: see the
-# plan job in .github/workflows/registry-proof.yml.
+# releases the "do not smoke a RED set again" hold on its fingerprint.
 set -euo pipefail
 
 GH_BIN="${GH_BIN:-gh}"

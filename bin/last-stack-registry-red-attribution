@@ -3,9 +3,6 @@
 # one names, or to "shared" when the check says something about the isolated
 # node or its install pipeline as a whole rather than about one app.
 #
-# Shared with last-stack-registry-publish-next so reporting and publishing
-# attribute the same actual install/startup failures.
-#
 # Check-name shapes the smoke (skills/llms-txt-install-smoke/run.sh) emits:
 #   install-apps:<app>:<mode> ...   -> <app>
 #   cli:<app>=... / cli:<app> ...   -> <app>
@@ -47,8 +44,7 @@ or
   passed_apps=<space-separated known apps with no fail of their own>
   failed_apps=<space-separated known apps attributed at least one fail>
 
-Env: LAST_STACK_REGISTRY_KNOWN_APPS (space-separated; same default as
-     last-stack-registry-publish-next)
+Env: LAST_STACK_REGISTRY_KNOWN_APPS (space-separated)
 USAGE
 }
 

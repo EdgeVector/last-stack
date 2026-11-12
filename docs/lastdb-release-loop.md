@@ -37,8 +37,6 @@ not uninstall it or remove app source or data. Situations remains required.
 
 | | |
 |---|---|
-| Signing key | Existing `lastsecrets://` locator in `LASTDB_REGISTRY_SIGNING_KEY_LASTSECRETS`; native signer stdin |
 | Verifying key | pinned in `lastdb` (`lastdb app index trust-key`); published as `registry/index-signing.pub` |
-| Publication DEV root | `LAST_STACK_REGISTRY_TAP_DIR`, the clean DEV worktree for `last-stack-registry-publish-next` |
 | Candidate sets | `~/.local/state/last-stack/canary-candidate-sets/<build>.json` |
 | App set | `config/registry/apps.json` (forge + public source per app) |

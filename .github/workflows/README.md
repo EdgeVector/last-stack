@@ -33,15 +33,3 @@ Inputs:
 The pack step runs `python3 .last-stack-tools/bin/last-stack-app-package-build`. The uploaded artifact name is `registry-package-<sha>`, where `<sha>` is the caller commit.
 
 Do not rename this file, these inputs, or the `registry-package-<sha>` artifact. `EdgeVector/loom` and `EdgeVector/lastseek` call this workflow from their `.github/workflows/ci-required.yml`. Their `scripts/registry-prepare.py` read that artifact.
-
-## `registry-proof.yml`
-
-Triggers: cron `7,37 * * * *` (every 30 minutes) and `workflow_dispatch`.
-
-Jobs:
-
-- `plan` reads the registry `next` index and decides whether a proof runs.
-- `proof` builds the named LastDB source, runs the install smoke, and uploads `registry-proof-bundle-<run id>`. The bundle holds verdicts, candidate identities, and timings. It does not hold a binary.
-- `report` opens or updates one GitHub issue for a red build, and closes that issue for a green build.
-
-This workflow never signs and never opens a tap pull request. Signing stays on Tom's Mac.
