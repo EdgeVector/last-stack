@@ -100,7 +100,7 @@ signed_flush_new_write() {
 }
 
 signed_primary_soak() {
-  local service started now pid point local_cut cloud_cut database marker
+  local service started now pid point local_cut cloud_cut database marker payload
   service="gui/$(id -u)/$LAUNCHD_LABEL"
   local_cut="$(jq -er .local <<< "$SIGNED_POINT")"
   cloud_cut="$(jq -er .cloud <<< "$SIGNED_POINT")"
@@ -118,6 +118,12 @@ signed_primary_soak() {
     die "the post-upgrade Brain write failed"
   fi
   signed_flush_new_write
+  payload="$(jq -nc --arg slug "$marker"     '{schema_name:"brain/Reference",filter:{HashKey:$slug},response_format:"count",limit:1}')"
+  curl -fsS --max-time 10 --unix-socket "$PRIMARY_SOCK" \
+    -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
+    -H 'Content-Type: application/json' --data "$payload" http://x/api/query \
+    | jq -e '.exact == true and .total_count == 1' >/dev/null \
+    || die "the signed primary could not read its verification write"
   local_cut="$(python3 "$_SCRIPT_DIR/signed-recovery-point.py" written "$PRIMARY_HOME" "$database")" \
     || die "cannot read the new local write boundary"
   [ "$local_cut" -gt "$(jq -er .local <<< "$SIGNED_POINT")" ] \
