@@ -74,7 +74,7 @@ root_real="$(CDPATH= cd -- "$RECOVERY_ROOT" && pwd -P)"
   || recovery_die "state-file-wrong-mode"
 
 jq -e '
-  (keys | sort) == ([
+  (del(.signed_program_dir, .signed_program_version, .signed_daemon_sha, .signed_cli_sha) | keys | sort) == ([
     "backup_lastdb", "backup_lastdb_sha256", "backup_lastdbd",
     "backup_lastdbd_sha256", "effect_started", "launchd_label",
     "launchd_plist", "loom_execution_id", "primary_home",
@@ -155,6 +155,16 @@ uid="$(id -u)"
 domain="gui/$uid"
 service="$domain/$launchd_label"
 
+# The driver's memory guard revive hold for the programs venue.
+release_programs_revive_hold() {
+  local revive="${LASTDBD_GUARD_REVIVE_HOLD_FILE:-$primary_home/monitoring/lastdbd-revive.hold}"
+  [ "$venue" = programs ] || return 0
+  if [ -f "$revive" ] && [ ! -L "$revive" ] \
+    && grep -q '^lastdb-safe-upgrade pid=[0-9]*$' "$revive" 2>/dev/null; then
+    rm -f -- "$revive"
+  fi
+}
+
 if [ "$venue" = programs ]; then
   # The old pair is the unchanged program directory itself.
   [[ "$(basename -- "$sidebin_dir")" =~ ^[0-9a-f]{40}$ ]] \
@@ -184,6 +194,40 @@ if [ "$venue" = programs ]; then
   current_program="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$launchd_plist" 2>/dev/null)" \
     || recovery_die "launchd-plist-program-unreadable"
   case "$stage" in
+    signed-programs-starting)
+      # The candidate may already have accepted a write. Recover supervision
+      # using that exact pair and leave the cutover verification failed.
+      candidate_dir="$(json_string "$STATE" signed_program_dir)" || recovery_die "signed-program-dir-absent"
+      candidate_ver="$(json_string "$STATE" signed_program_version)" || recovery_die "signed-program-version-absent"
+      daemon_sha="$(json_string "$STATE" signed_daemon_sha)" || recovery_die "signed-daemon-hash-absent"
+      cli_sha="$(json_string "$STATE" signed_cli_sha)" || recovery_die "signed-cli-hash-absent"
+      [[ "$(basename -- "$candidate_dir")" =~ ^[0-9a-f]{40}$ ]] \
+        && [ "$(dirname -- "$candidate_dir")" = "$primary_home/native-run-v2-programs" ] \
+        && [ -d "$candidate_dir" ] && [ ! -L "$candidate_dir" ] \
+        && [ "$candidate_dir" != "$sidebin_dir" ] \
+        && [ "$(lastdb_programs_daemon_path "$primary_home" "$current_program")" = "$candidate_dir/lastdbd" ] \
+        && [ "$(sha256_file "$candidate_dir/lastdbd")" = "$daemon_sha" ] \
+        && [ "$(sha256_file "$candidate_dir/lastdb")" = "$cli_sha" ] \
+        || recovery_die "signed-program-selection-differs"
+      if ! lastdb_launchd_job_loaded "$launchctl_bin" "$service"; then
+        ! live_unix_socket_has_listener "$primary_socket" \
+          || recovery_die "unexpected-listener-before-signed-bootstrap"
+        lastdb_launchd_reload_job "$launchctl_bin" "$domain" "$launchd_label" "$launchd_plist" \
+          || recovery_die "signed-candidate-bootstrap-failed"
+      fi
+      wait_for_live_unix_socket_health "$primary_socket" 90 \
+        || recovery_die "signed-candidate-health-failed"
+      socket_pid="$(live_unix_socket_health_pid "$primary_socket")" \
+        || recovery_die "signed-candidate-listener-absent"
+      lastdb_require_supervised_primary "$launchctl_bin" "$service" "$socket_pid" \
+        || recovery_die "signed-candidate-supervision-differs"
+      curl -fsS --max-time 10 --unix-socket "$primary_socket" http://x/api/system/boot-identity \
+        | jq -e --arg version "$candidate_ver" --argjson pid "$socket_pid"           '.build == $version and .pid == $pid' >/dev/null \
+        || recovery_die "signed-candidate-boot-identity-differs"
+      release_programs_revive_hold
+      printf 'CUTOVER_TIMEOUT_RECOVERY=green stage=%s candidate=retained\n' "$stage"
+      exit 0
+      ;;
     programs-stop-started|programs-stopped|programs-rollback-ready)
       [ "$(lastdb_programs_daemon_path "$primary_home" "$current_program")" = "$backup_daemon" ] \
         || recovery_die "plist-changed-before-switch" ;;
@@ -339,16 +383,6 @@ same_old_process() {
     || recovery_die "old-process-start-unreadable-no-reload"
   [ -n "$observed" ] || recovery_die "old-process-start-absent-no-reload"
   [ "$observed" = "$old_ps_lstart" ]
-}
-
-# The driver's memory guard revive hold for the programs venue.
-release_programs_revive_hold() {
-  local revive="${LASTDBD_GUARD_REVIVE_HOLD_FILE:-$primary_home/monitoring/lastdbd-revive.hold}"
-  [ "$venue" = programs ] || return 0
-  if [ -f "$revive" ] && [ ! -L "$revive" ] \
-    && grep -q '^lastdb-safe-upgrade pid=[0-9]*$' "$revive" 2>/dev/null; then
-    rm -f -- "$revive"
-  fi
 }
 
 wait_for_exact_old_exit() {

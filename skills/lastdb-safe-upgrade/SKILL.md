@@ -139,6 +139,36 @@ Format 7 status has no file-open counter, so hot latency samples are `nothot`. T
 A Loom execution of the same pair under the old route keeps its key.
 Use `--retry 2` to start a new execution of that pair.
 
+### Signed primary backups
+
+The normal Loom entry point detects a native home with a signed accepted-write
+queue and its database registry. It qualifies the exact published Mac CLI and
+daemon against GitHub package attestations, CI, benchmark completion, and the
+same source revision's DEV snapshot and signed-tail restore. The local probe
+uses a disposable generated database. It does not read the primary identity
+seed or require the primary recovery phrase.
+
+The same-format route checks the on-disk marker and both revisions' storage
+profile, verifies the owner-only production snapshot and signed log using
+strongly consistent read-only metadata, and requires the local queue to be
+fully acknowledged. It rechecks those boundaries after the exact daemon
+writes its shutdown flush receipt and exits. A late write that did not reach
+the cloud aborts the switch and restores supervision of the old pair.
+
+The driver installs the candidate through the existing LaunchAgent and
+programs venue. The five-minute soak checks the same process, disk writer,
+identity, memory, and known Brain and LastSecrets locators. A new Brain
+reference gives automatic sync a durable write to publish after the switch.
+If a failure occurs after candidate startup begins, the recovery handler
+retains the exact candidate and checks its supervision. It does not point a
+running signed home back at the old binary.
+
+A disk format or record profile change requires a one-time logical export and
+import into a fresh home. The standard binary switch stops before shutdown
+and reports the migration requirement. The nightly gate surfaces this
+condition without marking the candidate red. Confirm the migration and its
+signed recovery before replacing the source.
+
 ### V2 DEV restore proof
 
 `scripts/dev-v2-restore-proof.sh` is the DEV gate (2c) of the format 7 V2 route.

@@ -213,13 +213,23 @@ live_install_programs() {
   write_cutover_recovery_state "programs-backups-ready" false
   programs_stage_candidate
 
-  ensure_primary_launchd_rss_limit
-  ensure_primary_launchd_warm_cache_limit
-  ensure_primary_launchd_exit_timeout
-  programs_hold_revive
-  v2_recovery_point_preflight "$OLD_PROGRAM_DIR/lastdb"
-  strict_prestop_old_primary "$service" "$OLD_PROGRAM_DIR/lastdbd"
-  log "recovery point (no copy of the primary): automatic V2 backup through $V2_PRESTOP_HEAD (stream $V2_PRESTOP_STREAM, ordinal $V2_PRESTOP_ORDINAL); saved program pair $OLD_PROGRAM_DIR"
+  if [ "${PRIMARY_ROUTE:-}" = signed ]; then
+    [ ! -e "$PROGRAMS_REVIVE_HOLD" ] && [ ! -L "$PROGRAMS_REVIVE_HOLD" ] \
+      || die "existing memory guard hold blocks the signed upgrade"
+    programs_hold_revive
+    signed_refresh_recovery_point "$SIGNED_WAIT_SECS"
+    strict_prestop_old_primary "$service" "$OLD_PROGRAM_DIR/lastdbd"
+    signed_refresh_recovery_point 0
+    log "stopped signed recovery point: $(jq -r .cloud <<< "$SIGNED_POINT"); saved program pair $OLD_PROGRAM_DIR"
+  else
+    ensure_primary_launchd_rss_limit
+    ensure_primary_launchd_warm_cache_limit
+    ensure_primary_launchd_exit_timeout
+    programs_hold_revive
+    v2_recovery_point_preflight "$OLD_PROGRAM_DIR/lastdb"
+    strict_prestop_old_primary "$service" "$OLD_PROGRAM_DIR/lastdbd"
+    log "recovery point (no copy of the primary): automatic V2 backup through $V2_PRESTOP_HEAD (stream $V2_PRESTOP_STREAM, ordinal $V2_PRESTOP_ORDINAL); saved program pair $OLD_PROGRAM_DIR"
+  fi
   write_cutover_recovery_state "programs-rollback-ready" true
   sidebin_pair_hashes_match_expected \
     "$NEW_PROGRAM_DIR/lastdbd" "$NEW_PROGRAM_DIR/lastdb" "candidate program pair after the stop" \
@@ -229,6 +239,7 @@ live_install_programs() {
   write_cutover_recovery_state "programs-switch-started" true
   PROGRAMS_PLIST_SWITCHED=1
   if ! programs_point_at "$NEW_PROGRAM_DIR"; then
+    [ "${PRIMARY_ROUTE:-}" != signed ] || die "signed program link switch failed before startup"
     programs_restore_old_pair \
       && lastdb_launchd_reload_job launchctl "gui/${uid}" "$LAUNCHD_LABEL" "$LAUNCHD_PLIST" \
       && wait_for_live_unix_socket_health "$PRIMARY_SOCK" 180 >/dev/null 2>&1 \
@@ -237,13 +248,19 @@ live_install_programs() {
   fi
   INSTALLED_DAEMON_BIN="$NEW_PROGRAM_DIR/lastdbd"
   INSTALLED_CLI_BIN="$NEW_PROGRAM_DIR/lastdb"
-  write_cutover_recovery_state "programs-reload-started" true
+  if [ "${PRIMARY_ROUTE:-}" = signed ]; then
+    write_cutover_recovery_state "signed-programs-starting" true
+  else
+    write_cutover_recovery_state "programs-reload-started" true
+  fi
   if ! lastdb_launchd_reload_job launchctl "gui/${uid}" "$LAUNCHD_LABEL" "$LAUNCHD_PLIST"; then
     page_human "safe-upgrade: primary lastdbd job reload failed for ${LAUNCHD_LABEL}. Inspect: launchctl print ${service}. Rollback pair: $OLD_PROGRAM_DIR"
     die "launchd job-definition reload failed; inspect launchctl print ${service}. Rollback: set plist ProgramArguments:0 to $OLD_PROGRAM_DIR/lastdbd, last-stack-lastdb-current set --bin-dir $OLD_PROGRAM_DIR, launchctl bootstrap gui/${uid} ${LAUNCHD_PLIST}"
   fi
   RESTART_INTENT_START_REQUESTED=1
-  write_cutover_recovery_state "programs-supervisor-loaded" true
+  if [ "${PRIMARY_ROUTE:-}" != signed ]; then
+    write_cutover_recovery_state "programs-supervisor-loaded" true
+  fi
   local wait_secs="${LASTDB_CUTOVER_SOCKET_WAIT_SECS:-180}" out="" rc=0
   set +e
   out="$(wait_for_live_unix_socket_health "$PRIMARY_SOCK" "$wait_secs" 2>&1)"
@@ -256,6 +273,7 @@ live_install_programs() {
     die "the candidate did not serve /health within ${wait_secs}s; rollback pair: $OLD_PROGRAM_DIR (plist ProgramArguments:0 and last-stack-lastdb-current set --bin-dir)"
   fi
   programs_release_revive_hold
+  SIGNED_STOP_ARMED=0
   rm -f "$lock"
 }
 

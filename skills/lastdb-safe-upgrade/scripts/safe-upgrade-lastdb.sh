@@ -309,6 +309,8 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/post-cutover-status.sh"
 # shellcheck source=programs-venue.sh
 . "$_SCRIPT_DIR/programs-venue.sh"
+# shellcheck source=signed-primary.sh
+. "$_SCRIPT_DIR/signed-primary.sh"
 # shellcheck source=owner-lock.sh
 . "$_SCRIPT_DIR/owner-lock.sh"
 # shellcheck source=deadline.sh
@@ -339,6 +341,14 @@ if [ "${CHECK_DEV_STAMP:-0}" -eq 1 ]; then
     echo "VERDICT: RED"
     echo "REASON: exact candidate binding is absent or changed"
     exit 1
+  fi
+  if signed_primary_route; then
+    python3 "$_SCRIPT_DIR/signed-release.py" "${LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID:-}" \
+      "${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_VERSION:-}" \
+      "${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_PATH:-}" "${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_PATH:-}" \
+      || die "exact signed DEV restore qualification failed"
+    echo "VERDICT: GREEN"
+    exit 0
   fi
   # The receipt kind follows the primary route. A format 7 home needs the V2
   # DEV restore receipt; a V1 photograph proves nothing about a V2 home.
@@ -435,8 +445,10 @@ cleanup_work() {
   [ -n "${CUTOVER_RECOVERY_STATE_TMP:-}" ] && rm -f "$CUTOVER_RECOVERY_STATE_TMP"
   # A stopped primary must not stay held after this run exits; the guard then
   # revives whatever program the plist names.
-  if type programs_release_revive_hold >/dev/null 2>&1; then
-    programs_release_revive_hold
+  if [ "${PRIMARY_ROUTE:-}" != signed ] || [ "${SIGNED_STOP_ARMED:-0}" != 1 ]; then
+    if type programs_release_revive_hold >/dev/null 2>&1; then
+      programs_release_revive_hold
+    fi
   fi
   if type cleanup_upgrade_restart_intent >/dev/null 2>&1; then
     cleanup_upgrade_restart_intent
@@ -508,6 +520,10 @@ write_cutover_recovery_state() {
       --arg backup_lastdb "${SIDEBIN_BACKUP_CLI:-}" \
       --arg backup_lastdbd_sha256 "$daemon_sha" \
       --arg backup_lastdb_sha256 "$cli_sha" \
+      --arg signed_program_dir "${NEW_PROGRAM_DIR:-}" \
+      --arg signed_program_version "${CAND_VER:-}" \
+      --arg signed_daemon_sha "${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_SHA256:-}" \
+      --arg signed_cli_sha "${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_SHA256:-}" \
       '{state_version:$state_version,loom_execution_id:$loom_execution_id,
         stage:$stage,effect_started:$effect_started,venue:$venue,
         primary_home:$primary_home,primary_socket:$primary_socket,
@@ -516,7 +532,11 @@ write_cutover_recovery_state() {
         sidebin_dir:$sidebin_dir,launchd_label:$launchd_label,
         launchd_plist:$launchd_plist,backup_lastdbd:$backup_lastdbd,
         backup_lastdb:$backup_lastdb,backup_lastdbd_sha256:$backup_lastdbd_sha256,
-        backup_lastdb_sha256:$backup_lastdb_sha256}' \
+        backup_lastdb_sha256:$backup_lastdb_sha256}
+        + (if $stage == "signed-programs-starting" then
+            {signed_program_dir:$signed_program_dir, signed_program_version:$signed_program_version,
+             signed_daemon_sha:$signed_daemon_sha, signed_cli_sha:$signed_cli_sha}
+           else {} end)' \
       >"$CUTOVER_RECOVERY_STATE_TMP"
     chmod 600 "$CUTOVER_RECOVERY_STATE_TMP"
     mv -f "$CUTOVER_RECOVERY_STATE_TMP" "$state"
@@ -1162,7 +1182,7 @@ primary_board_read_ok() {
 primary_brain_and_secret_ok() {
   local payload out api schema="${LASTDB_LIVE_BRAIN_SCHEMA:-brain/Decision}"
   load_live_read_slugs || return 1
-  case "$schema" in brain/Decision|brain/Reference) ;; *) return 1 ;; esac
+  case "$schema" in brain/Decision|brain/Reference|brain/Preference) ;; *) return 1 ;; esac
   api="$(socket_api_version "$PRIMARY_SOCK")" || return 1
   out="$(mktemp "${TMPDIR:-/tmp}/lastdb-live-locators.XXXXXX")"
   chmod 600 "$out" || {
@@ -1766,6 +1786,8 @@ verify_old_primary_stopped() {
     and .version == 1 and .pid == $pid and .start_ts == $start_ts
     and .flush_ok == true
   ' "$receipt" >/dev/null || die "old primary flush receipt does not match the stopped session"
+  # Signed Mini records the flushed PID and boot identity in the receipt.
+  [ "${PRIMARY_ROUTE:-}" != signed ] || return 0
   [ -f "$ledger" ] && [ ! -L "$ledger" ] \
     || die "old primary session ledger is absent or unsafe"
   ledger_size="$(stat -f '%z' "$ledger")" \
@@ -1810,22 +1832,30 @@ strict_prestop_old_primary() {
   [ -n "$OLD_PRIMARY_PID" ] && [ "$OLD_PRIMARY_PID" = "$listener_pid" ] \
     && live_unix_socket_is_healthy "$PRIMARY_SOCK" \
     || die "old primary is not supervised and healthy before the stop"
-  OLD_PRIMARY_START_TS="$(jq -er --argjson pid "$OLD_PRIMARY_PID" '
-    select(.pid == $pid and (.start_ts | type) == "number") | .start_ts
-  ' "$PRIMARY_HOME/current-session.json")" \
-    || die "old primary session identity is absent before the stop"
+  if [ "${PRIMARY_ROUTE:-}" = signed ]; then
+    OLD_PRIMARY_START_TS="$(signed_primary_identity "$OLD_PRIMARY_PID" "$CURRENT_VER")" \
+      || die "signed primary boot identity differs before the stop"
+    signed_check_program_consumer "$program" "$service" "$OLD_PRIMARY_PID" \
+      || die "the old signed daemon has a different or additional executable consumer"
+  else
+    OLD_PRIMARY_START_TS="$(jq -er --argjson pid "$OLD_PRIMARY_PID" '
+      select(.pid == $pid and (.start_ts | type) == "number") | .start_ts
+    ' "$PRIMARY_HOME/current-session.json")" \
+      || die "old primary session identity is absent before the stop"
+  fi
   OLD_PRIMARY_PS_LSTART="$(ps -p "$OLD_PRIMARY_PID" -o lstart= 2>/dev/null)" \
     || die "old primary process start time is unreadable before the stop"
   [ -n "$OLD_PRIMARY_PS_LSTART" ] \
     || die "old primary process start time is absent before the stop"
   write_cutover_recovery_state "${VENUE}-stop-started" true
+  if [ "${PRIMARY_ROUTE:-}" = signed ]; then SIGNED_STOP_ARMED=1; fi
   out="$(lastdb_launchd_graceful_prestop launchctl "$service" "$program" \
     "${LASTDB_PRIMARY_GRACEFUL_STOP_WAIT_SECS:-300}" \
     "$PRIMARY_EXIT_TIMEOUT_SECS" 1 2>&1)" \
     || die "strict old-primary stop failed: $out"
   log "$out"
   case "$out" in
-    *'LASTDB_LAUNCHD_PRESTOP=ok '*'forced_kill=0'*) ;;
+    *'LASTDB_LAUNCHD_PRESTOP=ok '*"pid=$OLD_PRIMARY_PID "*'forced_kill=0'*) ;;
     *) die "strict old-primary stop did not prove a clean exit" ;;
   esac
   verify_old_primary_stopped "$service"
@@ -2212,7 +2242,10 @@ log "owner lock acquired: $OWNER_LOCK_DIR pid=$$ mode=$OWNER_LOCK_MODE"
 [ -d "$PRIMARY_HOME" ] || die "primary home missing: $PRIMARY_HOME"
 [ -f "$PRIMARY_HOME/identity.key" ] || die "no identity.key in $PRIMARY_HOME — refusing upgrade"
 
-if [ -x "${LASTDB_SIDEBIN_DIR:-$HOME/.lastdb/bin-with-upload-cap}/lastdbd" ]; then
+if signed_primary_route; then
+  CURRENT_VER="$(signed_socket_get /api/system/boot-identity | jq -er .build)" \
+    || die "signed primary build is unavailable"
+elif [ -x "${LASTDB_SIDEBIN_DIR:-$HOME/.lastdb/bin-with-upload-cap}/lastdbd" ]; then
   CURRENT_VER="$("${LASTDB_SIDEBIN_DIR:-$HOME/.lastdb/bin-with-upload-cap}/lastdbd" --version 2>/dev/null | awk '{print $NF}' || true)"
 else
   CURRENT_VER="$(lastdbd --version 2>/dev/null | awk '{print $NF}' || true)"
@@ -2352,6 +2385,12 @@ fi
 if [ "$CAND_VER" = "$CURRENT_VER" ] && [ "$PROBE_ONLY" -eq 0 ]; then
   log "candidate matches current; no upgrade needed"
   echo "VERDICT: ALREADY_CURRENT"
+  exit 0
+fi
+
+if signed_primary_route; then
+  PRIMARY_ROUTE=signed
+  run_signed_primary
   exit 0
 fi
 
