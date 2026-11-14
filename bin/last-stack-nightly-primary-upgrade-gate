@@ -6,7 +6,7 @@
 # ancestor of origin/main. Do not compile LastDB. Do not retry a red source.
 # Refuse Loom until the installed driver can prove brain and LastSecrets
 # before the live install. A format 7 primary with automatic V2 backup needs
-# the driver's format 7 V2 route (V2 recovery point, programs venue).
+# the driver's format 7 V2 route. Signed primaries use the current signed route.
 set -euo pipefail
 
 export PATH="${HOME}/.local/bin:${PATH:-/usr/bin:/bin}"
@@ -160,9 +160,23 @@ if [ ! -f "$driver" ] || ! grep -q 'primary_brain_and_secret_ok' "$driver"; then
   result error driver-marker-missing 1
 fi
 
-# One status read picks the route. A format 7 home has durability, not sync.
+# Recognize the signed layout before invoking Loom. A missing signed driver
+# is an operator issue, not a bad LastDB source to put on the red list.
 route="legacy"
-if curl -fsS --max-time 30 --unix-socket "$primary_sock" -H 'Host: localhost' \
+primary_home="$(dirname -- "$(dirname -- "$primary_sock")")"
+if [ -f "$primary_home/data/disk-run/accepted-v1/state.json" ] \
+  && [ -f "$primary_home/databases/registry.json" ]; then
+  route="signed"
+  if ! grep -q 'run_signed_primary' "$driver" \
+    || [ ! -f "$(dirname "$driver")/signed-primary.sh" ]; then
+    result error driver-signed-route-missing 1
+  fi
+  if ! format_result="$(python3 "$(dirname "$driver")/signed-recovery-point.py" format \
+    "$primary_home" "$mirror" "$primary_full" "$nightly_oid" 2>&1)"; then
+    printf '%s\n' "$format_result" >&2
+    result error signed-primary-format-preflight-refused 1
+  fi
+elif curl -fsS --max-time 30 --unix-socket "$primary_sock" -H 'Host: localhost' \
     -H 'X-LastDB-Client: lastdb-nightly-primary-upgrade' \
     http://x/api/status >"$work/primary-status.json" 2>/dev/null \
   && jq -e '.ok == true and (.status | has("sync") | not)
@@ -259,6 +273,9 @@ set +e
 loom_rc=$?
 set -e
 if [ "$loom_rc" -ne 0 ]; then
+  # A signed cloud/status refusal can be local or transient rather than a bad
+  # binary. Keep the Loom failure visible for operator diagnosis.
+  [ "$route" != signed ] || result error signed-loom-failed 1
   mkdir -p "$state_root/red"
   printf 'loom_rc=%s\n' "$loom_rc" >"$state_root/red/$nightly_oid"
   chmod 600 "$state_root/red/$nightly_oid"
