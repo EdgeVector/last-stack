@@ -8,6 +8,7 @@
 # There is no real-data mode. Brain:
 # decision-2026-10-12-never-run-copies-of-primary-database-use-synthetic-data
 #
+# Legacy and format 7 backup checks below do not apply to the current native route.
 # ALWAYS:
 #   1. Prepare the trial home from the synthetic seed outside $HOME before any
 #      candidate check. The seed is cached per key; most runs build nothing.
@@ -58,7 +59,7 @@
 #   safe-upgrade-lastdb.sh --probe-only     # probe only (no live install)
 #   safe-upgrade-lastdb.sh --candidate /path/to/lastdbd --probe-only
 #   safe-upgrade-lastdb.sh --version 0.22.8 # fetch that tap release tarball
-#   safe-upgrade-lastdb.sh --check-dev-stamp  # refuse/allow live based on DEV photograph receipt only
+#   safe-upgrade-lastdb.sh --check-dev-stamp  # inspect the route-specific qualification without installing
 #
 # Live cutovers run only as a Loom lastdb-safe-upgrade graph node. Use
 # last-stack-safe-upgrade-loom --candidate /path/to/lastdbd.
@@ -309,8 +310,8 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/post-cutover-status.sh"
 # shellcheck source=programs-venue.sh
 . "$_SCRIPT_DIR/programs-venue.sh"
-# shellcheck source=signed-primary.sh
-. "$_SCRIPT_DIR/signed-primary.sh"
+# shellcheck source=native-primary.sh
+. "$_SCRIPT_DIR/native-primary.sh"
 # shellcheck source=owner-lock.sh
 . "$_SCRIPT_DIR/owner-lock.sh"
 # shellcheck source=deadline.sh
@@ -342,12 +343,13 @@ if [ "${CHECK_DEV_STAMP:-0}" -eq 1 ]; then
     echo "REASON: exact candidate binding is absent or changed"
     exit 1
   fi
-  if signed_primary_route; then
-    python3 "$_SCRIPT_DIR/signed-release.py" "${LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID:-}" \
+  if native_primary_route; then
+    python3 "$_SCRIPT_DIR/native-upgrade-release.py" "${LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID:-}" \
       "${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_VERSION:-}" \
       "${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_PATH:-}" "${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_PATH:-}" \
-      || die "exact signed DEV restore qualification failed"
+      || die "exact published release qualification failed"
     echo "VERDICT: GREEN"
+    echo "SUMMARY: published native release qualification passed"
     exit 0
   fi
   # The receipt kind follows the primary route. A format 7 home needs the V2
@@ -445,7 +447,7 @@ cleanup_work() {
   [ -n "${CUTOVER_RECOVERY_STATE_TMP:-}" ] && rm -f "$CUTOVER_RECOVERY_STATE_TMP"
   # A stopped primary must not stay held after this run exits; the guard then
   # revives whatever program the plist names.
-  if [ "${PRIMARY_ROUTE:-}" != signed ] || [ "${SIGNED_STOP_ARMED:-0}" != 1 ]; then
+  if [ "${PRIMARY_ROUTE:-}" != native ] || [ "${NATIVE_STOP_ARMED:-0}" != 1 ]; then
     if type programs_release_revive_hold >/dev/null 2>&1; then
       programs_release_revive_hold
     fi
@@ -1786,8 +1788,8 @@ verify_old_primary_stopped() {
     and .version == 1 and .pid == $pid and .start_ts == $start_ts
     and .flush_ok == true
   ' "$receipt" >/dev/null || die "old primary flush receipt does not match the stopped session"
-  # Signed Mini records the flushed PID and boot identity in the receipt.
-  [ "${PRIMARY_ROUTE:-}" != signed ] || return 0
+  # Current Mini records the flushed PID and boot identity in the receipt.
+  [ "${PRIMARY_ROUTE:-}" != native ] || return 0
   [ -f "$ledger" ] && [ ! -L "$ledger" ] \
     || die "old primary session ledger is absent or unsafe"
   ledger_size="$(stat -f '%z' "$ledger")" \
@@ -1832,11 +1834,11 @@ strict_prestop_old_primary() {
   [ -n "$OLD_PRIMARY_PID" ] && [ "$OLD_PRIMARY_PID" = "$listener_pid" ] \
     && live_unix_socket_is_healthy "$PRIMARY_SOCK" \
     || die "old primary is not supervised and healthy before the stop"
-  if [ "${PRIMARY_ROUTE:-}" = signed ]; then
-    OLD_PRIMARY_START_TS="$(signed_primary_identity "$OLD_PRIMARY_PID" "$CURRENT_VER")" \
-      || die "signed primary boot identity differs before the stop"
-    signed_check_program_consumer "$program" "$service" "$OLD_PRIMARY_PID" \
-      || die "the old signed daemon has a different or additional executable consumer"
+  if [ "${PRIMARY_ROUTE:-}" = native ]; then
+    OLD_PRIMARY_START_TS="$(native_primary_identity "$OLD_PRIMARY_PID" "$CURRENT_VER")" \
+      || die "native primary boot identity differs before the stop"
+    native_check_program_consumer "$program" "$service" "$OLD_PRIMARY_PID" \
+      || die "the old native daemon has a different or additional executable consumer"
   else
     OLD_PRIMARY_START_TS="$(jq -er --argjson pid "$OLD_PRIMARY_PID" '
       select(.pid == $pid and (.start_ts | type) == "number") | .start_ts
@@ -1848,7 +1850,7 @@ strict_prestop_old_primary() {
   [ -n "$OLD_PRIMARY_PS_LSTART" ] \
     || die "old primary process start time is absent before the stop"
   write_cutover_recovery_state "${VENUE}-stop-started" true
-  if [ "${PRIMARY_ROUTE:-}" = signed ]; then SIGNED_STOP_ARMED=1; fi
+  if [ "${PRIMARY_ROUTE:-}" = native ]; then NATIVE_STOP_ARMED=1; fi
   out="$(lastdb_launchd_graceful_prestop launchctl "$service" "$program" \
     "${LASTDB_PRIMARY_GRACEFUL_STOP_WAIT_SECS:-300}" \
     "$PRIMARY_EXIT_TIMEOUT_SECS" 1 2>&1)" \
@@ -2242,9 +2244,9 @@ log "owner lock acquired: $OWNER_LOCK_DIR pid=$$ mode=$OWNER_LOCK_MODE"
 [ -d "$PRIMARY_HOME" ] || die "primary home missing: $PRIMARY_HOME"
 [ -f "$PRIMARY_HOME/identity.key" ] || die "no identity.key in $PRIMARY_HOME — refusing upgrade"
 
-if signed_primary_route; then
-  CURRENT_VER="$(signed_socket_get /api/system/boot-identity | jq -er .build)" \
-    || die "signed primary build is unavailable"
+if native_primary_route; then
+  CURRENT_VER="$(native_socket_get /api/system/boot-identity | jq -er .build)" \
+    || die "native primary build is unavailable"
 elif [ -x "${LASTDB_SIDEBIN_DIR:-$HOME/.lastdb/bin-with-upload-cap}/lastdbd" ]; then
   CURRENT_VER="$("${LASTDB_SIDEBIN_DIR:-$HOME/.lastdb/bin-with-upload-cap}/lastdbd" --version 2>/dev/null | awk '{print $NF}' || true)"
 else
@@ -2388,9 +2390,9 @@ if [ "$CAND_VER" = "$CURRENT_VER" ] && [ "$PROBE_ONLY" -eq 0 ]; then
   exit 0
 fi
 
-if signed_primary_route; then
-  PRIMARY_ROUTE=signed
-  run_signed_primary
+if native_primary_route; then
+  PRIMARY_ROUTE=native
+  run_native_primary
   exit 0
 fi
 
