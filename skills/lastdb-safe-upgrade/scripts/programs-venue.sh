@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Format 7 V2 route: a primary whose LaunchAgent runs
-# $PRIMARY_HOME/native-run-v2-programs/<full oid>/lastdbd with automatic V2
-# backup on. Sourced by safe-upgrade-lastdb.sh; uses its globals and log/warn/die.
+# Programs venue for native and format 7 primaries whose LaunchAgent runs
+# $PRIMARY_HOME/native-run-v2-programs/<full oid>/lastdbd.
+# Sourced by safe-upgrade-lastdb.sh; uses its globals and log/warn/die.
 #
 # The install matches the manual switch of 2026-11-01: the candidate pair goes
 # into its own program directory, the plist ProgramArguments:0 names it, and
@@ -213,14 +213,12 @@ live_install_programs() {
   write_cutover_recovery_state "programs-backups-ready" false
   programs_stage_candidate
 
-  if [ "${PRIMARY_ROUTE:-}" = signed ]; then
+  if [ "${PRIMARY_ROUTE:-}" = native ]; then
     [ ! -e "$PROGRAMS_REVIVE_HOLD" ] && [ ! -L "$PROGRAMS_REVIVE_HOLD" ] \
-      || die "existing memory guard hold blocks the signed upgrade"
+      || die "existing memory guard hold blocks the native upgrade"
     programs_hold_revive
-    signed_refresh_recovery_point "$SIGNED_WAIT_SECS"
     strict_prestop_old_primary "$service" "$OLD_PROGRAM_DIR/lastdbd"
-    signed_refresh_recovery_point 0
-    log "stopped signed recovery point: $(jq -r .cloud <<< "$SIGNED_POINT"); saved program pair $OLD_PROGRAM_DIR"
+    log "old primary flushed and stopped; saved program pair $OLD_PROGRAM_DIR"
   else
     ensure_primary_launchd_rss_limit
     ensure_primary_launchd_warm_cache_limit
@@ -239,7 +237,7 @@ live_install_programs() {
   write_cutover_recovery_state "programs-switch-started" true
   PROGRAMS_PLIST_SWITCHED=1
   if ! programs_point_at "$NEW_PROGRAM_DIR"; then
-    [ "${PRIMARY_ROUTE:-}" != signed ] || die "signed program link switch failed before startup"
+    [ "${PRIMARY_ROUTE:-}" != native ] || die "native program link switch failed before startup"
     programs_restore_old_pair \
       && lastdb_launchd_reload_job launchctl "gui/${uid}" "$LAUNCHD_LABEL" "$LAUNCHD_PLIST" \
       && wait_for_live_unix_socket_health "$PRIMARY_SOCK" 180 >/dev/null 2>&1 \
@@ -248,7 +246,7 @@ live_install_programs() {
   fi
   INSTALLED_DAEMON_BIN="$NEW_PROGRAM_DIR/lastdbd"
   INSTALLED_CLI_BIN="$NEW_PROGRAM_DIR/lastdb"
-  if [ "${PRIMARY_ROUTE:-}" = signed ]; then
+  if [ "${PRIMARY_ROUTE:-}" = native ]; then
     write_cutover_recovery_state "signed-programs-starting" true
   else
     write_cutover_recovery_state "programs-reload-started" true
@@ -258,7 +256,7 @@ live_install_programs() {
     die "launchd job-definition reload failed; inspect launchctl print ${service}. Rollback: set plist ProgramArguments:0 to $OLD_PROGRAM_DIR/lastdbd, last-stack-lastdb-current set --bin-dir $OLD_PROGRAM_DIR, launchctl bootstrap gui/${uid} ${LAUNCHD_PLIST}"
   fi
   RESTART_INTENT_START_REQUESTED=1
-  if [ "${PRIMARY_ROUTE:-}" != signed ]; then
+  if [ "${PRIMARY_ROUTE:-}" != native ]; then
     write_cutover_recovery_state "programs-supervisor-loaded" true
   fi
   local wait_secs="${LASTDB_CUTOVER_SOCKET_WAIT_SECS:-180}" out="" rc=0
@@ -273,7 +271,7 @@ live_install_programs() {
     die "the candidate did not serve /health within ${wait_secs}s; rollback pair: $OLD_PROGRAM_DIR (plist ProgramArguments:0 and last-stack-lastdb-current set --bin-dir)"
   fi
   programs_release_revive_hold
-  SIGNED_STOP_ARMED=0
+  NATIVE_STOP_ARMED=0
   rm -f "$lock"
 }
 

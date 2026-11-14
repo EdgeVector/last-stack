@@ -1,14 +1,13 @@
 ---
 name: lastdb-safe-upgrade
 description: |
-  Required path for a primary LastDB Mini version change. The driver boots
-  the exact candidate on a copy of a small synthetic seed. It never copies the
-  primary database and never runs a node on a copy of it (Tom, 2026-10-12). It
-  requires keyed reads, exact-source CI performance qualification, memory checks, and a
-  source-free restore of an exact DEV snapshot of the seed before a live
-  cutover. It then requires a current cloud backup (the recovery point), a
-  strict stopped flush receipt, supervised live health, and a cloud frontier
-  check. It makes no copy of the primary at any step. It does not run tests.
+  Required path for a primary LastDB Mini version change. The driver uses a
+  generated home for disk compatibility, keyed reads and memory checks. It
+  requires exact-source release qualification, a strict stopped flush receipt
+  and supervised live health. The current native route is independent of cloud
+  backup. Older routes retain their documented backup gates. No step copies
+  the primary database or runs a node on a copy of it. This procedure does not
+  run tests.
 ---
 
 # lastdb-safe-upgrade — never brick the primary; never take it down first
@@ -139,35 +138,30 @@ Format 7 status has no file-open counter, so hot latency samples are `nothot`. T
 A Loom execution of the same pair under the old route keeps its key.
 Use `--retry 2` to start a new execution of that pair.
 
-### Signed primary backups
+### Native primary upgrades
 
-The normal Loom entry point detects a native home with a signed accepted-write
-queue and its database registry. It qualifies the exact published Mac CLI and
-daemon against GitHub package attestations, CI, benchmark completion, and the
-same source revision's DEV snapshot and signed-tail restore. The local probe
-uses a disposable generated database. It does not read the primary identity
-seed or require the primary recovery phrase.
+The normal Loom entry point selects this route from the primary's on-disk
+format marker, starting with format 15. It qualifies the exact published Mac
+CLI and daemon against GitHub package attestations, CI and benchmark
+completion. A disposable generated database exercises durable writes, keyed
+reads and reopening in both directions.
 
-The same-format route checks the on-disk marker and both revisions' storage
-profile, verifies the owner-only production snapshot and signed log using
-strongly consistent read-only metadata, and requires the local queue to be
-fully acknowledged. It rechecks those boundaries after the exact daemon
-writes its shutdown flush receipt and exits. A late write that did not reach
-the cloud aborts the switch and restores supervision of the old pair.
+The driver checks the disk format and storage profile, stops the supervised
+daemon, and verifies its exact boot identity and shutdown flush receipt.
+It then starts the candidate through the existing LaunchAgent. The five-minute
+health check verifies the same process, the local writer, identity, memory,
+and known Brain and LastSecrets records. Cloud backup and restore have their
+own checks and can run independently of an upgrade.
 
-The driver installs the candidate through the existing LaunchAgent and
-programs venue. The five-minute soak checks the same process, disk writer,
-identity, memory, and known Brain and LastSecrets locators. A new Brain
-reference gives automatic sync a durable write to publish after the switch.
-If a failure occurs after candidate startup begins, the recovery handler
-retains the exact candidate and checks its supervision. It does not point a
-running signed home back at the old binary.
+Recovery before candidate startup can start the saved pair. After startup
+intent, recovery retains the exact candidate and verifies its supervision.
+This protects a home that may already have accepted writes with the new
+binary.
 
 A disk format or record profile change requires a one-time logical export and
-import into a fresh home. The standard binary switch stops before shutdown
-and reports the migration requirement. The nightly gate surfaces this
-condition without marking the candidate red. Confirm the migration and its
-signed recovery before replacing the source.
+import into a fresh home. The driver reports that requirement before
+shutdown, and the nightly gate leaves the candidate available for the
+migration. Verify the migrated data before replacing the source.
 
 ### V2 DEV restore proof
 

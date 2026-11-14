@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bind an upgrade pair to the published Mac package and its DEV restore."""
+"""Bind an upgrade pair to the published Mac package."""
 
 import hashlib
 import json
@@ -48,7 +48,7 @@ def main():
     else:
         require(re.fullmatch(r"\d+\.\d+\.\d+", version), "expected a published nightly or stable version")
         tag, workflow = f"v{version}", "stable-release.yml"
-    with tempfile.TemporaryDirectory(prefix="ldb-signed-release-") as folder:
+    with tempfile.TemporaryDirectory(prefix="ldb-native-release-") as folder:
         github("release", "download", tag, "-R", REPO, "--pattern", ARCHIVE,
                "--pattern", MANIFEST, "--dir", folder)
         bundle, manifest_path = Path(folder) / ARCHIVE, Path(folder) / MANIFEST
@@ -69,7 +69,7 @@ def main():
         require(sorted(manifest["binaries"], key=lambda row: row["name"]) == expected,
                 "the upgrade pair differs from the attested Mac executable pair")
 
-    checks = ("ci-required", "benchmark-complete", "snapshot-roundtrip-dev")
+    checks = ("ci-required", "benchmark-complete")
     found = {name: [] for name in checks}
     for page in range(1, 11):
         response = github("api", f"repos/{REPO}/commits/{source}/check-runs?per_page=100&page={page}&filter=all")
@@ -92,4 +92,4 @@ if __name__ == "__main__":
     try:
         main()
     except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
-        raise SystemExit(f"Signed upgrade release refused: {error}") from None
+        raise SystemExit(f"Native upgrade release refused: {error}") from None

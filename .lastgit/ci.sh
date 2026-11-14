@@ -32,7 +32,7 @@ for script in lib/canary-loom/*.sh skills/lastdb-safe-upgrade/scripts/*.sh; do
 done
 python3 -m py_compile skills/lastdb-safe-upgrade/scripts/dev-v2-stream-cleanup.py
 python3 -I skills/lastdb-safe-upgrade/scripts/dev-v2-stream-cleanup.py --help >/dev/null
-python3 -m py_compile skills/lastdb-safe-upgrade/scripts/signed-*.py
+python3 -m py_compile skills/lastdb-safe-upgrade/scripts/native-*.py
 
 bin/last-stack-lint-machine-leaks --ci
 # No unbounded workspace walk in a helper, no new bash->python heredoc

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Open a generated native home across a proposed signed-primary upgrade."""
+"""Open a generated native home across a proposed primary upgrade."""
 
 from contextlib import contextmanager
 import http.client
@@ -13,7 +13,7 @@ import tempfile
 import time
 
 
-SCHEMA = "SignedUpgradeGenerated"
+SCHEMA = "NativeUpgradeGenerated"
 
 
 def require(ok, reason):
@@ -111,7 +111,7 @@ def main():
     old, candidate, limit, settle, samples = sys.argv[1:]
     limit, settle, samples = map(int, (limit, settle, samples))
     require(limit > 0 and settle >= 0 and samples > 0, "invalid memory guard interval or limit")
-    with tempfile.TemporaryDirectory(prefix="ldb-signed-probe-", dir="/private/tmp") as folder:
+    with tempfile.TemporaryDirectory(prefix="ldb-native-probe-", dir="/private/tmp") as folder:
         home, path = Path(folder) / "home", Path(folder) / "db.sock"
         home.mkdir(mode=0o700)
         with node(old, home, path, limit):
@@ -139,4 +139,4 @@ if __name__ == "__main__":
     try:
         main()
     except (ValueError, OSError, KeyError, subprocess.SubprocessError, http.client.HTTPException) as error:
-        raise SystemExit(f"Signed upgrade probe failed: {error}") from None
+        raise SystemExit(f"Native upgrade probe failed: {error}") from None
