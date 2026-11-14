@@ -463,14 +463,13 @@ The live cutover has no rollback copy of the primary. See
 0. **Never copy the primary home and never boot a node on a copy of it** (Tom,
    2026-10-12). Not for a probe, not for the DEV photograph, not for a cloud
    backup test, not for a rollback point, not with `cp -cR`. There is no
-   exception. Use the synthetic seed and the cloud backup.
+   exception. Use generated data for the upgrade probe.
 1. **Never** run a candidate `lastdbd` with `--data-dir` pointing at the **live**
    `~/.lastdb` until the candidate passes on a copy of the synthetic seed.
-2. **Always** prepare a fresh trial home from the seed under the system temp
-   directory before the candidate check. This rule also applies to a probe-only
-   run. The trial home is not a rollback point; no rollback copy of the primary
-   exists. For a live cutover, require a current cloud backup first, then strictly
-   stop and flush the old primary.
+2. **Always** prepare a fresh generated trial home under the system temp
+   directory before the candidate check. This applies to probe-only runs as
+   well. A live cutover requires a strict stop and flush of the old primary.
+   Older routes also require the backup checks described above.
 3. **Never** restart/upgrade on a RED probe.
 3b. **A read that answers fast with ZERO rows is RED, not GREEN.** The
    **row-count bar** counts the rows the brain point read and the brain range
@@ -481,9 +480,9 @@ The live cutover has no rollback copy of the primary. See
    2026-09-03 after lastdbd 0.23.3-1535 served every kanban BoardCards read
    empty on the primary for an hour; every latency bar passed it GREEN, because
    an empty answer is the fastest possible answer.
-4. **Never** kill the primary unattended outside this skill's live step; if live
-   post-check fails after upgrade, **stop and restore** (binary bak, then
-   `lastdb restore` of the cloud backup if the data is damaged) — do not improvise.
+4. Use this skill's live step for a primary restart. If a live check fails,
+   follow the route's supervised recovery procedure. Once native candidate
+   startup is possible, preserve the candidate and diagnose the failure.
 5. **Deployment check on the seed:** the candidate loads schemas, serves the keyed
    brain point record, the brain range and a LastSecrets locator on its own copy
    of the seed. The title and range must be non-empty. The locator read returns no
@@ -555,13 +554,11 @@ The live cutover has no rollback copy of the primary. See
     installed live CLI/daemon pair is skewed.
 11. Do not claim “primary stopped” unless this script actually stopped the
    supervisor for that venue.
-12. **Cloud recovery point and stopped flush:** before the old daemon stops, the
-    driver requires a current cloud backup (see Recovery point) and writes
-    `restart-intent.json` for the exact old session. The daemon must stop
-    without a forced kill and write its exact flush receipt. The driver checks
-    that receipt and the clean session. It makes no copy of the primary. The
-    driver does not write a canary record.
-13. **Exact-candidate DEV photograph (required before live cutover — Tom
+12. **Stopped flush:** the old daemon must exit cleanly without a forced kill
+    and write a flush receipt for its exact process. The native route binds
+    this to the live boot identity. Older routes also use the session ledger
+    and require the cloud recovery point described above.
+13. **Exact-candidate DEV photograph (legacy routes, Tom
     2026-08-19):** the CUTOVER pass clones the fresh trial copy from step 1.
     It does not clone live `~/.lastdb` again. The versioned execution-key digest covers the source
     OID, canonical paths, binary hashes, and binary versions. The child graph
@@ -860,7 +857,8 @@ Or, after last-stack is installed:
 bash ~/.last-stack/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh --probe-only
 ```
 
-The script:
+For format 15 and newer, use [Native primary upgrades](#native-primary-upgrades).
+The steps below describe the older routes.
 
 | Step | What |
 |------|------|
@@ -974,9 +972,10 @@ launchctl kickstart -k gui/$(id -u)/com.REPLACE.lastdbd-primary-506
 bash ~/.last-stack/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh --live-read-check
 ```
 
-The programs venue has no `.bak` files. Point the plist and `~/.lastdb/current`
-back at the old program folder and bootstrap the job. See
-[Format 7 primary with automatic V2 backup](#format-7-primary-with-automatic-v2-backup-tom-2026-11-01).
+For the native route, follow the startup boundary in
+[Native primary upgrades](#native-primary-upgrades). For the format 7 route,
+point the plist and `~/.lastdb/current` back at the old program folder and
+bootstrap the job.
 
 > **Never `cp -a` straight onto the live `lastdbd` path.** An in-place copy keeps
 > the destination **inode**, macOS still has the cached code signature for that
