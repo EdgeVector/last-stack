@@ -2,8 +2,8 @@
 
 ## Primary signed cloud snapshot
 
-The primary Mac already runs `com.tomtang.lastdb-cloud-backup-kick` on
-the cadence in its installed LaunchAgent. Its program path resolves to
+The primary Mac keeps the cadence in its existing snapshot LaunchAgent.
+Its program path resolves to
 `lastdb-cloud-backup-kick` from the Last Stack package. This job checks
 the daemon's signed cloud status, then calls
 `lastdb backup snapshot --database personal --wait` for the connected
