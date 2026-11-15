@@ -110,10 +110,10 @@ if [ ! -d "$mirror" ]; then
 fi
 
 primary_line="$("$primary_bin" --version 2>/dev/null | head -n 1 || true)"
-primary_short="$(printf '%s\n' "$primary_line" | sed -n 's/.*-g\([0-9a-f]\{7,40\}\).*/\1/p')"
-if [ -z "$primary_short" ]; then
+if [[ ! "$primary_line" =~ [.-]g([0-9a-f]{7,40})$ ]]; then
   result error primary-oid-unreadable 1
 fi
+primary_short="${BASH_REMATCH[1]}"
 if ! git -C "$mirror" fetch --quiet origin main; then
   result error mirror-fetch-failed 1
 fi
