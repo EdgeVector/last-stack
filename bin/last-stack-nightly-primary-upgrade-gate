@@ -9,21 +9,25 @@
 # the driver's format 7 V2 route. Format 15 and newer use local checks.
 set -euo pipefail
 
+script="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$0")"
+root="$(cd -- "$(dirname -- "$script")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${PATH:-/usr/bin:/bin}"
 
 state_root="${LASTDB_NIGHTLY_PRIMARY_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/lastdb-nightly-primary-upgrade}"
 mirror="${LASTDB_NIGHTLY_FOLD_GIT_DIR:-$HOME/.cache/edgevector-git/lastdb.git}"
-driver="${LASTDB_SAFE_UPGRADE_DRIVER:-$HOME/.last-stack/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh}"
-loom_bin="${LASTDB_NIGHTLY_LOOM:-last-stack-safe-upgrade-loom}"
+driver="${LASTDB_SAFE_UPGRADE_DRIVER:-$root/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh}"
+loom_bin="${LASTDB_NIGHTLY_LOOM:-$root/bin/last-stack-safe-upgrade-loom}"
 primary_bin="${LASTDB_NIGHTLY_PRIMARY_BIN:-$HOME/.lastdb/current/lastdbd}"
 primary_sock="${LASTDB_NIGHTLY_PRIMARY_SOCK:-$HOME/.lastdb/data/folddb.sock}"
 repo="EdgeVector/lastdb"
 target="aarch64-apple-darwin"
 lock_held=0
+check_only=0
 
 usage() {
-  printf '%s\n' 'last-stack-nightly-primary-upgrade-gate'
+  printf '%s\n' 'last-stack-nightly-primary-upgrade-gate [--check-only]'
   printf '%s\n' 'Compare the GitHub nightly pair with the primary. Upgrade only a newer main commit.'
+  printf '%s\n' 'With --check-only, check release selection and the candidate package without running Loom.'
 }
 
 result() {
@@ -79,6 +83,10 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   usage
   exit 0
 fi
+if [ "${1:-}" = "--check-only" ]; then
+  check_only=1
+  shift
+fi
 if [ "$#" -ne 0 ]; then
   usage >&2
   exit 2
@@ -91,6 +99,9 @@ esac
 
 take_lock
 
+if [ ! -x "$driver" ] || [ ! -x "$loom_bin" ] || ! grep -q 'primary_brain_and_secret_ok' "$driver"; then
+  result error upgrade-bundle-incomplete 1
+fi
 if [ ! -x "$primary_bin" ]; then
   result error primary-bin-missing 1
 fi
@@ -156,10 +167,6 @@ fi
 if [ -e "$state_root/red/$nightly_oid" ]; then
   result noop already-red 0
 fi
-if [ ! -f "$driver" ] || ! grep -q 'primary_brain_and_secret_ok' "$driver"; then
-  result error driver-marker-missing 1
-fi
-
 # Recognize the native format from disk, including when backup is unavailable.
 route="legacy"
 primary_home="$(dirname -- "$(dirname -- "$primary_sock")")"
@@ -271,17 +278,32 @@ if [ "$bin_ok" -ne 2 ]; then
 fi
 chmod 755 "$pair/lastdb" "$pair/lastdbd"
 
+if [ "$check_only" -eq 1 ]; then
+  result ok "checked-${nightly_oid}" 0
+fi
+
 set +e
-"$loom_bin" --candidate "$pair/lastdbd" --source-git-oid "$nightly_oid"
+loom_receipt="$("$loom_bin" --candidate "$pair/lastdbd" --source-git-oid "$nightly_oid" --json)"
 loom_rc=$?
 set -e
-if [ "$loom_rc" -ne 0 ]; then
-  # A native refusal may come from the host or supervisor. Preserve the
-  # terminal Loom result and surface its failure for operator diagnosis.
-  [ "$route" != native ] || result error native-loom-failed 1
-  mkdir -p "$state_root/red"
-  printf 'loom_rc=%s\n' "$loom_rc" >"$state_root/red/$nightly_oid"
-  chmod 600 "$state_root/red/$nightly_oid"
-  result error loom-failed 1
+if [ "$loom_rc" -eq 0 ]; then
+  result ok "upgraded-${nightly_oid}" 0
 fi
-result ok "upgraded-${nightly_oid}" 0
+
+if [ "$route" = native ]; then
+  # The temporary download path changes Loom's execution key. Remember its
+  # terminal failure by source so the scheduler cannot start a new attempt.
+  # A launcher error without a terminal execution can be retried next night.
+  if ! execution="$(jq -er --arg oid "$nightly_oid" '
+    select(.source_git_oid == $oid and .graph == "lastdb-safe-upgrade" and .status == "failed")
+    | .execution | select(type == "string" and test("^lx-[A-Za-z0-9-]+$"))
+  ' <<<"$loom_receipt")"; then
+    result error native-loom-unconfirmed 1
+  fi
+  printf 'NIGHTLY_PRIMARY failed_execution=%s\n' "$execution"
+fi
+mkdir -p "$state_root/red"
+marker="$state_root/red/.$nightly_oid.$$"
+(umask 077; printf 'loom_rc=%s\nexecution=%s\n' "$loom_rc" "${execution:-}" >"$marker")
+mv -f -- "$marker" "$state_root/red/$nightly_oid"
+result error loom-failed 1
