@@ -135,7 +135,9 @@ refreshes the dev cert and keeps the same owner identity.
 If the command reports a missing API key, use the approved credential path for
 the run:
 
-- With an invite code: `folddb login --env dev --handle app-identity-dogfood-brain --invite "$INVITE_CODE"`.
+- Self-serve CLI signup (`POST /api/auth/cli/register`) registers the Ed25519
+  account and device identity directly (no invite codes), and developer API keys
+  validate via `POST /api/developer/validate-key`.
 - With an API key from LastSecrets: retrieve it point-of-use, pass it with
   `--api-key`, and do not echo it.
 

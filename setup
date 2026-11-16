@@ -756,27 +756,29 @@ resolve_symlink() {
 link_is_last_stack_tree() {
   local resolved="$1" raw="$2"
   case "$resolved" in
-    "$HOME/.local/share/lastdb-apps/last-stack/"*|"$SOURCE_ROOT"/*) return 0 ;;
+    "$HOME/.local/share/lastdb-apps/last-stack/"*|"$HOME/.local/state/last-stack/"*|"$HOME/.last-stack/"*|"$SOURCE_ROOT"/*) return 0 ;;
   esac
   case "$raw" in
-    *lastdb-apps/last-stack/*) return 0 ;;
+    *lastdb-apps/last-stack/*|*/last-stack/skills/*) return 0 ;;
   esac
   return 1
 }
 
-remove_retired_user_vocabulary_skill() {
-  # Drop an installed user-vocabulary skill whose SKILL.md is a symlink into
-  # a Last Stack tree. register_into no longer ships that skill.
+remove_retired_skill_links() {
+  # Drop installed skill links whose SKILL.md points into a Last Stack tree
+  # after register_into stops shipping those skills.
   local skills_dir="$1"
-  local skill="$skills_dir/user-vocabulary/SKILL.md"
-  [ -L "$skill" ] || return 0
-  local raw resolved
-  raw="$(readlink "$skill" 2>/dev/null || true)"
-  resolved="$(resolve_symlink "$skill")"
-  link_is_last_stack_tree "$resolved" "$raw" || return 0
-  rm -f "$skill"
-  rmdir "$skills_dir/user-vocabulary" 2>/dev/null || true
-  echo "  removed user-vocabulary skill link in $skills_dir"
+  local name skill raw resolved
+  for name in user-vocabulary app-identity-dev-enroll exemem-credentials; do
+    skill="$skills_dir/$name/SKILL.md"
+    [ -L "$skill" ] || continue
+    raw="$(readlink "$skill" 2>/dev/null || true)"
+    resolved="$(resolve_symlink "$skill")"
+    link_is_last_stack_tree "$resolved" "$raw" || continue
+    rm -f "$skill"
+    rmdir "$skills_dir/$name" 2>/dev/null || true
+    echo "  removed $name skill link in $skills_dir"
+  done
 }
 
 remove_retired_vocab_command() {
@@ -796,7 +798,7 @@ register_into() {
   local label="$2"
   local linked=()
   mkdir -p "$skills_dir"
-  remove_retired_user_vocabulary_skill "$skills_dir"
+  remove_retired_skill_links "$skills_dir"
   for skill_dir in "$SKILLS_SRC"/*/; do
     [ -f "$skill_dir/SKILL.md" ] || continue
     local dir_name skill_name target

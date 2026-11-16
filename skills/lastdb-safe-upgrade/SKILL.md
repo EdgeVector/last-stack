@@ -219,10 +219,8 @@ Runtime prerequisites are Python 3.9+, AWS CLI with DEV operator permissions,
 the active routines scheduler, and the existing LastSecrets DEV R2/B2 locators.
 
 The seed holds a copy of the primary `identity.key`. The DEV account is that identity in DEV.
-Registration needs no invite while that DEV account exists.
-If DEV loses the account, the proof stops at `dev_register`.
-Then mint one DEV invite (skill `exemem-credentials`, raw code in `ExememInviteCodes-dev`).
-Register once with the candidate CLI and `--invite-code-file <private 600 file>`. Then run the proof again.
+Account creation and device registration are self-serve via `POST /api/auth/cli/register` (`auth_service` provisions accounts directly from the signed Ed25519 identity without invite codes, and paid developer API keys validate via `POST /api/developer/validate-key`).
+If DEV loses the account or `dev_connect` fails, re-register that identity once in DEV with the candidate CLI (`connect --env dev --use-existing-identity`), then run the proof again.
 
 ## Legacy recovery point: the cloud backup, never a copy (Tom, 2026-10-12)
 
