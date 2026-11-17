@@ -221,7 +221,6 @@ live_install_programs() {
     log "old primary flushed and stopped; saved program pair $OLD_PROGRAM_DIR"
   else
     ensure_primary_launchd_rss_limit
-    ensure_primary_launchd_warm_cache_limit
     ensure_primary_launchd_exit_timeout
     programs_hold_revive
     v2_recovery_point_preflight "$OLD_PROGRAM_DIR/lastdb"
