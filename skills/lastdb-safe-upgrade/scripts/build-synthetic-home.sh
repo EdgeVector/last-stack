@@ -309,7 +309,7 @@ run_op_with_deadline "$INIT_DEADLINE_SECS" cli_env brain init \
   --node-url http://127.0.0.1 --name synthetic >"$BUILD/brain-init.out" 2>"$BUILD/brain-init.err" || rc=$?
 [ "$rc" -eq 0 ] || fail "brain init failed (rc=$rc); private evidence retained"
 
-# Collect the complete seed before one native durable mutation batch.
+# Collect the complete seed before one POST /v1/write.
 # The separate Python helper uses only the owned seed socket and the canonical
 # schema identities returned by normal app initialization.
 BATCH_HELPER="$SCRIPT_DIR/synthetic-record-batch.py"

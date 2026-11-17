@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write or verify one complete synthetic seed through the normal owner API.
+"""Write or verify one complete synthetic seed through POST /v1/read and POST /v1/write.
 
 The seed holds Brain and LastSecrets records only (kanban is off since
 2026-10-31): one fixed brain/Reference point record, M brain records,
@@ -22,6 +22,7 @@ import sys
 
 STAMP = "2026-10-12T00:00:00.000Z"
 CAP = 4 * 1024 * 1024
+READS = 64
 POINT_SLUG = "synth-point-reference"
 RANGE_BUCKET = "synth-tag-bucket"
 SECRETS = 4
@@ -115,8 +116,7 @@ def call(path, route, body=None):
         payload = reply.read(CAP + 1)
         require(reply.status == 200, "%s returned HTTP %d: %s" % (route, reply.status, excerpt(payload)))
         result = decode(payload)
-        require(type(result) is dict and result.get("ok") is True,
-                "%s returned ok=false: %s" % (route, excerpt(payload)))
+        require(type(result) is dict, "%s returned a non-object" % route)
         return result
     finally:
         conn.close()
@@ -141,7 +141,7 @@ def text(number):
                      % (number, i, (number * 7919 + i * 104729) % 100003) for i in range(8))
 
 
-def collect(brain, secrets, cards, records, whole_record):
+def collect(brain, secrets, cards, records):
     operations = []
     expected = collections.OrderedDict()
     stamp_ms = int(datetime.datetime.fromisoformat(STAMP.replace("Z", "+00:00")).timestamp() * 1000)
@@ -150,13 +150,12 @@ def collect(brain, secrets, cards, records, whole_record):
         address = (schema, key[0], key[1] or "")
         require(address not in expected)
         expected[address] = fields
-        request = {"type": "mutation", "schema": schema,
-                   "key_value": {"hash": key[0], "range": key[1]}, "durability": "durable"}
-        if whole_record:
-            request.update(record=fields, alternates=alternates or {}, mutation_type="create",
-                           expected={"type": "absent"})
-        else:
-            request.update(fields_and_values=fields, mutation_type="update")
+        item_key = {"hash": key[0]}
+        if key[1]:
+            item_key["range"] = key[1]
+        request = {"schema": schema, "op": "create", "key": item_key, "record": fields}
+        if alternates:
+            request["alternates"] = alternates
         operations.append(request)
 
     def record(kind, slug, number):
@@ -209,8 +208,9 @@ def commit(args, expected):
     owned_directory(container)
     for mode in ("write", "verify"):
         proof = read_json(container / ".build" / ("batch-%s.out" % mode))
+        calls = 1 if mode == "write" else (len(expected) + READS - 1) // READS
         require(proof == {"ok": True, "mode": mode, "cards": args.cards, "records": args.records,
-                          "known_keys": len(expected), "native_batch_calls": 1})
+                          "known_keys": len(expected), "native_batch_calls": calls})
     meta = container / "seed.meta"
     info = meta.lstat()
     require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1)
@@ -238,39 +238,46 @@ def commit(args, expected):
         os.close(fd)
 
 
-def verify(path, expected, whole_record):
-    grouped = collections.OrderedDict()
+def verify(path, expected):
+    """One /v1/read per 64 keys. Each read is one key. A missing key is an empty page."""
+    reads = []
+    order = []
     for (schema, hash_key, range_key), fields in expected.items():
-        group = grouped.setdefault(schema, {"keys": [], "fields": set(), "expected": {}})
-        group["keys"].append([hash_key, range_key])
-        group["expected"][(hash_key, range_key)] = fields
-        group["fields"].update(fields)
-    queries = [{"schema_name": schema, "filter": {"HashRangeKeys": group["keys"]},
-                "limit": len(group["keys"]),
-                **({"response_format": "values"} if whole_record else {"fields": sorted(group["fields"])})}
-               for schema, group in grouped.items()]
-    require(0 < len(queries) <= 64)
-    reply = call(path, "/api/queries/batch", {"queries": queries})
-    require(reply.get("count") == len(queries) and type(reply.get("results")) is list)
-    require(len(reply["results"]) == len(queries))
-    for (schema, group), item in zip(grouped.items(), reply["results"]):
-        require(type(item) is dict and item.get("status") == 200,
-                "verify query for %s returned status %r" % (schema, item.get("status") if type(item) is dict else None))
-        value = item.get("response")
-        require(type(value) is dict and value.get("ok") is True)
-        require(value.get("has_more") is False and value.get("next_cursor") is None)
-        require(not value.get("truncated", False) and not value.get("continuation"))
-        require(type(value.get("results")) is list)
-        require(type(value.get("returned_count")) is int and value["returned_count"] == len(value["results"]))
-        seen = set()
-        for row in value["results"]:
+        item_key = {"hash": hash_key}
+        if range_key:
+            item_key["range"] = range_key
+        reads.append({"schema": schema, "key": item_key, "limit": 1})
+        order.append((schema, hash_key, range_key, fields))
+    require(0 < len(reads))
+    seen = set()
+    calls = 0
+    for start in range(0, len(reads), READS):
+        chunk = reads[start:start + READS]
+        reply = call(path, "/v1/read", {"reads": chunk})
+        calls += 1
+        results = reply.get("results")
+        require(type(results) is list and len(results) == len(chunk),
+                "verify read returned %s results for %d keys" % (
+                    len(results) if type(results) is list else None, len(chunk)))
+        for item, (schema, hash_key, range_key, fields) in zip(results, order[start:start + READS]):
+            require(type(item) is dict and "error" not in item,
+                    "verify read for %s failed" % schema)
+            require(item.get("next_cursor") is None, "verify read for %s is a partial page" % schema)
+            records = item.get("records")
+            require(type(records) is list and len(records) == 1,
+                    "verify read for %s returned %s records" % (
+                        schema, len(records) if type(records) is list else None))
+            row = records[0]
             require(type(row) is dict and type(row.get("key")) is dict)
             key = (row["key"].get("hash"), row["key"].get("range") or "")
-            require(key in group["expected"] and key not in seen)
-            require(row.get("fields") == group["expected"][key])
-            seen.add(key)
-        require(seen == set(group["expected"]),
-                "verify query for %s returned %d of %d keys" % (schema, len(seen), len(group["expected"])))
+            identity = (schema, hash_key, range_key)
+            require(key == (hash_key, range_key) and identity not in seen,
+                    "verify read for %s returned another key" % schema)
+            require(row.get("record") == fields, "verify read for %s did not match the stored record" % schema)
+            seen.add(identity)
+    require(len(seen) == len(expected),
+            "verify read returned %d of %d keys" % (len(seen), len(expected)))
+    return calls
 
 
 def main():
@@ -299,32 +306,27 @@ def main():
                 for cfg in (secrets, brain)))
     if args.mode == "commit":
         require(not path.exists())
-        _, expected = collect(brain, secrets, args.cards, args.records, whole_record=False)
+        _, expected = collect(brain, secrets, args.cards, args.records)
         commit(args, expected)
         print(json.dumps({"ok": True, "mode": "commit", "native_batch_calls": 0}))
         return
     require(stat.S_ISSOCK(path.lstat().st_mode) and path.lstat().st_uid == os.getuid())
     before = metadata(path.lstat())
-    api = call(path, "/api/version").get("api_version")
-    require(type(api) is int and api > 0, "owner API version unavailable")
-    whole_record = api >= 29
-    operations, expected = collect(brain, secrets, args.cards, args.records, whole_record)
+    operations, expected = collect(brain, secrets, args.cards, args.records)
     if args.mode == "write":
-        reply = call(path, "/api/mutations/batch", {"mutations": operations, "convergence": "sync"})
-        shape = {k: reply.get(k) for k in ("count", "durability", "background_tasks_drained",
-                                            "convergence_pending")}
-        shape["operations.total"] = (reply.get("operations") or {}).get("total") \
-            if type(reply.get("operations")) is dict else None
-        what = "batch reply for %d mutations: %s" % (len(operations), json.dumps(shape, sort_keys=True))
-        require(type(reply.get("count")) is int and reply["count"] == len(operations), what)
-        require(reply.get("durability") == "durable", what)
-        require(type(reply.get("operations")) is dict and reply["operations"].get("total") == len(operations), what)
-        require(reply.get("background_tasks_drained") is True and reply.get("convergence_pending") is False, what)
+        reply = call(path, "/v1/write", {"mutations": operations})
+        revisions = reply.get("revisions")
+        require(type(reply.get("written")) is int and reply["written"] == len(operations),
+                "write committed %s of %d records" % (reply.get("written"), len(operations)))
+        require(type(revisions) is list and len(revisions) == len(operations)
+                and all(type(item) is str and item for item in revisions),
+                "write revisions do not match %d records" % len(operations))
+        calls = 1
     else:
-        verify(path, expected, whole_record)
+        calls = verify(path, expected)
     require(metadata(path.lstat()) == before)
     print(json.dumps({"ok": True, "mode": args.mode, "cards": args.cards, "records": args.records,
-                      "known_keys": len(expected), "native_batch_calls": 1}))
+                      "known_keys": len(expected), "native_batch_calls": calls}))
 
 
 if __name__ == "__main__":

@@ -86,25 +86,41 @@ def fields(key, value):
     return {"bucket": "upgrade", "id": key, "value": value}
 
 
+def record_page(item):
+    require(isinstance(item, dict) and "error" not in item and isinstance(item.get("records"), list),
+            "generated keyed reads differ")
+    return [row["record"] for row in item["records"]]
+
+
 def check(path, values):
-    point = request(path, "/api/query", {"schema_name": SCHEMA, "limit": 1,
-                   "filter": {"HashRangeKey": {"hash": "upgrade", "range": "a"}}})
-    ranged = request(path, "/api/query", {"schema_name": SCHEMA, "limit": 2,
-                     "filter": {"HashRangeRange": {"hash": "upgrade", "start": "a", "end": "z"}}})
+    reply = request(path, "/v1/read", {"reads": [
+        {"schema": SCHEMA, "key": {"hash": "upgrade", "range": "a"}, "limit": 1},
+        {"schema": SCHEMA, "range": {"hash": "upgrade", "start": "a", "end": "z"}, "limit": 2},
+    ]})
+    results = reply["results"]
+    require(isinstance(results, list) and len(results) == 2, "generated keyed reads differ")
     expected = [fields(key, value) for key, value in values.items()]
-    require([row["fields"] for row in point["results"]] == expected[:1]
-            and [row["fields"] for row in ranged["results"]] == expected, "generated keyed reads differ")
-    return point["results"][0]["revision"]
+    require(record_page(results[0]) == expected[:1] and record_page(results[1]) == expected,
+            "generated keyed reads differ")
+    revision = results[0]["records"][0]["revision"]
+    require(isinstance(revision, str) and revision, "generated keyed reads differ")
+    return revision
 
 
 def write(path, values, expected):
-    batch = [{"type": "mutation", "schema": SCHEMA, "record": fields(key, value),
-              "key_value": {"hash": "upgrade", "range": key}, "alternates": {},
-              "mutation_type": "create" if expected["type"] == "absent" else "replace",
-              "expected": expected, "durability": "durable", "convergence": "sync"}
-             for key, value in values.items()]
-    reply = request(path, "/api/mutations/batch", {"mutations": batch})
-    require(reply["count"] == len(batch) and reply["durability"] == "durable", "generated write did not flush")
+    absent = expected["type"] == "absent"
+    batch = []
+    for key, value in values.items():
+        item = {"schema": SCHEMA, "op": "create" if absent else "replace",
+                "key": {"hash": "upgrade", "range": key}, "record": fields(key, value)}
+        if not absent:
+            item["revision"] = expected["revision"]
+        batch.append(item)
+    reply = request(path, "/v1/write", {"mutations": batch})
+    revisions = reply["revisions"]
+    require(reply["written"] == len(batch) and isinstance(revisions, list) and len(revisions) == len(batch)
+            and all(isinstance(item, str) and item for item in revisions),
+            "generated write did not flush")
 
 
 def main():

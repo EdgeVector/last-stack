@@ -23,7 +23,7 @@
 #      regress vs the current binary on an identical copy. Cold is the first
 #      brain point read and the first range read under one hash. Hot is a
 #      later sample of the same operation that opens no file. The hot read is
-#      one batch of the keys that range read returned. It does not write.
+#      one POST /v1/read of the keys that range read returned. It does not write.
 #      correct-but-slow is RED (incident 2026-07-25/27: 0.23.1 passed the
 #      correctness+RSS bars while scans ran 5-20x slower; the live primary
 #      was the first place anyone noticed)
@@ -679,7 +679,7 @@ median_of() {
 # Latency ops. Each takes one arg and must exit non-zero on failure. These are
 # the keyed point read from the deployment check and one range read under one
 # hash (the shape of the 0.23.1 list regression). These operations do not write.
-# The range read is cold only. The hot read is one batch of its keys.
+# The range read is cold only. The hot read is one POST /v1/read of its keys.
 # The seed holds these keys (synthetic-record-batch.py). A live point read uses
 # the brain record named in live-read.env instead.
 SEED_POINT_SCHEMA="brain/Reference"
@@ -694,29 +694,35 @@ LAT_POINT_SCHEMA="$SEED_POINT_SCHEMA"
 LAT_POINT_FIELD="$SEED_POINT_FIELD"
 LAT_POINT_KEY="$SEED_POINT_KEY"
 
-socket_api_version() {
-  curl -fsS --max-time 8 --unix-socket "$1" -H 'Host: localhost' \
-    -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/version \
-    | jq -er '.api_version | select(type == "number" and . > 0 and floor == .)'
-}
+# A /v1/read page is one result, with no item error, and a records array.
+# An empty records array still passes a latency op. The row-count bar counts it.
+v1_page_ok='
+  (.results | type == "array" and length == 1)
+  and (.results[0] | has("error") | not)
+  and (.results[0].records | type == "array")
+'
 
-# $1 = socket, $2 = schema, $3 = field, $4 = hash key. Prints the reply.
+# $1 = socket, $2 = schema, $3 = field, $4 = hash key. Prints the POST /v1/read reply.
+# A key with no range is every record under that hash. The locator read asks for
+# keys only, so the reply has no record and no secret text.
 keyed_query() {
-  local api query
-  api="$(socket_api_version "$1")" || return 1
-  query="$(jq -nc --arg s "$2" --arg f "$3" --arg k "$4" --argjson api "$api" '
-    {schema_name:$s, filter:{HashKey:$k}}
-    + (if $api < 29 then {fields:[$f]} elif $f == "secret_locator_slug"
-       then {response_format:"count"} else {response_format:"values"} end)')" || return 1
+  local query
+  if [ "$3" = "secret_locator_slug" ]; then
+    query="$(jq -nc --arg s "$2" --arg k "$4" \
+      '{reads:[{schema:$s, key:{hash:$k}, limit:1, keys_only:true}]}')" || return 1
+  else
+    query="$(jq -nc --arg s "$2" --arg k "$4" \
+      '{reads:[{schema:$s, key:{hash:$k}}]}')" || return 1
+  fi
   curl -sS --max-time "$LAT_OP_TIMEOUT_SECS" --unix-socket "$1" -H 'Host: localhost' \
     -H 'X-LastDB-Client: lastdb-safe-upgrade' -H 'Content-Type: application/json' \
-    --data "$query" http://x/api/query 2>/dev/null
+    --data "$query" http://x/v1/read 2>/dev/null
 }
 
 op_lat_point() {
   # $1 = socket path
   keyed_query "$1" "$LAT_POINT_SCHEMA" "$LAT_POINT_FIELD" "$LAT_POINT_KEY" \
-    | jq -e '.ok == true' >/dev/null 2>&1
+    | jq -e "$v1_page_ok" >/dev/null 2>&1
 }
 
 op_lat_scan() {
@@ -726,9 +732,9 @@ op_lat_scan() {
   local body
   body="$(keyed_query "$1/data/folddb.sock" "$SEED_RANGE_SCHEMA" "$SEED_RANGE_FIELD" "$SEED_RANGE_HASH")" \
     || return 1
-  printf '%s' "$body" | jq -e '.ok == true' >/dev/null 2>&1 || return 1
+  printf '%s' "$body" | jq -e "$v1_page_ok" >/dev/null 2>&1 || return 1
   if [ -n "${LAT_KEYS_OUT:-}" ]; then
-    printf '%s' "$body" | jq -c '[.results[]? | select(.key.hash != null and .key.range != null) | [.key.hash, .key.range]]' \
+    printf '%s' "$body" | jq -c '[.results[0].records[]? | select(.key.hash != null and .key.range != null) | [.key.hash, .key.range]]' \
       >"$LAT_KEYS_OUT" || true
   fi
   return 0
@@ -755,11 +761,10 @@ op_rows_point() {
   local body count
   body="$(keyed_query "$1" "$LAT_POINT_SCHEMA" "$LAT_POINT_FIELD" "$LAT_POINT_KEY")" \
     || { echo "-1"; return 0; }
-  count="$(printf '%s' "$body" | jq -r 'if .ok != true then -1
-    elif (.returned_count // empty) != null then .returned_count
-    elif (.results // empty) != null then (.results | length)
-    elif (.rows // empty) != null then (.rows | length)
-    else -1 end' 2>/dev/null)"
+  count="$(printf '%s' "$body" | jq -r 'if (.results | type != "array" or length != 1) then -1
+    elif (.results[0] | has("error")) then -1
+    elif (.results[0].records | type != "array") then -1
+    else (.results[0].records | length) end' 2>/dev/null)"
   case "$count" in ''|*[!0-9-]*) count="-1" ;; esac
   echo "$count"
 }
@@ -769,9 +774,10 @@ op_rows_scan() {
   local body count
   body="$(keyed_query "$1/data/folddb.sock" "$SEED_RANGE_SCHEMA" "$SEED_RANGE_FIELD" "$SEED_RANGE_HASH")" \
     || { echo "-1"; return 0; }
-  count="$(printf '%s' "$body" | jq -r 'if .ok != true then -1
-    elif (.returned_count // empty) != null then .returned_count
-    else (.results | length) end' 2>/dev/null)"
+  count="$(printf '%s' "$body" | jq -r 'if (.results | type != "array" or length != 1) then -1
+    elif (.results[0] | has("error")) then -1
+    elif (.results[0].records | type != "array") then -1
+    else (.results[0].records | length) end' 2>/dev/null)"
   case "$count" in ''|*[!0-9-]*) count="-1" ;; esac
   echo "$count"
 }
@@ -780,21 +786,28 @@ op_rows_scan() {
 # LAT_BATCH_SCHEMA is the seed range schema.
 # $1 = socket path. Exit non-zero when the batch does not return rows.
 op_lat_batch() {
-  local sock="$1" req api
+  local sock="$1" req
   [ -n "${LAT_BATCH_SCHEMA:-}" ] || return 1
   [ -s "${LAT_BATCH_KEYS_FILE:-}" ] || return 1
   req="${LAT_BATCH_KEYS_FILE}.req"
-  api="$(socket_api_version "$sock")" || return 1
-  jq -c --arg schema "$LAT_BATCH_SCHEMA" \
-    --arg field "$SEED_RANGE_FIELD" --argjson api "$api" '
-      {schema_name:$schema, filter:{HashRangeKeys:.}}
-      + (if $api < 29 then {fields:[$field]} else {response_format:"values"} end)' \
-    "$LAT_BATCH_KEYS_FILE" >"$req" || return 1
+  # One POST /v1/read holds at most 64 key reads. The timed call is not split.
+  jq -c --arg schema "$LAT_BATCH_SCHEMA" '
+      if (type != "array") or (length < 1) or (length > 64) then
+        error("batch holds 1 to 64 keys")
+      else
+        {reads:[.[] | {schema:$schema, key:{hash:.[0], range:.[1]}}]}
+      end
+    ' "$LAT_BATCH_KEYS_FILE" >"$req" || return 1
   curl -sS --max-time "$LAT_OP_TIMEOUT_SECS" --unix-socket "$sock" \
     -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
     -H 'Content-Type: application/json' \
-    --data @"$req" http://x/api/query 2>/dev/null \
-    | jq -e '.ok == true and ((.returned_count // 0) | tonumber) > 0' >/dev/null 2>&1
+    --data @"$req" http://x/v1/read 2>/dev/null \
+    | jq -e '
+        (.results | type == "array" and length > 0)
+        and all(.results[]; has("error") | not)
+        and all(.results[]; (.records | type) == "array")
+        and ([.results[].records | length] | add) > 0
+      ' >/dev/null 2>&1
 }
 
 # Print status.read_cost.cold_shard_loads. Empty when the node omits it.
@@ -1155,20 +1168,21 @@ load_live_read_slugs() {
 
 primary_board_read_ok() {
   local payload out
-  payload='{"schema_name":"Board","fields":["title"],"filter":{"HashKey":"default"}}'
+  payload='{"reads":[{"schema":"Board","key":{"hash":"default"},"limit":1}]}'
   out="$(mktemp "${TMPDIR:-/tmp}/lastdb-live-board.XXXXXX")"
   chmod 600 "$out" || { rm -f "$out"; return 1; }
   if ! curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
       -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
       -H 'Content-Type: application/json' \
-      --data "$payload" http://x/api/query >"$out" 2>/dev/null; then
+      --data "$payload" http://x/v1/read >"$out" 2>/dev/null; then
     rm -f "$out"
     return 1
   fi
   if ! jq -e '
-      .ok == true
-      and (.results | length) > 0
-      and ((.results[0].fields.title // .results[0].title // "") | length) > 0
+      (.results | type == "array" and length == 1)
+      and (.results[0] | has("error") | not)
+      and (.results[0].records | type == "array" and length > 0)
+      and ((.results[0].records[0].record.title // "") | length) > 0
     ' "$out" >/dev/null 2>&1; then
     rm -f "$out"
     return 1
@@ -1179,43 +1193,38 @@ primary_board_read_ok() {
 
 # Marker primary_brain_and_secret_ok: the nightly gate refuses Loom without it.
 primary_brain_and_secret_ok() {
-  local payload out api schema="${LASTDB_LIVE_BRAIN_SCHEMA:-brain/Decision}"
+  local payload out schema="${LASTDB_LIVE_BRAIN_SCHEMA:-brain/Decision}"
   load_live_read_slugs || return 1
   case "$schema" in brain/Decision|brain/Reference|brain/Preference) ;; *) return 1 ;; esac
-  api="$(socket_api_version "$PRIMARY_SOCK")" || return 1
   out="$(mktemp "${TMPDIR:-/tmp}/lastdb-live-locators.XXXXXX")"
   chmod 600 "$out" || {
     rm -f "$out"
     return 1
   }
-  payload="$(jq -nc --arg b "$LASTDB_LIVE_BRAIN_SLUG" --arg s "$LASTDB_LIVE_SECRET_SLUG" --arg schema "$schema" --argjson api "$api" \
-    '{queries:[
-      ({schema_name:$schema,filter:{HashKey:$b},limit:1} +
-        (if $api < 29 then {fields:["knowledge_record_slug","knowledge_record_title"]}
-         else {response_format:"values"} end)),
-      ({schema_name:"lastsecrets/LastSecret",filter:{HashKey:$s},limit:1} +
-        (if $api < 29 then {fields:["secret_locator_slug"]} else {response_format:"count"} end))
+  # One POST /v1/read. The secret item is keys_only, so the reply has no secret text.
+  payload="$(jq -nc --arg b "$LASTDB_LIVE_BRAIN_SLUG" --arg s "$LASTDB_LIVE_SECRET_SLUG" --arg schema "$schema" \
+    '{reads:[
+      {schema:$schema, key:{hash:$b}, limit:1},
+      {schema:"lastsecrets/LastSecret", key:{hash:$s}, limit:1, keys_only:true}
     ]}')"
   if ! curl -fsS --max-time 30 --unix-socket "$PRIMARY_SOCK" \
       -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
       -H 'Content-Type: application/json' \
-      --data "$payload" http://x/api/queries/batch >"$out" 2>/dev/null; then
+      --data "$payload" http://x/v1/read >"$out" 2>/dev/null; then
     rm -f "$out"
     return 1
   fi
-  if ! jq -e --arg b "$LASTDB_LIVE_BRAIN_SLUG" --arg s "$LASTDB_LIVE_SECRET_SLUG" --argjson api "$api" '
-      def one_row:
-        .returned_count == 1 and (.results | length) == 1
-        and .has_more == false and .next_cursor == null and ((.truncated // false) | not);
-      .ok == true
-      and .count == 2 and (.results | length) == 2
-      and all(.results[]; .status == 200 and .response.ok == true)
-      and (.results[0].response | one_row
-        and .results[0].fields.knowledge_record_slug == $b
-        and ((.results[0].fields.knowledge_record_title // "") | length) > 0)
-      and (.results[1].response | if $api < 29
-        then one_row and .results[0].fields == {secret_locator_slug:$s}
-        else .exact == true and .total_count == 1 and (has("results") | not) end)
+  if ! jq -e --arg b "$LASTDB_LIVE_BRAIN_SLUG" --arg s "$LASTDB_LIVE_SECRET_SLUG" '
+      (.results | type == "array" and length == 2)
+      and all(.results[]; has("error") | not)
+      and all(.results[]; .next_cursor == null)
+      and (.results[0].records | type == "array" and length == 1)
+      and .results[0].records[0].record.knowledge_record_slug == $b
+      and ((.results[0].records[0].record.knowledge_record_title // "") | length) > 0
+      and (.results[1] | has("records") | not)
+      and (.results[1].keys | type == "array" and length == 1)
+      and .results[1].keys[0].hash == $s
+      and ((.results[1].keys[0].range == null) or (.results[1].keys[0].range == ""))
     ' "$out" >/dev/null 2>&1; then
     rm -f "$out"
     return 1
@@ -1271,17 +1280,21 @@ candidate_deployment_check() {
   if [ "$ready" -ne 1 ] \
       || ! keyed_query "$sock" "$SEED_POINT_SCHEMA" "$SEED_POINT_FIELD" "$SEED_POINT_KEY" >"$query" \
       || ! jq -e --arg f "$SEED_POINT_FIELD" '
-        .ok == true
-        and (.results | length) > 0
-        and ((.results[0].fields[$f] // "") | length) > 0
+        (.results | type == "array" and length == 1)
+        and (.results[0] | has("error") | not)
+        and (.results[0].records | type == "array" and length > 0)
+        and ((.results[0].records[0].record[$f] // "") | length) > 0
       ' "$query" >/dev/null 2>&1; then
     warn "the candidate did not serve the keyed brain read from the synthetic seed"
     stop_probe_node "$pid" "$copy" "$blog" || true
     return 1
   fi
   if ! keyed_query "$sock" "$SEED_RANGE_SCHEMA" "$SEED_RANGE_FIELD" "$SEED_RANGE_HASH" >"$cards" \
-      || ! jq -e '.ok == true and (.results | length) > 0' \
-        "$cards" >/dev/null 2>&1; then
+      || ! jq -e '
+        (.results | type == "array" and length == 1)
+        and (.results[0] | has("error") | not)
+        and (.results[0].records | type == "array" and length > 0)
+      ' "$cards" >/dev/null 2>&1; then
     warn "the candidate did not serve the brain range read from the synthetic seed"
     stop_probe_node "$pid" "$copy" "$blog" || true
     return 1
@@ -1289,8 +1302,13 @@ candidate_deployment_check() {
   # A locator read asks for the locator only and must not return an envelope.
   if ! keyed_query "$sock" "$SEED_SECRET_SCHEMA" secret_locator_slug "$SEED_SECRET_KEY" >"$cards" \
       || ! jq -e --arg k "$SEED_SECRET_KEY" '
-        .ok == true and (if .exact == true then .total_count == 1 and (has("results") | not)
-        else (.results | length) == 1 and .results[0].fields == {secret_locator_slug:$k} end)
+        (.results | type == "array" and length == 1)
+        and (.results[0] | has("error") | not)
+        and (.results[0] | has("records") | not)
+        and .results[0].next_cursor == null
+        and (.results[0].keys | type == "array" and length == 1)
+        and .results[0].keys[0].hash == $k
+        and ((.results[0].keys[0].range == null) or (.results[0].keys[0].range == ""))
       ' "$cards" >/dev/null 2>&1; then
     warn "the candidate did not serve the LastSecrets locator read from the synthetic seed"
     stop_probe_node "$pid" "$copy" "$blog" || true
