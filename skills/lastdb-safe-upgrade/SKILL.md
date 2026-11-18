@@ -82,9 +82,9 @@ Kanban and Situations are off. `LASTDB_SAFE_UPGRADE_APPS_OFF` defaults to `1`:
 no notice, card reopening, or Loom journal projection into LastDB runs. The local
 recovery journal remains available. Set it to `0` only after Tom restores those apps.
 
-The current posture also skips the historical Board read. The live gate batches
-one known Brain key and one LastSecrets locator key; it never requests secret
-text. `LASTDB_LIVE_BRAIN_SCHEMA=brain/Reference` can select a known reference
+The current posture also skips the historical Board read. The live gate sends
+one POST /v1/read of one known Brain key and one LastSecrets locator key; it
+never requests secret text. `LASTDB_LIVE_BRAIN_SCHEMA=brain/Reference` can select a known reference
 instead of the default `brain/Decision`. Both known slugs remain required.
 
 The default Loom route (protocol 7) reads the live status first.
@@ -179,7 +179,7 @@ spellings for older binaries before it runs a backup operation.
 4. Restore that exact stream, generation and commit with `lastdb backup restore`.
    The restore home holds only the paused DEV config. There is no source home.
    `scripts/dev-v2-recovery-phrase.py` pipes the recovery phrase (the BIP39 form of the seed identity).
-5. Require Cloud Off on the restored home. Boot it, read every known seed key in one batch, and stop it strictly.
+5. Require Cloud Off on the restored home. Boot it, read every known seed key with POST /v1/read, and stop it strictly.
 6. Queue automatic cleanup of this exact stopped proof stream, then write receipt v6
    (`proof_kind=format7-v2-dev-restore`) at the same exact receipt path as v4.
    The receipt binds the Loom execution, exact pair, trial home, DEV commit,
@@ -368,12 +368,12 @@ builder copies only `identity.key` and `.bootstrap_done` from the primary (two
 small files, never printed), so the DEV photograph registers the same identity.
 It registers the brain and LastSecrets schemas through the apps' own `init`.
 Kanban is off since 2026-10-31, so the seed has no kanban records.
-It collects all record keys before one durable native batch.
+It collects all record keys before one POST /v1/write.
 The seed has one `brain/Reference` point record, brain records of four types,
 `brain/TagMembership` range records under one hash, and four LastSecrets locators.
 The secret envelopes are synthetic public text.
 The builder stops and reaps the baseline, then reboots it.
-One query batch verifies every known key and every requested field.
+POST /v1/read verifies every known key and every stored field.
 Both stops require the exact native clean session and shutdown flush receipt.
 The completion marker receives a file flush and a directory flush.
 The brain and LastSecrets CLIs use a seed-owned `HOME` (`cli-home`), so a CLI
@@ -385,7 +385,7 @@ identity hash, the live tuning flags, the LastSecrets and brain versions, the da
 sizes, and the generator version (4). A cache hit builds nothing. A new baseline
 builds a new seed. An existing incomplete or foreign seed path refuses.
 The driver never sweeps or replaces cache siblings. Counts are bounded to 64
-range records and 64 Brain records for the single complete batch.
+range records and 64 Brain records for the single complete POST /v1/write.
 The build needs the network (schema service).
 
 CAUTION: Keep the exact seed through every PROBE, CUTOVER and recovery consumer.
@@ -497,7 +497,7 @@ The live cutover has no rollback copy of the primary. See
    that daemon reaches identity-ready. **Hot** = a later sample of that
    same operation after it has already finished, and only when the sample
    opens no file. A sample that opens a file is `nothot` and the pair is
-   dropped. The hot read is one HashRangeKeys batch of the keys that the
+   dropped. The hot read is one POST /v1/read of the keys that the
    range read returned. The first batch is not hot. The driver measures six
    candidate and baseline samples in adjacent pairs. It alternates which
    daemon runs first and records each sample in the probe log. Compare
@@ -774,8 +774,8 @@ execution for another pair.
 When the installed LastStack driver predates the owner's LastDB API, use the
 launcher from a clean, accepted LastStack worktree. It binds the driver from
 that same source, while preserving the local recovery journal and every cutover
-gate. API 29 and later use whole-record queries and conditional creates for
-the synthetic seed. The live LastSecrets check counts one exact locator key
+gate. The synthetic seed uses POST /v1/write creates and POST /v1/read.
+The live LastSecrets check counts one exact locator key
 without fetching the record value.
 
 The launcher does not write to LastDB before or during the run. The local
@@ -799,7 +799,7 @@ Do not call the cutover driver except through that Loom launcher.
 Before the live install, the driver classifies the live read. When Board
 answers, the proof stays the Board title. When Board does not answer, the
 proof is one brain record and one LastSecrets locator. The locator read
-requests `secret_locator_slug` only. A miss exits before the install, and
+is POST /v1/read with keys_only. A miss exits before the install, and
 the primary stays on the old pair. The same mode runs again after the install.
 
 The slugs come from `LASTDB_LIVE_BRAIN_SLUG` and `LASTDB_LIVE_SECRET_SLUG`,

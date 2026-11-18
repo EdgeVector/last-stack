@@ -530,7 +530,8 @@ with_alarm "$CLI_TIMEOUT" python3 -I "$BATCH_HELPER" verify --home "$RESTORED_HO
   || proof_die "the restored home does not hold every known seed key"
 jq -e --argjson c "$CARDS" --argjson r "$RECORDS" '
     .ok == true and .mode == "verify" and .cards == $c and .records == $r
-    and .native_batch_calls == 1 and (.known_keys | type == "number" and . > 0)
+    and (.known_keys | type == "number" and . > 0)
+    and .native_batch_calls == ((.known_keys + 63) / 64 | floor)
   ' "$PROOF_ROOT_REAL/verify.json" >/dev/null 2>&1 \
   || proof_die "the restored key read report is incomplete"
 known_keys="$(jq -r '.known_keys' "$PROOF_ROOT_REAL/verify.json")"
