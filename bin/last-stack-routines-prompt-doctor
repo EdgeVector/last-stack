@@ -85,13 +85,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-# Default normalize set: milestone-driver (card END STATE).
-if [ "$want_normalize" -eq 1 ] && [ "$want_from_findings" -eq 0 ] \
-  && [ "${#normalize_basenames[@]}" -eq 0 ]; then
-  normalize_basenames=(
-    milestone-driver.md
-  )
-fi
+# No default normalize set: its one member, milestone-driver, is deleted.
 
 is_version_pin() {
   case "$1" in

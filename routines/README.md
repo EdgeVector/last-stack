@@ -1,5 +1,11 @@
 # The Last Stack — routines
 
+> **Kanban and Situations are removed (Tom, 2026-11-18).** The board routines
+> (pickup, watch, validate, grooming, the North Star and milestone drivers,
+> factory health and repair, the reapers and rollups) and their skills and
+> commands are deleted. Text below that still names a card or a board step
+> describes a loop that no longer exists.
+
 The no-tests policy in [`../instructions/no-tests.md`](../instructions/no-tests.md)
 supersedes older test requirements in prompts, shared contracts, and cards.
 Do not add, run, repair, or restore tests. Keep non-test gates and product proof.
@@ -15,48 +21,6 @@ loop.
 
 > If the skills are the rules of the game, the routines are the players who
 > actually show up each turn.
-
-## Four Jobs (target fleet — Tom 2026-07-22)
-
-Collapse the routine zoo into **Generate · Claim · Reconcile · Intake
-friction**. Everything else is a specialized generator, reconciler mode, or
-backstop. The one-page operator cheat sheet lives at
-[`../docs/routines-target-fleet.html`](../docs/routines-target-fleet.html).
-
-| Role | Job | Ships code? | Examples |
-|------|-----|-------------|----------|
-| **Generate** | File/promote PR-sized work onto the board | No | `north-star-driver`, `milestone-driver`, `groom-board`, `papercut-reconciler` (sole papercut→card); `pipeline-health` files **Brain papercuts** only for pipeline blocks |
-| **Claim** | `pickup claim` → implement → open PR/CR | **Yes** | `kanban-pickup` (+ worker replicas) |
-| **Reconcile** | Advance merges, heal zombies, close done, drive outcome proof | Fixes only | `kanban-watch`, `merge-babysit`, `kanban-validate`, `milestone-driver`, reapers |
-| **Intake friction** | Keep the factory inputs honest | No | Brain papercuts, `self-upgrade`, disk, one deadman/factory observer, `morning-sync` REAL_HUMAN |
-
-Brain = intent · Board = queue · Pickup = only code shipper · Watch = only closer.
-
-**Papercuts have two halves, and only the consumer was ever written down.**
-`papercut-reconciler` is the sole papercut→card path (consumer). The producer is
-*every agent, every run*: file a Brain papercut for any friction you hit, and
-never a board card. The rule lives in `sop-routine-shared-contract` §5; the
-managed `brain-kanban` instruction block that carried it is retired. The default is FILE, not judge — a mention in a checkpoint or PR
-description is not a filing.
-
-**Every routine ends with close-out (Tom, 2026-08-17).** The last work step of
-every routine prompt is the close-out skill (`../skills/close-out/SKILL.md`):
-write the brain closeout report of the run and file brain papercuts for
-friction hit, then emit the heartbeat + `ROUTINE_RESULT` trailer as the final
-output. The "Close-out (always the LAST step)" section at the bottom of each
-prompt carries the exact wording; keep it when adapting a template.
-
-Operator tools: `last-stack-ship-preflight` (walk-away check),
-`last-stack-why-shipping-stopped` (Class A-E stall diagnosis),
-`kanban pickup explain <slug>` (why not claimable),
-`last-stack-fleet-deadman` (out-of-band fleet liveness).
-
-These are **templates**, not drop-in config. Every one carries `<PLACEHOLDERS>`
-you fill in for your own workspace (paths, repo list, the CLI you use for your
-brain/board, your non-test build and lint commands). Read a routine top-to-bottom and adapt it
-before you schedule it. Nothing here is tied to a specific product — these are
-generalized from a working agent fleet, with all workspace-specific details
-stripped out.
 
 ## How routines + skills compose
 
@@ -121,43 +85,6 @@ The skills assume this pipeline exists. `kanban-agent`'s RECONCILE mode is run
 skills without the routines and the playbook has no engine.** That's why this
 pack exists.
 
-### Scaling kanban-pickup workers
-
-`kanban-pickup` capacity comes from separate routines registry entries with
-separate ids and locks, all pointing at the same no-spawn prompt. Do not add
-in-process fan-out or detached agent launches to the prompt.
-
-`~/.routines/registry/*.toml` is the one canonical live registry. Installers
-seed a missing file and otherwise leave it alone — host-track refresh does
-not merge or rewrite an existing TOML. `--force-defaults` is the only hatch
-that replaces a live file with compiled defaults.
-
-Use the helper to seed the base worker plus w2-w6 when those files are missing:
-
-```bash
-last-stack-kanban-pickup-workers --workers 6 \
-  --prompt-path "$HOME/.last-stack/routines/kanban-pickup.md"
-ls ~/.routines/registry/last-stack-fkanban-pickup*.toml
-```
-
-The first three workers keep the established 15-minute anchors (`:00`, `:05`,
-`:10`). Workers w4-w6 fill the half-step slots (`:02:30`, `:07:30`, `:12:30`),
-so the fleet gets a pickup slot about every 2.5 minutes without changing the
-one-card-per-fire contract.
-
-Install the proof lane separately; it is not a pickup worker and owns bounded
-`Kind: validation` / terminal North Star proof cards. The helper seeds six
-independent workers. Each worker has its own routine lock
-and four hourly slots. The staggered slots create 24 starts per hour, so ten
-ready proof cards can drain within one hour when each proof stays within its
-30-minute bound:
-
-```bash
-last-stack-kanban-validate-routine --workers 6 \
-  --prompt-path "$HOME/.last-stack/routines/kanban-validate.md"
-ls ~/.routines/registry/last-stack-fkanban-validate*.toml
-```
-
 ## The two clusters
 
 ### A. Self-fixing fleet health — portable to any agent fleet
@@ -180,51 +107,6 @@ ls ~/.routines/registry/last-stack-fkanban-validate*.toml
 | [`lastdb-ops-offenders`](lastdb-ops-offenders.md) | daily | Rank live `lastdb ops` worst offenders, skip long-poll/cheap-count noise, investigate the rest, file ≤2 pickup-ready improvement cards. |
 | [`lastdb-batch-apps`](lastdb-batch-apps.md) | hourly | Pick one app, find serial LastDB call patterns, file one pickup-ready card to change the app to batch calls. |
 | [`whats-wrong`](whats-wrong.md) | hourly (:23) | EV OPS What's wrong panel (`http://127.0.0.1:7733` `coverage.exceptions`): one loom heal agent per row, Brain papercuts, full closeout. |
-
-### B. The kanban / brain driving loop — pairs 1:1 with the skills
-
-| Routine | Cadence (suggested) | What it does |
-|---|---|---|
-| [`kanban-pickup`](kanban-pickup.md) | every 5m fleet slot, scalable with separate workers | Drain the ready queue; claim one card and run WORK mode inline. |
-| [`kanban-watch`](kanban-watch.md) | every 10–20 min | RECONCILE the board; advance merged PRs, un-stick the strays. |
-| [`kanban-validate`](kanban-validate.md) | six workers, 2.5m stagger | **Proof lane (not pickup):** DONE-WHEN sweep + ONE of (A) post-merge END STATE or (B) backlog `Kind: validation`/`capstone` terminal proof; `done` on pass, or PROOF fail + pickup-ready fix PR on fail. |
-| [`groom-board`](groom-board.md) | daily | Promote ready `backlog`→`todo`, break up epics, prune junk. |
-| [`north-star-driver`](north-star-driver.md) | every 6h | Convert one active North Star or approved outcome request into one milestone scaffold; never creates cards. |
-| [`milestone-driver`](milestone-driver.md) | hourly | Portfolio **gap-fill**: for each idle NS milestone (no Kind:pr in todo/doing), file full next-gate PR set (cap 8/run); skip in-flight; never implements cards. |
-| [`program-driver`](program-driver.md) | paused compatibility only | Superseded by the two hierarchical drivers; exits without mutation if invoked. |
-| [`feature-prove`](feature-prove.md) | hourly | Product-proof for ship-mode North Star / milestone terminals; PASS file or fix-forward / open-decisions. No new feature-owner path. |
-| [`program-rollup`](program-rollup.md) | hourly | Mirror the board into the brain's driving index (auto-status block). |
-| [`north-star-rollup`](north-star-rollup.md) | hourly | Roll up cards by `north_star` × column into brain `north-star-dashboard` + local HTML. |
-| [`north-star-hygiene`](north-star-hygiene.md) | daily | Create missing brain North Star projects for orphan card `north_star` fields; clear high-confidence mis-tags; refresh dashboard. |
-| [`consolidate-brain`](consolidate-brain.md) | daily | Keep brain statuses honest; archive completed/dupe records. |
-| [`morning-sync`](morning-sync.md) | daily | Surface the short genuinely-human decision set; a read-only briefing. Includes §🏭 from nightly ship-pipeline gap audit. |
-| [`ship-pipeline-gap-audit`](ship-pipeline-gap-audit.md) | nightly | Audit North Star → Milestone → PR → shipped; write brain `ship-pipeline-gap-audit-latest`; auto-file ≤3 easy process-improvement cards. |
-| [`sentry-triage`](sentry-triage.md) | daily | Pull unresolved issues from every configured Sentry project, dedupe, and file actionable fix cards. |
-| [`dogfood-rotate`](dogfood-rotate.md) | daily | Thin trigger: `last-stack-dogfood-rotate-gate --routines-dispatch` selects and runs one startable recipe zero-LLM (skips plugin/skill preamble); files work only. |
-
-### Target Fleet Ownership
-
-`program-driver` is **DROP**. It remains only as paused compatibility and must
-not be configured as a milestone driver. New feature work uses one hierarchy:
-Brain North Star -> `MILESTONE_REQUEST` -> `north-star-driver` ->
-`milestone-driver` -> `Kind: pr` cards for pickup.
-
-`pipeline-health` owns merge-babysit and drain behavior. Keep the old specialized
-prompts available while dual-running, but do not treat them as separate product
-surfaces once the pipeline-health mode covers their proof.
-
-`board-reconcile` is the board close/proof fold: `kanban-watch`, always-on
-zero-LLM board closeout, `kanban-validate`, and the reaper. The LaunchAgent
-closeout stays in place until a steward explicitly approves schedule changes.
-
-Only one feature-driving frontier should be active per North Star/milestone
-pair unless Tom explicitly approves parallelism. Legacy feature-owner/milestone
-trees should be drained or retired, not expanded, so idle papercuts do not starve
-active NS/MS work.
-
-Schedule pause/delete changes are a later steward gate. Docs may describe the
-target shape, but this Week-1 slice must not pause, delete, or rename live
-scheduled routines.
 
 ## Registering a routine as a scheduled agent
 

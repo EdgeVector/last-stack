@@ -6,7 +6,7 @@
 
 Triggers: pull request to `main`, push to `main`, and `workflow_dispatch`.
 
-The `lint` job runs on `macos-latest`. It runs `.github/scripts/ci-toolchain.sh`, then `.lastgit/ci.sh`. That script checks shell syntax with `bash -n`, runs the named lint passes, and checks `config/factory-repair-contract.json` with `bin/last-stack-factory-repair-contract --local --json`. The repo has no tests. The final job `ci-required` is the required check. It succeeds only when `lint` succeeds.
+The `lint` job runs on `macos-latest`. It runs `.github/scripts/ci-toolchain.sh`, then `.lastgit/ci.sh`. That script checks shell syntax with `bash -n`, and runs the named lint passes. The repo has no tests. The final job `ci-required` is the required check. It succeeds only when `lint` succeeds.
 
 Do not rename `.lastgit/ci.sh`. `ci-required.yml` calls that path.
 

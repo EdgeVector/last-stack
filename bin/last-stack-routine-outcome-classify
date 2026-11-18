@@ -31,8 +31,6 @@ OBSERVERS = frozenset(
         "pipeline-health",
         "last-stack-why-stopped",
         "why-stopped",
-        "last-stack-ship-pipeline-gap-audit",
-        "ship-pipeline-gap-audit",
         "routine-fleet-health",
         "last-stack-whats-wrong",
         "whats-wrong",
