@@ -67,37 +67,6 @@ case "$id" in
     emit error "verdict=${verdict:-none} rc=$rc bin=$bin"
     exit "${rc:-1}"
     ;;
-  last-stack-papercut-reconciler)
-    pre="$HOME/.last-stack/bin/last-stack-generator-preflight"
-    if [ -x "$pre" ]; then
-      set +e
-      "$pre" papercut-reconciler
-      pre_rc=$?
-      set -e
-      if [ "$pre_rc" -ne 0 ]; then
-        emit noop "reason=generator-preflight-shed rc=$pre_rc"
-        exit 0
-      fi
-    fi
-    q="$HOME/.last-stack/bin/last-stack-papercut-queue"
-    if [ ! -x "$q" ]; then
-      emit error "reason=papercut-queue-missing"
-      exit 1
-    fi
-    snap_out="${ROUTINES_RUN_DIR:-.}/papercut-queue-snapshot.json"
-    mkdir -p "$(dirname "$snap_out")"
-    set +e
-    out="$(run_timeout 90 "$q" snapshot --output "$snap_out" --json 2>&1)"
-    rc=$?
-    set -e
-    printf '%s\n' "$out" | tail -20
-    if [ "$rc" -eq 0 ] && [ -s "$snap_out" ]; then
-      emit ok "unit=papercut-queue-snapshot rc=0 bytes=$(wc -c <"$snap_out" | tr -d ' ')"
-      exit 0
-    fi
-    emit error "unit=papercut-queue-snapshot rc=$rc"
-    exit "$rc"
-    ;;
   lastdbd-mini-telemetry-dashboard-refresh)
     wrap=""
     for cand in \
@@ -153,32 +122,6 @@ case "$id" in
     emit error "unit=worktree-reclaim-sweep rc=$rc"
     exit "$rc"
     ;;
-  last-stack-card-reaper)
-    reaper="${CARD_REAPER_RUN:-}"
-    if [ -z "$reaper" ]; then
-      reaper="$(command -v last-stack-card-reaper-run || true)"
-      [ -x "${reaper:-}" ] || reaper="$ROOT/bin/last-stack-card-reaper-run"
-    fi
-    if [ ! -x "$reaper" ]; then
-      emit error "reason=card-reaper-run-missing"
-      exit 1
-    fi
-    set +e
-    out="$(run_timeout 180 "$reaper" 2>&1)"
-    rc=$?
-    set -e
-    trailer="$(printf '%s\n' "$out" | grep '^ROUTINE_RESULT ' | tail -1 || true)"
-    if [ -n "$trailer" ]; then
-      printf '%s\n' "$trailer"
-      exit "$rc"
-    fi
-    if [ "$rc" -eq 0 ]; then
-      emit ok "unit=card-reaper-run rc=0"
-      exit 0
-    fi
-    emit error "unit=card-reaper-run rc=$rc"
-    exit "$rc"
-    ;;
   dogfood-rotate)
     # Real bounded unit: load the registry and run one eligibility/preflight
     # plus the last selected feature's health probe if present.
@@ -232,24 +175,6 @@ PY
     emit ok "unit=dogfood-registry-read bytes=${#reg}"
     exit 0
     ;;
-  kanban-parity-check)
-    if ! command -v kanban >/dev/null 2>&1; then
-      emit error "reason=kanban-cli-missing"
-      exit 1
-    fi
-    set +e
-    out="$(run_timeout 60 kanban groom parity-check --json 2>&1)"
-    rc=$?
-    set -e
-    printf '%s\n' "$out" | tail -20
-    # Detector: a completed JSON check is a finished inspect even when rc=1 (drift).
-    if printf '%s\n' "$out" | grep -q '{'; then
-      emit ok "unit=kanban-groom-parity-check rc=$rc"
-      exit 0
-    fi
-    emit error "unit=kanban-groom-parity-check rc=$rc"
-    exit "$rc"
-    ;;
   aws-cost-hygiene)
     bin="$(command -v last-stack-aws-cost-hygiene || true)"
     [ -x "${bin:-}" ] || bin="$HOME/.last-stack/bin/last-stack-aws-cost-hygiene"
@@ -268,15 +193,6 @@ PY
     fi
     emit error "unit=aws-cost-hygiene rc=$rc"
     exit "$rc"
-    ;;
-  last-stack-north-star-rollup)
-    gate="${NORTH_STAR_ROLLUP_GATE:-$HOME/.routines/scripts/north-star-rollup-gate.sh}"
-    if [ ! -f "$gate" ]; then
-      emit error "reason=north-star-rollup-gate-missing"
-      exit 1
-    fi
-    NORTH_STAR_ROLLUP_OUTER_TIMEOUT_SEC=90 bash "$gate"
-    exit $?
     ;;
   *)
     echo "usage: last-stack-routine-job-shrink-gate <routine-id>" >&2

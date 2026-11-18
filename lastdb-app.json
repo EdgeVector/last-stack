@@ -29,10 +29,6 @@
         "command": "last-stack-dev-proof-cleanup-routine"
       },
       {
-        "source": "bin/last-stack-kanban-reopen-deferred",
-        "command": "last-stack-kanban-reopen-deferred"
-      },
-      {
         "source": "bin/last-stack-class-a-heal",
         "command": "last-stack-class-a-heal"
       },
@@ -45,10 +41,6 @@
         "command": "last-stack-papercut-ledger-append"
       },
       {
-        "source": "bin/last-stack-papercut-queue",
-        "command": "last-stack-papercut-queue"
-      },
-      {
         "source": "bin/last-stack-prose-citation-check",
         "command": "last-stack-prose-citation-check"
       },
@@ -57,24 +49,8 @@
         "command": "last-stack-locate-file"
       },
       {
-        "source": "bin/last-stack-kanban-done-when-sweep",
-        "command": "last-stack-kanban-done-when-sweep"
-      },
-      {
-        "source": "bin/last-stack-kanban-show-batch",
-        "command": "last-stack-kanban-show-batch"
-      },
-      {
         "source": "bin/last-stack-pipeline-stuck-papercut-file",
         "command": "last-stack-pipeline-stuck-papercut-file"
-      },
-      {
-        "source": "bin/last-stack-kanban-pickup-workers",
-        "command": "last-stack-kanban-pickup-workers"
-      },
-      {
-        "source": "bin/last-stack-kanban-validate-routine",
-        "command": "last-stack-kanban-validate-routine"
       },
       {
         "source": "bin/last-stack-routines-prompt-doctor",
@@ -85,20 +61,8 @@
         "command": "last-stack-safe-upgrade-loom"
       },
       {
-        "source": "bin/last-stack-why-shipping-stopped",
-        "command": "last-stack-why-shipping-stopped"
-      },
-      {
         "source": "bin/last-stack-pipeline-forge-pr-ledger",
         "command": "last-stack-pipeline-forge-pr-ledger"
-      },
-      {
-        "source": "bin/last-stack-kanban-file-pr",
-        "command": "last-stack-kanban-file-pr"
-      },
-      {
-        "source": "bin/last-stack-kanban-done-when-eval",
-        "command": "last-stack-kanban-done-when-eval"
       },
       {
         "source": "bin/last-stack-json-capture",
@@ -117,24 +81,8 @@
         "command": "last-stack-design-pack"
       },
       {
-        "source": "bin/last-stack-kanban-decision-check",
-        "command": "last-stack-kanban-decision-check"
-      },
-      {
         "source": "bin/last-stack-feature-portfolio-admission",
         "command": "last-stack-feature-portfolio-admission"
-      },
-      {
-        "source": "bin/last-stack-milestone-slice-satisfaction",
-        "command": "last-stack-milestone-slice-satisfaction"
-      },
-      {
-        "source": "bin/last-stack-feature-delivery-effective-flow-proof",
-        "command": "last-stack-feature-delivery-effective-flow-proof"
-      },
-      {
-        "source": "bin/last-stack-ship-handoff",
-        "command": "last-stack-ship-handoff"
       },
       {
         "source": "bin/last-stack-real-human-notify",
@@ -161,14 +109,6 @@
         "command": "last-stack-cli-preflight"
       },
       {
-        "source": "bin/last-stack-board-closeout-sweep",
-        "command": "last-stack-board-closeout-sweep"
-      },
-      {
-        "source": "bin/last-stack-card-closeout",
-        "command": "last-stack-card-closeout"
-      },
-      {
         "source": "bin/last-stack-closeout-index",
         "command": "last-stack-closeout-index"
       },
@@ -181,20 +121,12 @@
         "command": "last-stack-forge-api"
       },
       {
-        "source": "bin/last-stack-kanban-mark-once",
-        "command": "last-stack-kanban-mark-once"
-      },
-      {
         "source": "bin/last-stack-forge-git",
         "command": "last-stack-forge-git"
       },
       {
         "source": "bin/last-stack-forge-json-jq",
         "command": "last-stack-forge-json-jq"
-      },
-      {
-        "source": "bin/last-stack-unattached-outcome-heal",
-        "command": "last-stack-unattached-outcome-heal"
       },
       {
         "source": "bin/last-stack-why-stopped",
@@ -205,28 +137,12 @@
         "command": "last-stack-whats-wrong-loom"
       },
       {
-        "source": "bin/last-stack-factory-health",
-        "command": "last-stack-factory-health"
-      },
-      {
-        "source": "bin/last-stack-factory-ready-buffer-controller",
-        "command": "last-stack-factory-ready-buffer-controller"
-      },
-      {
-        "source": "bin/last-stack-factory-ready-buffer-install",
-        "command": "last-stack-factory-ready-buffer-install"
-      },
-      {
         "source": "bin/last-stack-loom-reaper-run",
         "command": "last-stack-loom-reaper-run"
       },
       {
         "source": "bin/last-stack-loom-reaper-install",
         "command": "last-stack-loom-reaper-install"
-      },
-      {
-        "source": "bin/last-stack-ship-pipeline-gap-snapshot",
-        "command": "last-stack-ship-pipeline-gap-snapshot"
       },
       {
         "source": "bin/last-stack-pr-venue",
@@ -237,16 +153,8 @@
         "command": "last-stack-aws-cost-hygiene"
       },
       {
-        "source": "bin/last-stack-card-reaper-run",
-        "command": "last-stack-card-reaper-run"
-      },
-      {
         "source": "bin/last-stack-heartbeats-path",
         "command": "last-stack-heartbeats-path"
-      },
-      {
-        "source": "bin/last-stack-kanban-pickup-gate",
-        "command": "last-stack-kanban-pickup-gate"
       },
       {
         "source": "bin/last-stack-portal-wt",
@@ -281,14 +189,6 @@
         "command": "last-stack-registry-app"
       },
       {
-        "source": "bin/last-stack-feature-prove-routine",
-        "command": "last-stack-feature-prove-routine"
-      },
-      {
-        "source": "bin/last-stack-north-star-ledger-sync",
-        "command": "last-stack-north-star-ledger-sync"
-      },
-      {
         "source": "bin/last-stack-lastdb-pressure",
         "command": "last-stack-lastdb-pressure"
       },
@@ -299,14 +199,6 @@
       {
         "source": "bin/last-stack-north-star-proof",
         "command": "last-stack-north-star-proof"
-      },
-      {
-        "source": "bin/last-stack-ship-preflight",
-        "command": "last-stack-ship-preflight"
-      },
-      {
-        "source": "bin/last-stack-board-closeout-install",
-        "command": "last-stack-board-closeout-install"
       },
       {
         "source": "bin/last-stack-repark-shared-checkouts",
@@ -347,14 +239,6 @@
           "setup"
         ],
         "timeout_s": 15
-      },
-      {
-        "argv": [
-          "bin/last-stack-factory-repair-contract",
-          "--local",
-          "--json"
-        ],
-        "timeout_s": 30
       }
     ],
     "post_install": [

@@ -25,7 +25,6 @@ case "$id" in
   last-stack-pipeline-health|pipeline-health) id="last-stack-pipeline-health" ;;
   last-stack-why-stopped|why-stopped) id="last-stack-why-stopped" ;;
   last-stack-whats-wrong|whats-wrong) id="last-stack-whats-wrong" ;;
-  last-stack-ship-pipeline-gap-audit|ship-pipeline-gap-audit) id="last-stack-ship-pipeline-gap-audit" ;;
   routine-fleet-health) ;;
   -h|--help)
     echo "usage: last-stack-routine-observer-gate <routine-id>"
@@ -210,34 +209,6 @@ except Exception:
     fi
   else
     detail="open_cr=0 stuck=lastgit-missing"
-  fi
-fi
-
-if [ -z "$detail" ] && [ "$id" = "last-stack-ship-pipeline-gap-audit" ]; then
-  snap="$ROOT/bin/last-stack-ship-pipeline-gap-snapshot"
-  if [ -x "$snap" ]; then
-    set +e
-    if command -v timeout >/dev/null 2>&1; then
-      raw="$(timeout -k 2s 25s "$snap" --json --quiet 2>/dev/null)"
-      rc=$?
-    else
-      raw="$("$snap" --json --quiet 2>/dev/null)"
-      rc=$?
-    fi
-    set -e
-    if [ "$rc" -eq 124 ]; then
-      detail="busy-node status-timeout"
-    else
-      health="$(printf '%s\n' "$raw" | python3 -c 'import json,sys
-try:
-  d=json.load(sys.stdin)
-  print(d.get("health") or d.get("color") or "yellow")
-except Exception:
-  print("yellow")' 2>/dev/null || echo yellow)"
-      detail="health=${health} gaps=0 snapshot=gate"
-    fi
-  else
-    detail="health=yellow gaps=0 snapshot=empty"
   fi
 fi
 

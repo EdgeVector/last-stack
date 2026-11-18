@@ -897,12 +897,19 @@ if [ "${LAST_STACK_SETUP_REGISTRY:-0}" != "1" ]; then
 fi
 if [ "$LAST_STACK_SETUP_PRESERVE_SERVICES" -eq 0 ]; then
 
-# Zero-LLM board closeout (merged PR/CR → done) — survives low-credit watch pause.
-# Point LaunchAgents at the stable public root, not SOURCE_ROOT's version hash.
-if [ -x "$SOURCE_ROOT/bin/last-stack-board-closeout-install" ]; then
-  LAST_STACK_PUBLIC_ROOT="${LAST_STACK_PUBLIC_ROOT:-$HOME/.last-stack}" \
-    "$SOURCE_ROOT/bin/last-stack-board-closeout-install" install || \
-    echo "  board-closeout LaunchAgent: install failed (non-fatal)" >&2
+# The board-closeout, factory-health and factory-ready-buffer LaunchAgents are
+# retired with Kanban (Tom, 2026-11-18). Their commands are gone, so unload
+# any agent that an older install left behind.
+if [ -f "$SOURCE_ROOT/lib/last-stack-launchd-agent.sh" ]; then
+  (
+    # shellcheck source=lib/last-stack-launchd-agent.sh
+    . "$SOURCE_ROOT/lib/last-stack-launchd-agent.sh"
+    for retired in board-closeout factory-health factory-ready-buffer; do
+      retired_plist="$HOME/Library/LaunchAgents/com.edgevector.$retired.plist"
+      [ -f "$retired_plist" ] || continue
+      last_stack_agent_uninstall "com.edgevector.$retired" "$retired_plist" "$retired LaunchAgent (retired)"
+    done
+  ) || echo "  retired LaunchAgents: unload failed (non-fatal)" >&2
 fi
 
 # Hourly zero-LLM Loom recovery. The runner fixes the five-minute grace and
@@ -911,21 +918,6 @@ if [ -x "$SOURCE_ROOT/bin/last-stack-loom-reaper-install" ]; then
   LAST_STACK_PUBLIC_ROOT="${LAST_STACK_PUBLIC_ROOT:-$HOME/.last-stack}" \
     "$SOURCE_ROOT/bin/last-stack-loom-reaper-install" install || \
     echo "  loom-reaper LaunchAgent: install failed (non-fatal)" >&2
-fi
-
-# Hourly factory health (bands + ra notify).
-if [ -x "$SOURCE_ROOT/bin/last-stack-factory-health-install" ]; then
-  LAST_STACK_PUBLIC_ROOT="${LAST_STACK_PUBLIC_ROOT:-$HOME/.last-stack}" \
-    "$SOURCE_ROOT/bin/last-stack-factory-health-install" install || \
-    echo "  factory-health LaunchAgent: install failed (non-fatal)" >&2
-fi
-
-# Demand-based ready buffer (zero LLM). The installer loads the shipped
-# controller before it removes the old host-local idle ladder.
-if [ -x "$SOURCE_ROOT/bin/last-stack-factory-ready-buffer-install" ]; then
-  LAST_STACK_PUBLIC_ROOT="${LAST_STACK_PUBLIC_ROOT:-$HOME/.last-stack}" \
-    "$SOURCE_ROOT/bin/last-stack-factory-ready-buffer-install" install || \
-    echo "  factory-ready-buffer LaunchAgent: install failed (non-fatal)" >&2
 fi
 
 # Host-side memory guards (GUI Activity Monitor and the sentinel).

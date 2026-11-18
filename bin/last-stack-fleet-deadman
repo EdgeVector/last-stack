@@ -56,7 +56,7 @@ for p in "${problems[@]}"; do
   echo "  - $p"
 done
 echo "heal: launchctl kickstart -k $label"
-echo "      then check disk (ENOSPC history) and last-stack-ship-preflight"
+echo "      then check disk (ENOSPC history)"
 
 if [ "$PAGE" = 1 ] && command -v last-stack-page >/dev/null 2>&1; then
   last-stack-page "fleet-deadman: ${problems[*]}" 2>/dev/null || true

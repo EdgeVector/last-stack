@@ -22,12 +22,9 @@ robustly, and closing out finished work.
 
 The companion **routines** (`routines/`) are the *engine* that runs the playbook
 on a schedule: small, parameterized prompts you register as scheduled (cron)
-agents. The operator model is **Generate -> Claim -> Reconcile -> Intake
-friction**: generate PR-sized work, claim and ship it through pickup, reconcile
-merge/proof/board state, and turn fleet friction into Brain records before it
-becomes board work. The skills *assume* this pipeline exists; the routines
-provide it. See [`routines/README.md`](routines/README.md) and the target fleet
-cheat sheet in [`docs/routines-target-fleet.html`](docs/routines-target-fleet.html).
+agents. The Kanban and Situations routines, skills and commands were removed on
+2026-11-18 (Tom); the remaining routines cover machine hygiene, PR flow and
+LastDB upkeep. See [`routines/README.md`](routines/README.md).
 
 ## Install
 
@@ -121,11 +118,6 @@ Brain and Routines admin tabs have dedicated hourly deliverers. See
 [`docs/admin-deliverers.md`](docs/admin-deliverers.md) for install, dry-run,
 RUN-home, and LaunchAgent details.
 
-The factory ready-buffer controller checks the pickup-ready count every 30
-minutes. It selects one milestone-driver pass below three ready cards. Install
-or inspect it with `last-stack-factory-ready-buffer-install`. The installer
-removes the retired host-local idle ladder only after the shipped job loads.
-
 The Loom reaper runs each hour without an LLM. It uses the Host Track Loom
 binary, a five-minute grace, six resume slots, and a 300-second resume timeout.
 It abandons expired-lease execution husks after 48 hours. The runner prevents overlap
@@ -180,9 +172,6 @@ preserving project-specific rules where they belong.
 
 | Skill | What it does |
 |---|---|
-| **kanban** | Board CRUD over LastDB — file/list/show/move/groom cards. |
-| **kanban-agent** | Drive a card to **merged**, reconcile in-flight PRs, or validate post-merge END STATE checks. |
-| **kanban-setup** | Bootstrap kanban on a fresh machine — install, `init` (resolve published schemas), `doctor`, optional MCP registration. |
 | **onecontext** | Search prior Codex sessions, with guarded Aline usage and a JSONL fallback when Aline is unavailable. |
 | **registry-rotator** | Generic engine for registry-backed scheduled routines: pick the most-overdue eligible entry, run its recipe, file cards, and stamp the registry log. |
 | **wait-merge** | Robustly wait for a GitHub PR to merge by interpreting PR *state*, not a watcher's exit code. |
@@ -192,35 +181,18 @@ preserving project-specific rules where they belong.
 | **last-stack-upgrade** | Update the stack in place (clean-only self-upgrade) and re-register the skills. |
 | **session-miner** | Generic engine for mining recent agent session transcripts with profiles for papercuts, incidents, owner-stated knowledge, tooling friction, and revenant-watch (settled-dead product truth reanimated; Brain-only). |
 
-And the **routines** (`routines/`) — parameterized scheduled-agent templates that
-run the skills on a cadence. Operator-facing ownership is intentionally folded:
-`pipeline-health` owns merge-babysit and drain-style pipeline unblock work, while
-`board-reconcile` is the single board closeout/proof surface made from
-`kanban-watch`, the always-on zero-LLM closeout, `kanban-validate`, and the
-reaper.
+And the **routines** (`routines/`) are parameterized scheduled-agent templates that
+run the skills on a cadence. The Kanban and Situations routines, skills and
+commands were removed on 2026-11-18 (Tom); no routine here files or moves a card.
 
 | Routine | What it does |
 |---|---|
 | **self-improvement-loop** | Mine recent sessions for friction; upgrade the agent's own skills/routines/permissions. |
 | **revenant-watch** | Daily session-miner profile: flag agents reanimating settled-dead product truth (Brain-only ledger; open-work exemption). |
-| **papercut-reconciler** | The ONLY papercut→card path: harvest session papercuts into Brain records, cluster ALL open Brain papercuts into patterns, file pattern-level cards. |
 | **devops-continuous-improvement** | Inspect CI, merge flow, deployment, testing, and release gates; ship one small DevOps fix or file precise cards. |
 | **worktree-cleanup** / **disk-reclaim** | Prune stale worktrees/branches; reclaim disk; keep the machine healthy. |
 | **drain-open-prs** | Drive every open PR across all repos toward zero (merge or close). |
-| **kanban-pickup** / **kanban-watch** / **kanban-validate** | Drain ready **PR** queue; reconcile PRs; **proof lane** (DONE-WHEN + backlog validation proofs + post-merge END STATE). |
-| **groom-board** / **north-star-driver** / **milestone-driver** | Promote ready work and turn North Star intent into milestones and PR-sized cards. |
-| **program-rollup** / **consolidate-brain** / **morning-sync** | Mirror the board into the brain; keep statuses honest; deliver the daily decision briefing. |
-
-`program-driver` is DROP/superseded: do not use it as a milestone driver and do
-not add new feature-owner cards. New feature or North Star work flows through a
-Brain North Star, `MILESTONE_REQUEST`, `north-star-driver`, and
-`milestone-driver`.
-
-See [`routines/README.md`](routines/README.md) for how routines + skills compose,
-and fill in the `<PLACEHOLDERS>` before scheduling any of them.
-For a new project, start with the routine fleet bootstrap guide and record
-templates in [`docs/routine-fleet-portability.md`](docs/routine-fleet-portability.md)
-and [`templates/routine-fleet/`](templates/routine-fleet/).
+| **consolidate-brain** | Keep brain statuses honest. |
 
 ### Registry Rotator Records
 
@@ -294,9 +266,6 @@ bin/
                             ~/.last-stack/logs/routine-heartbeats.log
   last-stack-heartbeats-path
                             print the heartbeats log path
-  last-stack-board-drain-report
-                            print board position plus 1h/6h/24h pickup drain
-                            velocity from routine-heartbeats and run metadata
   last-stack-active-programs-guard
                             reject active-programs rewrites that drop program
                             headers/slugs; split closed programs into archive
@@ -336,63 +305,17 @@ templates/routine-fleet/
 
 ## How an AI agent uses this
 
-The intended loop, end to end:
-
-1. **File work as cards** (`kanban` skill). A card body is the spec: a `Repo:` /
-   `Base:` header plus GOAL / STEPS / VERIFY / DONE WHEN. Cards live on your
-   LastDB node.
-2. **Drive one card to merged** (`kanban-agent` skill, WORK mode). The agent
-   claims the card, works in an isolated git worktree, opens a PR, and then
-   *drives that PR to MERGED* — re-arming auto-merge, updating a behind branch,
-   rebasing conflicts — before moving the card to `done`, or leaving it in
-   `todo`/`doing` with a clear `BLOCKED:` marker when the END STATE requires an
-   async post-merge check. A card is only `done` when its code is actually in
-   the repo and the outcome is proven.
-3. **Wait on PRs without false failures** (`wait-merge` skill). Interprets PR
-   state rather than trusting a watcher's exit code, so transient CI/queue churn
-   doesn't look like a failure.
-4. **Reconcile the board** (`kanban-agent` skill, RECONCILE mode). A scheduled
-   sweep moves merged-but-unadvanced cards to `done` and nudges stuck PRs —
-   leaving un-started cards alone.
-5. **Validate post-merge outcomes** (`kanban-agent` skill, VALIDATE mode). A
-   scheduled pass runs one dev-only post-merge END STATE check, then moves the
-   card to `done` on pass or leaves it visibly blocked with `PROOF:` plus a fix
-   card/blocker on fail.
-6. **Close out** (`close-out` skill). After any substantive change: PR from a
-   worktree, drive to merged, file session papercuts (`brain papercut file`),
-   write a full *what was done* report to the brain (`brain`), update
-   superseded brain records and stale kanban cards, and file any follow-up as
-   a card (`kanban`).
-
-The two halves are deliberate: **the brain records why; the board records
-what's in flight.** Keep decisions in `brain` and active work in `kanban`, and
-the agent always has both context and a worklist.
+1. **Learn LastDB** from `instructions/lastdb.md`, which `setup` installs into
+   each agent's global instructions.
+2. **Wait on PRs without false failures** (`wait-merge` skill). It reads PR
+   state instead of a watcher's exit code.
+3. **Close out** (`close-out` skill) after a substantive change.
 
 When a defect keeps returning, or the user asks **what's the permanent fix**,
 use the **fix-it** skill. Do not add a temporary repair at the consumer.
 
-Steps 1–6 describe what an agent does *when invoked*. To make the loop
-**self-driving** — so cards get filed, promoted, picked up, and reconciled
-without a human kicking it each time — register the **routines** as scheduled
-agents: generators (`self-improvement-loop`, `papercut-reconciler`) file work,
-`north-star-driver`, `milestone-driver`, and `groom-board` promote it, separate
-`kanban-pickup` workers claim and ship one WORK card each, `pipeline-health`
-and board-reconcile (`kanban-watch` plus closeout/reaper) reconcile the
-stragglers, `kanban-validate`
-runs post-merge END STATE checks, and
-`program-rollup`/`consolidate-brain`/`morning-sync` keep the brain honest and
-surface the short genuinely-human decision set. See
-[`routines/README.md`](routines/README.md).
-
-The **session-miner** skill is the shared engine behind transcript-mining
-routines. A scheduled task can become a thin trigger that passes a profile name
-such as `papercuts`, `incidents`, `owner-statements`, `friction-patterns`, or
-`revenant-watch` plus a time window; the skill handles transcript parsing,
-dedupe, report-only dry runs, and profile-specific writes. `revenant-watch`
-writes Brain records only (never kanban cards from the miner itself).
-
-You'll also want the underlying tools installed and a LastDB node running — see
-the **kanban-setup** skill and the `kanban` / `brain` repos.
+The card-driven loop (file a card, pick it up, reconcile the board) is gone
+with Kanban.
 
 ## Configuring the node URL
 
