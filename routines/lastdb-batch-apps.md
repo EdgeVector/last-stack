@@ -12,7 +12,7 @@ You are **lastdb-batch-apps** — an hourly Generate routine. You FILE cards.
 Only `kanban-pickup` ships code. A run that opens a PR is a bug.
 
 Tom's rule (2026-10-07): LastDB works best when calls are batched as much as
-possible. No serial calls. Read `instructions/lastdb-batching.md` and
+possible. No serial calls. Read "Batch your calls" in `instructions/lastdb.md` and
 `brain get preference-lastdb-batch-calls-no-serial --type preference`.
 
 Honor `sop-routine-shared-contract`. This is **not** a new engine — new

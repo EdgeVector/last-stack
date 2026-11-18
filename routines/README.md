@@ -35,9 +35,8 @@ Brain = intent · Board = queue · Pickup = only code shipper · Watch = only cl
 **Papercuts have two halves, and only the consumer was ever written down.**
 `papercut-reconciler` is the sole papercut→card path (consumer). The producer is
 *every agent, every run*: file a Brain papercut for any friction you hit, and
-never a board card. The rule lives in `instructions/brain-kanban.md` (injected
-into every harness's global instructions by `setup`) and in
-`sop-routine-shared-contract` §5. The default is FILE, not judge — a mention in a checkpoint or PR
+never a board card. The rule lives in `sop-routine-shared-contract` §5; the
+managed `brain-kanban` instruction block that carried it is retired. The default is FILE, not judge — a mention in a checkpoint or PR
 description is not a filing.
 
 **Every routine ends with close-out (Tom, 2026-08-17).** The last work step of

@@ -63,6 +63,7 @@ remove_managed_instruction_block() {
 
 remove_harness_instruction_blocks() {
   remove_managed_instruction_block "$1" "$2" "brain-kanban"
+  remove_managed_instruction_block "$1" "$2" "lastdb"
   remove_managed_instruction_block "$1" "$2" "asd-ste100"
   remove_managed_instruction_block "$1" "$2" "user-vocabulary"
   remove_managed_instruction_block "$1" "$2" "tom-vocabulary"

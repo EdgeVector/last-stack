@@ -315,19 +315,18 @@ bin/
   last-stack-uninstall      remove the registered skills
 skills/<name>/SKILL.md  one directory per skill
   (includes lastdb-safe-upgrade — multi-harness Mini safe upgrade)
-instructions/brain-kanban.md
-                        canonical brain/kanban usage guidance; setup upserts it
-                        as a managed block into each harness's global
-                        instructions file (`~/.claude/CLAUDE.md`,
-                        `~/.codex/AGENTS.md`, `~/.factory/AGENTS.md`,
-                        `~/.config/opencode/AGENTS.md`, `~/.grok/AGENTS.md`,
-                        `~/.gemini/GEMINI.md`, and `~/.gemini/config/GEMINI.md`)
-                        and registers the brain/kanban MCP servers for Codex and
-                        agy (with a PATH env so GUI-spawned servers can find bun);
-                        also records the
-                        creation-time default that new repos start on Forgejo
-                        while existing venue choices remain unchanged until
-                        explicitly migrated
+instructions/lastdb.md
+                        the minimal agent guide: what LastDB is and how to use
+                        its current API and CLI. setup upserts it as a managed
+                        block into each harness's global instructions file
+                        (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`,
+                        `~/.factory/AGENTS.md`, `~/.config/opencode/AGENTS.md`,
+                        `~/.grok/AGENTS.md`, `~/.gemini/GEMINI.md`, and
+                        `~/.gemini/config/GEMINI.md`), with the no-tests and
+                        generated-evidence policy blocks. It replaces the
+                        retired brain-kanban and lastdb-batching blocks. setup
+                        no longer installs the shell-rule blocks; their files
+                        stay in instructions/ for the hooks that name them
 routines/<name>.md      one parameterized scheduled-agent template per routine
 routines/README.md      how routines + skills compose; how to register them
 templates/routine-fleet/

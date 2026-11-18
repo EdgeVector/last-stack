@@ -378,6 +378,8 @@ install_claude_hooks() {
 #   Antigravity CLI (agy) → ~/.gemini/GEMINI.md and ~/.gemini/config/GEMINI.md
 BK_START='<!-- last-stack:brain-kanban:start (managed by last-stack setup; edits inside are overwritten) -->'
 BK_END='<!-- last-stack:brain-kanban:end -->'
+LD_START='<!-- last-stack:lastdb:start (managed by last-stack setup; edits inside are overwritten) -->'
+LD_END='<!-- last-stack:lastdb:end -->'
 STE_START='<!-- last-stack:asd-ste100:start (managed by last-stack setup; edits inside are overwritten) -->'
 STE_END='<!-- last-stack:asd-ste100:end -->'
 TV_START='<!-- last-stack:tom-vocabulary:start (managed by last-stack setup; edits inside are overwritten) -->'
@@ -475,15 +477,17 @@ upsert_harness_instruction_blocks() {
   strip_managed_md_block "$file" "$NT_LEGACY_START" "$NT_END"
   strip_managed_md_block "$file" "$LB_START" "$LB_END"
   strip_managed_md_block "$file" "$GE_START" "$GE_END"
-  append_managed_md_block "$file" "$SOURCE_ROOT/instructions/brain-kanban.md" "$BK_START" "$BK_END"
-  append_managed_md_block "$file" "$SOURCE_ROOT/instructions/no-home-root-scan.md" "$HS_START" "$HS_END"
-  append_managed_md_block "$file" "$SOURCE_ROOT/instructions/bin-authoring.md" "$BA_START" "$BA_END"
-  append_managed_md_block "$file" "$SOURCE_ROOT/instructions/safe-json-capture.md" "$JC_START" "$JC_END"
-  append_managed_md_block "$file" "$SOURCE_ROOT/instructions/routine-shell.md" "$RS_START" "$RS_END"
-  append_managed_md_block "$file" "$SOURCE_ROOT/instructions/lastdb-batching.md" "$LB_START" "$LB_END"
+  strip_managed_md_block "$file" "$LD_START" "$LD_END"
+  # The installed set is minimal (Tom, 2026-11-18): the two policy rules and
+  # one LastDB guide. The brain-kanban and lastdb-batching blocks are retired;
+  # the guide replaces both. The shell blocks (no-home-root-scan,
+  # bin-authoring, safe-json-capture, routine-shell) are stripped above and no
+  # longer installed. Their files stay in instructions/ because the hooks and
+  # the shell lint name them in a rejection.
+  append_managed_md_block "$file" "$SOURCE_ROOT/instructions/lastdb.md" "$LD_START" "$LD_END"
   prepend_managed_md_block "$file" "$SOURCE_ROOT/instructions/no-tests.md" "$NT_START" "$NT_END"
   prepend_managed_md_block "$file" "$SOURCE_ROOT/instructions/generated-evidence.md" "$GE_START" "$GE_END"
-  echo "  ${label} instructions: generated-evidence + no-tests + brain-kanban + no-home-root-scan + bin-authoring + safe-json-capture + routine-shell + lastdb-batching -> $file"
+  echo "  ${label} instructions: generated-evidence + no-tests + lastdb -> $file"
 }
 
 # ── Codex routine shell: zsh -lc -> bash ─────────────────────────────────────
