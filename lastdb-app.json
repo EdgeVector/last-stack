@@ -17,10 +17,6 @@
     "prepare": [],
     "links": [
       {
-        "source": "bin/lastdb-cloud-backup-kick",
-        "command": "lastdb-cloud-backup-kick"
-      },
-      {
         "source": "bin/last-stack-dev-proof-cleanup",
         "command": "last-stack-dev-proof-cleanup"
       },

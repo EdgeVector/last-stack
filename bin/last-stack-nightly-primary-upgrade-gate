@@ -5,8 +5,7 @@
 # only when that source is a strict descendant of the running primary and an
 # ancestor of origin/main. Do not compile LastDB. Do not retry a red source.
 # Refuse Loom until the installed driver can prove brain and LastSecrets
-# before the live install. A format 7 primary with automatic V2 backup needs
-# the driver's format 7 V2 route. Format 15 and newer use local checks.
+# before the live install. Format 15 and newer use local checks.
 set -euo pipefail
 
 script="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$0")"
@@ -185,28 +184,6 @@ if [[ "$disk_format" =~ ^format=([1-9][0-9]{0,3})$ ]] && [ "${BASH_REMATCH[1]}" 
     "$primary_home" "$mirror" "$primary_full" "$nightly_oid" 2>&1)"; then
     printf '%s\n' "$format_result" >&2
     result error native-primary-format-preflight-refused 1
-  fi
-elif curl -fsS --max-time 30 --unix-socket "$primary_sock" -H 'Host: localhost' \
-    -H 'X-LastDB-Client: lastdb-nightly-primary-upgrade' \
-    http://x/api/status >"$work/primary-status.json" 2>/dev/null \
-  && jq -e '.ok == true and (.status | has("sync") | not)
-      and .status.durability.automatic_enabled == true' \
-    "$work/primary-status.json" >/dev/null 2>&1; then
-  route="format7-v2"
-fi
-if [ "$route" = "format7-v2" ]; then
-  venue="$(dirname "$driver")/programs-venue.sh"
-  if ! grep -q 'PRIMARY_ROUTE="format7-v2"' "$driver" || [ ! -f "$venue" ] \
-    || ! grep -q 'v2_recovery_point_preflight' "$venue" \
-    || ! grep -q 'live_install_programs' "$venue"; then
-    result error driver-format7-v2-route-missing 1
-  fi
-  # The V1 DEV photograph cannot read a V2 home. The installed driver must run
-  # the V2 DEV restore proof instead; an older install refuses the cutover.
-  # This source is not red.
-  if [ ! -f "$(dirname "$driver")/dev-v2-restore-proof.sh" ] \
-    || ! grep -q 'assert_dev_v2_restore_stamp_ok' "$driver"; then
-    result error driver-format7-v2-dev-proof-missing 1
   fi
 fi
 
