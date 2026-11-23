@@ -245,5 +245,5 @@ upgrade on a launchd primary; 2026-07-22 resident memory above the guard (memory
 bar); 2026-08-01 debug worktree build cut over (class bar); 2026-08-07 GREEN printed
 without restarting the daemon (the running build must report the candidate version);
 2026-09-24 SIGKILL five seconds into graceful shutdown (strict stop). The signed-log
-backup replaced the earlier native snapshot backup on 2026-11-19; this skill follows
+backup replaced the earlier native snapshot backup when the primary moved to build cacb31886 on 2026-11-23; this skill follows
 `docs/designs/signed-log-on-local-machinery.md` and `relay-protocol.md` in EdgeVector/lastdb.

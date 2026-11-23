@@ -104,7 +104,7 @@ class Home:
 
     def init(self):
         """A new identity and home, made offline. Returns the recovery phrase."""
-        phrase_file = self.base / "recovery-phrase.txt"
+        phrase_file = self.home / "recovery-phrase.txt"  # the command requires exactly this path
         self.cli(["admin", "backup", "init", "--into", str(self.home), "--recovery-phrase-out",
                   str(phrase_file), "--env", "dev", "--json"])
         return phrase_file.read_text().strip()
@@ -249,7 +249,8 @@ def prove(args, root, homes):
     wait("the relay to confirm the tail of A", a.synced_up)
     entries = a.spool()["head"]
     tail = entries - at_snapshot
-    require(tail == TAIL_BATCHES, f"the tail holds {tail} entries, expected {TAIL_BATCHES}")
+    expected_tail = TAIL_BATCHES * TAIL_BATCH_RECORDS  # one signed entry per record
+    require(tail == expected_tail, f"the tail holds {tail} entries, expected {expected_tail}")
     original = a.database()
     a.stop()
 
