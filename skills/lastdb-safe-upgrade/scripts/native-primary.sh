@@ -64,6 +64,27 @@ native_confirm_serving() {
   printf '%s %s\n' "$pid" "$start"
 }
 
+# DEV restore proof (dev-restore-proof.py): the exact candidate pair backs up a
+# generated home with a new identity to the DEV relay, then restores it from the
+# phrase alone. It reads nothing of the primary. The PROBE and the CUTOVER pass
+# each run it; no receipt is kept.
+native_dev_restore_proof() {
+  local out rc=0 line
+  [ -f "$DEV_RESTORE_PROOF_PY" ] || die "the DEV restore proof helper is absent"
+  out="$(run_op_with_deadline "${LASTDB_DEV_RESTORE_DEADLINE_SECS:-3600}" \
+    python3 -I "$DEV_RESTORE_PROOF_PY" --daemon "$CANDIDATE_BIN" --cli "$CANDIDATE_CLI_BIN" \
+    --source "${LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID:-}" \
+    --mirror "${LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR:-$HOME/.cache/edgevector-git/lastdb.git}" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "$out" >&2
+    die "the exact candidate failed the DEV restore proof (rc=$rc); the primary is unchanged"
+  fi
+  while IFS= read -r line; do
+    case "$line" in DEV_RESTORE_SUMMARY:*) log "$line" ;; esac
+  done <<< "$out"
+  log "DEV restore proof GREEN: backup to the DEV relay, snapshot, restore from the phrase, records match key by key"
+}
+
 native_primary_preflight() {
   local service
   service="gui/$(id -u)/$LAUNCHD_LABEL"
@@ -94,6 +115,7 @@ native_primary_soak() {
   done
   primary_brain_and_secret_ok || die "the new primary cannot read Brain and LastSecrets locators after the soak"
   log "native primary passed the five-minute health check"
+  backup_post_start_soak "$INSTALLED_CLI_BIN"
 }
 
 run_native_primary() {
@@ -110,6 +132,7 @@ run_native_primary() {
   python3 "$_SCRIPT_DIR/native-primary-probe.py" "$OLD_PROGRAM_DIR/lastdbd" \
     "$CANDIDATE_BIN" "$probe_limit" "$RSS_SETTLE_SECS" "$RSS_SAMPLE_SECS" \
     || die "native candidate failed the generated database reopen"
+  native_dev_restore_proof
   native_primary_preflight
   if [ "$PROBE_ONLY" -eq 1 ]; then
     echo "VERDICT: GREEN_PROBE_ONLY"
