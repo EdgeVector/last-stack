@@ -87,6 +87,15 @@ confirming the newest writes, then refuses. It records the head of each database
 same facts are in `lastdb status` (`Cloud sync: connected (prod)`, `Snapshot:`) and in
 `~/.lastdb/data/disk-run/accepted-v1/state.json` (`head`, `acked`, `snapshot_required`).
 
+The daemon does not send its last writes when it stops, so a write that arrives after
+that check can remain unsent. After the strict stop and before the program switch, the
+driver reads the stopped home: `state.json` has `acked` equal to `head`,
+`cloud-upload.json` has `spool_through` at that head, and no saved batch
+(`log-sync/<database id>/outgoing.json`) waits. If a check fails, the run ends RED with
+the old pair unchanged, recovery starts the old daemon again, and that daemon sends
+the rest. Run the upgrade again. Measured on the primary on 2026-11-23: a write was
+waiting about 17% of the time, so about one run in six ends this way.
+
 ## DEV restore proof (step 4)
 
 `scripts/dev-restore-proof.py` follows the CI recipe of EdgeVector/lastdb

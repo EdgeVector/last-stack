@@ -153,3 +153,33 @@ backup_post_start_soak() {
   [ "$verdict" = ok ] || die "backup soak: the snapshot is not on record after snapshot --wait: $verdict"
   log "backup soak: one snapshot --wait succeeded and is on record"
 }
+
+# After the strict stop: the stopped home holds nothing the relay has not
+# confirmed. The daemon does not send its last writes when it stops, so a write
+# that arrived after the recovery point check can remain in the spool. The
+# spool is confirmed through its head, the upload position is at that head, and
+# no saved batch waits. Print one word: ok, or the first failed check.
+backup_stopped_spool_verdict() {
+  local spool="$PRIMARY_HOME/data/disk-run/accepted-v1" db=""
+  if [ ! -f "$spool/state.json" ] || [ ! -f "$spool/cloud-upload.json" ]; then
+    echo "spool-files-missing"
+    return 0
+  fi
+  db="$(jq -r '.database_id // empty' "$spool/cloud-upload.json" 2>/dev/null || true)"
+  if ! printf '%s\n' "$db" | grep -Eq '^[0-9a-f]{64}$'; then
+    echo "database-id-missing"
+    return 0
+  fi
+  if [ -e "$PRIMARY_HOME/log-sync/$db/outgoing.json" ]; then
+    echo "saved-batch-waits"
+    return 0
+  fi
+  jq -r -n --slurpfile state "$spool/state.json" --slurpfile upload "$spool/cloud-upload.json" '
+    $state[0] as $s | $upload[0] as $u
+    | if ($s.head | type) != "number" or ($s.acked | type) != "number"
+        or ($u.spool_through | type) != "number" then "spool-position-missing"
+      elif $s.acked != $s.head then "spool-behind"
+      elif $u.spool_through != $s.head then "upload-position-behind"
+      else "ok" end
+  ' 2>/dev/null || echo "spool-files-invalid"
+}

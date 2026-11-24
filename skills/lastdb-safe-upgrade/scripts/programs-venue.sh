@@ -116,7 +116,7 @@ programs_stage_candidate() {
 }
 
 live_install_programs() {
-  local uid service lock ts
+  local uid service lock ts stopped_spool
   uid="$(id -u)"
   service="gui/${uid}/${LAUNCHD_LABEL}"
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -147,6 +147,13 @@ live_install_programs() {
     "$NEW_PROGRAM_DIR/lastdbd" "$NEW_PROGRAM_DIR/lastdb" "candidate program pair after the stop" \
     || die "candidate pair changed during the stop"
   verify_old_primary_stopped "$service"
+  # The stopped home is the recovery point only when the relay confirmed every
+  # write in it. Nothing changed yet: recovery starts the old pair again, and
+  # that daemon sends the rest.
+  stopped_spool="$(backup_stopped_spool_verdict)"
+  [ "$stopped_spool" = ok ] \
+    || die "the stopped primary holds writes the relay has not confirmed ($stopped_spool); the old pair is unchanged and starts again; run the upgrade again"
+  log "stopped spool: the relay confirmed every write of the stopped home"
 
   write_cutover_recovery_state "programs-switch-started" true
   PROGRAMS_PLIST_SWITCHED=1
