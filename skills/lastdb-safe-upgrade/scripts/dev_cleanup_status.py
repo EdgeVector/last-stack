@@ -1,6 +1,8 @@
 """Value-free failure classification and papercuts for the mechanical DEV worker."""
 import re
 import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 
 def aws_failure(response, service, operation):
@@ -32,14 +34,28 @@ def failure_reason(error):
 
 
 def report_errors(errors):
-    for error in errors:
-        result = subprocess.run(
-            ["papercut", "file", "--title", "DEV proof cleanup blocked",
-             "--symptom", error["reason"], "--component", "dev-proof-cleanup",
-             "--repo", "EdgeVector/last-stack", "--severity", "p2", "--text", "-"],
-            input=("The mechanical DEV cleanup retained its exact request. "
-                   f"Stream: {error['stream_id']}. Reason: {error['reason']}. "
-                   "Inspect its saved phase and ownership; do not clear holds or widen deletion targets."),
-            capture_output=True, text=True, timeout=60)
-        if result.returncode:
-            raise RuntimeError("cleanup papercut filing failed")
+    deadline = time.monotonic() + 60
+
+    def file_error(error):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        try:
+            result = subprocess.run(
+                ["papercut", "file", "--title", "DEV proof cleanup blocked",
+                 "--symptom", error["reason"], "--component", "dev-proof-cleanup",
+                 "--repo", "EdgeVector/last-stack", "--severity", "p2", "--text", "-"],
+                input=("The mechanical DEV cleanup retained its exact request. "
+                       f"Stream: {error['stream_id']}. Reason: {error['reason']}. "
+                       "Inspect its saved phase and ownership; do not clear holds or widen deletion targets."),
+                capture_output=True, text=True, timeout=remaining)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return result.returncode == 0
+
+    # The CLI admits one defect at a time. Bound concurrent independent calls
+    # and their total budget, rather than paying up to 60 seconds per request.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        outcomes = list(pool.map(file_error, errors))
+    if not all(outcomes):
+        raise RuntimeError("cleanup papercut filing failed")
