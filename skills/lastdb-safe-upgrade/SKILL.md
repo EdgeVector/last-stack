@@ -85,7 +85,8 @@ a refusal (fail closed):
 The driver retries for `LASTDB_BACKUP_WAIT_SECS` (default 300) while the relay is still
 confirming the newest writes, then refuses. It records the head of each database. The
 same facts are in `lastdb status` (`Cloud sync: connected (prod)`, `Snapshot:`) and in
-`~/.lastdb/data/disk-run/accepted-v1/state.json` (`head`, `acked`, `snapshot_required`).
+`status.spool` of `GET /api/status` (`head`, `acked`). Since LastDB 2d3e474a5 the spool
+lives in the store's commit; the old `data/disk-run/accepted-v1/state.json` file is gone.
 
 ## DEV restore proof (step 4)
 

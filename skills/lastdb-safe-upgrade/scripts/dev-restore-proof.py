@@ -156,16 +156,21 @@ class Home:
         return json.loads((self.home / "databases" / "registry.json").read_text())["owner"]["id"]
 
     def spool(self):
+        """The spool (`head`, `acked`) from the daemon's status; None while it does not answer.
+
+        Since LastDB 2d3e474a5 the spool lives in the store's commit, so the old
+        `data/disk-run/accepted-v1/state.json` file no longer exists. This matches
+        `spool_state` in EdgeVector/lastdb scripts/operations/personal_proof_nodes.py.
+        """
         try:
-            return json.loads((self.home / "data" / "disk-run" / "accepted-v1" / "state.json").read_text())
-        except (OSError, ValueError):
+            return request(self.sock, "/api/status", timeout=10)["status"]["spool"]
+        except (OSError, http.client.HTTPException, ValueError, KeyError, TypeError):
             return None
 
     def synced_up(self):
-        """Every accepted write is confirmed by the relay (acked == head) and no retry is saved."""
+        """Every accepted write is confirmed by the relay (acked == head)."""
         state = self.spool()
-        return (state is not None and state["head"] > 0 and state["head"] == state["acked"]
-                and not (self.home / "log-sync" / self.database() / "outgoing.json").exists())
+        return state is not None and state["head"] > 0 and state["head"] == state["acked"]
 
     def define_schema(self):
         request(self.sock, "/api/schemas/seed-system", {"isolated_copy": True, "schema": {
