@@ -22,6 +22,10 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+# The wrapper runs isolated Python; import only the sibling from this reviewed bundle.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from dev_cleanup_status import aws_failure, failure_reason, report_errors
+
 API = "https://ygyu7ritx8.execute-api.us-west-2.amazonaws.com"
 REGION = "us-west-2"
 TABLE = "ExememCloudControl-dev"
@@ -130,11 +134,11 @@ def worker_ready():
     info = registry.lstat()
     require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid(), "unsafe cleanup routine")
     entry = flat_routine(registry)
-    gate = str(Path.home()/".last-stack/bin/last-stack-dev-proof-cleanup")
-    require(entry.get("status") == "active" and entry.get("gate_command") == gate
+    gate = str(Path(__file__).resolve().parents[3]/"bin/last-stack-dev-proof-cleanup")
+    require(entry.get("status") == "active" and Path(entry.get("gate_command", "")).resolve() == Path(gate).resolve()
             and entry.get("id") == ROUTINE and entry.get("rrule") == "FREQ=MINUTELY;INTERVAL=10;BYSECOND=0"
             and os.access(gate, os.X_OK), "cleanup routine is not active with the installed gate")
-    installed=Path.home()/".last-stack/skills/lastdb-safe-upgrade/scripts/dev-v2-stream-cleanup.py"
+    installed=Path(gate).resolve().parents[1]/"skills/lastdb-safe-upgrade/scripts/dev-v2-stream-cleanup.py"
     require(installed.is_file() and digest(installed.read_bytes())==digest(Path(__file__).read_bytes()),
         "cleanup helper does not match the installed worker release")
     require(aws("sts","get-caller-identity",{})["Account"]==AWS_ACCOUNT,"unexpected AWS cleanup account")
@@ -297,7 +301,7 @@ def aws(service, operation, body, provider=None):
     response = subprocess.run(["aws",service,operation,"--region",region,"--output","json","--no-cli-pager",
         "--no-paginate","--cli-input-json",payload]+extra,
         stdin=subprocess.DEVNULL,text=True,capture_output=True,env=environment,timeout=90)
-    require(response.returncode == 0, "AWS operation refused: "+service+"/"+operation)
+    require(response.returncode == 0, aws_failure(response, service, operation))
     require(len(response.stdout)<50_000_000, "AWS response exceeds cleanup bound")
     return json.loads(response.stdout or "{}")
 
@@ -435,6 +439,8 @@ def make_plan(request, checksum, clients):
         row.update(owner=owner,kind=kind,suffix=suffix)
     target=request["stream_id"]
     selected={record:row for record,row in rows.items() if row["owner"]==target}
+    require(prefix+"stream#"+target in selected,
+        "proof stream metadata is absent; retained provider objects need an exact retirement disposition")
     stream=selected[prefix+"stream#"+target]["value"]
     require(stream["stream"]["scope"]==scope_value and stream["subject"]==request["account_id"]
         and stream["active_commit_id"] is None and not stream.get("ci_retirement"),"proof stream changed or remains active")
@@ -624,39 +630,9 @@ def emit(outcome,detail):
         stamp=datetime.now(timezone.utc).isoformat(timespec="seconds")
         subprocess.run([str(helper),"--line",ROUTINE+" "+stamp+" "+outcome+" "+detail],
             text=True,capture_output=True,timeout=20)
-    # Exit zero and ok/noop are the routinesd skip-harness contract. Failures
-    # remain explicit in detail and their open Brain papercuts, never a second
-    # agent attempting an unplanned deletion.
+    # Exit zero skips the agent harness, while the explicit error trailer keeps
+    # a blocked cleanup red in routinesd. Only exit 10 requests an agent.
     print("ROUTINE_RESULT outcome="+outcome+" detail="+detail)
-
-
-def report_errors(errors):
-    def file_error(error):
-        reason=error["reason"]
-        slug="papercut-dev-proof-cleanup-"+digest(reason.encode())[:12]
-        # Targeted discovery before an idempotent filing. The stable reason
-        # slug groups repeated occurrences instead of filing one per stream.
-        search=subprocess.run(["brain","ask",slug,"--json"],capture_output=True,text=True,timeout=60)
-        require(search.returncode==0,"cleanup error search failed")
-        body="Automatic DEV proof cleanup retained its request for review: "+json.dumps(error,sort_keys=True)+". Repo EdgeVector/last-stack. Inspect the exact request and saved phase; do not clear a fence or widen deletion targets."
-        existing=subprocess.run(["brain","get",slug,"--type","reference","--json"],capture_output=True,text=True,timeout=60)
-        if existing.returncode==0:
-            record=json.loads(existing.stdout)
-            if record.get("status")!="active":
-                reopened=subprocess.run(["brain","status",slug,"active","--type","reference"],capture_output=True,text=True,timeout=60)
-                require(reopened.returncode==0,"cleanup papercut reopen failed")
-            command=["brain","append",slug,"--type","reference"]
-            document="\n\nStatus: open. "+body+"\n"
-        else:
-            # The installed Brain exposes put/append/status, not papercut file.
-            fields={"type":"reference","slug":slug,"title":"DEV proof cleanup blocked: "+reason,
-                "status":"active","tags":["papercut","last-stack","severity-p2"]}
-            document="---\n"+"\n".join(k+": "+json.dumps(v) for k,v in fields.items())+"\n---\n\nStatus: open. Severity: p2. Component: dev-proof-cleanup.\n\n"+body+"\n"
-            command=["brain","put"]
-        result=subprocess.run(command,input=document,capture_output=True,text=True,timeout=60)
-        require(result.returncode==0,"cleanup papercut filing failed")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        list(pool.map(file_error,errors))
 
 
 def drain():
@@ -744,7 +720,7 @@ def drain():
             except (RuntimeError,KeyError,ValueError,OSError,subprocess.SubprocessError) as failure:
                 # Exception strings are fixed local reasons; never persist an AWS
                 # response, provider credentials, a signed URL or raw JSON row.
-                reason=str(failure) if isinstance(failure,RuntimeError) else type(failure).__name__
+                reason=failure_reason(failure)
                 errors.append({"stream_id":path.stem,"reason":reason})
                 state_path=path.with_suffix(".state.json")
                 state=json.loads(private(state_path))
@@ -768,7 +744,7 @@ def drain():
                 save(state_path,dict(state,closeout_reported=True))
                 archive_completed(root/(stream+".json"))
         print(json.dumps({"completed_streams":complete,"errors":errors},sort_keys=True))
-        emit("ok",("blocked" if errors else "cleanup pass")+" completed="+str(len(complete))+" errors="+str(len(errors)))
+        emit("error" if errors else "ok",("blocked" if errors else "cleanup pass")+" completed="+str(len(complete))+" errors="+str(len(errors)))
 
 
 def main():
@@ -790,16 +766,12 @@ def main():
         elif args.ready: worker_ready()
         else: drain()
     except (RuntimeError,KeyError,ValueError,OSError,subprocess.SubprocessError) as failure:
-        reason=str(failure) if isinstance(failure,RuntimeError) else type(failure).__name__
+        reason=failure_reason(failure)
         print("DEV_PROOF_CLEANUP: RED: "+reason,file=sys.stderr)
         if args.drain:
             try:
                 report_errors([{"stream_id":"worker startup","reason":reason}])
-                report="\n\nDEV proof cleanup worker startup blocked before completion: "+reason+". Pending requests and saved phases remain for retry.\n"
-                result=subprocess.run(["brain","append","reference-dev-proof-automatic-cleanup-20261103","--type","reference"],
-                    input=report,text=True,capture_output=True,timeout=60)
-                require(result.returncode==0,"cleanup startup closeout failed")
-                emit("ok","blocked startup; requests retained; Brain papercut filed")
+                emit("error","blocked startup; requests retained; papercut filed")
                 return 0
             except (RuntimeError,KeyError,ValueError,OSError,subprocess.SubprocessError):
                 print("DEV_PROOF_CLEANUP: startup failure could not be recorded in Brain",file=sys.stderr)
