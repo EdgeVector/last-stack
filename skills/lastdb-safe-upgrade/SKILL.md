@@ -206,8 +206,10 @@ bash ~/.last-stack/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh --l
 ```
 
 `cutover-timeout-recovery.sh` does this from the recovery state when the Loom step
-times out. After the candidate has started, recovery keeps the exact candidate and
-verifies its supervision, because the home may already hold writes from the new build.
+times out. After the candidate serves, recovery keeps the exact candidate and verifies
+its supervision, because the home may already hold writes from the new build. If it
+never serves, recovery unloads and removes that candidate, restores the old pair, and
+keeps the cutover failure status.
 
 **Data.** No copy of the primary exists. If the home is damaged, Tom restores it
 himself from the recovery phrase; no agent reads that phrase:
