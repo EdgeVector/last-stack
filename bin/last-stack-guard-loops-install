@@ -1,19 +1,17 @@
 #!/usr/bin/env bash
-# Install / status the guard LaunchAgents that had no installer:
-#   com.edgevector.lastdb-memory-guard      (acts on the primary lastdbd)
-#   com.edgevector.lastdb-telemetry-logger  (read-only: lastdb status + ops --json)
+# Install / status the guard LaunchAgent that had no installer:
+#   com.edgevector.lastdb-memory-guard   (acts on the primary lastdbd)
 # The gui-app and sentinel agents stay with
 # last-stack-host-memory-guards-install.
 #
 # The loops run as KeepAlive loops (bin/last-stack-launchd-loop) since
 # 2026-09-23. `status` prints the heartbeat age of every loop.
 #
-# This installer reloads ONLY the labels above, and only a label whose
-# rendered plist changed. It never boots out, kickstarts, or signals lastdbd
-# itself. `install <label>` installs one label and leaves the other alone.
+# This installer reloads ONLY the guard label above. It never boots out,
+# kickstarts, or signals lastdbd itself.
 #
 # Usage:
-#   last-stack-guard-loops-install install [label]|status
+#   last-stack-guard-loops-install install|status
 set -euo pipefail
 
 self="${BASH_SOURCE[0]}"
@@ -34,13 +32,11 @@ hb_dir="${LAUNCHD_LOOP_HEARTBEAT_DIR:-$HOME/.lastdb/monitoring/launchd-loop}"
 
 labels() {
   printf '%s\n' com.edgevector.lastdb-memory-guard
-  printf '%s\n' com.edgevector.lastdb-telemetry-logger
 }
 
 assert_guard_label() {
   case "$1" in
     com.edgevector.lastdb-memory-guard) ;;
-    com.edgevector.lastdb-telemetry-logger) ;;
     *) echo "refusing to touch label: $1" >&2; exit 1 ;;
   esac
 }
@@ -67,10 +63,6 @@ install_one() {
 install_agent() {
   mkdir -p "$hb_dir"
   local label
-  if [ -n "${1:-}" ]; then
-    install_one "$1"
-    return
-  fi
   for label in $(labels); do install_one "$label"; done
 }
 
@@ -87,8 +79,8 @@ status_agent() {
 }
 
 case "$cmd" in
-  install) install_agent "${2:-}" ;;
+  install) install_agent ;;
   status) status_agent ;;
   -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0" ;;
-  *) echo "usage: $0 install [label]|status" >&2; exit 2 ;;
+  *) echo "usage: $0 install|status" >&2; exit 2 ;;
 esac
