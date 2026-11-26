@@ -34,6 +34,9 @@ import time
 SCHEMA = "SafeUpgradeDevRestore"
 FIELDS = ["id", "note"]
 SYNC_SECONDS = 300
+RELAY_WAIT_SECONDS = 600
+RELAY_POLL_SECONDS = 5
+MAX_SYNC_SECONDS = 900
 BOOT_SECONDS = 120
 SEED_BATCHES = 3
 SEED_BATCH_RECORDS = 10
@@ -77,6 +80,49 @@ def wait(what, probe, seconds=SYNC_SECONDS):
             return last
         time.sleep(1)
     raise ValueError(f"timed out after {seconds}s waiting for {what}; last value {last!r}")
+
+
+def relay_state_summary(home, state, required_head):
+    """Return one safe, actionable relay state sample without identity material."""
+    if not isinstance(state, dict):
+        return {"home": home.name, "state": "unavailable", "required_head": required_head}
+    head, acked = state.get("head"), state.get("acked")
+    if type(head) is not int or type(acked) is not int or head < 0 or acked < 0:
+        return {"home": home.name, "state": "invalid", "head": head, "acked": acked,
+                "required_head": required_head}
+    return {"home": home.name, "state": "ready", "head": head, "acked": acked,
+            "behind": head - acked, "required_head": required_head}
+
+
+def wait_for_relay_confirmation(home, phase, seconds):
+    """Bounded polling that proves the relay confirmed every entry visible in A.
+
+    The target is captured only after the writes for this phase complete. A later
+    status sample must have acknowledged its full current head, so a completion
+    cannot accidentally prove an older prefix of A.
+    """
+    deadline = time.monotonic() + seconds
+    required_head, previous = None, None
+    while True:
+        state = home.spool()
+        if required_head is None and isinstance(state, dict) and type(state.get("head")) is int \
+                and state["head"] > 0:
+            required_head = state["head"]
+        summary = relay_state_summary(home, state, required_head)
+        encoded = json.dumps(summary, sort_keys=True, separators=(",", ":"))
+        if encoded != previous:
+            print(f"DEV_RELAY_PROGRESS: phase={phase} {encoded}", file=sys.stderr)
+            previous = encoded
+        if summary["state"] == "ready" and required_head is not None \
+                and summary["head"] >= required_head and summary["acked"] == summary["head"]:
+            print(f"DEV_RELAY_CONFIRMED: phase={phase} {encoded}")
+            return summary
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ValueError(
+                f"relay confirmation timed out after {seconds}s phase={phase}; "
+                f"required_head={required_head!r}; last_state={encoded}")
+        time.sleep(min(RELAY_POLL_SECONDS, remaining))
 
 
 class Home:
@@ -167,11 +213,6 @@ class Home:
         except (OSError, http.client.HTTPException, ValueError, KeyError, TypeError):
             return None
 
-    def synced_up(self):
-        """Every accepted write is confirmed by the relay (acked == head)."""
-        state = self.spool()
-        return state is not None and state["head"] > 0 and state["head"] == state["acked"]
-
     def define_schema(self):
         request(self.sock, "/api/schemas/seed-system", {"isolated_copy": True, "schema": {
             "name": SCHEMA, "descriptive_name": SCHEMA, "source": "system_seed", "schema_type": "Hash",
@@ -242,7 +283,7 @@ def prove(args, root, homes):
         batch = records_of("seed", SEED_BATCH_RECORDS, len(expected))
         a.write(batch)
         expected.update(batch)
-    wait("the relay to confirm every entry of A", a.synced_up)
+    wait_for_relay_confirmation(a, "seed", args.relay_wait_seconds)
     taken = a.cli(["backup", "snapshot", "--wait"], env=a.live_env())
     require(taken.get("snapshot_seq") == 1 and taken.get("uploaded_files") == taken.get("files"),
             f"the first snapshot is not complete: {sorted(taken)}")
@@ -251,7 +292,7 @@ def prove(args, root, homes):
         batch = records_of("tail", TAIL_BATCH_RECORDS, len(expected))
         a.write(batch)
         expected.update(batch)
-    wait("the relay to confirm the tail of A", a.synced_up)
+    wait_for_relay_confirmation(a, "tail", args.relay_wait_seconds)
     entries = a.spool()["head"]
     tail = entries - at_snapshot
     expected_tail = TAIL_BATCHES * TAIL_BATCH_RECORDS  # one signed entry per record
@@ -287,7 +328,12 @@ def main():
     parser.add_argument("--source", required=True, help="full candidate source commit")
     parser.add_argument("--mirror", default=os.path.expanduser("~/.cache/edgevector-git/lastdb.git"))
     parser.add_argument("--relay-url", help="override the DEV relay origin")
+    parser.add_argument("--relay-wait-seconds", type=int,
+                        default=os.environ.get("LASTDB_DEV_RESTORE_RELAY_WAIT_SECS", str(RELAY_WAIT_SECONDS)),
+                        help=f"bounded wait for each relay confirmation (1..{MAX_SYNC_SECONDS}, default {RELAY_WAIT_SECONDS})")
     args = parser.parse_args()
+    require(1 <= args.relay_wait_seconds <= MAX_SYNC_SECONDS,
+            f"--relay-wait-seconds must be in 1..{MAX_SYNC_SECONDS}")
     root = Path(tempfile.mkdtemp(prefix="ldb-dev-restore-", dir="/private/tmp")).resolve()
     homes = []
     try:
@@ -298,11 +344,17 @@ def main():
                 print(f"{home.name} daemon: {scrub(line)}", file=sys.stderr)
         raise SystemExit(f"DEV restore proof failed: {scrub(str(error))}") from None
     finally:
-        # A failure can leave a daemon running. Stop it, then delete only this run's directory.
+        # A failed relay proof never affects the primary. First request a durable
+        # candidate stop so the relay can finish its accepted work; force cleanup
+        # remains the last resort inside this generated, isolated home.
         for home in homes:
             if home.process is not None and home.process.poll() is None:
-                home.process.kill()
-                home.process.wait(timeout=30)
+                try:
+                    home.stop()
+                    print(f"DEV_RESTORE_RECOVERY: home={home.name} graceful_stop=confirmed", file=sys.stderr)
+                except (OSError, ValueError, subprocess.SubprocessError) as error:
+                    print(f"DEV_RESTORE_RECOVERY: home={home.name} graceful_stop=failed "
+                          f"reason={scrub(str(error))[:300]}", file=sys.stderr)
         shutil.rmtree(root, ignore_errors=True)
 
 

@@ -81,6 +81,7 @@ native_dev_restore_proof() {
   fi
   while IFS= read -r line; do
     case "$line" in DEV_RESTORE_SUMMARY:*) log "$line" ;; esac
+    case "$line" in DEV_RELAY_CONFIRMED:*) log "$line" ;; esac
   done <<< "$out"
   log "DEV restore proof GREEN: backup to the DEV relay, snapshot, restore from the phrase, records match key by key"
 }
