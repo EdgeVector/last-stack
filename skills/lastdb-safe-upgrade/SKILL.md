@@ -109,6 +109,13 @@ exact candidate pair and reads nothing of the primary.
    written, key by key, and the key listing has no other key.
 5. Both daemons stop; the proof deletes its own temporary directory, phrase included.
 
+For each seed and tail phase, the proof polls the candidate's spool for at most
+`LASTDB_DEV_RESTORE_RELAY_WAIT_SECS` seconds (default 600; cap 900). It emits
+`DEV_RELAY_PROGRESS:` as the relay advances and `DEV_RELAY_CONFIRMED:` only when
+the full current head of A is acknowledged. A timeout includes the required head
+and final head/acknowledged positions. The generated candidate then receives a
+durable stop request; the primary remains unchanged.
+
 The proof prints one `DEV_RESTORE_SUMMARY:` line. The relay keeps the entries and
 blobs of each run (a node cannot delete); no cleanup routine exists for them.
 
