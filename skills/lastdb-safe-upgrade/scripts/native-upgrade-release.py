@@ -49,8 +49,12 @@ def main():
         require(re.fullmatch(r"\d+\.\d+\.\d+", version), "expected a published nightly or stable version")
         tag, workflow = f"v{version}", "stable-release.yml"
     with tempfile.TemporaryDirectory(prefix="ldb-native-release-") as folder:
-        github("release", "download", tag, "-R", REPO, "--pattern", ARCHIVE,
-               "--pattern", MANIFEST, "--dir", folder)
+        downloader = Path(__file__).resolve().parents[3] / "lib/github_release_assets.py"
+        subprocess.run(
+            [sys.executable, str(downloader), "--repo", REPO, "--tag", tag,
+             "--destination", folder, ARCHIVE, MANIFEST],
+            check=True, timeout=360,
+        )
         bundle, manifest_path = Path(folder) / ARCHIVE, Path(folder) / MANIFEST
         for path in (bundle, manifest_path):
             fields = ["--repo", REPO, "--signer-workflow", f"{REPO}/.github/workflows/{workflow}",
