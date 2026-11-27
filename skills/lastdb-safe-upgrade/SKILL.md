@@ -78,7 +78,10 @@ a refusal (fail closed):
   true, `payment_hold` is false, `last_error` is present and null.
 - `databases` is a non-empty object. For every database: `upload.spool_head` and
   `upload.spool_confirmed_through` are numbers and equal (acked == head);
-  `upload.last_error` and `download.last_error` are null.
+  `upload.last_error` and `download.last_error` are null. `upload.spool_head` can
+  itself be a stale mirror of the local spool, so the guard also requires
+  `status.spool.head` (the live local head) to be no further ahead than each
+  database's `upload.spool_confirmed_through`.
 - `snapshot.state` is `published` or `installed`, with a `taken_at_ms` and a 64-hex
   `manifest_sha256`.
 
