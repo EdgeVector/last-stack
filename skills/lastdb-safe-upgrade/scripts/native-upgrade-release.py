@@ -69,7 +69,7 @@ def main():
         require(sorted(manifest["binaries"], key=lambda row: row["name"]) == expected,
                 "the upgrade pair differs from the attested Mac executable pair")
 
-    checks = ("ci-required", "benchmark-complete")
+    checks = ("ci-required", "benchmark-complete", "signed-history-proofs-complete")
     found = {name: [] for name in checks}
     for page in range(1, 11):
         response = github("api", f"repos/{REPO}/commits/{source}/check-runs?per_page=100&page={page}&filter=all")
