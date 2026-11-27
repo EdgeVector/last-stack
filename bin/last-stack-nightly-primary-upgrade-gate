@@ -273,7 +273,7 @@ if [ "$route" = native ]; then
   # A launcher error without a terminal execution can be retried next night.
   if ! execution="$(jq -er --arg oid "$nightly_oid" '
     select(.source_git_oid == $oid and .graph == "lastdb-safe-upgrade" and .status == "failed")
-    | .execution | select(type == "string" and test("^lx-[A-Za-z0-9-]+$"))
+    | .execution | select(type == "string" and test("^lx-[A-Za-z0-9.-]+$"))
   ' <<<"$loom_receipt")"; then
     result error native-loom-unconfirmed 1
   fi
