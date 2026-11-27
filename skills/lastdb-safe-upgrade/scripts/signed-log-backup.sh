@@ -18,6 +18,7 @@ BACKUP_WAIT_SECS="${LASTDB_BACKUP_WAIT_SECS:-300}"
 BACKUP_SNAPSHOT_WAIT_SECS="${LASTDB_BACKUP_SNAPSHOT_WAIT_SECS:-3600}"
 # JSON object {"<database id>": <spool head>} read from the OLD build before the stop.
 BACKUP_PRESTOP_HEADS=""
+BACKUP_PRESTOP_LOCAL_HEAD=""
 
 backup_status_sample() {
   # $1 = output file (fresh, mode 600)
@@ -39,6 +40,11 @@ backup_sync_verdict() {
       elif ($c.environment | type) != "string" or ($c.environment | length) == 0 then "environment-missing"
       elif $c.captures_accepted != true then "captures-not-accepted"
       elif $c.payment_hold != false then "payment-hold"
+      elif (.status.spool | type) != "object" then "local-spool-missing"
+      elif .status.spool.gap != false then "local-capture-gap"
+      elif (.status.spool.head | type) != "number"
+          or (.status.spool.acked | type) != "number" then "local-position-missing"
+      elif .status.spool.head != .status.spool.acked then "upload-behind"
       elif ($c | has("last_error") | not) then "error-field-missing"
       elif $c.last_error != null then "error"
       elif ($c.databases | type) != "object" or ($c.databases | length) == 0 then "no-database-progress"
@@ -95,15 +101,19 @@ backup_recovery_point_preflight() {
   BACKUP_PRESTOP_HEADS="$(jq -c '[.status.cloud_sync.databases | to_entries[]
     | {key: .key, value: .value.upload.spool_head}] | from_entries' "$status")" \
     || die "recovery point: the database heads cannot be read; the primary was not stopped"
+  BACKUP_PRESTOP_LOCAL_HEAD="$(jq -er '.status.spool.head' "$status")" \
+    || die "recovery point: the local spool head cannot be read; the primary was not stopped"
   log "recovery point (no copy of the primary): backup connected, a snapshot on record, acked == head for $(jq -r 'length' <<<"$BACKUP_PRESTOP_HEADS") database(s); saved program pair $OLD_PROGRAM_DIR"
 }
 
 # After the new build starts: acked follows head again. Every database that was
 # there before the stop is reported, its head has not moved back, and acked == head.
 backup_following_verdict() {
-  jq -r --argjson before "$BACKUP_PRESTOP_HEADS" '
+  jq -r --argjson before "$BACKUP_PRESTOP_HEADS" --argjson local_before "$BACKUP_PRESTOP_LOCAL_HEAD" '
     .status.cloud_sync.databases as $d
-    | if ($d | type) != "object" then "no-database-progress"
+    | if (.status.spool.head | type) != "number" then "local-position-missing"
+      elif .status.spool.head < $local_before then "local-head-moved-back"
+      elif ($d | type) != "object" then "no-database-progress"
       elif any($before | keys[]; ($d[.] | type) != "object") then "database-not-reported-yet"
       elif any($before | to_entries[]; $d[.key].upload.spool_head < .value) then "head-moved-back"
       else "ok" end
