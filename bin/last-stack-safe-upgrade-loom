@@ -358,9 +358,19 @@ view="$(loom run lastdb-safe-upgrade --key "$KEY" --input "$input" \
   --local-recovery-dir "$LOCAL_RECOVERY_DIR")"
 loom_rc=$?
 set -e
-execution="$(printf '%s\n' "$view" | awk '/^lx-/{print; exit}')"
-status="$(printf '%s\n' "$view" | awk -F': ' '/^status:/{print $2; exit}')"
-state="$(printf '%s\n' "$view" | awk -F': ' '/^state:/{print $2; exit}')"
+# A failed `loom run` can return no human view. Its durable journal still
+# records the terminal execution. Bind that result to this exact candidate
+# instead of parsing display text or treating a known failure as unconfirmed.
+if journal_receipt="$(printf '%s\n' "$input" | python3 "$ROOT/lib/lastdb_upgrade_loom_receipt.py" \
+    "$LOCAL_RECOVERY_DIR/executions.jsonl" "$KEY")"; then
+  execution="$(jq -er '.execution' <<<"$journal_receipt")"
+  status="$(jq -er '.status' <<<"$journal_receipt")"
+  state="$(jq -er '.state' <<<"$journal_receipt")"
+else
+  execution=""
+  status="unknown"
+  state="unknown"
+fi
 
 outcome="error"
 [ "$loom_rc" -eq 0 ] && [ "$status" = "succeeded" ] && outcome="ok"
