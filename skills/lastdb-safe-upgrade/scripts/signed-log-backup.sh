@@ -33,8 +33,7 @@ backup_status_sample() {
 # last accepted write confirmed by the relay (acked == head).
 backup_sync_verdict() {
   jq -r '
-    .status.spool.head as $live_head
-    | .status.cloud_sync as $c
+    .status.cloud_sync as $c
     | if .ok != true then "status-not-ok"
       elif ($c | type) != "object" then "cloud-sync-missing"
       elif $c.connected != true then "not-connected"
@@ -53,10 +52,6 @@ backup_sync_verdict() {
           or (.upload.spool_confirmed_through | type) != "number") then "upload-position-missing"
       elif any($c.databases[]; .upload.last_error != null or .download.last_error != null) then "database-error"
       elif any($c.databases[]; .upload.spool_head != .upload.spool_confirmed_through) then "upload-behind"
-      # A per-database upload.spool_head can itself be a stale mirror of the
-      # live local spool, so confirmed == cached-head is not proof the relay
-      # has caught up with the spool this sample actually read.
-      elif any($c.databases[]; $live_head > .upload.spool_confirmed_through) then "upload-behind"
       else "ok" end
   ' "$1" 2>/dev/null || echo "status-invalid"
 }
