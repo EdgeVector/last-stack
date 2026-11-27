@@ -129,16 +129,16 @@ cleanup_work() {
 trap cleanup_work EXIT
 
 list="$work/releases.json"
-if ! env -u GH_TOKEN -u GITHUB_TOKEN gh release list --repo "$repo" --limit 40 \
-  --json tagName,publishedAt,isDraft >"$list"; then
+if ! env -u GH_TOKEN -u GITHUB_TOKEN gh api --hostname github.com \
+  "repos/$repo/releases?per_page=40" >"$list"; then
   result error release-list-failed 1
 fi
-tag="$(jq -r '[.[] | select(.isDraft != true and (.tagName | startswith("nightly-")))] | sort_by(.publishedAt) | last | .tagName // empty' "$list")"
+tag="$(jq -r '[.[] | select(.draft != true and (.tag_name | startswith("nightly-")))] | sort_by(.published_at) | last | .tag_name // empty' "$list")"
 if [ -z "$tag" ]; then
   result error nightly-tag-missing 1
 fi
-if ! env -u GH_TOKEN -u GITHUB_TOKEN gh release download "$tag" --repo "$repo" \
-  --pattern nightly.json --dir "$work" --clobber; then
+if ! python3 "$root/lib/github_release_assets.py" --repo "$repo" --tag "$tag" \
+  --destination "$work" nightly.json; then
   result error nightly-index-download-failed 1
 fi
 
@@ -197,9 +197,8 @@ fi
 
 bundle="lastdb-${target}.tar.gz"
 manifest_name="lastdb-${target}.manifest.json"
-if ! env -u GH_TOKEN -u GITHUB_TOKEN gh release download "$tag" --repo "$repo" \
-  --pattern "$bundle" --pattern "$manifest_name" --pattern SHA256SUMS.txt \
-  --dir "$work" --clobber; then
+if ! python3 "$root/lib/github_release_assets.py" --repo "$repo" --tag "$tag" \
+  --destination "$work" "$bundle" "$manifest_name" SHA256SUMS.txt; then
   result error asset-download-failed 1
 fi
 
