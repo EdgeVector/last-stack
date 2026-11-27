@@ -52,7 +52,7 @@ into a fresh home required"); Tom does that by hand, there is no migration code.
 
 | Step | What runs | Fails when |
 |------|-----------|------------|
-| 1. Qualify | `native-upgrade-release.py`: the exact `lastdb` + `lastdbd` pair equals the attested Mac release of the full source commit, and `ci-required` and `benchmark-complete` passed for that commit. No local build or benchmark. | Any hash, attestation or check differs |
+| 1. Qualify | `native-upgrade-release.py`: the exact `lastdb` + `lastdbd` pair equals the attested Mac release of the full source commit, and `ci-required`, `benchmark-complete` and `signed-history-proofs-complete` passed for that commit. No local build or benchmark. | Any hash, attestation or check differs |
 | 2. Class | Refuse `target/debug`, `-dirty` versions, a daemon over 1.5x the incumbent size; sibling `lastdb` of the same version; `codesign --verify --strict` | Any of these |
 | 3. Generated home | `native-primary-probe.py`: old build writes, candidate reads and writes (keyed reads), old build reads again. Memory below the memory-guard limit minus 10%. | A read differs, memory too high, no clean stop |
 | 4. DEV restore proof | `dev-restore-proof.py` (below) | Any step |
