@@ -3,9 +3,6 @@
 # the lastdbd and lastdb pair from one directory. Explicit daemon-only callers
 # retain their existing opt-in. Never compiles.
 #
-# The real-copy safe-upgrade driver keeps its independent source, hash, version,
-# restore, and primary protection checks.
-#
 # Lookup order:
 #   1. ~/.lastdb-test-copies/lastdbd-smoke-staged-<shortsha>
 #   2. ~/.local/state/last-stack/canary-builds/<full-oid>/
@@ -160,8 +157,8 @@ if [ "$allow_newest" -eq 1 ] && [ -d "$BUILDS_DIR" ]; then
   # Newest directory by mtime that actually contains an executable lastdbd.
   #
   # A stage directory is named for the commit it was built from. Other tooling
-  # copies a stage next to it under "<oid>-retryN.XXXXXX" (the safe-upgrade
-  # cutover retries leave such copies behind, complete with their own
+  # copies a stage next to it under "<oid>-retryN.XXXXXX" (the retired safe-upgrade
+  # cutover retries left such copies behind, complete with their own
   # cutover-fail logs). Those copies win `ls -1t`, so reporting the raw
   # basename as resolved_oid published a non-OID token: the 2026-09-06 smoke
   # run recorded

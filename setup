@@ -772,14 +772,23 @@ remove_retired_skill_links() {
   # Drop installed skill links whose SKILL.md points into a Last Stack tree
   # after register_into stops shipping those skills.
   local skills_dir="$1"
-  local name skill raw resolved
-  for name in user-vocabulary app-identity-dev-enroll exemem-credentials; do
+  local name skill raw resolved link
+  for name in user-vocabulary app-identity-dev-enroll exemem-credentials \
+    lastdb-safe-upgrade lastdb-smoke-test; do
     skill="$skills_dir/$name/SKILL.md"
     [ -L "$skill" ] || continue
     raw="$(readlink "$skill" 2>/dev/null || true)"
     resolved="$(resolve_symlink "$skill")"
     link_is_last_stack_tree "$resolved" "$raw" || continue
     rm -f "$skill"
+    # register_into mirrored sidecar files (scripts/) as links into the same
+    # tree. Remove those links too, then the directories they leave empty.
+    while IFS= read -r link; do
+      raw="$(readlink "$link" 2>/dev/null || true)"
+      resolved="$(resolve_symlink "$link")"
+      if link_is_last_stack_tree "$resolved" "$raw"; then rm -f "$link"; fi
+    done < <(find "$skills_dir/$name" -maxdepth 3 -type l 2>/dev/null)
+    find "$skills_dir/$name" -mindepth 1 -maxdepth 3 -type d -empty -delete 2>/dev/null || true
     rmdir "$skills_dir/$name" 2>/dev/null || true
     echo "  removed $name skill link in $skills_dir"
   done

@@ -184,7 +184,7 @@ loom show <execution-id>
   node (`effects: none`/`idempotent`) retries by re-running the SAME
   `loom run … --key <key>` command. A parked `checked` node has its evidence
   attached — resolve it honestly, never by forcing state.
-- **Interrupted / node restarted** (safe-upgrade cutovers happen) → the replay
+- **Interrupted / node restarted** (`lastdb upgrade` restarts happen) → the replay
   contract holds: re-run the same `loom run … --key <key>`. Completed nodes
   are cached; only the in-flight frontier re-runs.
 - **Poll cadence:** ScheduleWakeup ~1200s while a pass runs unattended. Do not
@@ -220,7 +220,7 @@ you gave up instead: how far, what blocks, and the smallest decision needed.
 
 - **Never kill the primary LastDB brain** (`lastdbd` on
   `~/.lastdb/data/folddb.sock`). A refused socket during a walk is usually a
-  safe-upgrade cutover — wait, then resume with the same key.
+  `lastdb upgrade` restart — wait, then resume with the same key.
 - **Never signal an approval the user did not give.** The gate is the product.
 - **Never stash/reset in a shared checkout**; worktrees only.
 - Input fields must not contain double quotes (sed extraction in node

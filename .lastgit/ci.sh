@@ -25,15 +25,7 @@ for script in setup bin/* lib/*.sh hooks/*.sh .lastgit/ci.sh; do
   esac
 done
 
-# The graph executes nested shell and Python workers. Check their actual
-# source syntax without a daemon, test, or primary operation.
-for script in lib/canary-loom/*.sh skills/lastdb-safe-upgrade/scripts/*.sh; do
-  bash -n "$script"
-done
-python3 -m py_compile skills/lastdb-safe-upgrade/scripts/dev-v2-stream-cleanup.py
-python3 -I skills/lastdb-safe-upgrade/scripts/dev-v2-stream-cleanup.py --help >/dev/null
-python3 -m py_compile skills/lastdb-safe-upgrade/scripts/native-*.py
-python3 -m py_compile skills/lastdb-safe-upgrade/scripts/dev-restore-proof.py
+python3 -m py_compile lib/dev-photograph-cleanup-handoff.py
 
 bin/last-stack-lint-machine-leaks --ci
 # No unbounded workspace walk in a helper, no new bash->python heredoc

@@ -17,14 +17,6 @@
     "prepare": [],
     "links": [
       {
-        "source": "bin/last-stack-dev-proof-cleanup",
-        "command": "last-stack-dev-proof-cleanup"
-      },
-      {
-        "source": "bin/last-stack-dev-proof-cleanup-routine",
-        "command": "last-stack-dev-proof-cleanup-routine"
-      },
-      {
         "source": "bin/last-stack-class-a-heal",
         "command": "last-stack-class-a-heal"
       },
@@ -51,10 +43,6 @@
       {
         "source": "bin/last-stack-routines-prompt-doctor",
         "command": "last-stack-routines-prompt-doctor"
-      },
-      {
-        "source": "bin/last-stack-safe-upgrade-loom",
-        "command": "last-stack-safe-upgrade-loom"
       },
       {
         "source": "bin/last-stack-pipeline-forge-pr-ledger",
@@ -221,15 +209,6 @@
     "probe": [
       {
         "argv": [
-          "python3",
-          "-I",
-          "skills/lastdb-safe-upgrade/scripts/dev-v2-stream-cleanup.py",
-          "--help"
-        ],
-        "timeout_s": 15
-      },
-      {
-        "argv": [
           "bash",
           "-n",
           "setup"
@@ -243,12 +222,6 @@
           "bin/last-stack-registry-setup"
         ],
         "timeout_s": 600
-      },
-      {
-        "argv": [
-          "bin/last-stack-dev-proof-cleanup-routine"
-        ],
-        "timeout_s": 30
       }
     ]
   }

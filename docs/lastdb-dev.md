@@ -61,8 +61,7 @@ lastdb-dev stop
 ## What the node inherits
 
 The node boots with the primary's `LASTDB_*` environment, read from the
-primary's LaunchAgent plist through the same helper `lastdb-safe-upgrade`
-uses (`skills/lastdb-safe-upgrade/scripts/live-lastdb-env.sh`), so the dev node
+primary's LaunchAgent plist through `lib/live-lastdb-env.sh`, so the dev node
 runs with the same limits and tuning as the primary.
 
 The node does not inherit `LASTDB_HOME` or any Sentry DSN.

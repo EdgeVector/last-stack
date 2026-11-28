@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Shared live LASTDB_* env-mirror for CoW probes.
-# Sourced by safe-upgrade-lastdb.sh.
+# Shared live LASTDB_* env-mirror for dev nodes.
+# Sourced by bin/last-stack-lastdb-dev.
 # Never invent a second env-mirror.
 #
 # LIVE_LASTDB_ENV_PAIRS: KEY=VAL per line from the live LaunchAgent plist.
 # HOME-shaped keys are excluded — the probe must only ever see its own
 # --data-dir copy. LASTDB_BUILD_CONFLICT_STAMP_ON_COPY is excluded too.
-# The safe-upgrade candidate sets that flag on its ephemeral copy only.
-# A primary plist must not hand the flag to a probe or to the live daemon.
+# It is not a live key, and a primary plist must not hand it to a dev node.
 #
 # bash 3.2 compatible (macOS /bin/bash). No side effects at source.
 

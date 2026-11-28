@@ -1131,7 +1131,7 @@ restart_primary() {
 #   agent loaded         -> KeepAlive owns the restart; never race it
 #   socket answers       -> something serves this home already; fail closed
 #   absent < N cycles    -> a bootout/bootstrap window is not a crash.
-#                           lastdb-safe-upgrade boots the agent out and back in
+#                           `lastdb upgrade` boots the agent out and back in
 #                           during its live step, and that window must never be
 #                           mistaken for one. Requiring the state to persist
 #                           across cycles costs one minute of downtime and

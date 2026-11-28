@@ -28,6 +28,5 @@ Respect host policy. When Kanban and Situations are off, move their code only
 with `--inactive`, do not invoke either app, and do not initialize their schemas.
 Carry `LAST_STACK_APPS_OFF=1` into this host's activation and updater environment.
 
-The LastDB program pair is separate. Every primary LastDB version change uses
-the `lastdb-safe-upgrade` skill and its backup, restore, clean-stop and health
-gates. This app workflow never upgrades or restarts the primary database.
+The LastDB program pair is separate. The primary updates itself with `lastdb upgrade` (`lastdb upgrade --status`; manual change: `lastdb upgrade --version <v>` or `--rollback`).
+This app workflow never upgrades or restarts the primary database.

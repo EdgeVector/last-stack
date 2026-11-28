@@ -150,6 +150,5 @@ Papercuts (stale wording, polish) → brain `papercut-…` only, not board.
 ## Related
 
 - Daily observe-only canary: skill + routine `llms-txt-install-smoke`
-- Real-data Mini canary: `lastdb-smoke-test` / `lastdb-local-smoke-test`
 - Public map: https://thelastdb.com/llms.txt · https://thelastdb.com/start
 - Shared contract: `sop-routine-shared-contract`
