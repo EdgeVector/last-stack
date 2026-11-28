@@ -101,7 +101,7 @@ else
 fi
 PRIMARY_HOME="${LASTDB_DEV_PRIMARY_HOME:-$HOME/.lastdb}"
 resolve_launchd_plist() {
-  # Same discovery order as lastdb-safe-upgrade: explicit env, then the loaded
+  # Discovery order: explicit env, then the loaded
   # job whose label looks like the primary daemon, then a LaunchAgent plist by
   # that label pattern. No host-specific label is hard-coded here.
   local label plist
@@ -244,11 +244,11 @@ memory_preflight() {
 }
 
 # ---------- primary env mirror ----------
-# Shared with lastdb-safe-upgrade (HR-N1): a probe that boots without the
+# Shared env mirror (HR-N1): a probe that boots without the
 # primary's LASTDB_* env is not running the primary's database — e.g.
 # LASTDB_MAX_FIELD_VALUE_BYTES decides which field values the node accepts.
-# Never invent a second env-mirror; source the one the upgrade path uses.
-LIVE_ENV_SH="$ROOT/skills/lastdb-safe-upgrade/scripts/live-lastdb-env.sh"
+# Never invent a second env-mirror; source lib/live-lastdb-env.sh.
+LIVE_ENV_SH="$ROOT/lib/live-lastdb-env.sh"
 mirror_env_lines() {
   if [ -f "$LIVE_ENV_SH" ]; then
     # shellcheck source=/dev/null
@@ -268,7 +268,7 @@ mirror_env_lines() {
 }
 
 refuse_retained_home_change() {
-  python3 -I "$ROOT/skills/lastdb-safe-upgrade/scripts/dev-photograph-cleanup-handoff.py" \
+  python3 -I "$ROOT/lib/dev-photograph-cleanup-handoff.py" \
     check-home-change --root "$1" >/dev/null 2>&1 \
     || die "retained photograph requires the exact released cleanup path"
 }
@@ -700,7 +700,7 @@ reclaim_exact_seed() (
     and .creator_pid <= 2147483647 and .creator_pid == (.creator_pid | floor)
   ' "$marker" >/dev/null || die "exact seed owner marker differs"
   if [ "$(jq -er '.kind' "$marker")" = "synthetic-photograph" ]; then
-    python3 -I "$ROOT/skills/lastdb-safe-upgrade/scripts/dev-photograph-cleanup-handoff.py" \
+    python3 -I "$ROOT/lib/dev-photograph-cleanup-handoff.py" \
       verify-release --root "$r" >/dev/null 2>&1 \
       || die "exact photograph cleanup consumer is pending or its proof differs"
   fi
@@ -731,7 +731,7 @@ reclaim_exact_seed() (
   [ "$(stat -f '%u:%Lp:%d:%i' "$r")" = "$before" ] \
     || die "exact seed container changed"
   if [ "$(jq -er '.kind' "$marker")" = "synthetic-photograph" ]; then
-    python3 -I "$ROOT/skills/lastdb-safe-upgrade/scripts/dev-photograph-cleanup-handoff.py" \
+    python3 -I "$ROOT/lib/dev-photograph-cleanup-handoff.py" \
       verify-release --root "$r" >/dev/null 2>&1 \
       || die "exact photograph release changed before cleanup"
     EXACT_PHOTOGRAPH_RELEASED_ROOT="$r" reclaim_one "$r" "released exact synthetic photograph" "$dry"

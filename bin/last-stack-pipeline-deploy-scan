@@ -21,7 +21,7 @@
 #   - no producer for <name>, but other repos DO have one under <root>
 #                             -> status=not-applicable, blocked=false.
 #      That repo does not deploy through the LastGit deploy-pipeline at all
-#      (e.g. fold deploys via lastdb-safe-upgrade, last-stack via host-track),
+#      (e.g. LastDB updates itself with `lastdb upgrade`),
 #      so a gate waiting on it can never be satisfied and must not block.
 #   - no producers under <root> whatsoever
 #                             -> status=unconfigured, blocked=true.

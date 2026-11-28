@@ -36,8 +36,8 @@ FORGE_RE = re.compile(r"https?://[^/\s)>\]]+/([^/\s)>\]]+)/([^/\s)>\]]+)/pulls?/
 # VERBS and mean repair anywhere. `papercut` is not a verb: on a reconciler
 # CARD it is the repair link (routines/papercut-reconciler.md: "The
 # `Papercut: <slug>` lines are the repair link"), and in hand-written prose it
-# is a citation (skills/lastdb-safe-upgrade/SKILL.md and its script both carry
-# `Papercut: <slug>` next to a hazard they describe). Reading the card meaning
+# is a citation (the retired lastdb-safe-upgrade skill and its script both
+# carried `Papercut: <slug>` next to a hazard they described). Reading the card meaning
 # in a hand-written PR body closed
 # papercut-fkanban-host-track-fresh-while-main-ahead-20260923 on
 # EdgeVector/last-stack#255, a PR whose own body says it is additive and

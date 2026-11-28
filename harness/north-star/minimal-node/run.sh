@@ -58,12 +58,12 @@ if [ "$MODE" = offline ]; then
     ns_write_report "$SLUG" FAIL "throwaway lastdbd failed to serve auto-identity\n$notes" || exit 1
     exit 1
   fi
-  ns_write_report "$SLUG" PASS-OFFLINE "$(printf 'Mini throwaway boot GREEN (never primary).\n\n%s\nLive full CoW smoke: skill lastdb-smoke-test / sop-lastdb-local-smoke-test\n' "$notes")"
+  ns_write_report "$SLUG" PASS-OFFLINE "$(printf 'Mini throwaway boot GREEN (never primary).\n\n%s\n' "$notes")"
   exit 0
 fi
 
-# Live: invoke scheduled smoke skill path if a runnable script exists
+# Live: note how the primary is kept current when a lastdb CLI exists
 if [ -x "$HOME/.last-stack/bin/last-stack-lastdb-current" ] || command -v lastdb >/dev/null; then
-  notes="$(printf '%s\nLive mode: run skill lastdb-smoke-test (synthetic seed) — not inlined to avoid long CI.\n' "$notes")"
+  notes="$(printf '%s\nLive mode: the primary updates itself with lastdb upgrade; check lastdb upgrade --status.\n' "$notes")"
 fi
-ns_write_report "$SLUG" PASS "$(printf 'Minimal-node live path documents CoW smoke skill; throwaway boot already proven offline.\n\n%s\n' "$notes")"
+ns_write_report "$SLUG" PASS "$(printf 'Minimal-node throwaway boot already proven offline.\n\n%s\n' "$notes")"

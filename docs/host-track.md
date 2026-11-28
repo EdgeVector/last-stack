@@ -9,7 +9,7 @@ removed after app, service and connector migration is proved.
 Last Stack remains available through `~/.last-stack` compatibility code links to
 `~/.local/share/lastdb-apps/last-stack/current/source`. State and evidence remain
 under `~/.local/state/last-stack`. The canonical LastDB program pair stays under
-`~/.lastdb/current` and uses the separate safe-upgrade workflow.
+`~/.lastdb/current`. The primary updates itself with `lastdb upgrade` (`lastdb upgrade --status`; manual change: `lastdb upgrade --version <v>` or `--rollback`).
 
 Historical factory receipts retain their original authority paths as evidence.
 They cannot authorize an artifact install or be treated as registry receipts.

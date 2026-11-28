@@ -283,7 +283,6 @@ bin/
                             touches the primary lastdbd process
   last-stack-uninstall      remove the registered skills
 skills/<name>/SKILL.md  one directory per skill
-  (includes lastdb-safe-upgrade — multi-harness Mini safe upgrade)
 instructions/lastdb.md
                         the minimal agent guide: what LastDB is and how to use
                         its current API and CLI. setup upserts it as a managed
